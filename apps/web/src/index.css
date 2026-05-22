@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * ADIA ERP — dark premium design system.
+ * Dark theme is the default and only theme for Faza-1.
+ */
+@layer base {
+  :root,
+  .dark {
+    --background: 240 10% 6%;
+    --foreground: 0 0% 96%;
+
+    --card: 240 9% 9%;
+    --card-foreground: 0 0% 96%;
+
+    --popover: 240 9% 9%;
+    --popover-foreground: 0 0% 96%;
+
+    --primary: 263 70% 60%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 240 6% 16%;
+    --secondary-foreground: 0 0% 96%;
+
+    --muted: 240 6% 14%;
+    --muted-foreground: 240 5% 60%;
+
+    --accent: 240 6% 18%;
+    --accent-foreground: 0 0% 96%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 240 6% 18%;
+    --input: 240 6% 18%;
+    --ring: 263 70% 60%;
+
+    --sidebar: 240 10% 8%;
+    --sidebar-foreground: 0 0% 90%;
+    --sidebar-accent: 240 6% 16%;
+    --sidebar-border: 240 6% 16%;
+
+    --radius: 0.625rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+  }
+}

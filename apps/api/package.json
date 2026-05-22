@@ -1,0 +1,42 @@
+{
+  "name": "@adia/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ADIA ERP (CAKE ERP) — backend API (Express + PostgreSQL, raw SQL)",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "migrate": "tsx src/db/migrate.ts",
+    "db:create": "tsx scripts/create-db.ts"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.20.0",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.9",
+    "@types/node": "^20.17.19",
+    "@types/pg": "^8.11.11",
+    "@types/supertest": "^6.0.2",
+    "eslint": "^9.20.1",
+    "supertest": "^7.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.24.1",
+    "vitest": "^3.0.6"
+  }
+}
