@@ -2,8 +2,7 @@
  * `authenticate` middleware — verifies the `Authorization: Bearer <JWT>`
  * header and attaches the principal to `req.auth`.
  *
- * Skeleton for Sprint 0: the function is ready but not yet wired onto
- * business endpoints (those arrive with M1-M9 in the next sprint).
+ * Wired onto every M1-M3 business endpoint; later modules reuse it as-is.
  */
 import type { NextFunction, Request, Response } from 'express';
 import { verifyToken } from '../auth/jwt.js';

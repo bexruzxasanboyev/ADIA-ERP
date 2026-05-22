@@ -6,10 +6,8 @@
  * `pm` super-admin role always passes (spec section 6).
  *
  * Must run AFTER `authenticate`. Location-scoped checks ("a store sees only
- * its own data") are enforced inside each handler in later sprints, since
- * they need the resource's location id.
- *
- * Skeleton for Sprint 0: ready, not yet wired onto business endpoints.
+ * its own data") are enforced inside each handler, since they need the
+ * resource's location id.
  */
 import type { NextFunction, Request, Response } from 'express';
 import { SUPER_ADMIN_ROLE, type Role } from '../auth/roles.js';

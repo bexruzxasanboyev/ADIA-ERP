@@ -94,4 +94,4 @@ export async function ping(): Promise<boolean> {
   return rows[0]?.ok === 1;
 }
 
-export { closePool } from './pool.js';
+export { closePool, setSearchPathSchema } from './pool.js';

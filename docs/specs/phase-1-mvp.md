@@ -226,6 +226,27 @@ Barcha endpointlar: `Authorization: Bearer <JWT>`. Javob `application/json`.
 Xato formati: `{ "error": { "code": "STRING_CODE", "message": "..." } }`.
 RBAC: §6 matritsasi. Har write endpoint `audit_log` ga yozadi.
 
+### Javob konvensiyalari (majburiy)
+
+- **List endpointlar yalang'och massiv qaytaradi** (konvert YO'Q):
+  `GET /api/products`, `GET /api/locations`, `GET /api/users`,
+  `GET /api/stock` — to'g'ridan-to'g'ri `[...]`.
+- **Yagona istisno — paginatsiyali list:** `GET /api/stock/movements`
+  konvert qaytaradi: `{ items: [...], total, limit, offset }`.
+  `total` — filtrlangan umumiy son (`COUNT(*)`), faqat joriy sahifa emas.
+- Bitta resurs (`POST`/`PATCH`/`PUT`/`GET /:id`) o'z konvertini saqlaydi:
+  `{ product }`, `{ location }`, `{ user }`, `{ stock }`, `{ movement_id }`.
+- **Embed (JOIN)**: `GET /api/stock` har qatorga `product_name`,
+  `product_unit` qo'shadi (`JOIN products`). `GET /api/stock/movements` har
+  qatorga `product_name`, `product_unit`, `from_location_name`,
+  `to_location_name` qo'shadi (`JOIN products` + `JOIN locations`).
+- **Qo'lda movement `reason`**: `POST /api/stock/movement` mijozdan faqat
+  `transfer` (ikki tomon: from+to) yoki `adjust` (bir tomon) qabul qiladi.
+  Server `reason` ni endpoint shaklidan o'zi aniqlaydi; mijoz yuborsa
+  derived qiymatga mos kelishi shart. `purchase`/`sale`/`production_input`/
+  `production_output` — faqat tizim (M5/M6/M7) qo'yadi; mijoz yuborsa
+  `422 VALIDATION_ERROR`.
+
 ### 4.1. Auth
 | Metod | Endpoint | Rol | Tavsif |
 |---|---|---|---|
@@ -235,17 +256,17 @@ RBAC: §6 matritsasi. Har write endpoint `audit_log` ga yozadi.
 ### 4.2. Locations & Users
 | Metod | Endpoint | Rol | Request → Response |
 |---|---|---|---|
-| GET  | `/api/locations` | pm, *_manager | `[{id,name,type,parent_id,manager_user_id,...}]` (rol bo'yicha filtr) |
-| GET  | `/api/locations/:id` | pm, o'z bo'g'ini | bitta location |
-| POST | `/api/locations` | pm | `{name,type,parent_id,poster_*}` → `201 {id,...}` |
-| PATCH| `/api/locations/:id` | pm | tahrir; `manager_user_id`, `lead_time_days` va h.k. |
-| GET  | `/api/users` | pm | foydalanuvchilar |
+| GET  | `/api/locations` | pm, *_manager | yalang'och massiv `[{id,name,type,parent_id,manager_user_id,...}]` (rol bo'yicha filtr) |
+| GET  | `/api/locations/:id` | pm, o'z bo'g'ini | `{location}` |
+| POST | `/api/locations` | pm | `{name,type,parent_id,poster_*}` → `201 {location}` |
+| PATCH| `/api/locations/:id` | pm | tahrir; `name`, `manager_user_id`, `parent_id`, `is_active`, `lead_time_days`, `review_days`, `safety_factor` → `{location}` |
+| GET  | `/api/users` | pm | yalang'och massiv `[{id,name,email,role,...}]` |
 | POST | `/api/users` | pm | `{name,email,password,role,location_id,telegram_id}` → `201` |
 
 ### 4.3. Products & Recipes
 | Metod | Endpoint | Rol | Request → Response |
 |---|---|---|---|
-| GET  | `/api/products` | pm, *_manager | mahsulotlar (filtr: `?type=`) |
+| GET  | `/api/products` | pm, *_manager | yalang'och massiv (filtr: `?type=`) |
 | POST | `/api/products` | pm, raw_warehouse_manager | `{name,type,unit,sku,poster_*}` → `201` |
 | GET  | `/api/products/:id/recipe` | pm, production_manager | BOM ro'yxati |
 | PUT  | `/api/products/:id/recipe` | pm, production_manager | `[{component_product_id,qty_per_unit}]` → to'liq almashtirish |
@@ -253,10 +274,10 @@ RBAC: §6 matritsasi. Har write endpoint `audit_log` ga yozadi.
 ### 4.4. Stock & Movements
 | Metod | Endpoint | Rol | Request → Response |
 |---|---|---|---|
-| GET  | `/api/stock?location_id=` | pm, o'z bo'g'ini | `[{location_id,product_id,qty,min_level,max_level,minmax_mode,updated_at}]` |
-| PATCH| `/api/stock/minmax` | pm, o'z bo'g'ini manageri | `{location_id,product_id,min_level,max_level}` → yangilangan qator |
-| POST | `/api/stock/movement` | pm, ombor/sklad/ta'minot man', production | `{product_id,from_location_id?,to_location_id?,qty,reason,note?}` → `201 {movement_id}`; atomar; yetmasa `409 INSUFFICIENT_STOCK` |
-| GET  | `/api/stock/movements?location_id=&product_id=` | pm, o'z bo'g'ini | harakatlar tarixi (paginatsiya) |
+| GET  | `/api/stock?location_id=` | pm, o'z bo'g'ini | yalang'och massiv `[{location_id,product_id,qty,min_level,max_level,minmax_mode,updated_at,product_name,product_unit}]` |
+| PATCH| `/api/stock/minmax` | pm, o'z bo'g'ini manageri | `{location_id,product_id,min_level,max_level}` → `{stock}`. Audit: `stock` kompozit PK — `entity_id=null`, payload da `location_id`+`product_id` |
+| POST | `/api/stock/movement` | pm, ombor/sklad/ta'minot man', production | `{product_id,from_location_id?,to_location_id?,qty,reason?,note?}` → `201 {movement_id}`; atomar; yetmasa `409 INSUFFICIENT_STOCK`. `reason` faqat `transfer`/`adjust` (server o'zi aniqlaydi); tizim reasonlari `422` |
+| GET  | `/api/stock/movements?location_id=&product_id=&limit=&offset=` | pm, o'z bo'g'ini | `{items,total,limit,offset}`; har item da `product_name,product_unit,from_location_name,to_location_name` |
 
 ### 4.5. Replenishment
 | Metod | Endpoint | Rol | Request → Response |
@@ -399,6 +420,13 @@ aks holda qo'lda kiritishga fallback. Hujjatlash atamasi: **"import (fallback: q
 chaqirilib, javob ingredient tarkibini qaytarish-qaytarmasligi aniqlanadi. Natija
 `docs/adia-poster-api.md` ga qayd etiladi va shu spec'ning §5.5 holati yangilanadi.
 Bu tekshiruv import-vs-qo'lda yo'lini yakuniy belgilaydi — boshqa M2/M5 ishlaridan oldin.
+
+**HOLAT (backend-engineer, 2026-05-22 — Sprint 1):** ⚠️ Tekshiruv **bloklangan** —
+`.env` dagi `POSTER_TOKEN` bo'sh (Poster admin panelida hali yaratilmagan). To'liq
+qayd: `docs/adia-poster-api.md` §8. **Oraliq qaror:** M2 BOM oqimi token kelguncha
+**qo'lda kiritish yo'li** (`PUT /api/products/:id/recipe`) bilan quriladi — bu
+fallback shu §5.5 da ko'zda tutilgan. Token kelgach import oqimi qo'shimcha
+sifatida qo'shiladi; qo'lda yo'l saqlanib qoladi.
 
 ---
 

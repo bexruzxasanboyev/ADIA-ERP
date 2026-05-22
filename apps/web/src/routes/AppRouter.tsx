@@ -1,13 +1,23 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { ProtectedRoute } from './ProtectedRoute';
+import { RoleRoute } from './RoleRoute';
 import { LoginPage } from '@/pages/LoginPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
+import { LocationsPage } from '@/pages/locations/LocationsPage';
+import { UsersPage } from '@/pages/users/UsersPage';
+import { ProductsPage } from '@/pages/products/ProductsPage';
+import { StockPage } from '@/pages/stock/StockPage';
 
 /**
- * Application routes. Module pages are placeholders in Faza-1 Sprint 0 —
- * each is replaced by a real screen in later sprints.
+ * Application routes (phase-1-mvp.md §2, §6).
+ *
+ * Faza-1 Sprint 1 delivers M1 (locations/users), M2 (products/recipes)
+ * and M3 (stock). The warehouse / store module screens reuse StockPage —
+ * the backend scopes /api/stock by role, so each manager sees only their
+ * own location. Dashboard, production, supply and replenishment remain
+ * placeholders until their sprints.
  */
 export function AppRouter() {
   return (
@@ -22,6 +32,7 @@ export function AppRouter() {
         }
       >
         <Route index element={<Navigate to="/dashboard" replace />} />
+
         <Route
           path="/dashboard"
           element={
@@ -31,15 +42,37 @@ export function AppRouter() {
             />
           }
         />
+
+        {/* M3 — stock screens. Each reuses StockPage; the backend scopes
+            /api/stock by the caller's role and location. */}
         <Route
           path="/raw-warehouse"
           element={
-            <PlaceholderPage
+            <StockPage
               title="Xom-ashyo ombori"
               description="Xom-ashyo qoldig‘i va harakatlari."
             />
           }
         />
+        <Route
+          path="/central-warehouse"
+          element={
+            <StockPage
+              title="Markaziy sklad"
+              description="Markaziy sklad qoldig‘i va jo‘natmalari."
+            />
+          }
+        />
+        <Route
+          path="/stores"
+          element={
+            <StockPage
+              title="Do‘konlar"
+              description="Do‘konlar qoldig‘i va savdo harakatlari."
+            />
+          }
+        />
+
         <Route
           path="/production"
           element={
@@ -59,30 +92,26 @@ export function AppRouter() {
           }
         />
         <Route
-          path="/central-warehouse"
-          element={
-            <PlaceholderPage
-              title="Markaziy sklad"
-              description="Markaziy sklad qoldig‘i va jo‘natmalar."
-            />
-          }
-        />
-        <Route
-          path="/stores"
-          element={
-            <PlaceholderPage
-              title="Do‘konlar"
-              description="Do‘konlar qoldig‘i va savdo ko‘rsatkichlari."
-            />
-          }
-        />
-        <Route
           path="/replenishment"
           element={
             <PlaceholderPage
               title="To‘ldirish so‘rovlari"
               description="Avtomatik to‘ldirish tsikli va so‘rovlar holati."
             />
+          }
+        />
+
+        {/* M2 — products & recipes. */}
+        <Route path="/products" element={<ProductsPage />} />
+
+        {/* M1 — locations & users. */}
+        <Route path="/locations" element={<LocationsPage />} />
+        <Route
+          path="/users"
+          element={
+            <RoleRoute allow={['pm']}>
+              <UsersPage />
+            </RoleRoute>
           }
         />
       </Route>

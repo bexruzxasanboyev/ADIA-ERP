@@ -9,22 +9,13 @@ import {
 } from '@/components/ui/sidebar';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { navItemsForRole } from '@/lib/navigation';
+import { navSectionsForRole } from '@/lib/navigation';
+import { ROLE_LABELS } from '@/lib/labels';
 import { useAuth } from '@/hooks/useAuth';
-
-/** Uzbek display labels for RBAC roles. */
-const ROLE_LABELS: Record<string, string> = {
-  pm: 'Loyiha rahbari',
-  raw_warehouse_manager: 'Xom-ashyo ombori boshlig‘i',
-  production_manager: 'Ishlab chiqarish boshlig‘i',
-  supply_manager: 'Ta’minot boshlig‘i',
-  central_warehouse_manager: 'Markaziy sklad boshlig‘i',
-  store_manager: 'Do‘kon boshlig‘i',
-};
 
 export function AppSidebar() {
   const { user, logout } = useAuth();
-  const items = user ? navItemsForRole(user.role) : [];
+  const sections = user ? navSectionsForRole(user.role) : [];
 
   return (
     <Sidebar>
@@ -34,24 +25,28 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <SidebarContent>
-        <SidebarSectionLabel>Modullar</SidebarSectionLabel>
-        {items.map((item) => (
-          <NavLink
-            key={item.path}
-            to={item.path}
-            className={({ isActive }) =>
-              cn(
-                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                isActive
-                  ? 'bg-sidebar-accent text-foreground'
-                  : 'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground',
-              )
-            }
-          >
-            <item.icon className="size-4 shrink-0" aria-hidden="true" />
-            <span>{item.label}</span>
-          </NavLink>
+        {sections.map((section) => (
+          <div key={section.label}>
+            <SidebarSectionLabel>{section.label}</SidebarSectionLabel>
+            {section.items.map((item) => (
+              <NavLink
+                key={item.path}
+                to={item.path}
+                className={({ isActive }) =>
+                  cn(
+                    'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    isActive
+                      ? 'bg-sidebar-accent text-foreground'
+                      : 'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground',
+                  )
+                }
+              >
+                <item.icon className="size-4 shrink-0" aria-hidden="true" />
+                <span>{item.label}</span>
+              </NavLink>
+            ))}
+          </div>
         ))}
       </SidebarContent>
 
@@ -62,7 +57,7 @@ export function AppSidebar() {
               {user.name}
             </p>
             <p className="truncate text-xs text-muted-foreground">
-              {ROLE_LABELS[user.role] ?? user.role}
+              {ROLE_LABELS[user.role]}
             </p>
           </div>
         )}

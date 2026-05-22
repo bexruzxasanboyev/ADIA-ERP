@@ -544,5 +544,33 @@ Javobda `access_token` keladi (2 yil amal qiladi).
 - PHP SDK: https://github.com/joinposter/api-php
 - Webhook: https://dev.joinposter.com/en/docs/v3/web/webhooks
 
+---
 
+## 8. BOM import tekshiruvi (VAZIFA 0 — backend-engineer, 2026-05-22)
+
+Spec §5.5 talab qilgan real API tekshiruvi: `menu.getProduct` va `menu.getPrepacks`
+javobi ingredient/retsept tarkibini qaytaradimi.
+
+**Holat: BAJARILMADI — bloklangan.** Sabab: `.env` dagi `POSTER_TOKEN` **bo'sh**
+(13-qator: `POSTER_TOKEN=`). Token hali Poster admin panelida yaratilmagan
+(Доступ → Интеграции → "+ Yangi token"). Tokensiz har qanday chaqiruv
+`{"error":{"code":10,"message":"Access token is not defined"}}` qaytaradi.
+
+Tekshirilgan chaqiruvlar (hammasi `code:10`):
+- `menu.getProducts` — subdomain (`adia.joinposter.com`) va global (`joinposter.com`);
+- `clients.getGroups` — token haqiqiyligini tasdiqlash uchun.
+
+`POSTER_APP_ID` va `POSTER_APP_SECRET` to'ldirilgan, lekin ular OAuth ilova
+kalitlari — REST API chaqiruvlari uchun **Personal Integration token** kerak.
+
+**Egadan kerak:** Poster admin panelida Personal Integration token yaratib,
+`.env` ga `POSTER_TOKEN=<account>:<32-hex>` ko'rinishida qo'yish. Token kelgach
+bu tekshiruv (`menu.getProduct` bitta `product_id` bilan + `menu.getPrepacks`)
+qayta o'tkaziladi va natija shu yerga yoziladi.
+
+**Oraliq qaror (M2 ga ta'sir):** token kelguncha M2 BOM oqimi **qo'lda kiritish
+yo'li** (`PUT /api/products/:id/recipe`) bo'yicha quriladi. Bu yo'l spec §5.5 da
+fallback sifatida allaqachon ko'zda tutilgan va import oqimi qo'shilganda ham
+saqlanadi — ya'ni hozir qurilgan kod keyin Poster import bilan to'ldiriladi,
+qayta yozilmaydi.
 
