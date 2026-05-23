@@ -5,15 +5,14 @@
 /*
  * ADIA ERP — dark premium design system.
  *
- * Palette: Graphite + Amber (Treasury / Bank-ERP).
- * Rationale: "industrial ERP, treasury-grade" aesthetic — Mercury Banking,
- * Stripe Treasury, Bloomberg Terminal, classic operations dashboards.
- * Background is a true neutral graphite with a faint cool undertone, so
- * it never washes blue. Primary lives in the warm amber zone (36°) — the
- * "money / machinery / operations" hue, maximally far from violet and
- * far from every semantic status hue, so badges and the below-min red
- * indicator stay maximally legible. WCAG 2.1 AA: primary on bg ~10:1,
- * body text on bg ~17:1.
+ * Palette: Graphite + Cobalt Blue (modern ERP, owner-approved).
+ * Rationale: bright cobalt primary (#3b82f6 = HSL 217 91% 60%) on a
+ * neutral graphite background. The background is intentionally low-
+ * saturation (15%) so the bright blue primary reads as clean cobalt
+ * rather than shifting toward indigo/violet in dark mode. Status
+ * accent `info` is pushed to teal (188°) to stay clearly distinct
+ * from the primary blue in small badges.
+ * WCAG 2.1 AA: primary on bg ~7.5:1, body text on bg ~17:1.
  *
  * Dark theme is the default and only theme for Faza-1.
  */
@@ -30,9 +29,9 @@
     --popover: 220 13% 12%;            /* #1b1e25 — slightly above card */
     --popover-foreground: 220 14% 96%;
 
-    /* Primary — amber/gold, treasury & industrial accent */
-    --primary: 36 96% 56%;             /* #f6a623 — confident amber */
-    --primary-foreground: 24 60% 8%;   /* #21130a — deep brown-black */
+    /* Primary — bright cobalt blue (owner-approved) */
+    --primary: 217 91% 60%;            /* #3b82f6 — clean cobalt */
+    --primary-foreground: 0 0% 100%;   /* #ffffff — white */
 
     /* Secondary / muted / accent — graphite tiers, neutral */
     --secondary: 220 11% 17%;          /* #262931 */
@@ -44,11 +43,11 @@
     --accent: 220 11% 18%;             /* #292c34 — hover surface */
     --accent-foreground: 220 14% 96%;
 
-    /* Status — each on a distinct hue, none collide with amber primary (36°).
-       destructive 0°  → red,    far from amber, max alert
+    /* Status — distinct hues that don't collide with cobalt primary (217°).
+       destructive 0°  → red,    max alert
        success    152° → emerald
-       warning    28°  → orange — yellower-redder than primary, distinct in context
-       info       200° → cyan
+       warning    36°  → amber-gold (warm, opposite of primary)
+       info       188° → teal-cyan — pushed away from 217° blue so badges stay distinct
     */
     --destructive: 0 84% 60%;          /* #ef4444 — alert red */
     --destructive-foreground: 0 0% 100%;
@@ -56,16 +55,16 @@
     --success: 152 56% 48%;            /* #36b27a — emerald */
     --success-foreground: 152 100% 6%;
 
-    --warning: 28 90% 58%;             /* #f08a30 — distinct from amber primary */
-    --warning-foreground: 28 100% 8%;
+    --warning: 36 96% 56%;             /* #f6a623 — amber-gold, warm contrast */
+    --warning-foreground: 24 60% 8%;
 
-    --info: 200 88% 56%;               /* #1fb8e0 — cyan */
-    --info-foreground: 200 100% 8%;
+    --info: 188 85% 50%;               /* #14b8c4 — teal, distinct from primary blue */
+    --info-foreground: 188 100% 8%;
 
     /* Borders & inputs — slightly lifted from card */
     --border: 220 10% 18%;             /* #2a2d34 */
     --input: 220 10% 17%;              /* #272a30 */
-    --ring: 36 96% 56%;                /* matches primary amber */
+    --ring: 217 91% 60%;               /* matches primary cobalt */
 
     /* Sidebar — deeper than background for depth and rail feel */
     --sidebar: 222 18% 6%;             /* #0a0c10 — deepest surface */
