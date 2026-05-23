@@ -1,9 +1,12 @@
 import { Outlet } from 'react-router-dom';
 import { AppSidebar } from './AppSidebar';
+import { AssistantButton } from './AssistantButton';
 
 /**
  * Authenticated layout shell: persistent sidebar + scrollable content area.
- * Module screens render into <Outlet />.
+ * Module screens render into <Outlet />. A floating `AssistantButton`
+ * lives at the layout root so the AI chat drawer is reachable from any
+ * authenticated screen (Faza-2 F2.2).
  */
 export function AppLayout() {
   return (
@@ -14,6 +17,7 @@ export function AppLayout() {
           <Outlet />
         </main>
       </div>
+      <AssistantButton />
     </div>
   );
 }

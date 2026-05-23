@@ -392,6 +392,70 @@ export interface RecalcMinMaxResponse {
   errors: Array<{ location_id: number; product_id: number; message: string }>;
 }
 
+// ---------------------------------------------------------------------------
+// Faza-2 — F2.2 AI Assistant (Vertex AI Gemini, read-only).
+// Mirrors `apps/backend/src/routes/assistant.ts` (phase-2.md §2.2, §4.1).
+// ADR-0006 — `session_id` is a `number` for the frontend contract; the
+// backend may carry it as UUID internally and surface a numeric handle, or
+// emit it as bigint. We type as `number` per the team-lead spec; tests
+// stub with simple integers.
+// ---------------------------------------------------------------------------
+
+/** A single tool-call summary attached to an assistant response. */
+export interface AssistantToolCall {
+  /** Tool function name, e.g. `get_stock`, `get_below_min`. */
+  tool_name: string;
+  /** Arguments the model called the tool with (server-injected RBAC scope is not shown). */
+  args: Record<string, unknown>;
+  /** Short human-readable summary of the tool result (e.g. "12 qator topildi"). */
+  result_summary: string;
+}
+
+/**
+ * `POST /api/assistant/query` response envelope.
+ * `session_id` is returned even on the first turn (the backend created a new session).
+ */
+export interface AssistantQueryResponse {
+  session_id: number;
+  /** Final assistant text — markdown allowed. */
+  response: string;
+  tool_calls: AssistantToolCall[];
+}
+
+/** A single chat message row, both for the live UI and for session history. */
+export type AssistantMessageRole = 'user' | 'assistant' | 'tool';
+
+export interface AssistantMessage {
+  role: AssistantMessageRole;
+  /** Text content; empty for pure tool-call rows. */
+  content: string;
+  /** Tool-calls emitted for an `assistant` turn (or describing the `tool` row). */
+  tool_calls?: AssistantToolCall[];
+  created_at: string;
+}
+
+/** `GET /api/assistant/sessions` row. */
+export interface AssistantSessionSummary {
+  id: number;
+  /** Auto-summarised from the first user message; nullable for brand-new sessions. */
+  title: string | null;
+  updated_at: string;
+}
+
+/** `GET /api/assistant/sessions` envelope. */
+export interface AssistantSessionsResponse {
+  items: AssistantSessionSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** `GET /api/assistant/sessions/:id` envelope. */
+export interface AssistantSessionDetail {
+  session: AssistantSessionSummary;
+  messages: AssistantMessage[];
+}
+
 /**
  * A single purchase_orders row.
  * `qty` is a JS `number` — see the NUMERIC parser note on

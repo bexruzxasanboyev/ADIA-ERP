@@ -53,6 +53,22 @@ export type AppConfig = {
     readonly token: string;
     readonly username: string;
   };
+  /**
+   * Phase-2 F2.2 — Vertex AI Gemini configuration for the AI assistant
+   * (ADR-0006). `enabled` is true only when both a GCP project id is set
+   * AND `GOOGLE_APPLICATION_CREDENTIALS` points at a readable service
+   * account key. When disabled, the assistant endpoint short-circuits with
+   * a clean 503 — useful for dev/test without GCP credentials.
+   */
+  readonly vertex: {
+    readonly enabled: boolean;
+    readonly projectId: string;
+    readonly region: string;
+    readonly model: string;
+    readonly maxInputTokens: number;
+    readonly maxOutputTokens: number;
+    readonly maxToolCallsPerTurn: number;
+  };
 };
 
 class ConfigError extends Error {
@@ -143,6 +159,30 @@ export function loadConfig(): AppConfig {
       // start polling. Optional so dev / test work with an empty token.
       token: optional('BOT_TOKEN', ''),
       username: optional('BOT_USERNAME', ''),
+    }),
+    vertex: Object.freeze({
+      // F2.2 — AI assistant. Enabled only when project + service account
+      // credentials are present. Tests run with `enabled=false` so they do
+      // not need GCP access and the Vertex client is fully mocked.
+      enabled:
+        optional('VERTEX_PROJECT_ID', '') !== '' &&
+        optional('GOOGLE_APPLICATION_CREDENTIALS', '') !== '' &&
+        nodeEnv !== 'test',
+      projectId: optional('VERTEX_PROJECT_ID', ''),
+      region: optional('VERTEX_REGION', 'europe-west1'),
+      model: optional('VERTEX_MODEL', 'gemini-2.5-flash'),
+      maxInputTokens: parsePositiveInt(
+        'VERTEX_MAX_INPUT_TOKENS',
+        optional('VERTEX_MAX_INPUT_TOKENS', '8000'),
+      ),
+      maxOutputTokens: parsePositiveInt(
+        'VERTEX_MAX_OUTPUT_TOKENS',
+        optional('VERTEX_MAX_OUTPUT_TOKENS', '2000'),
+      ),
+      maxToolCallsPerTurn: parsePositiveInt(
+        'VERTEX_MAX_TOOL_CALLS',
+        optional('VERTEX_MAX_TOOL_CALLS', '5'),
+      ),
     }),
   });
 

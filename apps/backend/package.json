@@ -15,9 +15,11 @@
     "migrate": "tsx src/db/migrate.ts",
     "db:create": "tsx scripts/create-db.ts",
     "seed:dev": "tsx scripts/seed-dev.ts",
-    "poster:test": "tsx scripts/poster-test.ts"
+    "poster:test": "tsx scripts/poster-test.ts",
+    "vertex:test": "tsx scripts/vertex-test.ts"
   },
   "dependencies": {
+    "@google-cloud/vertexai": "^1.12.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
