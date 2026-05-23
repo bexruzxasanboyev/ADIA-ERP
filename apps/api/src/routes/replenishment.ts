@@ -133,8 +133,29 @@ replenishmentRouter.get(
     const principal = getPrincipal(req);
     const id = parseIdParam(req.params.id, 'id');
 
-    const { rows } = await query<ReplenishmentRow>(
-      `SELECT ${REPLENISHMENT_COLUMNS} FROM replenishment_requests WHERE id = $1`,
+    // Embed product + requester/target location names (parity with the list
+    // endpoint — frontend detail page renders the same fields).
+    const qualifiedCols = REPLENISHMENT_COLUMNS.split(',')
+      .map((c) => `r.${c.trim()}`)
+      .join(', ');
+    const { rows } = await query<
+      ReplenishmentRow & {
+        product_name: string;
+        product_unit: string;
+        requester_location_name: string | null;
+        target_location_name: string | null;
+      }
+    >(
+      `SELECT ${qualifiedCols},
+              p.name AS product_name,
+              p.unit AS product_unit,
+              rl.name AS requester_location_name,
+              tl.name AS target_location_name
+       FROM replenishment_requests r
+       JOIN products p ON p.id = r.product_id
+       LEFT JOIN locations rl ON rl.id = r.requester_location_id
+       LEFT JOIN locations tl ON tl.id = r.target_location_id
+       WHERE r.id = $1`,
       [id],
     );
     const request = rows[0];

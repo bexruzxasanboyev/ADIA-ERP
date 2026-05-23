@@ -43,9 +43,9 @@ const DEFAULT_PAGE_SIZE = 50;
 type StockRow = {
   location_id: number;
   product_id: number;
-  qty: string;
-  min_level: string;
-  max_level: string;
+  qty: number;
+  min_level: number;
+  max_level: number;
   minmax_mode: string;
   updated_at: Date;
   product_name: string;
@@ -140,9 +140,9 @@ stockRouter.patch(
     const { rows } = await query<{
       location_id: number;
       product_id: number;
-      qty: string;
-      min_level: string;
-      max_level: string;
+      qty: number;
+      min_level: number;
+      max_level: number;
       minmax_mode: string;
       updated_at: Date;
     }>(
@@ -231,7 +231,7 @@ type MovementRow = {
   product_id: number;
   from_location_id: number | null;
   to_location_id: number | null;
-  qty: string;
+  qty: number;
   reason: string;
   note: string | null;
   created_by: number | null;

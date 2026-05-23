@@ -17,6 +17,16 @@ import { loadConfig } from '../config/index.js';
 // 2^53, this single line is where that decision is revisited.
 types.setTypeParser(20, (value: string) => Number(value));
 
+// pg returns NUMERIC (OID 1700) as a string too — same precision-safety stance.
+// In Faza-1 every NUMERIC column is NUMERIC(14,4) or NUMERIC(14,2): the maximum
+// absolute value is 9_999_999_999.9999, far below 2^53 (~9.0072e15), so JS
+// `number` is exact for every legal value. Parsing to a number here gives the
+// rest of the codebase a single contract — `qty`, `qty_needed`, `qty_per_unit`,
+// `min_level`, `max_level` are all numbers in row objects. If a future column
+// ever needed precision past 2^53 it would have to opt back into the string
+// representation explicitly.
+types.setTypeParser(1700, (value: string) => parseFloat(value));
+
 let pool: Pool | undefined;
 
 /**

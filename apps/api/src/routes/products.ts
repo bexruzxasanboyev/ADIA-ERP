@@ -54,7 +54,7 @@ type RecipeRow = {
   id: number;
   product_id: number;
   component_product_id: number;
-  qty_per_unit: string;
+  qty_per_unit: number;
 };
 
 const PRODUCT_COLUMNS = `id, name, type, unit, sku, poster_ingredient_id,

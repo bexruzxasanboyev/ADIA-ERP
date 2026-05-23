@@ -10,7 +10,11 @@
  *   - a manager user per non-pm location;
  *   - a handful of sample products (raw / semi / finished);
  *   - a starting stock row with min/max for the store, so the replenishment
- *     scan in M4 has data to act on.
+ *     scan in M4 has data to act on;
+ *   - a BOM for the finished product (Shokoladli tort = un + shakar + tuxum)
+ *     so the engine can transition past CHECK_PRODUCTION_INPUT;
+ *   - a starting raw-warehouse stock for every raw ingredient so the engine
+ *     finds enough input to issue a production order.
  *
  * Usage:  npm run seed:dev    (from apps/api)
  */
@@ -162,6 +166,48 @@ async function main(): Promise<void> {
        ON CONFLICT (location_id, product_id) DO NOTHING`,
       [storeId, cakeId],
     );
+  }
+
+  // 6. BOM for Shokoladli tort. One cake = 0.5 kg un + 0.3 kg shakar + 2 tuxum.
+  //    Without a BOM the engine stalls at CHECK_PRODUCTION_INPUT because it
+  //    cannot compute the input requirement (AC4.1 zero-config goal).
+  const flourId = productIdBySku.get('RAW-FLOUR');
+  const sugarId = productIdBySku.get('RAW-SUGAR');
+  const eggId = productIdBySku.get('RAW-EGG');
+  if (cakeId !== undefined && flourId !== undefined && sugarId !== undefined && eggId !== undefined) {
+    for (const [componentId, qtyPerUnit] of [
+      [flourId, 0.5],
+      [sugarId, 0.3],
+      [eggId, 2],
+    ] as const) {
+      await query(
+        `INSERT INTO recipes (product_id, component_product_id, qty_per_unit)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (product_id, component_product_id) DO NOTHING`,
+        [cakeId, componentId, qtyPerUnit],
+      );
+    }
+  }
+
+  // 7. Raw-warehouse opening stock — enough for the engine to advance past
+  //    CHECK_PRODUCTION_INPUT into CREATE_PRODUCTION_ORDER without a manual
+  //    purchase round. 200 of each is generous for dev.
+  const rawWhId = locationIdByName.get('Mahsulotlar Ombori');
+  if (rawWhId !== undefined) {
+    const rawSeed: [number | undefined, number][] = [
+      [flourId, 200],
+      [sugarId, 200],
+      [eggId, 200],
+    ];
+    for (const [productId, qty] of rawSeed) {
+      if (productId === undefined) continue;
+      await query(
+        `INSERT INTO stock (location_id, product_id, qty, min_level, max_level)
+         VALUES ($1, $2, $3, 0, 0)
+         ON CONFLICT (location_id, product_id) DO NOTHING`,
+        [rawWhId, productId, qty],
+      );
+    }
   }
 
   console.log('[seed-dev] done.');

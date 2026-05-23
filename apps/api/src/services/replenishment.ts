@@ -70,7 +70,7 @@ export type ReplenishmentRow = {
   product_id: number;
   requester_location_id: number;
   target_location_id: number | null;
-  qty_needed: string;
+  qty_needed: number;
   status: ReplenishmentStatus;
   production_order_id: number | null;
   purchase_order_id: number | null;
@@ -411,7 +411,7 @@ async function advanceCheckProductionInput(
   // What does the BOM call for, given this request's qty?
   const { rows: bom } = await tx.query<{
     component_product_id: number;
-    qty_per_unit: string;
+    qty_per_unit: number;
   }>(
     'SELECT component_product_id, qty_per_unit FROM recipes WHERE product_id = $1',
     [request.product_id],
@@ -722,7 +722,7 @@ async function readStockQty(
   locationId: number,
   productId: number,
 ): Promise<number> {
-  const { rows } = await tx.query<{ qty: string }>(
+  const { rows } = await tx.query<{ qty: number }>(
     'SELECT qty FROM stock WHERE location_id = $1 AND product_id = $2',
     [locationId, productId],
   );
@@ -946,9 +946,9 @@ export async function scanBelowMin(): Promise<BelowMinRow[]> {
   const { rows } = await query<{
     location_id: number;
     product_id: number;
-    qty: string;
-    min_level: string;
-    max_level: string;
+    qty: number;
+    min_level: number;
+    max_level: number;
   }>(
     `SELECT location_id, product_id, qty, min_level, max_level
      FROM stock

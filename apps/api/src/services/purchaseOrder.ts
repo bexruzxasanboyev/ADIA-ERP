@@ -25,7 +25,7 @@ import { applyMovement } from './stockMovement.js';
 export type PurchaseOrderRow = {
   id: number;
   product_id: number;
-  qty: string;
+  qty: number;
   supplier_id: number | null;
   target_location_id: number;
   status: string;

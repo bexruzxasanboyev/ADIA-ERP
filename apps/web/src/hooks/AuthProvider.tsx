@@ -53,9 +53,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     let cancelled = false;
 
-    apiRequest<User>('/api/auth/me')
+    apiRequest<{ user: User }>('/api/auth/me')
       .then((me) => {
-        if (!cancelled) setUser(me);
+        if (!cancelled) setUser(me.user);
       })
       .catch((err: unknown) => {
         if (cancelled) return;

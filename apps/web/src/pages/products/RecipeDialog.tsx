@@ -65,11 +65,13 @@ export function RecipeDialog({
     setLoadError(null);
     setSaveError(null);
 
-    apiRequest<RecipeLine[]>(`/api/products/${product.id}/recipe`)
+    apiRequest<{ product_id: number; recipe: RecipeLine[] }>(
+      `/api/products/${product.id}/recipe`,
+    )
       .then((data) => {
         if (cancelled) return;
         setLines(
-          data.map((l) => ({
+          data.recipe.map((l) => ({
             component_product_id: String(l.component_product_id),
             qty_per_unit: String(l.qty_per_unit),
           })),

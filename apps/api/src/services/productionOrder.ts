@@ -23,7 +23,7 @@ import { applyMovement } from './stockMovement.js';
 export type ProductionOrderRow = {
   id: number;
   product_id: number;
-  qty: string;
+  qty: number;
   location_id: number;
   target_location_id: number | null;
   deadline: string | null;
@@ -65,7 +65,7 @@ export async function consumeBomAndProduce(
   // BOM lines for the produced product.
   const { rows: bom } = await tx.query<{
     component_product_id: number;
-    qty_per_unit: string;
+    qty_per_unit: number;
   }>(
     'SELECT component_product_id, qty_per_unit FROM recipes WHERE product_id = $1',
     [order.product_id],
