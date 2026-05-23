@@ -14,6 +14,7 @@ import { ReplenishmentDetailPage } from '@/pages/replenishment/ReplenishmentDeta
 import { ProductionOrdersPage } from '@/pages/production-orders/ProductionOrdersPage';
 import { PurchaseOrdersPage } from '@/pages/purchase-orders/PurchaseOrdersPage';
 import { DashboardPage } from '@/pages/dashboard/DashboardPage';
+import { ForecastsPage } from '@/pages/forecasts/ForecastsPage';
 import { ImportWarningsPage } from '@/pages/admin/ImportWarningsPage';
 
 /**
@@ -40,6 +41,9 @@ export function AppRouter() {
         <Route index element={<Navigate to="/dashboard" replace />} />
 
         <Route path="/dashboard" element={<DashboardPage />} />
+
+        {/* F3.4 — Forecasts page (all authenticated roles, RBAC-scoped server-side). */}
+        <Route path="/forecasts" element={<ForecastsPage />} />
 
         {/* M3 — stock screens. Each reuses StockPage; the backend scopes
             /api/stock by the caller's role and location. */}

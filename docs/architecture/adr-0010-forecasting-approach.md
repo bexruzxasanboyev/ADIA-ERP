@@ -243,6 +243,21 @@ backend formatlash).
 - **Docker image hajmi:** ~800 MB (Python slim + Prophet
   bog'liqliklari). Hetzner registry yoki public Docker Hub.
 
+## Deploy eslatma (Sprint-4 implementatsiyasi)
+
+- **Bitta instance.** Prophet fit CPU-bound; horizontal scaling kunlik
+  batch'ga foyda bermaydi. `docker-compose.yml` da
+  `restart: unless-stopped` qo'yildi — crash bo'lsa avtomatik qaytadi.
+- **Tarmoq.** Sidecar `127.0.0.1:8000` ga bind qilingan — tashqi tarmoqdan
+  hech qachon ko'rinmaydi. Backend loopback (yoki compose ichki tarmog'i)
+  orqali murojaat qiladi.
+- **Auth.** `FORECASTER_SHARED_SECRET` env'i. Python tomon `hmac.compare_digest`
+  (Node ekvivalenti: `crypto.timingSafeEqual`).
+- **Feature gate.** Backend `config.forecaster.enabled` faqat URL VA
+  shared secret ikkalasi sozlangandagina true. Sozlanmagan bo'lsa:
+  cron startda no-op, `/api/forecasts/recalc` 503, `GET /api/forecasts`
+  cache'dan o'qiy beradi (oxirgi muvaffaqiyatli yozuv saqlanadi).
+
 ## Oqibatlar
 
 **Yaxshi:**

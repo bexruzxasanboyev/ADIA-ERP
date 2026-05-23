@@ -26,6 +26,8 @@ import {
   parseOptionalIdParam,
 } from '../lib/validate.js';
 import { runMinmaxRecalcCycle } from '../workers/minmaxRecalcCron.js';
+import { runForecastRefreshCycle } from '../workers/forecastRefreshCron.js';
+import { loadConfig } from '../config/index.js';
 
 export const adminRouter: Router = Router();
 
@@ -69,6 +71,38 @@ adminRouter.post(
         filter: { location_id: locationId ?? null, product_id: productId ?? null },
         summary,
       },
+    });
+    res.status(200).json(summary);
+  }),
+);
+
+// -----------------------------------------------------------------------------
+// POST /api/admin/forecasts/recalc  (F3.4 / ADR-0010)
+// -----------------------------------------------------------------------------
+//
+// Manual trigger for the Prophet forecast refresh. Synchronous like the
+// minmax trigger — waits for the whole batch and returns the summary. On a
+// disabled sidecar (no FORECASTER_URL / shared secret) returns 503 so the
+// PM sees "feature unavailable" instead of a silent no-op.
+adminRouter.post(
+  '/forecasts/recalc',
+  authenticate,
+  authorize('pm'),
+  asyncHandler(async (req, res) => {
+    const cfg = loadConfig();
+    if (!cfg.forecaster.enabled) {
+      throw AppError.serviceUnavailable(
+        'Forecaster sidecar is not configured (FORECASTER_URL / FORECASTER_SHARED_SECRET).',
+      );
+    }
+    const principal = getPrincipal(req);
+    const summary = await runForecastRefreshCycle(principal.userId);
+    await writeAudit(poolRunner, {
+      actorUserId: principal.userId,
+      action: 'admin.forecasts.recalc.trigger',
+      entity: 'forecasts',
+      entityId: null,
+      payload: { summary },
     });
     res.status(200).json(summary);
   }),

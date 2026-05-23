@@ -12,6 +12,7 @@ import {
   ClipboardList,
   ShoppingCart,
   AlertTriangle,
+  TrendingUp,
   type LucideIcon,
 } from 'lucide-react';
 import type { Role } from './types';
@@ -63,6 +64,12 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         path: '/dashboard',
         label: 'Boshqaruv paneli',
         icon: LayoutDashboard,
+        roles: ALL_ROLES,
+      },
+      {
+        path: '/forecasts',
+        label: 'Bashorat',
+        icon: TrendingUp,
         roles: ALL_ROLES,
       },
     ],

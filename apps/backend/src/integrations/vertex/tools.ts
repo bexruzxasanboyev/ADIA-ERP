@@ -25,8 +25,18 @@ import { query, type SqlParam } from '../../db/index.js';
 // Tool registry types
 // ---------------------------------------------------------------------------
 
+/** A JSON value tools may surface to the model. Scalars + nested JSON
+ * (introduced by F3.4 — `daily_predictions` is a JSONB array). */
+export type ToolValue =
+  | string
+  | number
+  | boolean
+  | null
+  | ToolValue[]
+  | { readonly [key: string]: ToolValue };
+
 /** JSON-clean tool result — a list of homogeneous rows. */
-export type ToolRow = Record<string, string | number | boolean | null>;
+export type ToolRow = Record<string, ToolValue>;
 
 export type ToolExecutor = {
   readonly declaration: FunctionDeclaration;
@@ -43,6 +53,7 @@ export const TOOL_NAMES = [
   'get_below_min',
   'get_recent_movements',
   'get_sales_summary',
+  'get_forecast',
 ] as const;
 
 export type ToolName = (typeof TOOL_NAMES)[number];
@@ -127,6 +138,10 @@ function numerify(row: Record<string, unknown>): ToolRow {
       } else {
         out[k] = trimmed;
       }
+    } else if (Array.isArray(v) || (typeof v === 'object' && v !== null)) {
+      // JSONB columns arrive as parsed JS values. Pass through unchanged —
+      // this keeps `daily_predictions` (F3.4) intact for the model.
+      out[k] = v as ToolValue;
     } else {
       out[k] = String(v);
     }
@@ -704,6 +719,86 @@ const getSalesSummary: ToolExecutor = {
 };
 
 // ---------------------------------------------------------------------------
+// 7. get_forecast  (F3.4 / ADR-0010)
+// ---------------------------------------------------------------------------
+
+const getForecast: ToolExecutor = {
+  declaration: {
+    name: 'get_forecast',
+    description:
+      'Returns the Prophet sales forecast and `expected_stockout_date` for one or many ' +
+      '(location, product) pairs. Use when the user asks "qachon tugaydi", "X kunlik ' +
+      'bashorat", or "qaysi mahsulot tezda tugaydi". Reads the nightly cache — never ' +
+      'calls the sidecar at request time. When no row exists for the requested pair ' +
+      '(under 30 days of history), returns an empty list — the model should respond ' +
+      '"Bashorat uchun ma\'lumot yetarli emas". RBAC scoped server-side.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        location_id: {
+          type: Type.NUMBER,
+          description: 'Optional location id. Ignored for non-PM callers (pinned to their own).',
+        },
+        product_id: {
+          type: Type.NUMBER,
+          description: 'Optional product id; omit for all products at the scoped location(s).',
+        },
+        days_ahead: {
+          type: Type.NUMBER,
+          description:
+            'Slice the cached `daily_predictions` array to the first N entries ' +
+            '(1..30, default 14). The cache itself is regenerated nightly.',
+        },
+      },
+    },
+  },
+  async execute(args, principal): Promise<ToolRow[]> {
+    const scope = resolveLocationScope(principal, args.location_id);
+    if (scope.kind === 'empty') {
+      return [];
+    }
+    const productId = parseOptionalId(args.product_id);
+    const daysAhead = clampLimit(args.days_ahead, 14, 30);
+
+    const params: SqlParam[] = [];
+    const conditions: string[] = [];
+    if (scope.kind === 'one') {
+      params.push(scope.locationId);
+      conditions.push(`f.location_id = $${params.length}`);
+    }
+    if (productId !== null) {
+      params.push(productId);
+      conditions.push(`f.product_id = $${params.length}`);
+    }
+    const where = conditions.length === 0 ? '' : `WHERE ${conditions.join(' AND ')}`;
+
+    const { rows } = await query<Record<string, unknown>>(
+      `SELECT f.location_id, l.name AS location_name,
+              f.product_id, p.name AS product_name, p.unit AS product_unit,
+              s.qty AS current_qty,
+              f.expected_stockout_date,
+              f.generated_at,
+              (now() - f.generated_at > interval '24 hours') AS stale,
+              jsonb_path_query_array(
+                f.daily_predictions,
+                '$[0 to ${daysAhead - 1}]'
+              ) AS daily_predictions
+         FROM forecasts f
+         JOIN locations l ON l.id = f.location_id
+         JOIN products  p ON p.id = f.product_id
+         LEFT JOIN stock s
+           ON s.location_id = f.location_id
+          AND s.product_id  = f.product_id
+         ${where}
+         ORDER BY f.expected_stockout_date ASC NULLS LAST, l.name, p.name
+         LIMIT 200`,
+      params,
+    );
+    return rows.map(numerify);
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 
@@ -716,6 +811,7 @@ export const TOOL_REGISTRY: Record<ToolName, ToolExecutor> = {
   get_below_min: getBelowMin,
   get_recent_movements: getRecentMovements,
   get_sales_summary: getSalesSummary,
+  get_forecast: getForecast,
 };
 
 /** All tool declarations as one Gemini `Tool[]` value. */

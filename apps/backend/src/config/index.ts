@@ -89,6 +89,22 @@ export type AppConfig = {
     readonly maxOutputTokens: number;
     readonly maxToolCallsPerTurn: number;
   };
+  /**
+   * Faza-3 Sprint 4 / ADR-0010 — Prophet forecaster sidecar.
+   * `enabled` is true only when BOTH the URL and the shared secret are
+   * configured. When disabled, the nightly cron is a no-op and the
+   * `/api/forecasts` route returns 503; the AI `get_forecast` tool reads
+   * the cache table either way (last successful run survives until the
+   * next overwrite).
+   */
+  readonly forecaster: {
+    readonly enabled: boolean;
+    readonly url: string;
+    readonly sharedSecret: string;
+    readonly horizonDays: number;
+    readonly batchSize: number;
+    readonly requestTimeoutMs: number;
+  };
 };
 
 class ConfigError extends Error {
@@ -199,6 +215,28 @@ export function loadConfig(): AppConfig {
       token: optional('BOT_TOKEN', ''),
       username: optional('BOT_USERNAME', ''),
       webhookSecret: optional('TELEGRAM_WEBHOOK_SECRET', ''),
+    }),
+    forecaster: Object.freeze({
+      // F3.4 / ADR-0010 — Prophet sidecar. Both URL and shared secret must
+      // be set, otherwise the feature is disabled and the cron / route /
+      // tool all short-circuit (last cached row stays usable).
+      enabled:
+        optional('FORECASTER_URL', '') !== '' &&
+        optional('FORECASTER_SHARED_SECRET', '') !== '',
+      url: optional('FORECASTER_URL', 'http://localhost:8000'),
+      sharedSecret: optional('FORECASTER_SHARED_SECRET', ''),
+      horizonDays: parsePositiveInt(
+        'FORECASTER_HORIZON_DAYS',
+        optional('FORECASTER_HORIZON_DAYS', '14'),
+      ),
+      batchSize: parsePositiveInt(
+        'FORECASTER_BATCH_SIZE',
+        optional('FORECASTER_BATCH_SIZE', '50'),
+      ),
+      requestTimeoutMs: parsePositiveInt(
+        'FORECASTER_REQUEST_TIMEOUT_MS',
+        optional('FORECASTER_REQUEST_TIMEOUT_MS', '120000'),
+      ),
     }),
     vertex: Object.freeze({
       // F2.2 — AI assistant. Enabled only when project + service account

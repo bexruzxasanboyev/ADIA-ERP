@@ -22,6 +22,8 @@ export const ErrorCode = {
   // Faza-3 F3.2 — AI write-action lifecycle (ADR-0009).
   ACTION_NOT_PENDING: 'ACTION_NOT_PENDING',
   ACTION_EXPIRED: 'ACTION_EXPIRED',
+  // F3.4 / ADR-0010 — feature gated by an external sidecar that is not configured.
+  SERVICE_UNAVAILABLE: 'SERVICE_UNAVAILABLE',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -39,6 +41,7 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   INTERNAL_ERROR: 500,
   ACTION_NOT_PENDING: 409,
   ACTION_EXPIRED: 410,
+  SERVICE_UNAVAILABLE: 503,
 };
 
 /** The JSON body shape sent to clients. */
@@ -89,5 +92,9 @@ export class AppError extends Error {
 
   static internal(message = 'An unexpected error occurred.'): AppError {
     return new AppError(ErrorCode.INTERNAL_ERROR, message);
+  }
+
+  static serviceUnavailable(message = 'Service is temporarily unavailable.'): AppError {
+    return new AppError(ErrorCode.SERVICE_UNAVAILABLE, message);
   }
 }

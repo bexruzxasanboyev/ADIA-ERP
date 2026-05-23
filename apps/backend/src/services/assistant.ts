@@ -733,6 +733,11 @@ function previewFields(toolName: string, row: ToolRow): string {
     if (value === undefined || value === null) {
       continue;
     }
+    // Skip nested JSON values (F3.4 — `daily_predictions` is an array);
+    // they are not previewable in a one-line summary.
+    if (typeof value === 'object') {
+      continue;
+    }
     fields.push(`${key}=${String(value)}`);
   }
   return fields.join(', ');

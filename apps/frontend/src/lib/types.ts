@@ -545,6 +545,47 @@ export interface AssistantSessionDetail {
  * `qty` is a JS `number` — see the NUMERIC parser note on
  * `ReplenishmentRequest.qty_needed`. Approval timestamps are ISO strings.
  */
+// ---------------------------------------------------------------------------
+// Faza-3 — F3.4 Forecasting (Prophet sidecar; ADR-0010, phase-3.md §2.4).
+// Mirrors `apps/backend/src/routes/forecasts.ts` ForecastsResponse.
+// ---------------------------------------------------------------------------
+
+/** A single day from the 14-day forecast horizon. */
+export interface ForecastDailyPrediction {
+  /** ISO `YYYY-MM-DD`. */
+  date: string;
+  /** Predicted demand (`yhat`). */
+  yhat: number;
+  /** Lower confidence bound (`yhat_lower`). */
+  yhat_lower: number;
+  /** Upper confidence bound (`yhat_upper`). */
+  yhat_upper: number;
+}
+
+/**
+ * A single `forecasts` row enriched with location/product names.
+ * `expected_stockout_date` is `YYYY-MM-DD` or `null` when the
+ * 14-day window does not exhaust current stock.
+ * `stale` is set when the row's `generated_at` is older than 24h
+ * (sidecar / cron has lagged).
+ */
+export interface ForecastItem {
+  location_id: number;
+  location_name: string;
+  product_id: number;
+  product_name: string;
+  product_unit: Unit;
+  daily_predictions: ForecastDailyPrediction[];
+  expected_stockout_date: string | null;
+  generated_at: string;
+  stale: boolean;
+}
+
+/** `GET /api/forecasts` envelope. */
+export interface ForecastsResponse {
+  items: ForecastItem[];
+}
+
 export interface PurchaseOrder {
   id: number;
   product_id: number;

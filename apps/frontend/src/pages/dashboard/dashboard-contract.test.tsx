@@ -95,6 +95,12 @@ function mockOverview(body: DashboardOverview) {
     if (url.includes('/api/dashboard/overview')) {
       return Promise.resolve(jsonResponse(200, body));
     }
+    // The dashboard now embeds the F3.4 ForecastsPanel; stub the
+    // forecasts endpoint with an empty payload so the panel renders
+    // the empty branch without affecting these assertions.
+    if (url.includes('/api/forecasts')) {
+      return Promise.resolve(jsonResponse(200, { items: [] }));
+    }
     return Promise.reject(new Error(`unexpected fetch: ${url}`));
   });
 }

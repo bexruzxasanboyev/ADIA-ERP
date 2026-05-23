@@ -40,6 +40,7 @@ import type {
 } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { OpenRequestsChart } from './OpenRequestsChart';
+import { ForecastsPanel } from './ForecastsPanel';
 
 /**
  * M8 — Boshqaruv paneli (phase-1-mvp.md §2.8, §4.8).
@@ -147,6 +148,8 @@ export function DashboardPage() {
             <BelowMinPanel overview={data} className="xl:col-span-3" />
             <OpenRequestsPanel overview={data} className="xl:col-span-2" />
           </div>
+
+          <ForecastsPanel />
 
           <ProductionPlanPanel overview={data} />
 

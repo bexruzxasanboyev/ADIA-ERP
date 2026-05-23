@@ -40,6 +40,10 @@ import {
   stopActionExpireWorker,
 } from './workers/actionExpireCron.js';
 import {
+  startForecastRefreshWorker,
+  stopForecastRefreshWorker,
+} from './workers/forecastRefreshCron.js';
+import {
   ensureCallbackHandlerWired,
   startBotLongPolling,
   stopBot,
@@ -73,6 +77,13 @@ function main(): void {
   // TTL has elapsed. One UPDATE per minute, atomic and idempotent.
   startActionExpireWorker();
   console.log('[server] assistant action expire worker started (* * * * *)');
+
+  // Faza-3 F3.4 / ADR-0010 — Prophet forecaster sidecar refresh. Self-disables
+  // when FORECASTER_URL / FORECASTER_SHARED_SECRET are not configured.
+  const forecastTask = startForecastRefreshWorker();
+  if (forecastTask !== undefined) {
+    console.log('[server] forecast refresh worker started (30 4 * * *)');
+  }
 
   // Poster integration workers only run when a token is configured — saves
   // log spam and avoids hammering Poster on a fresh install.
@@ -116,6 +127,7 @@ function main(): void {
     stopMinmaxRecalcWorker();
     stopRefreshTokenCleanupWorker();
     stopActionExpireWorker();
+    stopForecastRefreshWorker();
     // F3.3 — stop long-polling (if running); webhook mode has no task.
     void stopBot();
     server.close(() => {
