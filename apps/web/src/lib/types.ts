@@ -4,14 +4,22 @@
  * and the DB schema in docs/architecture/db-schema-phase-1.sql.
  */
 
-/** RBAC roles — phase-1-mvp.md §6 matrix columns. */
+/**
+ * RBAC roles — phase-1-mvp.md §6 matrix columns.
+ *
+ * `ai_assistant` mirrors the backend `user_role` enum (auth/roles.ts) so
+ * the client type stays drift-free. It is NOT user-facing in Faza-1 — the
+ * sidebar, role-routes, and forms never offer it as an option — but a
+ * `User` returned by the API may legitimately carry it.
+ */
 export type Role =
   | 'pm'
   | 'raw_warehouse_manager'
   | 'production_manager'
   | 'supply_manager'
   | 'central_warehouse_manager'
-  | 'store_manager';
+  | 'store_manager'
+  | 'ai_assistant';
 
 /** Location classification — db-schema location_type enum. */
 export type LocationType =
@@ -137,4 +145,166 @@ export interface MovementsResponse {
   total: number;
   limit: number;
   offset: number;
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 2 — replenishment, production orders, purchase orders.
+// Mirrors `apps/api/src/services/{replenishment,productionOrder,purchaseOrder}.ts`.
+// ---------------------------------------------------------------------------
+
+/** Replenishment state machine — phase-1-mvp.md §3 (10 holat). */
+export type ReplenishmentStatus =
+  | 'NEW'
+  | 'CHECK_STORE_SUPPLIER'
+  | 'SHIP_TO_REQUESTER'
+  | 'CHECK_PRODUCTION_INPUT'
+  | 'CREATE_PURCHASE_ORDER'
+  | 'CREATE_PRODUCTION_ORDER'
+  | 'PRODUCING'
+  | 'DONE_TO_WAREHOUSE'
+  | 'CLOSED'
+  | 'CANCELLED';
+
+/** Terminal replenishment statuses — no further transitions allowed. */
+export const TERMINAL_REPLENISHMENT_STATUSES: readonly ReplenishmentStatus[] = [
+  'CLOSED',
+  'CANCELLED',
+];
+
+/**
+ * A single replenishment_requests row.
+ * Note: `qty_needed` is returned as a numeric *string* by the backend
+ * (PostgreSQL `NUMERIC` → JSON string). The client is responsible for
+ * parsing it with `Number(...)` before formatting.
+ */
+export interface ReplenishmentRequest {
+  id: number;
+  product_id: number;
+  requester_location_id: number;
+  target_location_id: number | null;
+  qty_needed: string;
+  status: ReplenishmentStatus;
+  production_order_id: number | null;
+  purchase_order_id: number | null;
+  shipment_movement_id: number | null;
+  note: string | null;
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+  closed_at: string | null;
+  /**
+   * Embedded by the backend for display — `GET /api/replenishment` and
+   * `GET /api/replenishment/:id` always send these (JOIN products /
+   * locations). `target_location_name` is nullable because the column
+   * itself is optional.
+   */
+  product_name: string;
+  product_unit: Unit;
+  requester_location_name: string;
+  target_location_name: string | null;
+}
+
+/** A single replenishment_transitions audit row. */
+export interface ReplenishmentTransition {
+  id: number;
+  from_status: ReplenishmentStatus | null;
+  to_status: ReplenishmentStatus;
+  reason: string | null;
+  actor_user_id: number | null;
+  created_at: string;
+  /**
+   * Embedded by the backend — JOIN users so the UI can render "kim"
+   * without an extra `/api/users` fetch. `null` for system / cron rows.
+   */
+  actor_name: string | null;
+}
+
+/** `GET /api/replenishment/:id` envelope — request + transitions tarixi. */
+export interface ReplenishmentDetail {
+  request: ReplenishmentRequest;
+  transitions: ReplenishmentTransition[];
+}
+
+/** `POST /api/replenishment/:id/advance` envelope. */
+export interface ReplenishmentAdvanceResponse {
+  advanced: boolean;
+  status: ReplenishmentStatus;
+  reason: string;
+  request: ReplenishmentRequest;
+}
+
+/** Production order status — production_orders.status enum. */
+export type ProductionOrderStatus = 'new' | 'in_progress' | 'done' | 'cancelled';
+
+/**
+ * A single production_orders row.
+ * `qty` is a numeric string (NUMERIC → JSON).
+ * `deadline` is an ISO date (YYYY-MM-DD) or null.
+ */
+export interface ProductionOrder {
+  id: number;
+  product_id: number;
+  qty: string;
+  location_id: number;
+  target_location_id: number | null;
+  deadline: string | null;
+  status: ProductionOrderStatus;
+  replenishment_id: number | null;
+  note: string | null;
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+  done_at: string | null;
+  /**
+   * Embedded by the backend for display — `GET /api/production-orders`
+   * always sends these. `target_location_name` is nullable because the
+   * column itself is optional.
+   */
+  product_name: string;
+  location_name: string;
+  target_location_name: string | null;
+}
+
+/** Purchase order status — purchase_orders.status enum. */
+export type PurchaseOrderStatus =
+  | 'draft'
+  | 'approved'
+  | 'received'
+  | 'cancelled'
+  | 'rejected';
+
+/** Two-step approval step identifier — purchaseOrder.ts ApprovalStep. */
+export type PurchaseApprovalStep = 'manager' | 'keeper';
+
+/**
+ * A single purchase_orders row.
+ * `qty` is a numeric string. Approvals timestamps are ISO strings.
+ */
+export interface PurchaseOrder {
+  id: number;
+  product_id: number;
+  qty: string;
+  supplier_id: number | null;
+  target_location_id: number;
+  status: PurchaseOrderStatus;
+  replenishment_id: number | null;
+  manager_approved_by: number | null;
+  manager_approved_at: string | null;
+  keeper_approved_by: number | null;
+  keeper_approved_at: string | null;
+  received_movement_id: number | null;
+  note: string | null;
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+  /**
+   * Embedded by the backend for display — `GET /api/purchase-orders`
+   * always sends these. Approver / supplier names are nullable because
+   * the referenced FK columns are themselves optional.
+   */
+  product_name: string;
+  target_location_name: string;
+  manager_approved_name: string | null;
+  keeper_approved_name: string | null;
+  supplier_name: string | null;
 }

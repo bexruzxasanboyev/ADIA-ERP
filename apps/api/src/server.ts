@@ -7,6 +7,10 @@
 import { createApp } from './app.js';
 import { loadConfig } from './config/index.js';
 import { closePool } from './db/index.js';
+import {
+  startReplenishmentScanWorker,
+  stopReplenishmentScanWorker,
+} from './workers/replenishmentScan.js';
 
 function main(): void {
   const cfg = loadConfig(); // throws clearly on missing/invalid env
@@ -16,8 +20,14 @@ function main(): void {
     console.log(`[server] ADIA ERP API listening on port ${cfg.port} (${cfg.nodeEnv})`);
   });
 
+  // Start the replenishment scan worker once the HTTP server is up. The
+  // worker runs every 5 minutes and is a no-op if the DB is empty.
+  startReplenishmentScanWorker();
+  console.log('[server] replenishment scan worker started (*/5 * * * *)');
+
   const shutdown = (signal: string): void => {
     console.log(`[server] ${signal} received — shutting down.`);
+    stopReplenishmentScanWorker();
     server.close(() => {
       void closePool().finally(() => process.exit(0));
     });

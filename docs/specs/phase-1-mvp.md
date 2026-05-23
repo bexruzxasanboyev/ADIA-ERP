@@ -147,6 +147,14 @@ rol/foydalanuvchiga yuboradi. Faza-1 — bir tomonlama (inline tugmalarsiz).
 
 To'liq dizayn asoslari: `docs/architecture/adr-0001-replenishment-state-machine.md`.
 
+> **Sprint 2 audit aniqliklari (2026-05-23) — ADR-0001 §7–§12:**
+> 1. `CHECK_PRODUCTION_INPUT → CREATE_PRODUCTION_ORDER` action'i endi `raw_warehouse → production` transferni o'z ichiga oladi (branch (b)/(c) ikkalasi).
+> 2. Skip-state zanjirlash (SM-7) — bir `advance` chaqiruvi bir nechta forward o'tishni zanjir qiladi (masalan, `new → done` foydalanuvchi sakrashi).
+> 3. `target_location_id` har doim zanjirdagi `central_warehouse` — `parent_id` emas; `production_order.target_location_id` ham xuddi shu.
+> 4. `POST /api/replenishment/:id/advance` `200 OK` qaytaradi (oldingi `201` xato edi — yangi resurs yaratilmaydi).
+> 5. `production_order` `cancelled` ga o'tish ruxsat etiladi (faqat `new`/`in_progress` dan).
+> 6. Multi-shortage: sekvensial PO, `purchase_order_id` qayta yozilmasin (NULL → yangi PO), eski PO audit'da saqlanadi; M:N jadval Faza-2.
+
 ### 3.1. Holatlar (`replenishment_status` enum)
 
 | Holat | Ma'nosi | Tur |
@@ -197,18 +205,22 @@ har qanday ochiq holat
 
 ### 3.3. Guard'lar va action'lar
 
-| O'tish | Guard | Action (atomar) |
+> **Sprint 2 audit aniqliklari (2026-05-23):** quyidagi jadval ADR-0001 §7–§12 ga muvofiq aniqlashtirildi. Asosiy o'zgarishlar: `CHECK_PRODUCTION_INPUT → CREATE_PRODUCTION_ORDER` action'iga `raw_warehouse → production` transfer qo'shildi; `NEW` da `target_location_id` `parent_id` o'rniga zanjirdagi `central_warehouse` ga belgilanadi; multi-shortage uchun `purchase_order_id` qayta yozilmasligi qoidasi qo'shildi.
+
+| O'tish | Guard | Action (atomar — bitta tranzaksiyada) |
 |---|---|---|
-| `NEW → CHECK_STORE_SUPPLIER` | requester ning yuqori bo'g'ini (central warehouse) topildi | `target_location_id` belgilanadi |
-| `CHECK_STORE_SUPPLIER → SHIP_TO_REQUESTER` | `central_wh.stock.qty >= qty_needed` | — |
-| `CHECK_STORE_SUPPLIER → CHECK_PRODUCTION_INPUT` | qty yetmaydi | — |
-| `CHECK_PRODUCTION_INPUT → CREATE_PRODUCTION_ORDER` | mahsulot BOM komponentlari xom-ashyo omborida yetarli | `production_order` (`new`) yaratiladi, bog'lanadi |
-| `CHECK_PRODUCTION_INPUT → CREATE_PURCHASE_ORDER` | xom-ashyo yetmaydi | yetmaydigan komponent uchun `purchase_order` (`draft`) yaratiladi |
-| `CREATE_PURCHASE_ORDER → CREATE_PRODUCTION_ORDER` | `purchase_order.status='received'` | `production_order` yaratiladi |
-| `CREATE_PRODUCTION_ORDER → PRODUCING` | `production_order.status='in_progress'` | — |
-| `PRODUCING → DONE_TO_WAREHOUSE` | `production_order.status='done'` | "tayyor" oqimi — BOM chiqim + sklad kirim (M5) |
-| `DONE_TO_WAREHOUSE → SHIP_TO_REQUESTER` | — | — |
-| `SHIP_TO_REQUESTER → CLOSED` | `target.stock.qty > 0` | `target → requester` transfer (`min(qty_needed, mavjud)`); `closed_at` belgilanadi |
+| `NEW → CHECK_STORE_SUPPLIER` | zanjirda `type='central_warehouse'` location topildi (`resolveTopology(...).centralWarehouseLocationId`) | `target_location_id := <central_warehouse_id>` |
+| `CHECK_STORE_SUPPLIER → SHIP_TO_REQUESTER` | `target.stock.qty >= qty_needed` | — |
+| `CHECK_STORE_SUPPLIER → CHECK_PRODUCTION_INPUT` | `target.stock.qty < qty_needed` | — |
+| `CHECK_PRODUCTION_INPUT → CREATE_PRODUCTION_ORDER` | BOM mavjud; har komponent uchun `raw_warehouse.stock.qty >= qty_per_unit * qty_needed` | **(1)** Har BOM komponenti uchun `applyMovement(reason='transfer', from=raw_warehouse, to=production, qty=qty_per_unit*qty_needed, replenishment_id=<id>)` — xom-ashyo `production` location'ga ko'chiriladi; **(2)** `production_order(status='new', location_id=production, target_location_id=<central_warehouse_id>, replenishment_id=<id>)` yaratiladi; **(3)** `request.production_order_id` belgilanadi. Hammasi bitta tranzaksiyada — birorta transfer `INSUFFICIENT_STOCK` bersa hammasi rollback. |
+| `CHECK_PRODUCTION_INPUT → CREATE_PURCHASE_ORDER` | kamida bitta BOM komponenti `raw_warehouse` da yetmaydi | **(1)** Agar `request.purchase_order_id IS NOT NULL` (oldingi PO `received` bo'lgan, lekin boshqa komponent hali yetmaydi) — `purchase_order_id := NULL` ga tushiriladi + `audit_log` ga `replenishment.purchase_order.unlink` (oldingi PO ID payload'da); **(2)** Birinchi yetmaydigan komponent uchun `purchase_order(status='draft', product_id=<component>, qty=<shortfall>, target_location_id=raw_warehouse, replenishment_id=<id>)` yaratiladi; **(3)** `request.purchase_order_id := <new_po_id>`. |
+| `CREATE_PURCHASE_ORDER → CREATE_PRODUCTION_ORDER` | `purchase_order.status='received'` (PO `received` action'i xom-ashyoni `raw_warehouse` ga atomar qo'shadi — M6 mas'uliyati) | Yana `CHECK_PRODUCTION_INPUT` shartlari tekshiriladi: agar barcha BOM komponentlari yetarli — yuqoridagi `CHECK_PRODUCTION_INPUT → CREATE_PRODUCTION_ORDER` action'i bajariladi (transfer + PO yaratish); agar yana shortage qolsa — `CHECK_PRODUCTION_INPUT → CREATE_PURCHASE_ORDER` action'i (PO unlink + yangi PO). |
+| `CREATE_PRODUCTION_ORDER → PRODUCING` | `production_order.status IN ('in_progress','done')` | — (no-op transition; faqat status flip + audit) |
+| `PRODUCING → DONE_TO_WAREHOUSE` | `production_order.status='done'` | — ("tayyor" oqimi — BOM `production` location'dan chiqim va `target_location_id` (central warehouse) ga kirim — M5 `production_orders.ts` da, `done` qilingan paytda atomar ravishda allaqachon bajarilgan; bu yerda faqat status flip + audit) |
+| `DONE_TO_WAREHOUSE → SHIP_TO_REQUESTER` | — | — (no-op transition) |
+| `SHIP_TO_REQUESTER → CLOSED` | `target.stock.qty > 0` | `applyMovement(reason='transfer', from=target (central_warehouse), to=requester, qty=min(qty_needed, target.qty), replenishment_id=<id>)`; `request.shipment_movement_id := <movement_id>`; `closed_at := now()`. |
+
+**Skip-state zanjirlash (ADR-0001 §8):** Agar bitta `advance` chaqiruvi chog'ida bir holat o'tgandan keyin keyingi holatning guard'i ham **darhol** qondirilgan bo'lsa, state machine **o'sha tranzaksiya ichida** keyingi qadamga ham o'tadi. Asosiy holat: foydalanuvchi `PATCH /api/production-orders/:id {status:'done'}` qiladi (`in_progress` ni o'tkazib yuborib) — keyingi `advance` chaqiruvida `CREATE_PRODUCTION_ORDER → PRODUCING → DONE_TO_WAREHOUSE` zanjir bajariladi (har biri alohida `replenishment_transitions` qatori).
 
 ### 3.4. State machine invariantlari
 - SM-1: Har o'tish `replenishment_transitions` ga `(from_status, to_status, reason, actor)` bilan yoziladi.
@@ -217,6 +229,7 @@ har qanday ochiq holat
 - SM-4: `CREATE_PURCHASE_ORDER` va `PRODUCING` — "kutuv" holatlari; `advance` ularda guard bajarilmaguncha xatosiz "hali tayyor emas" qaytaradi (no-op).
 - SM-5: Terminal holatda (`CLOSED`/`CANCELLED`) `advance` ishlamaydi.
 - SM-6: `advance` ni cron ham, foydalanuvchi ham chaqira oladi; idempotent — bir holatda ikki marta chaqirilsa holat sakramaydi.
+- **SM-7 (Sprint 2):** **Skip-state zanjirlash** — bitta `advance` chaqiruvi bir nechta o'tishni ketma-ket bajarishi mumkin, agar har o'tish ALLOWED_TRANSITIONS bo'yicha qonuniy bo'lsa va keyingi guard'i darhol qondirilsa. Asosiy holat: foydalanuvchi `production_order` ni `new → done` ga to'g'ridan o'tkazsa, `advance` `CREATE_PRODUCTION_ORDER → PRODUCING → DONE_TO_WAREHOUSE` ni bitta tranzaksiyada zanjir qiladi. Audit jurnali har bir oraliq o'tishni alohida saqlaydi (SM-1). To'liq dizayn — ADR-0001 §8.
 
 ---
 
@@ -285,7 +298,7 @@ RBAC: §6 matritsasi. Har write endpoint `audit_log` ga yozadi.
 | GET  | `/api/replenishment?status=` | pm, *_manager | ochiq/filtrlangan requestlar (rol bo'yicha) |
 | GET  | `/api/replenishment/:id` | pm, bog'liq bo'g'in | request + `transitions` tarixi |
 | POST | `/api/replenishment` | pm, central_warehouse_manager | qo'lda request: `{product_id,requester_location_id,qty_needed}` → `201`; dublikat bo'lsa `409 OPEN_REQUEST_EXISTS` |
-| POST | `/api/replenishment/:id/advance` | pm, bog'liq rol | state machine'ni keyingi bosqichga; `201 {status, transition}`; noto'g'ri o'tish `409 INVALID_TRANSITION` |
+| POST | `/api/replenishment/:id/advance` | pm, bog'liq rol | state machine'ni keyingi bosqichga; `200 {advanced, status, reason, request}` (yangi resurs yaratilmaydi — transition jurnal yozuvi, audit). `advanced=false` (kutuv guard'i qondirilmagan, SM-4) — ham `200`, xato emas. Noto'g'ri o'tish `409 INVALID_TRANSITION`. Aniqlik: ADR-0001 §10. |
 | POST | `/api/replenishment/:id/cancel` | pm | `→ CANCELLED` |
 
 ### 4.6. Production orders
@@ -293,7 +306,7 @@ RBAC: §6 matritsasi. Har write endpoint `audit_log` ga yozadi.
 |---|---|---|---|
 | GET  | `/api/production-orders?status=` | pm, production_manager | zayafkalar |
 | POST | `/api/production-orders` | pm, production_manager, central_warehouse_manager | `{product_id,qty,location_id,target_location_id,deadline?}` → `201` |
-| PATCH| `/api/production-orders/:id` | pm, production_manager | `{status}`: `in_progress` / `done`; `done` da BOM chiqim + sklad kirim atomar; yetmasa `409 INSUFFICIENT_STOCK` |
+| PATCH| `/api/production-orders/:id` | pm, production_manager | `{status}`: `in_progress` / `done` / `cancelled`; `done` da BOM chiqim + sklad kirim atomar; yetmasa `409 INSUFFICIENT_STOCK`. `cancelled` faqat `new` yoki `in_progress` holatdan ruxsat etiladi (`done → cancelled` taqiqlanadi — `409 INVALID_TRANSITION`); bog'liq `replenishment_request` avtomatik bekor qilinmaydi — `pm` qo'lda hal qiladi. Aniqlik: ADR-0001 §11. |
 
 ### 4.7. Purchase orders (ikki bosqichli tasdiq)
 | Metod | Endpoint | Rol | Request → Response |
@@ -537,3 +550,11 @@ xom-ashyo ombori.)
   boshida `backend-engineer` Poster webhook autentifikatsiyasini real akkauntda
   aniqlashi va `docs/adia-poster-api.md` ga qayd etishi kerak; aniqlangunча
   endpoint maxfiy URL-token bilan vaqtincha himoyalanadi.
+
+### 8.4. Sprint 2 audit — kelajakdagi migratsiya/cleanup ro'yxati
+
+Quyidagilar joriy sxemada **mavjud**, lekin kod ulardan foydalanmaydi yoki Faza-1 cheklovi qoldirilgan. Alohida migratsiya bilan keyinroq hal qilinadi (hozir o'chirilmaydi — bu hujjat ishi).
+
+- **Dead enum values — `purchase_order_status`:** `manager_approved` va `keeper_approved` qiymatlari sxemada bor (`db-schema-phase-1.sql`), lekin M6 implementatsiyasi `draft → approved → received` zanjirini ishlatadi (ikki bosqichli tasdiq DB enum holati orqali emas, `manager_approved_by` / `keeper_approved_by` ustunlari orqali bajariladi — har ikkalasi to'ldirilsa `approved` ga o'tadi, AC6.2). **Migratsiya rejasi:** kelgusi cleanup-migratsiya `manager_approved` va `keeper_approved` qiymatlarini `purchase_order_status` enumdan olib tashlaydi. Joriy Faza-1 da o'chirilmaydi — ehtimol Faza-2 da yangi migratsiya bilan birga (chunki PostgreSQL'da enum value'sini olib tashlash `ALTER TYPE ... RENAME TO + CREATE TYPE ... + UPDATE + DROP` ketma-ketligini talab qiladi). Vazifa: `system-architect` / `backend-engineer` Faza-2 boshida.
+- **Multi-shortage M:N jadval — `replenishment_purchase_orders` (Faza-2):** Faza-1 da sekvensial sxema saqlanadi (ADR-0001 §12) — bir vaqtda bitta PO, eski PO'lar `audit_log` va `replenishment_transitions` orqali bog'lanadi. Faza-2 da bir requestga ko'p PO ni to'g'ri tasvirlash uchun `replenishment_purchase_orders(replenishment_id, purchase_order_id, created_at)` M:N jadvali qo'shiladi va `replenishment_requests.purchase_order_id` ustuni olib tashlanadi.
+- **`production_order_status='cancelled'` ishlatish (Sprint 2 da qo'shildi):** §4.6 PATCH yangilangan — bu yangi qiymat emas (enumda allaqachon bor), faqat ishlatishga ruxsat berildi.

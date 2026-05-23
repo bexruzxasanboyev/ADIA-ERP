@@ -6,6 +6,9 @@ import type {
   LocationType,
   MovementReason,
   ProductType,
+  ProductionOrderStatus,
+  PurchaseOrderStatus,
+  ReplenishmentStatus,
   Role,
   Unit,
 } from './types';
@@ -17,6 +20,10 @@ export const ROLE_LABELS: Record<Role, string> = {
   supply_manager: 'Ta’minot boshlig‘i',
   central_warehouse_manager: 'Markaziy sklad boshlig‘i',
   store_manager: 'Do‘kon boshlig‘i',
+  // `ai_assistant` mirrors the backend enum but is not user-facing in
+  // Faza-1 — it is intentionally excluded from ROLE_OPTIONS below so it
+  // never appears in role pickers.
+  ai_assistant: 'AI assistent',
 };
 
 export const LOCATION_TYPE_LABELS: Record<LocationType, string> = {
@@ -48,9 +55,16 @@ export const MOVEMENT_REASON_LABELS: Record<MovementReason, string> = {
   adjust: 'Tuzatish',
 };
 
+/**
+ * Role picker options for forms. Excludes `ai_assistant` because the AI
+ * assistant role is not provisioned by an admin in Faza-1 — its tokens
+ * are minted server-side. Order matches the RBAC matrix in §6.
+ */
 export const ROLE_OPTIONS: { value: Role; label: string }[] = (
   Object.keys(ROLE_LABELS) as Role[]
-).map((value) => ({ value, label: ROLE_LABELS[value] }));
+)
+  .filter((role) => role !== 'ai_assistant')
+  .map((value) => ({ value, label: ROLE_LABELS[value] }));
 
 export const LOCATION_TYPE_OPTIONS: { value: LocationType; label: string }[] = (
   Object.keys(LOCATION_TYPE_LABELS) as LocationType[]
@@ -63,3 +77,97 @@ export const PRODUCT_TYPE_OPTIONS: { value: ProductType; label: string }[] = (
 export const UNIT_OPTIONS: { value: Unit; label: string }[] = (
   Object.keys(UNIT_LABELS) as Unit[]
 ).map((value) => ({ value, label: UNIT_LABELS[value] }));
+
+// ---------------------------------------------------------------------------
+// Sprint 2 — replenishment / production order / purchase order labels.
+// ---------------------------------------------------------------------------
+
+/** Uzbek labels for the 10-status replenishment state machine. */
+export const REPLENISHMENT_STATUS_LABELS: Record<ReplenishmentStatus, string> = {
+  NEW: 'Yangi',
+  CHECK_STORE_SUPPLIER: 'Tekshiruv: ta’minot/markaziy sklad',
+  SHIP_TO_REQUESTER: 'So‘rovchiga jo‘natish',
+  CHECK_PRODUCTION_INPUT: 'Tekshiruv: ishlab chiqarish xom-ashyosi',
+  CREATE_PURCHASE_ORDER: 'Sotib olish so‘rovi',
+  CREATE_PRODUCTION_ORDER: 'Ishlab chiqarish zayafkasi',
+  PRODUCING: 'Ishlab chiqarilmoqda',
+  DONE_TO_WAREHOUSE: 'Markaziy skladga topshirildi',
+  CLOSED: 'Yopilgan',
+  CANCELLED: 'Bekor qilingan',
+};
+
+/** Replenishment status badge variant — visual hierarchy on lists. */
+export const REPLENISHMENT_STATUS_VARIANT: Record<
+  ReplenishmentStatus,
+  'default' | 'outline' | 'success' | 'warning' | 'danger'
+> = {
+  NEW: 'warning',
+  CHECK_STORE_SUPPLIER: 'default',
+  SHIP_TO_REQUESTER: 'default',
+  CHECK_PRODUCTION_INPUT: 'default',
+  CREATE_PURCHASE_ORDER: 'default',
+  CREATE_PRODUCTION_ORDER: 'default',
+  PRODUCING: 'default',
+  DONE_TO_WAREHOUSE: 'default',
+  CLOSED: 'success',
+  CANCELLED: 'danger',
+};
+
+export const REPLENISHMENT_STATUS_OPTIONS: {
+  value: ReplenishmentStatus;
+  label: string;
+}[] = (Object.keys(REPLENISHMENT_STATUS_LABELS) as ReplenishmentStatus[]).map(
+  (value) => ({ value, label: REPLENISHMENT_STATUS_LABELS[value] }),
+);
+
+/** Uzbek labels for production order statuses. */
+export const PRODUCTION_ORDER_STATUS_LABELS: Record<ProductionOrderStatus, string> = {
+  new: 'Yangi',
+  in_progress: 'Jarayonda',
+  done: 'Yakunlangan',
+  cancelled: 'Bekor qilingan',
+};
+
+export const PRODUCTION_ORDER_STATUS_VARIANT: Record<
+  ProductionOrderStatus,
+  'default' | 'outline' | 'success' | 'warning' | 'danger'
+> = {
+  new: 'warning',
+  in_progress: 'default',
+  done: 'success',
+  cancelled: 'danger',
+};
+
+export const PRODUCTION_ORDER_STATUS_OPTIONS: {
+  value: ProductionOrderStatus;
+  label: string;
+}[] = (
+  Object.keys(PRODUCTION_ORDER_STATUS_LABELS) as ProductionOrderStatus[]
+).map((value) => ({ value, label: PRODUCTION_ORDER_STATUS_LABELS[value] }));
+
+/** Uzbek labels for purchase order statuses. */
+export const PURCHASE_ORDER_STATUS_LABELS: Record<PurchaseOrderStatus, string> = {
+  draft: 'Loyiha',
+  approved: 'Tasdiqlangan',
+  received: 'Qabul qilingan',
+  cancelled: 'Bekor qilingan',
+  rejected: 'Rad etilgan',
+};
+
+export const PURCHASE_ORDER_STATUS_VARIANT: Record<
+  PurchaseOrderStatus,
+  'default' | 'outline' | 'success' | 'warning' | 'danger'
+> = {
+  draft: 'warning',
+  approved: 'default',
+  received: 'success',
+  cancelled: 'danger',
+  rejected: 'danger',
+};
+
+export const PURCHASE_ORDER_STATUS_OPTIONS: {
+  value: PurchaseOrderStatus;
+  label: string;
+}[] = (
+  Object.keys(PURCHASE_ORDER_STATUS_LABELS) as PurchaseOrderStatus[]
+).map((value) => ({ value, label: PURCHASE_ORDER_STATUS_LABELS[value] }));

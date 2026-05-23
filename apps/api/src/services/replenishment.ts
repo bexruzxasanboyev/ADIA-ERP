@@ -1,0 +1,1028 @@
+/**
+ * M4 — Replenishment engine + state machine (spec section 2.4 and 3, ADR-0001).
+ *
+ * This file is the YADRO of the self-correcting bakery ERP. It implements the
+ * 10-state machine that drives one `replenishment_request` from `NEW` (the
+ * scan worker spotted `stock.qty <= min_level`) to `CLOSED` (the requester
+ * was topped up to `max_level`).
+ *
+ * Invariants enforced here:
+ *   - SM-1 every transition is appended to `replenishment_transitions`;
+ *   - SM-2 only a transition in `ALLOWED_TRANSITIONS` is accepted —
+ *           anything else raises `INVALID_TRANSITION` (409);
+ *   - SM-3 `advance()` flips status + creates the linked document + applies
+ *           the movement + writes audit in ONE `withTransaction`;
+ *   - SM-4 the wait states (`CREATE_PURCHASE_ORDER`, `PRODUCING`) return a
+ *           no-op `{ advanced: false }` when their guard is not yet met;
+ *   - SM-5 `advance()` is a no-op on terminal (`CLOSED`/`CANCELLED`) states;
+ *   - SM-6 idempotent — re-calling `advance()` on the same row twice never
+ *           skips a state and never double-applies a movement (FOR UPDATE
+ *           lock + status check inside the same transaction).
+ *   - Invariant 2 — one open request per (product, requester_location) is
+ *           enforced by the partial UNIQUE index on the table; this service
+ *           additionally returns OPEN_REQUEST_EXISTS (409) on `createRequest`.
+ */
+import { query, withTransaction, type TxClient } from '../db/index.js';
+import { AppError } from '../errors/index.js';
+import { writeAudit } from '../lib/audit.js';
+import { applyMovement } from './stockMovement.js';
+
+// -----------------------------------------------------------------------------
+// Types
+// -----------------------------------------------------------------------------
+
+export type ReplenishmentStatus =
+  | 'NEW'
+  | 'CHECK_STORE_SUPPLIER'
+  | 'SHIP_TO_REQUESTER'
+  | 'CHECK_PRODUCTION_INPUT'
+  | 'CREATE_PURCHASE_ORDER'
+  | 'CREATE_PRODUCTION_ORDER'
+  | 'PRODUCING'
+  | 'DONE_TO_WAREHOUSE'
+  | 'CLOSED'
+  | 'CANCELLED';
+
+export const TERMINAL_STATUSES: readonly ReplenishmentStatus[] = ['CLOSED', 'CANCELLED'];
+
+/**
+ * For skip-state chaining (SM-7) — the set of forward transitions that should
+ * be retried inside the SAME `advance()` call after a successful step. If the
+ * next state's guard happens to be satisfied (e.g. the linked production order
+ * is already `done` when we move to `PRODUCING`), the engine chains forward
+ * in one transaction rather than waiting for the cron's next pass.
+ */
+const CHAINABLE_AFTER: Readonly<Record<ReplenishmentStatus, boolean>> = {
+  NEW: false,
+  CHECK_STORE_SUPPLIER: false,
+  SHIP_TO_REQUESTER: false,
+  CHECK_PRODUCTION_INPUT: false,
+  CREATE_PURCHASE_ORDER: false,
+  CREATE_PRODUCTION_ORDER: true, // -> PRODUCING -> DONE_TO_WAREHOUSE
+  PRODUCING: true, // -> DONE_TO_WAREHOUSE
+  DONE_TO_WAREHOUSE: false,
+  CLOSED: false,
+  CANCELLED: false,
+};
+
+export type ReplenishmentRow = {
+  id: number;
+  product_id: number;
+  requester_location_id: number;
+  target_location_id: number | null;
+  qty_needed: string;
+  status: ReplenishmentStatus;
+  production_order_id: number | null;
+  purchase_order_id: number | null;
+  shipment_movement_id: number | null;
+  note: string | null;
+  created_by: number | null;
+  created_at: Date;
+  updated_at: Date;
+  closed_at: Date | null;
+};
+
+export const REPLENISHMENT_COLUMNS = `id, product_id, requester_location_id,
+  target_location_id, qty_needed, status, production_order_id, purchase_order_id,
+  shipment_movement_id, note, created_by, created_at, updated_at, closed_at`;
+
+/**
+ * Possible outcomes of one `advance()` call. `advanced=false` means a wait
+ * state's guard is not yet met (SM-4) — not an error.
+ */
+export type AdvanceResult = {
+  readonly advanced: boolean;
+  readonly request: ReplenishmentRow;
+  readonly reason: string;
+};
+
+// -----------------------------------------------------------------------------
+// Transition table — SM-2
+// -----------------------------------------------------------------------------
+// The set of every `from -> to` step the engine may take. CANCELLED is an
+// orthogonal terminal: `cancel()` flips any open status to CANCELLED.
+const ALLOWED_TRANSITIONS: Readonly<Record<ReplenishmentStatus, readonly ReplenishmentStatus[]>> = {
+  NEW: ['CHECK_STORE_SUPPLIER', 'CANCELLED'],
+  CHECK_STORE_SUPPLIER: ['SHIP_TO_REQUESTER', 'CHECK_PRODUCTION_INPUT', 'CANCELLED'],
+  CHECK_PRODUCTION_INPUT: ['CREATE_PRODUCTION_ORDER', 'CREATE_PURCHASE_ORDER', 'CANCELLED'],
+  CREATE_PURCHASE_ORDER: ['CREATE_PRODUCTION_ORDER', 'CANCELLED'],
+  CREATE_PRODUCTION_ORDER: ['PRODUCING', 'CANCELLED'],
+  PRODUCING: ['DONE_TO_WAREHOUSE', 'CANCELLED'],
+  DONE_TO_WAREHOUSE: ['SHIP_TO_REQUESTER', 'CANCELLED'],
+  SHIP_TO_REQUESTER: ['CLOSED', 'CANCELLED'],
+  CLOSED: [],
+  CANCELLED: [],
+};
+
+/** Returns true when `to` is reachable from `from` in one step. */
+export function canTransition(from: ReplenishmentStatus, to: ReplenishmentStatus): boolean {
+  return ALLOWED_TRANSITIONS[from].includes(to);
+}
+
+// -----------------------------------------------------------------------------
+// Create / Cancel
+// -----------------------------------------------------------------------------
+
+/**
+ * Create a new replenishment request. The partial UNIQUE index on
+ * `(product_id, requester_location_id) WHERE status NOT IN ('CLOSED','CANCELLED')`
+ * is the DB-level guard against duplicates (invariant 2); we surface a
+ * friendly `OPEN_REQUEST_EXISTS` (409) when it fires.
+ */
+export async function createRequest(opts: {
+  productId: number;
+  requesterLocationId: number;
+  qtyNeeded: number;
+  actorUserId: number | null;
+  note?: string | null;
+}): Promise<ReplenishmentRow> {
+  if (!Number.isFinite(opts.qtyNeeded) || opts.qtyNeeded <= 0) {
+    throw AppError.validation('qty_needed must be a number greater than zero.');
+  }
+
+  try {
+    return await withTransaction(async (tx) => {
+      const { rows } = await tx.query<ReplenishmentRow>(
+        `INSERT INTO replenishment_requests
+           (product_id, requester_location_id, qty_needed, status, note, created_by)
+         VALUES ($1, $2, $3, 'NEW', $4, $5)
+         RETURNING ${REPLENISHMENT_COLUMNS}`,
+        [
+          opts.productId,
+          opts.requesterLocationId,
+          opts.qtyNeeded,
+          opts.note ?? null,
+          opts.actorUserId,
+        ],
+      );
+      const row = rows[0];
+      if (row === undefined) {
+        throw AppError.internal('Replenishment insert returned no row.');
+      }
+      await recordTransition(tx, row.id, null, 'NEW', 'created', opts.actorUserId);
+      await writeAudit(tx, {
+        actorUserId: opts.actorUserId,
+        action: 'replenishment.create',
+        entity: 'replenishment_requests',
+        entityId: row.id,
+        payload: {
+          product_id: opts.productId,
+          requester_location_id: opts.requesterLocationId,
+          qty_needed: opts.qtyNeeded,
+        },
+      });
+      return row;
+    });
+  } catch (err) {
+    // 23505 is the PostgreSQL unique-violation SQLSTATE — only our partial
+    // index can fire here. Surface the spec-defined OPEN_REQUEST_EXISTS code.
+    if (isUniqueViolation(err)) {
+      throw new AppError(
+        'OPEN_REQUEST_EXISTS',
+        'An open replenishment request already exists for this (product, location).',
+      );
+    }
+    throw err;
+  }
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    typeof err === 'object' && err !== null && 'code' in err && (err as { code: unknown }).code === '23505'
+  );
+}
+
+/** Flip any non-terminal request to CANCELLED. Idempotent on already-cancelled. */
+export async function cancelRequest(
+  requestId: number,
+  actorUserId: number | null,
+  reason: string,
+): Promise<ReplenishmentRow> {
+  return withTransaction(async (tx) => {
+    const order = await lockRequest(tx, requestId);
+    if (order.status === 'CANCELLED' || order.status === 'CLOSED') {
+      return order;
+    }
+    const { rows } = await tx.query<ReplenishmentRow>(
+      `UPDATE replenishment_requests SET status = 'CANCELLED', closed_at = now()
+       WHERE id = $1
+       RETURNING ${REPLENISHMENT_COLUMNS}`,
+      [requestId],
+    );
+    const updated = rows[0];
+    if (updated === undefined) {
+      throw AppError.internal('Replenishment cancel returned no row.');
+    }
+    await recordTransition(tx, requestId, order.status, 'CANCELLED', reason, actorUserId);
+    await writeAudit(tx, {
+      actorUserId,
+      action: 'replenishment.cancel',
+      entity: 'replenishment_requests',
+      entityId: requestId,
+      payload: { from: order.status, reason },
+    });
+    return updated;
+  });
+}
+
+// -----------------------------------------------------------------------------
+// advance() — the heart of the state machine (SM-2..SM-6)
+// -----------------------------------------------------------------------------
+
+/**
+ * Advance one replenishment request by one step.
+ *
+ * The whole step (lock, guard check, document creation, stock movement,
+ * status flip, transition row, audit row) runs inside ONE `withTransaction`,
+ * which keeps the request consistent under concurrent calls (cron worker +
+ * a user button) — `SELECT ... FOR UPDATE` serializes them (SM-6).
+ *
+ * Returns `{ advanced: false }` for:
+ *   - terminal states (SM-5), and
+ *   - wait states whose external guard has not yet fired (SM-4).
+ *
+ * Pass `tx` when an outer transaction is open (e.g. `finishProductionOrder`
+ * commits the order flip and the request advance together — AC5.3, AC6.3);
+ * the inner step then re-uses the outer tx instead of opening a nested one.
+ *
+ * Skip-state chaining (SM-7): when a single hop leaves the request in a
+ * state whose next guard is also satisfied (e.g. `CREATE_PRODUCTION_ORDER`
+ * after a `new -> done` jump on the production order), the engine chains
+ * forward inside the same transaction. Each chained hop appends its own
+ * `replenishment_transitions` row.
+ */
+export async function advance(
+  requestId: number,
+  actorUserId: number | null,
+  tx?: TxClient,
+): Promise<AdvanceResult> {
+  const run = async (client: TxClient): Promise<AdvanceResult> => {
+    const initial = await lockRequest(client, requestId);
+
+    // SM-5: terminal states never advance.
+    if (TERMINAL_STATUSES.includes(initial.status)) {
+      return { advanced: false, request: initial, reason: 'terminal' };
+    }
+
+    let result = await advanceOne(client, initial, actorUserId);
+
+    // SM-7 — chain forward inside the SAME transaction while the new state
+    // is chain-eligible and the next guard is satisfied. The loop is bounded
+    // by the forward state graph (CREATE_PRODUCTION_ORDER -> PRODUCING ->
+    // DONE_TO_WAREHOUSE) so it terminates quickly; the safety counter is a
+    // belt-and-braces against an unexpected cycle.
+    let safety = 5;
+    while (
+      result.advanced &&
+      !TERMINAL_STATUSES.includes(result.request.status) &&
+      CHAINABLE_AFTER[result.request.status] &&
+      safety > 0
+    ) {
+      safety -= 1;
+      const next = await advanceOne(client, result.request, actorUserId);
+      if (!next.advanced) {
+        break;
+      }
+      result = next;
+    }
+    return result;
+  };
+
+  return tx !== undefined ? run(tx) : withTransaction(run);
+}
+
+/** Dispatch one step against the current status. */
+async function advanceOne(
+  tx: TxClient,
+  request: ReplenishmentRow,
+  actorUserId: number | null,
+): Promise<AdvanceResult> {
+  switch (request.status) {
+    case 'NEW':
+      return advanceNew(tx, request, actorUserId);
+    case 'CHECK_STORE_SUPPLIER':
+      return advanceCheckStoreSupplier(tx, request, actorUserId);
+    case 'SHIP_TO_REQUESTER':
+      return advanceShipToRequester(tx, request, actorUserId);
+    case 'CHECK_PRODUCTION_INPUT':
+      return advanceCheckProductionInput(tx, request, actorUserId);
+    case 'CREATE_PURCHASE_ORDER':
+      return advanceWaitingForPurchase(tx, request, actorUserId);
+    case 'CREATE_PRODUCTION_ORDER':
+      return advanceCreateProductionOrder(tx, request, actorUserId);
+    case 'PRODUCING':
+      return advanceWaitingForProduction(tx, request, actorUserId);
+    case 'DONE_TO_WAREHOUSE':
+      return advanceDoneToWarehouse(tx, request, actorUserId);
+    default:
+      return { advanced: false, request, reason: 'unknown' };
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Per-state advance handlers
+// -----------------------------------------------------------------------------
+
+/**
+ * NEW -> CHECK_STORE_SUPPLIER. Guard: the chain rooted at the requester
+ * contains a `type='central_warehouse'` location — that one becomes the
+ * `target_location_id` (ADR-0001 §9). `parent_id` is NOT used directly:
+ * with multi-hop chains (store -> supply -> central) the immediate parent
+ * may not be the warehouse, but the SHIP_TO_REQUESTER step always pulls
+ * from the central warehouse.
+ */
+async function advanceNew(
+  tx: TxClient,
+  request: ReplenishmentRow,
+  actorUserId: number | null,
+): Promise<AdvanceResult> {
+  const topology = await resolveTopology(tx, request.requester_location_id);
+  if (topology.centralWarehouseLocationId === null) {
+    return { advanced: false, request, reason: 'no central_warehouse in chain' };
+  }
+  const next = await transitionStatus(
+    tx,
+    request,
+    'CHECK_STORE_SUPPLIER',
+    'central warehouse resolved',
+    actorUserId,
+    { targetLocationId: topology.centralWarehouseLocationId },
+  );
+  return { advanced: true, request: next, reason: 'central warehouse resolved' };
+}
+
+/**
+ * CHECK_STORE_SUPPLIER -> SHIP_TO_REQUESTER (enough at target) OR
+ *                        CHECK_PRODUCTION_INPUT (not enough).
+ * Guard reads `target.stock.qty >= qty_needed` (spec section 3.3).
+ */
+async function advanceCheckStoreSupplier(
+  tx: TxClient,
+  request: ReplenishmentRow,
+  actorUserId: number | null,
+): Promise<AdvanceResult> {
+  if (request.target_location_id === null) {
+    return { advanced: false, request, reason: 'target_location_id is null' };
+  }
+  const qtyNeeded = Number(request.qty_needed);
+  const targetQty = await readStockQty(tx, request.target_location_id, request.product_id);
+  if (targetQty >= qtyNeeded) {
+    const next = await transitionStatus(
+      tx,
+      request,
+      'SHIP_TO_REQUESTER',
+      `target has ${targetQty} >= needed ${qtyNeeded}`,
+      actorUserId,
+    );
+    return { advanced: true, request: next, reason: 'enough at target' };
+  }
+  const next = await transitionStatus(
+    tx,
+    request,
+    'CHECK_PRODUCTION_INPUT',
+    `target has ${targetQty} < needed ${qtyNeeded}`,
+    actorUserId,
+  );
+  return { advanced: true, request: next, reason: 'not enough at target' };
+}
+
+/**
+ * CHECK_PRODUCTION_INPUT -> CREATE_PRODUCTION_ORDER (BOM raw is sufficient)
+ *                        OR CREATE_PURCHASE_ORDER (a raw is short).
+ *
+ * The "production location" and "raw warehouse" are resolved from the
+ * seeded topology: production = first ancestor of the requester whose
+ * `type='production'`; raw warehouse = parent of that production location.
+ * If they cannot be resolved the request is held (returns `advanced:false`).
+ */
+async function advanceCheckProductionInput(
+  tx: TxClient,
+  request: ReplenishmentRow,
+  actorUserId: number | null,
+): Promise<AdvanceResult> {
+  const topology = await resolveTopology(tx, request.requester_location_id);
+  if (topology.productionLocationId === null) {
+    return { advanced: false, request, reason: 'no production location in chain' };
+  }
+  if (topology.rawWarehouseLocationId === null) {
+    return { advanced: false, request, reason: 'no raw warehouse in chain' };
+  }
+
+  // What does the BOM call for, given this request's qty?
+  const { rows: bom } = await tx.query<{
+    component_product_id: number;
+    qty_per_unit: string;
+  }>(
+    'SELECT component_product_id, qty_per_unit FROM recipes WHERE product_id = $1',
+    [request.product_id],
+  );
+  if (bom.length === 0) {
+    // No recipe -> we cannot produce, so the only path is purchase the
+    // finished product itself. Spec section 3 assumes recipes exist; we
+    // hold the request rather than guess.
+    return { advanced: false, request, reason: 'product has no BOM' };
+  }
+  const qtyNeeded = Number(request.qty_needed);
+
+  // For every component, compare the raw-warehouse on-hand against the need.
+  const shortages: { componentId: number; need: number; have: number }[] = [];
+  for (const line of bom) {
+    const need = Number(line.qty_per_unit) * qtyNeeded;
+    const have = await readStockQty(tx, topology.rawWarehouseLocationId, line.component_product_id);
+    if (have < need) {
+      shortages.push({ componentId: line.component_product_id, need, have });
+    }
+  }
+
+  if (shortages.length === 0) {
+    // ADR-0001 §7 — every BOM component is transferred from the raw warehouse
+    // INTO the production location BEFORE the production order is created.
+    // Without this step the later `finishProductionOrder` flow would find an
+    // empty production location and fail with INSUFFICIENT_STOCK. All
+    // transfers + PO insert run inside the SAME transaction; one transfer
+    // failure rolls every earlier transfer back.
+    // ADR-0001 §9 — production output always lands in the central warehouse,
+    // which is the request's `target_location_id` (filled at NEW).
+    const targetLocationId =
+      request.target_location_id ?? topology.centralWarehouseLocationId;
+    for (const line of bom) {
+      const moveQty = Number(line.qty_per_unit) * qtyNeeded;
+      await applyMovement(
+        {
+          productId: line.component_product_id,
+          fromLocationId: topology.rawWarehouseLocationId,
+          toLocationId: topology.productionLocationId,
+          qty: moveQty,
+          reason: 'transfer',
+          actorUserId,
+          replenishmentId: request.id,
+        },
+        tx,
+      );
+    }
+    const productionOrderId = await createProductionOrderRow(tx, {
+      productId: request.product_id,
+      qty: qtyNeeded,
+      locationId: topology.productionLocationId,
+      targetLocationId,
+      replenishmentId: request.id,
+      actorUserId,
+    });
+    const reasonText =
+      request.status === 'CREATE_PURCHASE_ORDER'
+        ? 'create_purchase -> recheck production input -> raw sufficient'
+        : 'raw inputs sufficient';
+    const next = await transitionStatus(
+      tx,
+      request,
+      'CREATE_PRODUCTION_ORDER',
+      reasonText,
+      actorUserId,
+      { productionOrderId },
+    );
+    return { advanced: true, request: next, reason: 'raw sufficient -> production order' };
+  }
+
+  // One or more raws short. Create ONE purchase order for the FIRST shortage
+  // (spec section 3.3 — purchase order created for missing component). When
+  // multiple components are short, repeated `advance()` calls after each
+  // purchase_received will create the next one if still short.
+  // ADR-0001 §12 — keep the FK consistent: if the request still points at a
+  // previous (already-received) PO, unlink it BEFORE creating the new one so
+  // a stale row never overwrites the link. The audit_log row preserves the
+  // bond between the request and the previous PO for forensic queries; the
+  // M:N table is Phase-2 work (spec §8.4).
+  const firstShortage = shortages[0];
+  if (firstShortage === undefined) {
+    throw AppError.internal('shortages array unexpectedly empty.');
+  }
+  if (request.purchase_order_id !== null) {
+    const previousPoId = request.purchase_order_id;
+    await tx.query(
+      `UPDATE replenishment_requests SET purchase_order_id = NULL WHERE id = $1`,
+      [request.id],
+    );
+    await writeAudit(tx, {
+      actorUserId,
+      action: 'replenishment.purchase_order.unlink',
+      entity: 'replenishment_requests',
+      entityId: request.id,
+      payload: {
+        previous_purchase_order_id: previousPoId,
+        reason: `next shortage on component ${firstShortage.componentId}`,
+      },
+    });
+  }
+  const purchaseOrderId = await createPurchaseOrderRow(tx, {
+    productId: firstShortage.componentId,
+    qty: firstShortage.need - firstShortage.have, // purchase exactly the shortfall
+    targetLocationId: topology.rawWarehouseLocationId,
+    replenishmentId: request.id,
+    actorUserId,
+  });
+  const next = await transitionStatus(
+    tx,
+    request,
+    'CREATE_PURCHASE_ORDER',
+    `raw component ${firstShortage.componentId} short`,
+    actorUserId,
+    { purchaseOrderId },
+  );
+  return { advanced: true, request: next, reason: 'raw short -> purchase order' };
+}
+
+/**
+ * CREATE_PURCHASE_ORDER is a WAIT state (SM-4). It advances to
+ * CREATE_PRODUCTION_ORDER only when the linked purchase order is `received`.
+ * If still pending, returns `{ advanced: false }` — no error.
+ */
+async function advanceWaitingForPurchase(
+  tx: TxClient,
+  request: ReplenishmentRow,
+  actorUserId: number | null,
+): Promise<AdvanceResult> {
+  if (request.purchase_order_id === null) {
+    return { advanced: false, request, reason: 'no linked purchase order' };
+  }
+  const { rows } = await tx.query<{ status: string }>(
+    'SELECT status FROM purchase_orders WHERE id = $1',
+    [request.purchase_order_id],
+  );
+  const poStatus = rows[0]?.status;
+  if (poStatus !== 'received') {
+    return { advanced: false, request, reason: `purchase order still ${poStatus ?? 'missing'}` };
+  }
+  // Raw is now in the warehouse — re-run the production-input check, which
+  // will (usually) now succeed and create the production order. The next
+  // transition logged is CREATE_PURCHASE_ORDER -> CREATE_PRODUCTION_ORDER
+  // (or back to CREATE_PURCHASE_ORDER if another component is still short).
+  // The reason text in the transition row will already be carried by the
+  // inner `transitionStatus` call; this comment merely flags the from-state.
+  return advanceCheckProductionInput(tx, request, actorUserId);
+}
+
+/**
+ * CREATE_PRODUCTION_ORDER -> PRODUCING when the linked production order has
+ * been flipped to `in_progress` (the production manager started it).
+ */
+async function advanceCreateProductionOrder(
+  tx: TxClient,
+  request: ReplenishmentRow,
+  actorUserId: number | null,
+): Promise<AdvanceResult> {
+  if (request.production_order_id === null) {
+    return { advanced: false, request, reason: 'no linked production order' };
+  }
+  const { rows } = await tx.query<{ status: string }>(
+    'SELECT status FROM production_orders WHERE id = $1',
+    [request.production_order_id],
+  );
+  const poStatus = rows[0]?.status;
+  if (poStatus === 'in_progress' || poStatus === 'done') {
+    const next = await transitionStatus(
+      tx,
+      request,
+      'PRODUCING',
+      `production order is ${poStatus}`,
+      actorUserId,
+    );
+    return { advanced: true, request: next, reason: 'production started' };
+  }
+  return { advanced: false, request, reason: `production order is ${poStatus ?? 'missing'}` };
+}
+
+/**
+ * PRODUCING is a WAIT state. Advances to DONE_TO_WAREHOUSE only when the
+ * linked production order is `done` — by that point the production_order
+ * service already moved BOM out and finished goods INTO the target location.
+ */
+async function advanceWaitingForProduction(
+  tx: TxClient,
+  request: ReplenishmentRow,
+  actorUserId: number | null,
+): Promise<AdvanceResult> {
+  if (request.production_order_id === null) {
+    return { advanced: false, request, reason: 'no linked production order' };
+  }
+  const { rows } = await tx.query<{ status: string }>(
+    'SELECT status FROM production_orders WHERE id = $1',
+    [request.production_order_id],
+  );
+  const poStatus = rows[0]?.status;
+  if (poStatus === 'done') {
+    const next = await transitionStatus(
+      tx,
+      request,
+      'DONE_TO_WAREHOUSE',
+      'production complete',
+      actorUserId,
+    );
+    return { advanced: true, request: next, reason: 'production done' };
+  }
+  return { advanced: false, request, reason: `production order is ${poStatus ?? 'missing'}` };
+}
+
+/** DONE_TO_WAREHOUSE -> SHIP_TO_REQUESTER (the goods are now at target). */
+async function advanceDoneToWarehouse(
+  tx: TxClient,
+  request: ReplenishmentRow,
+  actorUserId: number | null,
+): Promise<AdvanceResult> {
+  const next = await transitionStatus(
+    tx,
+    request,
+    'SHIP_TO_REQUESTER',
+    'output landed in warehouse',
+    actorUserId,
+  );
+  return { advanced: true, request: next, reason: 'ready to ship' };
+}
+
+/**
+ * SHIP_TO_REQUESTER -> CLOSED. Atomic transfer of
+ * `min(qty_needed, target.qty)` from `target_location_id` to
+ * `requester_location_id`. The request is then closed.
+ */
+async function advanceShipToRequester(
+  tx: TxClient,
+  request: ReplenishmentRow,
+  actorUserId: number | null,
+): Promise<AdvanceResult> {
+  if (request.target_location_id === null) {
+    return { advanced: false, request, reason: 'no target location' };
+  }
+  const qtyNeeded = Number(request.qty_needed);
+  const targetQty = await readStockQty(tx, request.target_location_id, request.product_id);
+  if (targetQty <= 0) {
+    return { advanced: false, request, reason: 'target has no stock to ship' };
+  }
+  const shipQty = Math.min(qtyNeeded, targetQty);
+
+  const { movementId } = await applyMovement(
+    {
+      productId: request.product_id,
+      fromLocationId: request.target_location_id,
+      toLocationId: request.requester_location_id,
+      qty: shipQty,
+      reason: 'transfer',
+      actorUserId,
+      replenishmentId: request.id,
+    },
+    tx,
+  );
+
+  const { rows } = await tx.query<ReplenishmentRow>(
+    `UPDATE replenishment_requests
+     SET status = 'CLOSED', shipment_movement_id = $2, closed_at = now()
+     WHERE id = $1
+     RETURNING ${REPLENISHMENT_COLUMNS}`,
+    [request.id, movementId],
+  );
+  const updated = rows[0];
+  if (updated === undefined) {
+    throw AppError.internal('Replenishment close returned no row.');
+  }
+  await recordTransition(
+    tx,
+    request.id,
+    'SHIP_TO_REQUESTER',
+    'CLOSED',
+    `shipped ${shipQty}`,
+    actorUserId,
+  );
+  await writeAudit(tx, {
+    actorUserId,
+    action: 'replenishment.closed',
+    entity: 'replenishment_requests',
+    entityId: request.id,
+    payload: { shipped_qty: shipQty, movement_id: movementId },
+  });
+  return { advanced: true, request: updated, reason: 'shipped' };
+}
+
+// -----------------------------------------------------------------------------
+// Internal helpers
+// -----------------------------------------------------------------------------
+
+/** SELECT ... FOR UPDATE on the request — serializes concurrent advances. */
+async function lockRequest(tx: TxClient, requestId: number): Promise<ReplenishmentRow> {
+  const { rows } = await tx.query<ReplenishmentRow>(
+    `SELECT ${REPLENISHMENT_COLUMNS} FROM replenishment_requests WHERE id = $1 FOR UPDATE`,
+    [requestId],
+  );
+  const row = rows[0];
+  if (row === undefined) {
+    throw AppError.notFound('Replenishment request not found.');
+  }
+  return row;
+}
+
+async function readStockQty(
+  tx: TxClient,
+  locationId: number,
+  productId: number,
+): Promise<number> {
+  const { rows } = await tx.query<{ qty: string }>(
+    'SELECT qty FROM stock WHERE location_id = $1 AND product_id = $2',
+    [locationId, productId],
+  );
+  const raw = rows[0]?.qty;
+  return raw === undefined ? 0 : Number(raw);
+}
+
+/**
+ * Apply a status flip + optional linked-document updates + the audit/transition
+ * pair, then re-read the row. SM-2 is enforced here: the target status MUST
+ * be reachable from the current one — else INVALID_TRANSITION.
+ */
+async function transitionStatus(
+  tx: TxClient,
+  request: ReplenishmentRow,
+  to: ReplenishmentStatus,
+  reason: string,
+  actorUserId: number | null,
+  links: {
+    targetLocationId?: number;
+    productionOrderId?: number;
+    purchaseOrderId?: number;
+  } = {},
+): Promise<ReplenishmentRow> {
+  if (!canTransition(request.status, to)) {
+    throw new AppError(
+      'INVALID_TRANSITION',
+      `Cannot transition replenishment ${request.id} from ${request.status} to ${to}.`,
+    );
+  }
+  // SM-2 — DB-level guard. The expected-status `WHERE` clause makes the row
+  // refuse the flip if another transaction has already moved it. Combined
+  // with `lockRequest`'s `FOR UPDATE` this is belt-and-braces against
+  // concurrent advances; without the application lock it is the sole guard.
+  const sets: string[] = ['status = $3'];
+  const params: (string | number | null)[] = [request.id, request.status, to];
+  if (links.targetLocationId !== undefined) {
+    params.push(links.targetLocationId);
+    sets.push(`target_location_id = $${params.length}`);
+  }
+  if (links.productionOrderId !== undefined) {
+    params.push(links.productionOrderId);
+    sets.push(`production_order_id = $${params.length}`);
+  }
+  if (links.purchaseOrderId !== undefined) {
+    params.push(links.purchaseOrderId);
+    sets.push(`purchase_order_id = $${params.length}`);
+  }
+  const { rows, rowCount } = await tx.query<ReplenishmentRow>(
+    `UPDATE replenishment_requests SET ${sets.join(', ')}
+     WHERE id = $1 AND status = $2
+     RETURNING ${REPLENISHMENT_COLUMNS}`,
+    params,
+  );
+  if (rowCount === 0) {
+    throw new AppError(
+      'INVALID_TRANSITION',
+      `Replenishment ${request.id} is no longer in ${request.status}; concurrent change blocked the transition.`,
+    );
+  }
+  const updated = rows[0];
+  if (updated === undefined) {
+    throw AppError.internal('Replenishment status update returned no row.');
+  }
+  await recordTransition(tx, request.id, request.status, to, reason, actorUserId);
+  return updated;
+}
+
+/** Append one row to `replenishment_transitions` (SM-1). */
+async function recordTransition(
+  tx: TxClient,
+  replenishmentId: number,
+  from: ReplenishmentStatus | null,
+  to: ReplenishmentStatus,
+  reason: string,
+  actorUserId: number | null,
+): Promise<void> {
+  await tx.query(
+    `INSERT INTO replenishment_transitions
+       (replenishment_id, from_status, to_status, reason, actor_user_id)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [replenishmentId, from, to, reason, actorUserId],
+  );
+}
+
+/**
+ * Resolve the chain topology starting at `requesterLocationId` by walking
+ * `parent_id` until we hit either a `production` location (and then its
+ * parent — the raw warehouse) or run out of parents. Pure SQL recursion via
+ * a CTE so it is a single round trip.
+ */
+async function resolveTopology(
+  tx: TxClient,
+  requesterLocationId: number,
+): Promise<{
+  productionLocationId: number | null;
+  rawWarehouseLocationId: number | null;
+  centralWarehouseLocationId: number | null;
+}> {
+  const { rows } = await tx.query<{ id: number; type: string; depth: number }>(
+    `WITH RECURSIVE chain AS (
+       SELECT id, type, parent_id, 0 AS depth FROM locations WHERE id = $1
+       UNION ALL
+       SELECT l.id, l.type, l.parent_id, c.depth + 1
+       FROM locations l JOIN chain c ON l.id = c.parent_id
+     )
+     SELECT id, type, depth FROM chain ORDER BY depth`,
+    [requesterLocationId],
+  );
+
+  let productionLocationId: number | null = null;
+  let rawWarehouseLocationId: number | null = null;
+  let centralWarehouseLocationId: number | null = null;
+  for (const row of rows) {
+    if (centralWarehouseLocationId === null && row.type === 'central_warehouse') {
+      centralWarehouseLocationId = row.id;
+    }
+    if (productionLocationId === null && row.type === 'production') {
+      productionLocationId = row.id;
+    }
+    if (rawWarehouseLocationId === null && row.type === 'raw_warehouse') {
+      rawWarehouseLocationId = row.id;
+    }
+  }
+  return { productionLocationId, rawWarehouseLocationId, centralWarehouseLocationId };
+}
+
+/** Create a `production_orders` row linked back to the request. */
+async function createProductionOrderRow(
+  tx: TxClient,
+  opts: {
+    productId: number;
+    qty: number;
+    locationId: number;
+    targetLocationId: number | null;
+    replenishmentId: number;
+    actorUserId: number | null;
+  },
+): Promise<number> {
+  const { rows } = await tx.query<{ id: number }>(
+    `INSERT INTO production_orders
+       (product_id, qty, location_id, target_location_id, status, replenishment_id, created_by)
+     VALUES ($1, $2, $3, $4, 'new', $5, $6)
+     RETURNING id`,
+    [
+      opts.productId,
+      opts.qty,
+      opts.locationId,
+      opts.targetLocationId,
+      opts.replenishmentId,
+      opts.actorUserId,
+    ],
+  );
+  const id = rows[0]?.id;
+  if (id === undefined) {
+    throw AppError.internal('Production order insert returned no row.');
+  }
+  await writeAudit(tx, {
+    actorUserId: opts.actorUserId,
+    action: 'production_order.create',
+    entity: 'production_orders',
+    entityId: id,
+    payload: { product_id: opts.productId, qty: opts.qty, replenishment_id: opts.replenishmentId },
+  });
+  return id;
+}
+
+/** Create a `purchase_orders` row in `draft` status linked back to the request. */
+async function createPurchaseOrderRow(
+  tx: TxClient,
+  opts: {
+    productId: number;
+    qty: number;
+    targetLocationId: number;
+    replenishmentId: number;
+    actorUserId: number | null;
+  },
+): Promise<number> {
+  const { rows } = await tx.query<{ id: number }>(
+    `INSERT INTO purchase_orders
+       (product_id, qty, target_location_id, status, replenishment_id, created_by)
+     VALUES ($1, $2, $3, 'draft', $4, $5)
+     RETURNING id`,
+    [
+      opts.productId,
+      opts.qty,
+      opts.targetLocationId,
+      opts.replenishmentId,
+      opts.actorUserId,
+    ],
+  );
+  const id = rows[0]?.id;
+  if (id === undefined) {
+    throw AppError.internal('Purchase order insert returned no row.');
+  }
+  await writeAudit(tx, {
+    actorUserId: opts.actorUserId,
+    action: 'purchase_order.create',
+    entity: 'purchase_orders',
+    entityId: id,
+    payload: { product_id: opts.productId, qty: opts.qty, replenishment_id: opts.replenishmentId },
+  });
+  return id;
+}
+
+// -----------------------------------------------------------------------------
+// Scan worker
+// -----------------------------------------------------------------------------
+
+/** One row produced by the below-min scan. */
+export type BelowMinRow = {
+  location_id: number;
+  product_id: number;
+  qty: number;
+  min_level: number;
+  max_level: number;
+};
+
+/** All `(location, product)` rows where `qty <= min_level` and `max > 0`. */
+export async function scanBelowMin(): Promise<BelowMinRow[]> {
+  const { rows } = await query<{
+    location_id: number;
+    product_id: number;
+    qty: string;
+    min_level: string;
+    max_level: string;
+  }>(
+    `SELECT location_id, product_id, qty, min_level, max_level
+     FROM stock
+     WHERE qty <= min_level AND max_level > 0`,
+  );
+  return rows.map((r) => ({
+    location_id: r.location_id,
+    product_id: r.product_id,
+    qty: Number(r.qty),
+    min_level: Number(r.min_level),
+    max_level: Number(r.max_level),
+  }));
+}
+
+/**
+ * Run one cycle of the engine:
+ *   1. scan for `qty <= min_level` rows;
+ *   2. for each row, ensure an open request exists (create if missing); the
+ *      partial UNIQUE index plus the OPEN_REQUEST_EXISTS catch makes this
+ *      idempotent — a duplicate scan never creates a duplicate request;
+ *   3. step every NON-terminal open request forward once (`advance`).
+ *
+ * Returns a summary suitable for logging.
+ */
+export async function runEngineCycle(opts: { actorUserId?: number | null } = {}): Promise<{
+  scanned: number;
+  created: number;
+  advanced: number;
+}> {
+  const actor = opts.actorUserId ?? null;
+  const below = await scanBelowMin();
+  let created = 0;
+  for (const row of below) {
+    const qtyNeeded = row.max_level - row.qty;
+    if (qtyNeeded <= 0) {
+      continue;
+    }
+    try {
+      await createRequest({
+        productId: row.product_id,
+        requesterLocationId: row.location_id,
+        qtyNeeded,
+        actorUserId: actor,
+      });
+      created += 1;
+    } catch (err) {
+      if (err instanceof AppError && err.code === 'OPEN_REQUEST_EXISTS') {
+        // Expected — the previous scan already raised a request for this row.
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  // Step every non-terminal request once. A failure on one row must not stop
+  // the whole cycle — the cron pass runs every five minutes, so an isolated
+  // error stays visible in the log but the rest of the queue keeps moving.
+  const { rows: open } = await query<{ id: number }>(
+    `SELECT id FROM replenishment_requests
+     WHERE status NOT IN ('CLOSED','CANCELLED')`,
+  );
+  let advanced = 0;
+  for (const r of open) {
+    try {
+      const result = await advance(r.id, actor);
+      if (result.advanced) {
+        advanced += 1;
+      }
+    } catch (err) {
+      console.error(
+        `[replenishment-engine] advance(${r.id}) failed:`,
+        (err as Error).message,
+      );
+    }
+  }
+  return { scanned: below.length, created, advanced };
+}

@@ -9,6 +9,10 @@ import { LocationsPage } from '@/pages/locations/LocationsPage';
 import { UsersPage } from '@/pages/users/UsersPage';
 import { ProductsPage } from '@/pages/products/ProductsPage';
 import { StockPage } from '@/pages/stock/StockPage';
+import { ReplenishmentPage } from '@/pages/replenishment/ReplenishmentPage';
+import { ReplenishmentDetailPage } from '@/pages/replenishment/ReplenishmentDetailPage';
+import { ProductionOrdersPage } from '@/pages/production-orders/ProductionOrdersPage';
+import { PurchaseOrdersPage } from '@/pages/purchase-orders/PurchaseOrdersPage';
 
 /**
  * Application routes (phase-1-mvp.md §2, §6).
@@ -91,13 +95,38 @@ export function AppRouter() {
             />
           }
         />
+        <Route path="/replenishment" element={<ReplenishmentPage />} />
         <Route
-          path="/replenishment"
+          path="/replenishment/:id"
+          element={<ReplenishmentDetailPage />}
+        />
+
+        <Route
+          path="/production-orders"
           element={
-            <PlaceholderPage
-              title="To‘ldirish so‘rovlari"
-              description="Avtomatik to‘ldirish tsikli va so‘rovlar holati."
-            />
+            <RoleRoute
+              allow={[
+                'pm',
+                'production_manager',
+                'central_warehouse_manager',
+              ]}
+            >
+              <ProductionOrdersPage />
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/purchase-orders"
+          element={
+            <RoleRoute
+              allow={[
+                'pm',
+                'supply_manager',
+                'raw_warehouse_manager',
+              ]}
+            >
+              <PurchaseOrdersPage />
+            </RoleRoute>
           }
         />
 

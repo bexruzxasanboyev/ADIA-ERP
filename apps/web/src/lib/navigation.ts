@@ -9,6 +9,8 @@ import {
   MapPin,
   Package,
   Users,
+  ClipboardList,
+  ShoppingCart,
   type LucideIcon,
 } from 'lucide-react';
 import type { Role } from './types';
@@ -102,6 +104,18 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: 'To‘ldirish so‘rovlari',
         icon: RefreshCw,
         roles: ALL_ROLES,
+      },
+      {
+        path: '/production-orders',
+        label: 'Ishlab chiqarish zayafkalari',
+        icon: ClipboardList,
+        roles: ['pm', 'production_manager', 'central_warehouse_manager'],
+      },
+      {
+        path: '/purchase-orders',
+        label: 'Sotib olish so‘rovlari',
+        icon: ShoppingCart,
+        roles: ['pm', 'supply_manager', 'raw_warehouse_manager'],
       },
     ],
   },

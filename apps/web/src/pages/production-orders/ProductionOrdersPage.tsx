@@ -1,0 +1,277 @@
+import { useMemo, useState } from 'react';
+import { Plus, Loader2 } from 'lucide-react';
+import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Label } from '@/components/ui/label';
+import { Select } from '@/components/ui/select';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { useToast } from '@/components/ui/toast';
+import {
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  PageHeader,
+} from '@/components/PageState';
+import { useApiQuery } from '@/hooks/useApiQuery';
+import { useAuth } from '@/hooks/useAuth';
+import { apiRequest, ApiError } from '@/lib/api-client';
+import { formatDateTime, formatQty } from '@/lib/format';
+import {
+  PRODUCTION_ORDER_STATUS_LABELS,
+  PRODUCTION_ORDER_STATUS_OPTIONS,
+  PRODUCTION_ORDER_STATUS_VARIANT,
+} from '@/lib/labels';
+import type {
+  Location,
+  Product,
+  ProductionOrder,
+  ProductionOrderStatus,
+} from '@/lib/types';
+import { ProductionOrderFormDialog } from './ProductionOrderFormDialog';
+
+/**
+ * M5 — production orders list (zayafkalar).
+ * `GET /api/production-orders?status=` returns a bare `ProductionOrder[]`.
+ *
+ * Status transitions (PATCH /:id) are exposed inline:
+ *   - new → in_progress (Boshlash)
+ *   - in_progress → done (Yakunlash) — atomic BOM-consume; 409
+ *     `INSUFFICIENT_STOCK` surfaces as "BOM komponentlari yetarli emas".
+ *   - new|in_progress → cancelled (Bekor qilish)
+ */
+export function ProductionOrdersPage() {
+  const { user } = useAuth();
+  const canCreate =
+    user?.role === 'pm' ||
+    user?.role === 'production_manager' ||
+    user?.role === 'central_warehouse_manager';
+  const canTransition =
+    user?.role === 'pm' || user?.role === 'production_manager';
+
+  const { notify } = useToast();
+  const [status, setStatus] = useState<ProductionOrderStatus | ''>('');
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const path =
+    status === ''
+      ? '/api/production-orders'
+      : `/api/production-orders?status=${status}`;
+  const { data, isLoading, error, refetch } =
+    useApiQuery<ProductionOrder[]>(path);
+
+  // The table reads `product_name`, `location_name`, and
+  // `target_location_name` directly from the embedded row — no
+  // client-side join on names. Products are still fetched so the
+  // quantity cell can render the unit (the backend embeds product_name
+  // but not product_unit for production orders; TODO: add it server-side
+  // and drop this fetch). Locations are only needed by the "Yangi
+  // zayafka" dialog.
+  const products = useApiQuery<Product[]>('/api/products');
+  const locations = useApiQuery<Location[]>(canCreate ? '/api/locations' : null);
+
+  const productById = useMemo(() => {
+    const m = new Map<number, Product>();
+    for (const p of products.data ?? []) m.set(p.id, p);
+    return m;
+  }, [products.data]);
+
+  async function transition(
+    orderId: number,
+    nextStatus: 'in_progress' | 'done' | 'cancelled',
+  ): Promise<void> {
+    setActionError(null);
+    setBusyId(orderId);
+    try {
+      await apiRequest(`/api/production-orders/${orderId}`, {
+        method: 'PATCH',
+        body: { status: nextStatus },
+      });
+      notify(
+        'success',
+        `Zayafka holati: ${PRODUCTION_ORDER_STATUS_LABELS[nextStatus]}.`,
+      );
+      refetch();
+    } catch (err: unknown) {
+      if (err instanceof ApiError && err.code === 'INSUFFICIENT_STOCK') {
+        setActionError(
+          'BOM komponentlari yetarli emas — zayafka yakunlanmadi. Avval xom-ashyoni to‘ldiring.',
+        );
+      } else {
+        setActionError(
+          err instanceof ApiError ? err.message : 'Amalni bajarib bo‘lmadi.',
+        );
+      }
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const rows = data ?? [];
+
+  return (
+    <div className="mx-auto max-w-6xl space-y-6">
+      <PageHeader
+        title="Ishlab chiqarish zayafkalari"
+        description="Ishlab chiqarish bo‘limidagi zayafkalar va ularning holati."
+        action={
+          canCreate ? (
+            <Button onClick={() => setDialogOpen(true)}>
+              <Plus className="size-4" aria-hidden="true" />
+              Yangi zayafka
+            </Button>
+          ) : undefined
+        }
+      />
+
+      <div className="flex flex-wrap items-end gap-4">
+        <div className="space-y-1">
+          <Label htmlFor="po-status">Holat bo‘yicha</Label>
+          <Select
+            id="po-status"
+            className="w-56"
+            value={status}
+            onChange={(e) =>
+              setStatus(e.target.value as ProductionOrderStatus | '')
+            }
+          >
+            <option value="">Barcha holatlar</option>
+            {PRODUCTION_ORDER_STATUS_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </Select>
+        </div>
+      </div>
+
+      {actionError && (
+        <p
+          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive-foreground"
+          role="alert"
+        >
+          {actionError}
+        </p>
+      )}
+
+      <Card>
+        {isLoading && <LoadingState />}
+        {!isLoading && error && (
+          <ErrorState message={error} onRetry={refetch} />
+        )}
+        {!isLoading && !error && rows.length === 0 && (
+          <EmptyState message="Zayafkalar topilmadi." />
+        )}
+        {!isLoading && !error && rows.length > 0 && (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>#</TableHead>
+                <TableHead>Mahsulot</TableHead>
+                <TableHead className="text-right">Miqdor</TableHead>
+                <TableHead>Ishlab chiqarish bo‘g‘ini</TableHead>
+                <TableHead>Maqsad</TableHead>
+                <TableHead>Muddat</TableHead>
+                <TableHead>Holat</TableHead>
+                <TableHead className="text-right">Amal</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row) => {
+                const isBusy = busyId === row.id;
+                const unit = productById.get(row.product_id)?.unit ?? '';
+                return (
+                  <TableRow key={row.id}>
+                    <TableCell className="text-muted-foreground">
+                      #{row.id}
+                    </TableCell>
+                    <TableCell className="font-medium">
+                      {row.product_name}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatQty(Number(row.qty))} {unit}
+                    </TableCell>
+                    <TableCell>{row.location_name}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {row.target_location_name ?? '—'}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-muted-foreground">
+                      {row.deadline ?? '—'}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={PRODUCTION_ORDER_STATUS_VARIANT[row.status]}>
+                        {PRODUCTION_ORDER_STATUS_LABELS[row.status]}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="inline-flex gap-2">
+                        {canTransition && row.status === 'new' && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={isBusy}
+                            onClick={() => transition(row.id, 'in_progress')}
+                          >
+                            {isBusy && (
+                              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                            )}
+                            Boshlash
+                          </Button>
+                        )}
+                        {canTransition && row.status === 'in_progress' && (
+                          <Button
+                            size="sm"
+                            disabled={isBusy}
+                            onClick={() => transition(row.id, 'done')}
+                          >
+                            {isBusy && (
+                              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                            )}
+                            Yakunlash
+                          </Button>
+                        )}
+                        {canTransition &&
+                          (row.status === 'new' || row.status === 'in_progress') && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={isBusy}
+                              onClick={() => transition(row.id, 'cancelled')}
+                            >
+                              Bekor
+                            </Button>
+                          )}
+                        <span className="whitespace-nowrap text-xs text-muted-foreground">
+                          {formatDateTime(row.created_at)}
+                        </span>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        )}
+      </Card>
+
+      {canCreate && (
+        <ProductionOrderFormDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          products={products.data ?? []}
+          locations={locations.data ?? []}
+          onSaved={refetch}
+        />
+      )}
+    </div>
+  );
+}

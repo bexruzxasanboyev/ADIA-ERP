@@ -26,6 +26,42 @@ describe('navSectionsForRole', () => {
     expect(paths).not.toContain('/production');
   });
 
+  it('exposes production-orders to production / central-warehouse / pm', () => {
+    expect(
+      navSectionsForRole('production_manager').flatMap((s) =>
+        s.items.map((i) => i.path),
+      ),
+    ).toContain('/production-orders');
+    expect(
+      navSectionsForRole('central_warehouse_manager').flatMap((s) =>
+        s.items.map((i) => i.path),
+      ),
+    ).toContain('/production-orders');
+    expect(
+      navSectionsForRole('store_manager').flatMap((s) =>
+        s.items.map((i) => i.path),
+      ),
+    ).not.toContain('/production-orders');
+  });
+
+  it('exposes purchase-orders to supply / raw-warehouse / pm', () => {
+    expect(
+      navSectionsForRole('supply_manager').flatMap((s) =>
+        s.items.map((i) => i.path),
+      ),
+    ).toContain('/purchase-orders');
+    expect(
+      navSectionsForRole('raw_warehouse_manager').flatMap((s) =>
+        s.items.map((i) => i.path),
+      ),
+    ).toContain('/purchase-orders');
+    expect(
+      navSectionsForRole('store_manager').flatMap((s) =>
+        s.items.map((i) => i.path),
+      ),
+    ).not.toContain('/purchase-orders');
+  });
+
   it('drops empty sections', () => {
     const sections = navSectionsForRole('production_manager');
     for (const section of sections) {

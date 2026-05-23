@@ -1,0 +1,200 @@
+import { Fragment, useMemo, useState } from 'react';
+import { Plus } from 'lucide-react';
+import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Label } from '@/components/ui/label';
+import { Select } from '@/components/ui/select';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  PageHeader,
+} from '@/components/PageState';
+import { useApiQuery } from '@/hooks/useApiQuery';
+import { useAuth } from '@/hooks/useAuth';
+import { formatDateTime, formatQty } from '@/lib/format';
+import {
+  PURCHASE_ORDER_STATUS_LABELS,
+  PURCHASE_ORDER_STATUS_OPTIONS,
+  PURCHASE_ORDER_STATUS_VARIANT,
+} from '@/lib/labels';
+import type {
+  Location,
+  Product,
+  PurchaseOrder,
+  PurchaseOrderStatus,
+} from '@/lib/types';
+import { PurchaseOrderFormDialog } from './PurchaseOrderFormDialog';
+import { ApprovalPanel } from './ApprovalPanel';
+
+/**
+ * M6 — purchase orders list (sotib olish so‘rovlari).
+ * `GET /api/purchase-orders?status=` returns a bare `PurchaseOrder[]`.
+ *
+ * The two-step approval (D5) is exposed via `ApprovalPanel` — each row
+ * expands inline so the manager and the warehouse keeper can sign off
+ * independently. Receive / reject also live in that panel.
+ */
+export function PurchaseOrdersPage() {
+  const { user } = useAuth();
+  const canCreate = user?.role === 'pm' || user?.role === 'supply_manager';
+
+  const [status, setStatus] = useState<PurchaseOrderStatus | ''>('');
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+
+  const path =
+    status === ''
+      ? '/api/purchase-orders'
+      : `/api/purchase-orders?status=${status}`;
+  const { data, isLoading, error, refetch } =
+    useApiQuery<PurchaseOrder[]>(path);
+
+  // The table reads `product_name`, `target_location_name`,
+  // `manager_approved_name`, `keeper_approved_name`, `supplier_name`
+  // directly from the embedded row — no client-side join on names.
+  // Products are still fetched so the quantity cell can render the unit
+  // (the backend embeds `product_name` but not `product_unit` for
+  // purchase orders; TODO: add it server-side and drop this fetch).
+  // Locations are only needed by the "Yangi sotib olish" dialog.
+  const products = useApiQuery<Product[]>('/api/products');
+  const locations = useApiQuery<Location[]>(canCreate ? '/api/locations' : null);
+
+  const productById = useMemo(() => {
+    const m = new Map<number, Product>();
+    for (const p of products.data ?? []) m.set(p.id, p);
+    return m;
+  }, [products.data]);
+
+  const rows = data ?? [];
+
+  return (
+    <div className="mx-auto max-w-6xl space-y-6">
+      <PageHeader
+        title="Sotib olish so‘rovlari"
+        description="Ta’minot bo‘limining sotib olish hujjatlari va ikki bosqichli tasdiq."
+        action={
+          canCreate ? (
+            <Button onClick={() => setDialogOpen(true)}>
+              <Plus className="size-4" aria-hidden="true" />
+              Yangi sotib olish
+            </Button>
+          ) : undefined
+        }
+      />
+
+      <div className="flex flex-wrap items-end gap-4">
+        <div className="space-y-1">
+          <Label htmlFor="purch-status">Holat bo‘yicha</Label>
+          <Select
+            id="purch-status"
+            className="w-56"
+            value={status}
+            onChange={(e) =>
+              setStatus(e.target.value as PurchaseOrderStatus | '')
+            }
+          >
+            <option value="">Barcha holatlar</option>
+            {PURCHASE_ORDER_STATUS_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </Select>
+        </div>
+      </div>
+
+      <Card>
+        {isLoading && <LoadingState />}
+        {!isLoading && error && (
+          <ErrorState message={error} onRetry={refetch} />
+        )}
+        {!isLoading && !error && rows.length === 0 && (
+          <EmptyState message="So‘rovlar topilmadi." />
+        )}
+        {!isLoading && !error && rows.length > 0 && (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>#</TableHead>
+                <TableHead>Mahsulot</TableHead>
+                <TableHead className="text-right">Miqdor</TableHead>
+                <TableHead>Qabul qiluvchi</TableHead>
+                <TableHead>Holat</TableHead>
+                <TableHead>Yaratilgan</TableHead>
+                <TableHead className="text-right">Amal</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row) => {
+                const unit = productById.get(row.product_id)?.unit ?? '';
+                const isOpen = expandedId === row.id;
+                return (
+                  <Fragment key={row.id}>
+                    <TableRow>
+                      <TableCell className="text-muted-foreground">
+                        #{row.id}
+                      </TableCell>
+                      <TableCell className="font-medium">
+                        {row.product_name}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatQty(Number(row.qty))} {unit}
+                      </TableCell>
+                      <TableCell>{row.target_location_name}</TableCell>
+                      <TableCell>
+                        <Badge variant={PURCHASE_ORDER_STATUS_VARIANT[row.status]}>
+                          {PURCHASE_ORDER_STATUS_LABELS[row.status]}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-muted-foreground">
+                        {formatDateTime(row.created_at)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            setExpandedId(isOpen ? null : row.id)
+                          }
+                        >
+                          {isOpen ? 'Yashirish' : 'Ko‘rish'}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                    {isOpen && (
+                      <TableRow>
+                        <TableCell colSpan={7} className="bg-muted/20">
+                          <ApprovalPanel order={row} onChanged={refetch} />
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </TableBody>
+          </Table>
+        )}
+      </Card>
+
+      {canCreate && (
+        <PurchaseOrderFormDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          products={products.data ?? []}
+          locations={locations.data ?? []}
+          onSaved={refetch}
+        />
+      )}
+    </div>
+  );
+}
