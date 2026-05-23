@@ -16,11 +16,17 @@
  * Idempotent — running the sync twice with no Poster movement is a no-op.
  */
 import { applyMovement } from '../../services/stockMovement.js';
-import { query } from '../../db/index.js';
+import { query, withTransaction } from '../../db/index.js';
+import {
+  createNotification,
+  getLocationManager,
+  getPmRecipients,
+} from '../../services/notify.js';
 import type { PosterClient, PosterLeftover } from './client.js';
 import {
   finishSyncRun,
   notifyPosterSyncFailed,
+  redactUrl,
   startSyncRun,
   type SyncTrigger,
 } from './syncLog.js';
@@ -59,33 +65,43 @@ async function readQty(locationId: number, productId: number): Promise<number> {
   return rows[0]?.qty ?? 0;
 }
 
-/** Push a `negative_stock_detected` notification to PMs + the location manager. */
+/**
+ * Push a `negative_stock_detected` notification to PMs + the location manager.
+ *
+ * Debounce (C3 — Sprint 3 audit): one notification per (location, product)
+ * per 24 hours. A negative-qty Poster row reappears on every 15-minute scan
+ * until reconciled, and we must not spam PMs once they have seen it. The
+ * dedupe key collapses both the PM and the manager nudge into the same
+ * window so they all share one Telegram per 24h.
+ */
 async function notifyNegative(
   locationId: number,
   productId: number,
   posterQty: number,
 ): Promise<void> {
   try {
-    const { rows } = await query<{ id: number }>(
-      `SELECT id FROM users
-        WHERE is_active = TRUE
-          AND (role = 'pm' OR id IN (SELECT manager_user_id FROM locations WHERE id = $1))`,
-      [locationId],
-    );
-    for (const r of rows) {
-      await query(
-        `INSERT INTO notifications (recipient_user_id, type, title, body, payload)
-         VALUES ($1, 'negative_stock_detected', $2, $3, $4)`,
-        [
-          r.id,
-          'Poster: negative stock detected',
-          `Poster qty ${posterQty} at location ${locationId} for product ${productId}; clamped to 0.`,
-          JSON.stringify({ location_id: locationId, product_id: productId, poster_qty: posterQty }),
-        ],
-      );
-    }
+    await withTransaction(async (tx) => {
+      const pmIds = await getPmRecipients(tx);
+      const managerId = await getLocationManager(tx, locationId);
+      const recipients = new Set<number>(pmIds);
+      if (managerId !== null) recipients.add(managerId);
+      for (const userId of recipients) {
+        await createNotification(tx, {
+          recipientUserId: userId,
+          type: 'negative_stock_detected',
+          title: 'Poster: negative stock detected',
+          body: `Poster qty ${posterQty} at location ${locationId} for product ${productId}; clamped to 0.`,
+          payload: { location_id: locationId, product_id: productId, poster_qty: posterQty },
+          // Per-recipient scope — `createNotification` dedupes on the key
+          // alone, so a single recipient-less key would let the FIRST
+          // user's row suppress every other user's nudge.
+          dedupeKey: `negative_stock_detected:${locationId}:${productId}:user:${userId}`,
+          dedupeWindowMinutes: 24 * 60,
+        });
+      }
+    });
   } catch (err) {
-    console.error('[poster] notifyNegative swallow:', (err as Error).message);
+    console.error('[poster] notifyNegative swallow:', redactUrl((err as Error).message));
   }
 }
 
@@ -210,7 +226,7 @@ export async function syncStockLeftovers(
     await finishSyncRun(runId, 'ok', { recordsIn, recordsApplied });
     return summary;
   } catch (err) {
-    const detail = (err as Error).message;
+    const detail = redactUrl((err as Error).message);
     await finishSyncRun(runId, 'failed', { recordsIn, recordsApplied }, detail);
     await notifyPosterSyncFailed('leftovers', detail);
     throw err;

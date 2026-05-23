@@ -90,6 +90,18 @@ poll'i bitta runda taxminan 5–7 soniya. Xatolikda eksponensial backoff bilan r
 - **Poster ostatkasini ADIA `stock.qty` ga to'g'ridan-to'g'ri yozish:** rad etildi —
   invariant 1 (har o'zgarish movement + audit) buziladi. `adjust` movement orqali.
 
+## Rate-limit qatlami (C4 — Sprint 3 audit)
+
+Webhook endpoint (`POST /api/integrations/poster/webhook[/:secret]`) JWTsiz
+ishlaydi — yagona himoya URL secret. Sirloq oqib chiqsa yoki DoS bo'lsa
+`poster_webhook_events` jadvalini yoritmaslik uchun ikki qatlam:
+
+1. **Application qatlam:** `express-rate-limit` IP bo'yicha 60 so'rov/min
+   (`routes/posterIntegration.ts`). Test rejimida o'chiriladi.
+2. **Nginx qatlami (deploy paytida tavsiya):** `limit_req zone` 120 so'rov/min/IP.
+
+Deploy cheklovlari (PM2 fork, 1 instance) — ADR-0005.
+
 ## Oqibatlar
 
 - (+) Real-time savdo (webhook) + ishonchli to'ldirish (poll).

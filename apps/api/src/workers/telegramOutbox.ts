@@ -18,6 +18,14 @@
  * same message twice. The guard is module-scope (single Node process /
  * single PM2 instance per CLAUDE.md §5 deployment).
  *
+ * I3 (Sprint 3 audit) — DEPLOY CONSTRAINT: Faza-1 deploy assumes PM2 fork
+ * mode with a SINGLE API instance plus the cron worker in-process. The
+ * `cronGuard.running` flag is process-local — running two Node instances
+ * (cluster mode or a second VM) would double-send messages.
+ * BEFORE switching to PM2 cluster mode, this worker MUST adopt the
+ * `SELECT ... FOR UPDATE SKIP LOCKED` pattern on `notifications` so each
+ * row is owned by exactly one worker. See ADR-0005 (deploy constraints).
+ *
  * The worker NEVER throws: a Grammy failure stays inside `attemptSend`, a
  * SQL failure for a single row is logged and the loop continues, and a
  * fatal cycle error is logged then swallowed (same pattern as the other

@@ -376,4 +376,54 @@ describe('GET /api/dashboard/overview — RBAC + payload shape', () => {
     const res = await request(ctx.app).get('/api/dashboard/overview');
     expect(res.status).toBe(401);
   });
+
+  // C6 (Sprint 3 audit) — `pending_approvals` is role-aware. supply_manager
+  // is the chain-wide draft-approver and their `location_id` is the supply
+  // hub, NOT the raw warehouse a PO targets — the old `target_location_id =
+  // principal.locationId` filter therefore always returned 0 for them. We
+  // count the rows BEFORE seedWorld() so prior tests' fixtures (no
+  // beforeEach reset here) do not pollute the assertion.
+  it('shows draft purchase orders to a supply_manager (C6)', async () => {
+    const baseline = await ctx.db.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM purchase_orders
+        WHERE status = 'draft'
+          AND (manager_approved_by IS NULL OR keeper_approved_by IS NULL)`,
+    );
+    const baseCount = Number(baseline.rows[0]?.n ?? 0);
+
+    await seedWorld(); // adds ONE more draft PO
+    const supplyLoc = await makeLocation(ctx.db, { type: 'supply', name: 'Supply C6' });
+    const supplyMgr = await makeUser(ctx.db, {
+      role: 'supply_manager',
+      locationId: supplyLoc,
+    });
+
+    const res = await request(ctx.app)
+      .get('/api/dashboard/overview')
+      .set('Authorization', `Bearer ${supplyMgr.token}`);
+
+    expect(res.status).toBe(200);
+    // The supply_manager is chain-wide draft-approver; they must see EVERY
+    // draft missing manager approval. The +1 is the row this test seeded.
+    expect(res.body.kpis.pending_approvals).toBe(baseCount + 1);
+  });
+
+  it('hides pending_approvals from store_manager and production_manager (C6)', async () => {
+    const w = await seedWorld();
+    const prodMgr = await makeUser(ctx.db, {
+      role: 'production_manager',
+      locationId: w.production,
+    });
+    const r1 = await request(ctx.app)
+      .get('/api/dashboard/overview')
+      .set('Authorization', `Bearer ${w.storeAManager.token}`);
+    expect(r1.status).toBe(200);
+    expect(r1.body.kpis.pending_approvals).toBe(0);
+
+    const r2 = await request(ctx.app)
+      .get('/api/dashboard/overview')
+      .set('Authorization', `Bearer ${prodMgr.token}`);
+    expect(r2.status).toBe(200);
+    expect(r2.body.kpis.pending_approvals).toBe(0);
+  });
 });

@@ -12,8 +12,9 @@
  *   stores the raw payload — the actual ingestion is async in
  *   `processPendingWebhookEvents` (`posterSalesSync` worker).
  */
-import { Router, type Request } from 'express';
+import { Router, type Request, type RequestHandler } from 'express';
 import { timingSafeEqual } from 'node:crypto';
+import rateLimit from 'express-rate-limit';
 import { loadConfig } from '../config/index.js';
 import { query } from '../db/index.js';
 import { AppError } from '../errors/index.js';
@@ -81,6 +82,36 @@ async function ingestWebhook(req: Request): Promise<void> {
   );
 }
 
+/**
+ * C4 (Sprint 3 audit) — per-IP rate limit on the webhook endpoint.
+ *
+ * The webhook endpoint runs without JWT (Poster cannot send headers), so the
+ * only gate is the URL secret. A leaked secret + a high-volume DoS would
+ * otherwise flood `poster_webhook_events`. Cap each IP at 60 requests/min;
+ * over the limit -> 429 (Poster retries silently). Disabled under `test` so
+ * suites that exercise the endpoint in a tight loop are not throttled.
+ *
+ * Note: deploy may also add an nginx-layer zone limit (ADR-0002 §13). The
+ * application-layer cap is the in-process belt-and-braces.
+ */
+const webhookRateLimit: RequestHandler =
+  loadConfig().nodeEnv === 'test'
+    ? (_req, _res, next): void => next()
+    : rateLimit({
+        windowMs: 60 * 1000, // 1 minute
+        limit: 60,
+        standardHeaders: true,
+        legacyHeaders: false,
+        handler: (_req, res): void => {
+          res.status(429).json({
+            error: {
+              code: 'RATE_LIMITED',
+              message: 'Webhook rate limit exceeded — retry later.',
+            },
+          });
+        },
+      });
+
 const webhookHandler = asyncHandler(async (req, res) => {
   if (!verifyWebhookSecret(readSecret(req))) {
     // Do NOT leak the reason — log internally, return 401 to Poster.
@@ -92,8 +123,8 @@ const webhookHandler = asyncHandler(async (req, res) => {
   res.status(200).json({ received: true });
 });
 
-posterIntegrationRouter.post('/webhook', webhookHandler);
-posterIntegrationRouter.post('/webhook/:secret', webhookHandler);
+posterIntegrationRouter.post('/webhook', webhookRateLimit, webhookHandler);
+posterIntegrationRouter.post('/webhook/:secret', webhookRateLimit, webhookHandler);
 
 // -----------------------------------------------------------------------------
 // 4.9.2 Manual full sync — pm only.

@@ -40,14 +40,14 @@ export type AppConfig = {
      */
     readonly webhookSecret: string;
   };
-  readonly telegram: {
-    readonly botToken: string;
-  };
   /**
    * Telegram bot identity used by the M9 outbox worker. Optional — when
    * `token` is empty the outbox worker is not started (development /
    * integration-test mode). `username` is informational (e.g. for help
    * messages and links) and never required.
+   *
+   * I2 (Sprint 3 audit) — the legacy `telegram.botToken` field was removed;
+   * `bot.token` (env `BOT_TOKEN`) is the single source of truth.
    */
   readonly bot: {
     readonly token: string;
@@ -136,9 +136,6 @@ export function loadConfig(): AppConfig {
       appSecret: optional('POSTER_APP_SECRET', ''),
       token: optional('POSTER_TOKEN', ''),
       webhookSecret: optional('POSTER_WEBHOOK_SECRET', ''),
-    }),
-    telegram: Object.freeze({
-      botToken: optional('TELEGRAM_BOT_TOKEN', ''),
     }),
     bot: Object.freeze({
       // M9 — Grammy bot token / username (see `.env` BOT_TOKEN / BOT_USERNAME).

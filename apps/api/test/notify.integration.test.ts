@@ -188,6 +188,36 @@ describe('replenishment_created', () => {
 
     expect(await countByType('replenishment_created', storeManagerId)).toBe(1);
   });
+
+  // C1 (Sprint 3 audit) — spec §7 requires BOTH the requester AND the
+  // target location manager to receive `replenishment_created`. The target
+  // manager is notified after `advanceNew` resolves the central warehouse.
+  it('also notifies the target location manager once the target is resolved (C1)', async () => {
+    const { store, central, storeManagerId, centralManagerId } =
+      await buildChainWithManagers();
+    const product = await makeProduct(ctx.db, { type: 'finished' });
+    await setStock(ctx.db, {
+      locationId: store,
+      productId: product,
+      qty: 1,
+      minLevel: 5,
+      maxLevel: 10,
+    });
+    await setStock(ctx.db, { locationId: central, productId: product, qty: 50 });
+
+    // Driving runEngineCycle creates the request, then advances NEW ->
+    // CHECK_STORE_SUPPLIER which fills target_location_id and fires the
+    // target-side nudge.
+    await runEngineCycle();
+
+    expect(await countByType('replenishment_created', storeManagerId)).toBe(1);
+    expect(await countByType('replenishment_created', centralManagerId)).toBe(1);
+
+    // Re-running the cycle MUST NOT produce a second target-side nudge —
+    // the dedupeKey `replenishment_created:target:<id>` makes it idempotent.
+    await runEngineCycle();
+    expect(await countByType('replenishment_created', centralManagerId)).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

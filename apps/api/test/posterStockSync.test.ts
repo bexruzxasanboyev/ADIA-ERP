@@ -201,6 +201,59 @@ describe('Poster stockSync', () => {
     expect(moves).toHaveLength(1); // still only the first
   });
 
+  it('debounces `negative_stock_detected` to one notification per (location, product) per 24h (C3)', async () => {
+    const { locationId } = await seedLocationAndProduct({
+      posterStorageId: 3,
+      posterIngredientId: 100,
+      initialQty: 4,
+    });
+    // Seed a PM user so notifyNegative has at least one recipient. Use a
+    // suite-unique email — other tests in this file seed `pm@t` and the
+    // beforeEach hook does NOT wipe `users`.
+    await ctx.db.query(
+      `INSERT INTO users (name, email, password_hash, role)
+       VALUES ('pm-c3','pm-c3@t','x','pm')
+       ON CONFLICT (email) DO NOTHING`,
+    );
+    const client = clientWithLeftovers({
+      3: [
+        {
+          ingredient_id: '100',
+          ingredient_name: 'X',
+          ingredient_left: '-1',
+          storage_ingredient_left: '-1.5',
+          ingredient_unit: 'kg',
+          ingredients_type: '1',
+        },
+      ],
+    });
+    // Two consecutive scans on the same negative leftover => still ONE
+    // notification (dedupeKey = `negative_stock_detected:<loc>:<prod>`,
+    // 24h window).
+    await syncStockLeftovers(client);
+    await syncStockLeftovers(client);
+    // Assert per-recipient count: each user (PM and/or location manager)
+    // gets exactly ONE notification for this (location, product) — the
+    // dedupe key is `negative_stock_detected:<loc>:<prod>:user:<uid>`.
+    const { rows: perUser } = await ctx.db.query<{ n: number }>(
+      `SELECT count(*)::int AS n
+         FROM notifications
+        WHERE type='negative_stock_detected'
+        GROUP BY recipient_user_id`,
+    );
+    expect(perUser.length).toBeGreaterThan(0);
+    for (const r of perUser) expect(Number(r.n)).toBe(1);
+
+    const { rows: keys } = await ctx.db.query<{ dedupe_key: string | null }>(
+      `SELECT dedupe_key FROM notifications WHERE type='negative_stock_detected'`,
+    );
+    for (const r of keys) {
+      expect(r.dedupe_key).toMatch(
+        new RegExp(`^negative_stock_detected:${locationId}:\\d+:user:\\d+$`),
+      );
+    }
+  });
+
   it('skips leftover rows that have no matching ADIA product (e.g. not yet seeded)', async () => {
     await ctx.db.query(
       `INSERT INTO locations (name, type, poster_storage_id) VALUES ('A','central_warehouse',3)`,

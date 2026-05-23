@@ -132,6 +132,109 @@ describe('Poster seedSync — storages', () => {
   });
 });
 
+describe('Poster seedSync — ingredients_type filter (C5)', () => {
+  // Sprint 3 audit: `menu.getIngredients` returns BOTH raw ingredients
+  // (ingredients_type=1) AND semi-finished prepacks (ingredients_type=2).
+  // syncIngredients must skip type=2 — otherwise it would create a
+  // `products(type='raw')` row that later collides with `syncPrepacks` on
+  // the partial UNIQUE on `poster_ingredient_id` and crash the seed.
+  it('imports only ingredients_type=1; type=2 prepacks land via syncPrepacks without collision', async () => {
+    const client = clientForResponses({
+      // Mixed list — one raw (type=1), one prepack (type=2). Real Poster
+      // payload is what surfaced this bug.
+      'menu.getIngredients': [
+        { ingredient_id: 100, ingredient_name: 'Flour', ingredient_unit: 'kg', ingredients_type: 1 },
+        { ingredient_id: 600, ingredient_name: 'Dough base', ingredient_unit: 'kg', ingredients_type: 2 },
+      ],
+      // The matching prepack — `ingredient_id=600` collides with the row
+      // skipped above so syncPrepacks can claim it safely.
+      'menu.getPrepacks': [
+        {
+          product_id: '500',
+          ingredient_id: '600',
+          product_name: 'Dough base',
+          out: 1,
+          ingredients: [
+            {
+              structure_id: 's1',
+              ingredient_id: '100',
+              structure_unit: 'kg',
+              structure_type: '1',
+              structure_brutto: 0.5,
+              ingredient_name: 'Flour',
+              ingredient_unit: 'kg',
+            },
+          ],
+        },
+      ],
+    });
+
+    const rIng = await syncIngredients(client);
+    expect(rIng.status).toBe('ok');
+    // Only Flour was imported as raw; the type=2 row was skipped.
+    expect(rIng.recordsApplied).toBe(1);
+    const { rows: rawProducts } = await ctx.db.query<{
+      id: number;
+      type: string;
+      poster_ingredient_id: number;
+    }>(`SELECT id, type, poster_ingredient_id FROM products`);
+    expect(rawProducts).toHaveLength(1);
+    expect(rawProducts[0]?.type).toBe('raw');
+    expect(rawProducts[0]?.poster_ingredient_id).toBe(100);
+
+    // The prepack now lands as `type='semi'`. No UNIQUE-violation crash.
+    const rPre = await syncPrepacks(client);
+    expect(rPre.status).toBe('ok');
+    expect(rPre.recordsApplied).toBe(1);
+
+    const { rows: allProducts } = await ctx.db.query<{
+      type: string;
+      poster_product_id: number | null;
+      poster_ingredient_id: number | null;
+    }>(`SELECT type, poster_product_id, poster_ingredient_id FROM products ORDER BY id`);
+    const prepack = allProducts.find((p) => p.poster_product_id === 500);
+    expect(prepack?.type).toBe('semi');
+    expect(prepack?.poster_ingredient_id).toBe(600);
+  });
+
+  it('upsertPrepack does not crash when a raw row already holds the same poster_ingredient_id', async () => {
+    // Pre-seed a raw row that ALREADY occupies `poster_ingredient_id=600`.
+    // This is the worst-case version of the bug above — what happens when
+    // the seed is run on a database that was once filled by the buggy
+    // version that imported type=2 as raw. The new upsertPrepack must
+    // upgrade the existing row (raw -> semi) rather than try to INSERT a
+    // duplicate that violates the partial UNIQUE.
+    await ctx.db.query(
+      `INSERT INTO products (name, type, unit, poster_ingredient_id)
+       VALUES ('Dough base (legacy)', 'raw', 'kg', 600)`,
+    );
+    const client = clientForResponses({
+      'menu.getPrepacks': [
+        {
+          product_id: '500',
+          ingredient_id: '600',
+          product_name: 'Dough base',
+          out: 1,
+          ingredients: [], // BOM doesn't matter for this test.
+        },
+      ],
+    });
+    const r = await syncPrepacks(client);
+    expect(r.status).toBe('ok');
+    const { rows } = await ctx.db.query<{
+      id: number;
+      type: string;
+      poster_product_id: number | null;
+      poster_ingredient_id: number | null;
+    }>(`SELECT id, type, poster_product_id, poster_ingredient_id FROM products`);
+    expect(rows).toHaveLength(1);
+    // Same row, upgraded from raw -> semi, with poster_product_id now filled.
+    expect(rows[0]?.type).toBe('semi');
+    expect(rows[0]?.poster_product_id).toBe(500);
+    expect(rows[0]?.poster_ingredient_id).toBe(600);
+  });
+});
+
 describe('Poster seedSync — ingredients + prepacks (BOM)', () => {
   it('imports ingredients, then a prepack with its BOM (`out`-normalised)', async () => {
     const client = clientForResponses({

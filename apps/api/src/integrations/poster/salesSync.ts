@@ -23,6 +23,7 @@ import type { PosterClient, PosterTransactionFull } from './client.js';
 import {
   finishSyncRun,
   notifyPosterSyncFailed,
+  redactUrl,
   startSyncRun,
 } from './syncLog.js';
 
@@ -37,6 +38,12 @@ export type SalesIngestResult = {
   readonly movementsApplied: number;
   /** Events skipped because the store could not be resolved. */
   readonly storeMisses: number;
+  /**
+   * Lines that raised an exception while being ingested (C7 — Sprint 3 audit).
+   * Drives the run-status flip to `partial` when one or more lines failed
+   * even though the wrapping fetch / scan loop succeeded.
+   */
+  readonly failedLines: number;
 };
 
 /** Locate an ADIA store (`type='store'`) by Poster spot_id. */
@@ -76,21 +83,30 @@ function parseCloseDate(raw: string | undefined): Date {
  */
 export async function ingestTransaction(
   tx: PosterTransactionFull,
-): Promise<{ linesInserted: number; movementsApplied: number; storeFound: boolean }> {
+): Promise<{
+  linesInserted: number;
+  movementsApplied: number;
+  storeFound: boolean;
+  failedLines: number;
+}> {
   const transactionId = Number(tx.transaction_id);
   if (!Number.isInteger(transactionId) || transactionId <= 0) {
-    return { linesInserted: 0, movementsApplied: 0, storeFound: false };
+    return { linesInserted: 0, movementsApplied: 0, storeFound: false, failedLines: 0 };
   }
   const spotId = Number(tx.spot_id);
   const storeId = Number.isInteger(spotId) && spotId > 0 ? await resolveStoreId(spotId) : null;
   if (storeId === null) {
-    return { linesInserted: 0, movementsApplied: 0, storeFound: false };
+    return { linesInserted: 0, movementsApplied: 0, storeFound: false, failedLines: 0 };
   }
   const closedAt = parseCloseDate(tx.date_close);
   const lines = Array.isArray(tx.products) ? tx.products : [];
 
   let linesInserted = 0;
   let movementsApplied = 0;
+  // C7 — per-line failure counter. The whole check used to swallow a thrown
+  // SQL error silently (only console.error). Now we expose a counter so the
+  // sync log can flip to `partial` when any line of any event failed.
+  let failedLines = 0;
 
   // Each line is its own transaction — a single bad line must not abort the
   // whole check (and the UNIQUE indexes give us idempotency line-by-line).
@@ -174,14 +190,15 @@ export async function ingestTransaction(
         if ((result.decrement ?? 0) > 0) movementsApplied += 1;
       }
     } catch (err) {
+      failedLines += 1;
       console.error(
         `[poster] sale line ${lineId} of tx ${transactionId} failed:`,
-        (err as Error).message,
+        redactUrl((err as Error).message),
       );
     }
   }
 
-  return { linesInserted, movementsApplied, storeFound: true };
+  return { linesInserted, movementsApplied, storeFound: true, failedLines };
 }
 
 /**
@@ -199,6 +216,7 @@ export async function processPendingWebhookEvents(
     linesInserted: 0,
     movementsApplied: 0,
     storeMisses: 0,
+    failedLines: 0,
   };
   try {
     const { rows } = await query<{ id: number; event_type: string; poster_object_id: number | null }>(
@@ -224,7 +242,7 @@ export async function processPendingWebhookEvents(
       try {
         full = await client.getTransaction(txId);
       } catch (err) {
-        console.error(`[poster] getTransaction(${txId}) failed:`, (err as Error).message);
+        console.error(`[poster] getTransaction(${txId}) failed:`, redactUrl((err as Error).message));
         // leave the event un-processed so the next tick retries
         continue;
       }
@@ -240,18 +258,33 @@ export async function processPendingWebhookEvents(
       if (result.linesInserted > 0) summary.eventsApplied += 1;
       summary.linesInserted += result.linesInserted;
       summary.movementsApplied += result.movementsApplied;
+      summary.failedLines += result.failedLines;
       await query(
         `UPDATE poster_webhook_events SET processed = TRUE, processed_at = now() WHERE id = $1`,
         [ev.id],
       );
     }
-    await finishSyncRun(runId, 'ok', {
-      recordsIn: summary.eventsScanned,
-      recordsApplied: summary.eventsApplied,
-    });
+    // C7 — flip to `partial` (with a per-run stats string) when any line of
+    // any event raised an exception, even though every other event succeeded.
+    if (summary.failedLines > 0) {
+      const detail =
+        `partial: ${summary.failedLines} failed line(s) across ${summary.eventsScanned} event(s); ` +
+        `${summary.linesInserted} line(s) ingested.`;
+      await finishSyncRun(
+        runId,
+        'partial',
+        { recordsIn: summary.eventsScanned, recordsApplied: summary.eventsApplied },
+        detail,
+      );
+    } else {
+      await finishSyncRun(runId, 'ok', {
+        recordsIn: summary.eventsScanned,
+        recordsApplied: summary.eventsApplied,
+      });
+    }
     return summary;
   } catch (err) {
-    const detail = (err as Error).message;
+    const detail = redactUrl((err as Error).message);
     await finishSyncRun(
       runId,
       'failed',
@@ -278,6 +311,7 @@ export async function fallbackPollTransactions(
     linesInserted: 0,
     movementsApplied: 0,
     storeMisses: 0,
+    failedLines: 0,
   };
   try {
     const to = new Date();
@@ -293,7 +327,7 @@ export async function fallbackPollTransactions(
       try {
         full = await client.getTransaction(txId);
       } catch (err) {
-        console.error(`[poster] fallback getTransaction(${txId}) failed:`, (err as Error).message);
+        console.error(`[poster] fallback getTransaction(${txId}) failed:`, redactUrl((err as Error).message));
         continue;
       }
       if (full === null) continue;
@@ -302,14 +336,27 @@ export async function fallbackPollTransactions(
       if (result.linesInserted > 0) summary.eventsApplied += 1;
       summary.linesInserted += result.linesInserted;
       summary.movementsApplied += result.movementsApplied;
+      summary.failedLines += result.failedLines;
     }
-    await finishSyncRun(runId, 'ok', {
-      recordsIn: summary.eventsScanned,
-      recordsApplied: summary.eventsApplied,
-    });
+    if (summary.failedLines > 0) {
+      const detail =
+        `partial: ${summary.failedLines} failed line(s) across ${summary.eventsScanned} event(s); ` +
+        `${summary.linesInserted} line(s) ingested.`;
+      await finishSyncRun(
+        runId,
+        'partial',
+        { recordsIn: summary.eventsScanned, recordsApplied: summary.eventsApplied },
+        detail,
+      );
+    } else {
+      await finishSyncRun(runId, 'ok', {
+        recordsIn: summary.eventsScanned,
+        recordsApplied: summary.eventsApplied,
+      });
+    }
     return summary;
   } catch (err) {
-    const detail = (err as Error).message;
+    const detail = redactUrl((err as Error).message);
     await finishSyncRun(
       runId,
       'failed',

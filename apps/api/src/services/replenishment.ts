@@ -361,6 +361,12 @@ async function advanceNew(
     actorUserId,
     { targetLocationId: topology.centralWarehouseLocationId },
   );
+  // C1 (Sprint 3 audit) — spec §7 says `replenishment_created` is delivered
+  // to BOTH the requester manager (already done at createRequest time, when
+  // the target was not yet known) AND the target location manager. The
+  // target is filled in by `advanceNew`, so this is the one place where the
+  // target manager can be addressed. Dedupe key keeps re-runs idempotent.
+  await notifyReplenishmentTargetSet(tx, next, actorUserId);
   return { advanced: true, request: next, reason: 'central warehouse resolved' };
 }
 
@@ -1181,6 +1187,56 @@ async function notifyReplenishmentCreated(
       qty_needed: request.qty_needed,
       requester_location_id: request.requester_location_id,
     },
+  });
+}
+
+/**
+ * C1 (Sprint 3 audit) — `replenishment_created` for the TARGET location
+ * manager, fired right after `advanceNew` resolves the target. Spec §7
+ * mandates that both managers see the request:
+ *   - requester manager is notified at `createRequest` (target unknown);
+ *   - target manager is notified here (the first hop that fills it).
+ *
+ * Dedupe key (`replenishment_created:target:<id>`) makes a re-advance of
+ * the same row a no-op. The actor receives only the requester-side nudge.
+ */
+async function notifyReplenishmentTargetSet(
+  tx: TxClient,
+  request: ReplenishmentRow,
+  actorUserId: number | null,
+): Promise<void> {
+  if (request.target_location_id === null) return;
+  const targetManagerId = await getLocationManager(tx, request.target_location_id);
+  if (targetManagerId === null) return;
+  // Spec §7 says "requester AND target manager"; if they happen to be the
+  // same person (small chain), the dedupeKey on the requester-side nudge
+  // already covers them — but here we suppress regardless to avoid two
+  // pings landing on one person.
+  const requesterManagerId = await getLocationManager(tx, request.requester_location_id);
+  if (requesterManagerId === targetManagerId) return;
+  const { productName, productUnit, locationName: requesterName } = await fetchProductAndLocation(
+    tx,
+    request.product_id,
+    request.requester_location_id,
+  );
+  await createNotification(tx, {
+    recipientUserId: targetManagerId,
+    type: 'replenishment_created',
+    title: `Yangi to'ldirish so'rovi #${request.id}`,
+    body:
+      `Sizning omborga so'rov #${request.id}: ${productName} ${request.qty_needed} ${productUnit} ` +
+      `— ${requesterName} uchun jo'natiladi.`,
+    payload: {
+      replenishment_id: request.id,
+      product_id: request.product_id,
+      qty_needed: request.qty_needed,
+      target_location_id: request.target_location_id,
+      requester_location_id: request.requester_location_id,
+      role: 'target',
+      actor_user_id: actorUserId,
+    },
+    dedupeKey: `replenishment_created:target:${request.id}`,
+    dedupeWindowMinutes: 24 * 60,
   });
 }
 

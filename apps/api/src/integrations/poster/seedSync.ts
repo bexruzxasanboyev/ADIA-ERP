@@ -24,6 +24,7 @@ import { PosterClient } from './client.js';
 import {
   finishSyncRun,
   notifyPosterSyncFailed,
+  redactUrl,
   startSyncRun,
   type SyncEntity,
   type SyncTrigger,
@@ -140,28 +141,45 @@ async function upsertPrepack(
   posterIngredientId: number,
   name: string,
 ): Promise<number> {
+  // C5 — `products` has TWO partial UNIQUE indexes on the Poster keys:
+  // `uq_products_poster_product` on (poster_product_id) AND
+  // `uq_products_poster_ingredient` on (poster_ingredient_id).
+  // A plain `ON CONFLICT (poster_product_id)` does not catch a collision
+  // on the ingredient_id key — which is the realistic case where the
+  // prepack's component already exists as `type='raw'` with the same
+  // `poster_ingredient_id` (e.g. type=1 ingredient list also contained
+  // the prepack). Two-phase SELECT-then-INSERT/UPDATE handles both keys
+  // without raising 23505 and without overwriting the wrong row.
+  const existing = await query<{ id: number; type: string }>(
+    `SELECT id, type FROM products
+      WHERE poster_product_id = $1
+         OR (poster_ingredient_id IS NOT NULL AND poster_ingredient_id = $2)
+      ORDER BY (poster_product_id = $1) DESC, id ASC
+      LIMIT 1`,
+    [posterProductId, posterIngredientId],
+  );
+  const found = existing.rows[0];
+  if (found !== undefined) {
+    await query(
+      `UPDATE products
+          SET name = $1,
+              poster_product_id = COALESCE(poster_product_id, $2),
+              poster_ingredient_id = COALESCE(poster_ingredient_id, $3),
+              type = CASE WHEN type = 'raw' THEN 'semi' ELSE type END
+        WHERE id = $4`,
+      [name, posterProductId, posterIngredientId, found.id],
+    );
+    return found.id;
+  }
   const { rows } = await query<{ id: number }>(
     `INSERT INTO products (name, type, unit, poster_product_id, poster_ingredient_id)
      VALUES ($1, 'semi', 'kg', $2, $3)
-     ON CONFLICT (poster_product_id) WHERE poster_product_id IS NOT NULL
-     DO UPDATE SET name = EXCLUDED.name,
-                   poster_ingredient_id = COALESCE(products.poster_ingredient_id, EXCLUDED.poster_ingredient_id),
-                   type = CASE WHEN products.type = 'raw' THEN 'semi' ELSE products.type END
      RETURNING id`,
     [name, posterProductId, posterIngredientId],
   );
   const id = rows[0]?.id;
   if (id === undefined) {
-    // Conflict happened on a different unique index (e.g. ingredient_id) —
-    // fetch the matching row.
-    const { rows: r2 } = await query<{ id: number }>(
-      `SELECT id FROM products WHERE poster_product_id = $1`,
-      [posterProductId],
-    );
-    if (r2[0] === undefined) {
-      throw new Error(`upsertPrepack: could not resolve id for poster_product_id=${posterProductId}`);
-    }
-    return r2[0].id;
+    throw new Error(`upsertPrepack: could not resolve id for poster_product_id=${posterProductId}`);
   }
   return id;
 }
@@ -225,7 +243,7 @@ async function replaceRecipe(
       } catch (err) {
         // A bad component (e.g. self-cycle) must not abort the rest — but the
         // service caller still gets a final count of how many landed.
-        console.error('[poster] recipe row skipped:', (err as Error).message);
+        console.error('[poster] recipe row skipped:', redactUrl((err as Error).message));
       }
     }
     await writeAudit(tx, {
@@ -261,7 +279,7 @@ export async function syncSpots(
     await finishSyncRun(runId, 'ok', { recordsIn: rows.length, recordsApplied: applied });
     return { entity: 'spots', status: 'ok', recordsIn: rows.length, recordsApplied: applied };
   } catch (err) {
-    const detail = (err as Error).message;
+    const detail = redactUrl((err as Error).message);
     await finishSyncRun(runId, 'failed', { recordsIn: 0, recordsApplied: 0 }, detail);
     await notifyPosterSyncFailed('spots', detail);
     return { entity: 'spots', status: 'failed', recordsIn: 0, recordsApplied: 0, errorDetail: detail };
@@ -286,7 +304,7 @@ export async function syncStorages(
     await finishSyncRun(runId, 'ok', { recordsIn: rows.length, recordsApplied: applied });
     return { entity: 'storages', status: 'ok', recordsIn: rows.length, recordsApplied: applied };
   } catch (err) {
-    const detail = (err as Error).message;
+    const detail = redactUrl((err as Error).message);
     await finishSyncRun(runId, 'failed', { recordsIn: 0, recordsApplied: 0 }, detail);
     await notifyPosterSyncFailed('storages', detail);
     return { entity: 'storages', status: 'failed', recordsIn: 0, recordsApplied: 0, errorDetail: detail };
@@ -304,6 +322,16 @@ export async function syncIngredients(
     for (const r of rows) {
       const id = Number(r.ingredient_id);
       if (!Number.isInteger(id) || id <= 0) continue;
+      // C5 — Poster `menu.getIngredients` returns BOTH raw ingredients
+      // (`ingredients_type=1`) and semi-finished prepacks
+      // (`ingredients_type=2`). Importing type=2 here as raw would later
+      // collide with `syncPrepacks` on `(poster_ingredient_id)` (the
+      // partial UNIQUE on `products.poster_ingredient_id`) AND mislabel
+      // the row as raw. Skip non-type-1 rows — prepacks land via
+      // `syncPrepacks` instead. Missing/undefined `ingredients_type`
+      // defaults to 1 (the historical behaviour for older Poster fixtures).
+      const ingType = r.ingredients_type === undefined ? 1 : Number(r.ingredients_type);
+      if (Number.isFinite(ingType) && ingType !== 1) continue;
       const name = String(r.ingredient_name ?? '').trim() || `Ingredient ${id}`;
       const unit = String(r.ingredient_unit ?? 'p');
       await upsertIngredient(id, name, unit);
@@ -312,7 +340,7 @@ export async function syncIngredients(
     await finishSyncRun(runId, 'ok', { recordsIn: rows.length, recordsApplied: applied });
     return { entity: 'ingredients', status: 'ok', recordsIn: rows.length, recordsApplied: applied };
   } catch (err) {
-    const detail = (err as Error).message;
+    const detail = redactUrl((err as Error).message);
     await finishSyncRun(runId, 'failed', { recordsIn: 0, recordsApplied: 0 }, detail);
     await notifyPosterSyncFailed('ingredients', detail);
     return { entity: 'ingredients', status: 'failed', recordsIn: 0, recordsApplied: 0, errorDetail: detail };
@@ -370,7 +398,7 @@ export async function syncMenuProducts(
     await finishSyncRun(runId, 'ok', { recordsIn: total, recordsApplied: applied });
     return { entity: 'products', status: 'ok', recordsIn: total, recordsApplied: applied };
   } catch (err) {
-    const detail = (err as Error).message;
+    const detail = redactUrl((err as Error).message);
     await finishSyncRun(runId, 'partial', { recordsIn: total, recordsApplied: applied }, detail);
     await notifyPosterSyncFailed('products', detail);
     return {
@@ -435,7 +463,7 @@ export async function syncPrepacks(
     await finishSyncRun(runId, 'ok', { recordsIn: total, recordsApplied: applied });
     return { entity: 'products', status: 'ok', recordsIn: total, recordsApplied: applied };
   } catch (err) {
-    const detail = (err as Error).message;
+    const detail = redactUrl((err as Error).message);
     await finishSyncRun(runId, 'partial', { recordsIn: total, recordsApplied: applied }, detail);
     await notifyPosterSyncFailed('products', detail);
     return {

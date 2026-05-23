@@ -184,7 +184,7 @@ dashboardRouter.get(
       fetchOpenRequestsByStatus(scope),
       fetchProductionPlan(scope),
       fetchRecentMovements(scope),
-      fetchKpiExtras(scope),
+      fetchKpiExtras(scope, principal),
     ]);
 
     const byStatus: Record<string, number> = {};
@@ -388,9 +388,13 @@ async function fetchRecentMovements(
 /**
  * The extra KPIs not already captured by other queries: active production
  * orders and purchase orders awaiting either approval step.
+ *
+ * `pending_approvals` is role-aware (C6 — Sprint 3 audit) — see
+ * `pendingApprovalsClause` below. The two queries fan out in parallel.
  */
 async function fetchKpiExtras(
   scope: Exclude<Scope, { kind: 'empty' }>,
+  principal: AuthPrincipal,
 ): Promise<{ activeProduction: string; pendingApprovals: string }> {
   // Active production orders — same scope rule as production_plan.
   const prodParams: SqlParam[] = [];
@@ -400,29 +404,72 @@ async function fetchKpiExtras(
     prodWhere += ` AND (location_id = $${prodParams.length} OR target_location_id = $${prodParams.length})`;
   }
 
-  // Pending approvals = draft purchase orders where at least one approval
-  // step is still open. For a scoped principal the relevant signal is the
-  // target raw warehouse, which is the only PO field that maps to a
-  // location. A store manager will see zero — by design.
-  const poParams: SqlParam[] = [];
-  let poWhere = `WHERE status = 'draft'
-                   AND (manager_approved_by IS NULL OR keeper_approved_by IS NULL)`;
-  if (scope.kind === 'location') {
-    poParams.push(scope.locationId);
-    poWhere += ` AND target_location_id = $${poParams.length}`;
-  }
+  const { sql: poSql, params: poParams } = pendingApprovalsClause(principal);
 
   const [prodRes, poRes] = await Promise.all([
     query<SimpleCountRaw>(
       `SELECT count(*) AS cnt FROM production_orders ${prodWhere}`,
       prodParams,
     ),
-    query<SimpleCountRaw>(`SELECT count(*) AS cnt FROM purchase_orders ${poWhere}`, poParams),
+    query<SimpleCountRaw>(`SELECT count(*) AS cnt FROM purchase_orders ${poSql}`, poParams),
   ]);
   return {
     activeProduction: prodRes.rows[0]?.cnt ?? '0',
     pendingApprovals: poRes.rows[0]?.cnt ?? '0',
   };
+}
+
+/**
+ * Build the `pending_approvals` WHERE clause and its bind params, role-aware.
+ *
+ * Spec D5 + section 4.5: a purchase_order is `draft` until both the supply
+ * manager (step 1) and the raw-warehouse keeper (step 2) approve it. The
+ * dashboard widget says "approvals waiting for YOU".
+ *
+ *   pm / ai_assistant / central_warehouse_manager:
+ *     full chain — every draft missing at least one approval.
+ *   raw_warehouse_manager:
+ *     drafts targeting their warehouse (the only PO field that ties to a
+ *     location), missing at least one approval. They are the keeper-step
+ *     approver.
+ *   supply_manager:
+ *     supply_manager's `users.location_id` is the supply hub, not the raw
+ *     warehouse. They cannot be filtered by `target_location_id`. They are
+ *     the chain's draft-approvers (step 1) — show every draft still missing
+ *     manager approval. Chain-wide visibility is by design.
+ *   store_manager / production_manager:
+ *     no role in the approval chain — show 0.
+ */
+function pendingApprovalsClause(
+  principal: AuthPrincipal,
+): { sql: string; params: SqlParam[] } {
+  const role = principal.role;
+  const draftOpen =
+    `status = 'draft' AND (manager_approved_by IS NULL OR keeper_approved_by IS NULL)`;
+
+  if (role === 'pm' || role === 'ai_assistant' || role === 'central_warehouse_manager') {
+    return { sql: `WHERE ${draftOpen}`, params: [] };
+  }
+  if (role === 'raw_warehouse_manager') {
+    if (principal.locationId === null) {
+      return { sql: `WHERE 1 = 0`, params: [] };
+    }
+    return {
+      sql: `WHERE ${draftOpen} AND target_location_id = $1`,
+      params: [principal.locationId],
+    };
+  }
+  if (role === 'supply_manager') {
+    // C6 — show every draft still awaiting manager approval. A supply_manager
+    // is the chain-wide draft-approver and their `location_id` is the supply
+    // hub, not the raw warehouse a PO targets.
+    return {
+      sql: `WHERE ${draftOpen} AND manager_approved_by IS NULL`,
+      params: [],
+    };
+  }
+  // store_manager, production_manager — no role in PO approval chain.
+  return { sql: `WHERE 1 = 0`, params: [] };
 }
 
 // ---------------------------------------------------------------------------
