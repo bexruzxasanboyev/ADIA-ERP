@@ -92,6 +92,22 @@ const RESULT_SUMMARY_MAX_LEN = 200;
 /** Title derived from the first user message — keep the UI sidebar tidy. */
 const SESSION_TITLE_MAX_LEN = 40;
 
+/**
+ * Heuristic chars-per-token used to bound the user's raw message length.
+ * Gemini tokenisation isn't 1:1 with bytes, but for Cyrillic/Latin Uzbek text
+ * ~3 chars/token is a safe upper bound. We multiply `cfg.vertex.maxInputTokens`
+ * by this to compute a character cap and reject the request at the boundary
+ * before paying for a Vertex round-trip.
+ */
+const MESSAGE_CHARS_PER_TOKEN = 3;
+
+/**
+ * Max characters of the final assistant response stored in the audit payload.
+ * Truncated to keep audit rows bounded — full text still lives in
+ * `assistant_messages.content` for the session view.
+ */
+const AUDIT_RESPONSE_TEXT_MAX_LEN = 1000;
+
 // ---------------------------------------------------------------------------
 // Internal row shapes
 // ---------------------------------------------------------------------------
@@ -142,6 +158,21 @@ export async function runAssistantQuery(
     throw AppError.validation('Field "message" must be a non-empty string.');
   }
 
+  // Token-budget guard — reject obviously oversize messages BEFORE we touch
+  // the DB or Vertex. The cap is derived from `cfg.vertex.maxInputTokens`
+  // using a conservative chars-per-token ratio so the model has headroom
+  // for the system prompt + tool declarations + history.
+  const cfg = loadConfig();
+  const maxMessageChars = cfg.vertex.maxInputTokens * MESSAGE_CHARS_PER_TOKEN;
+  if (message.length > maxMessageChars) {
+    throw AppError.validation(
+      `Xabar juda uzun (max ~${maxMessageChars} belgi).`,
+    );
+  }
+
+  // Wall-clock latency for the audit payload (spec §2.2).
+  const startedAt = Date.now();
+
   // 1. Resolve or create the session. RBAC is enforced here.
   const session = await resolveSession(input.sessionId, message, principal);
 
@@ -153,7 +184,6 @@ export async function runAssistantQuery(
   const contents: Content[] = historyToContents(history);
 
   // 4. Multi-turn tool loop.
-  const cfg = loadConfig();
   const systemInstruction = buildSystemPrompt(principal);
   const tools = toolDeclarations();
   const executedTools: ExecutedToolCall[] = [];
@@ -209,11 +239,14 @@ export async function runAssistantQuery(
   }
 
   // 5. Persist tool rows + final assistant message + audit, all atomically.
+  const latencyMs = Date.now() - startedAt;
   await persistTurn({
     sessionId: session.id,
+    userMessage: message,
     finalText,
     executedTools,
     principal,
+    latencyMs,
   });
 
   // 6. Build the API-facing tool-call list (transform DB shape -> view shape).
@@ -414,9 +447,11 @@ function clip(text: string, max: number): string {
 
 type PersistTurnInput = {
   readonly sessionId: number;
+  readonly userMessage: string;
   readonly finalText: string;
   readonly executedTools: readonly ExecutedToolCall[];
   readonly principal: AuthPrincipal;
+  readonly latencyMs: number;
 };
 
 async function persistTurn(input: PersistTurnInput): Promise<void> {
@@ -425,6 +460,9 @@ async function persistTurn(input: PersistTurnInput): Promise<void> {
     args: t.args,
     ok: t.ok,
   }));
+  // Ordered list of distinct tool names actually executed — useful for
+  // metrics/dashboards (spec §2.2) without re-deriving from `tool_calls`.
+  const toolsUsed = input.executedTools.map((t) => t.name);
 
   await withTransaction(async (tx: TxClient) => {
     // One `role='tool'` row per executed tool, in execution order.
@@ -457,7 +495,11 @@ async function persistTurn(input: PersistTurnInput): Promise<void> {
       `UPDATE assistant_sessions SET updated_at = now() WHERE id = $1`,
       [input.sessionId],
     );
-    // Audit — one summary row per query.
+    // Audit — one summary row per query. Spec §2.2 requires the user
+    // question, the assistant response (truncated), and observed latency in
+    // addition to the tool-call audit. `response_text` is clipped to
+    // AUDIT_RESPONSE_TEXT_MAX_LEN so audit rows stay bounded (full text is
+    // already in `assistant_messages.content`).
     await writeAudit(tx, {
       actorUserId: input.principal.userId,
       action: 'assistant_query.run',
@@ -465,8 +507,12 @@ async function persistTurn(input: PersistTurnInput): Promise<void> {
       entityId: input.sessionId,
       payload: {
         session_id: input.sessionId,
+        user_question: input.userMessage,
         tool_calls: toolCallsJson,
+        tools_used: toolsUsed,
+        response_text: clip(input.finalText, AUDIT_RESPONSE_TEXT_MAX_LEN),
         response_chars: input.finalText.length,
+        latency_ms: input.latencyMs,
       },
     });
   });

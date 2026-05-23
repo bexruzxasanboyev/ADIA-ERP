@@ -35,6 +35,8 @@ export type ToolExecutor = {
 
 /** Names of every advertised tool. Closed list — model picks from it. */
 export const TOOL_NAMES = [
+  'list_locations',
+  'list_products',
   'get_stock',
   'get_open_requests',
   'get_production_plan',
@@ -131,6 +133,166 @@ function numerify(row: Record<string, unknown>): ToolRow {
   }
   return out;
 }
+
+/**
+ * Sanitise a free-text `name_contains` filter for use inside an ILIKE
+ * pattern: trim, drop empty values, and escape the LIKE metacharacters
+ * (`%`, `_`, `\`) so a name fragment like "50%" doesn't behave as a wildcard.
+ * Returns `null` when the input is missing or empty.
+ */
+function parseNameContains(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (trimmed === '') {
+    return null;
+  }
+  // Cap length so a model-supplied huge string doesn't explode SQL planning.
+  const capped = trimmed.slice(0, 100);
+  // Escape backslash first, then % and _.
+  return capped.replace(/\\/g, '\\\\').replace(/[%_]/g, (m) => `\\${m}`);
+}
+
+const LOCATION_TYPES = [
+  'raw_warehouse',
+  'production',
+  'supply',
+  'central_warehouse',
+  'store',
+] as const;
+
+const PRODUCT_TYPES = ['raw', 'semi', 'finished'] as const;
+
+// ---------------------------------------------------------------------------
+// 0a. list_locations
+// ---------------------------------------------------------------------------
+
+const listLocations: ToolExecutor = {
+  declaration: {
+    name: 'list_locations',
+    description:
+      'Lists supply-chain locations (warehouses, production, supply, stores) as {id, name, type}. ' +
+      'Use this BEFORE any other tool when the user mentions a location by name (e.g. ' +
+      '"Markaziy sklad", "do\'kon A") so you can map the name to a numeric `location_id`. ' +
+      'Optionally filter by `type` or a case-insensitive `name_contains` substring. ' +
+      'RBAC: non-PM callers see only their own location.',
+    parameters: {
+      type: FunctionDeclarationSchemaType.OBJECT,
+      properties: {
+        type: {
+          type: FunctionDeclarationSchemaType.STRING,
+          description:
+            'Optional location_type filter. One of: raw_warehouse, production, supply, ' +
+            'central_warehouse, store.',
+        },
+        name_contains: {
+          type: FunctionDeclarationSchemaType.STRING,
+          description:
+            'Optional case-insensitive substring filter on the location name (max 100 chars).',
+        },
+      },
+    },
+  },
+  async execute(args, principal): Promise<ToolRow[]> {
+    const scope = resolveLocationScope(principal, undefined);
+    if (scope.kind === 'empty') {
+      return [];
+    }
+    const params: SqlParam[] = [];
+    const conditions: string[] = ['l.is_active = TRUE'];
+    if (scope.kind === 'one') {
+      params.push(scope.locationId);
+      conditions.push(`l.id = $${params.length}`);
+    }
+    if (typeof args.type === 'string') {
+      const t = args.type.trim().toLowerCase();
+      if ((LOCATION_TYPES as readonly string[]).includes(t)) {
+        params.push(t);
+        conditions.push(`l.type::text = $${params.length}`);
+      }
+    }
+    const nameLike = parseNameContains(args.name_contains);
+    if (nameLike !== null) {
+      params.push(`%${nameLike}%`);
+      conditions.push(`l.name ILIKE $${params.length}`);
+    }
+    const where = `WHERE ${conditions.join(' AND ')}`;
+    const { rows } = await query<Record<string, unknown>>(
+      `SELECT l.id, l.name, l.type::text AS type
+         FROM locations l
+         ${where}
+         ORDER BY l.name
+         LIMIT 200`,
+      params,
+    );
+    return rows.map(numerify);
+  },
+};
+
+// ---------------------------------------------------------------------------
+// 0b. list_products
+// ---------------------------------------------------------------------------
+
+const listProducts: ToolExecutor = {
+  declaration: {
+    name: 'list_products',
+    description:
+      'Lists products as {id, name, type, unit}. Use this BEFORE any other tool when the ' +
+      'user mentions a product by name (e.g. "tort", "un") so you can map the name to a ' +
+      'numeric `product_id`. Optionally filter by `type` (raw, semi, finished) or a ' +
+      'case-insensitive `name_contains` substring. Default limit 50, max 200.',
+    parameters: {
+      type: FunctionDeclarationSchemaType.OBJECT,
+      properties: {
+        type: {
+          type: FunctionDeclarationSchemaType.STRING,
+          description: 'Optional product_type filter. One of: raw, semi, finished.',
+        },
+        name_contains: {
+          type: FunctionDeclarationSchemaType.STRING,
+          description:
+            'Optional case-insensitive substring filter on the product name (max 100 chars).',
+        },
+        limit: {
+          type: FunctionDeclarationSchemaType.NUMBER,
+          description: 'Optional row limit, default 50, max 200.',
+        },
+      },
+    },
+  },
+  async execute(args): Promise<ToolRow[]> {
+    // Product catalogue is global (not location-scoped) — every role may read it.
+    // RBAC continues to apply at downstream tools (stock, movements, requests).
+    const params: SqlParam[] = [];
+    const conditions: string[] = ['p.is_active = TRUE'];
+    if (typeof args.type === 'string') {
+      const t = args.type.trim().toLowerCase();
+      if ((PRODUCT_TYPES as readonly string[]).includes(t)) {
+        params.push(t);
+        conditions.push(`p.type::text = $${params.length}`);
+      }
+    }
+    const nameLike = parseNameContains(args.name_contains);
+    if (nameLike !== null) {
+      params.push(`%${nameLike}%`);
+      conditions.push(`p.name ILIKE $${params.length}`);
+    }
+    const where = `WHERE ${conditions.join(' AND ')}`;
+    const limit = clampLimit(args.limit, 50, 200);
+    params.push(limit);
+    const limitIdx = params.length;
+    const { rows } = await query<Record<string, unknown>>(
+      `SELECT p.id, p.name, p.type::text AS type, p.unit::text AS unit
+         FROM products p
+         ${where}
+         ORDER BY p.name
+         LIMIT $${limitIdx}`,
+      params,
+    );
+    return rows.map(numerify);
+  },
+};
 
 // ---------------------------------------------------------------------------
 // 1. get_stock
@@ -546,6 +708,8 @@ const getSalesSummary: ToolExecutor = {
 // ---------------------------------------------------------------------------
 
 export const TOOL_REGISTRY: Record<ToolName, ToolExecutor> = {
+  list_locations: listLocations,
+  list_products: listProducts,
   get_stock: getStock,
   get_open_requests: getOpenRequests,
   get_production_plan: getProductionPlan,
