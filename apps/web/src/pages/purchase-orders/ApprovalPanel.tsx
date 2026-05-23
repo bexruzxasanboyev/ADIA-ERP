@@ -205,13 +205,13 @@ function StepCard({
       className={cn(
         'flex items-start gap-3 rounded-md border p-3',
         signed
-          ? 'border-emerald-500/30 bg-emerald-500/5'
+          ? 'border-success/30 bg-success/5'
           : 'border-border bg-card',
       )}
     >
       {signed ? (
         <CheckCircle2
-          className="mt-0.5 size-5 shrink-0 text-emerald-400"
+          className="mt-0.5 size-5 shrink-0 text-success"
           aria-hidden="true"
         />
       ) : (

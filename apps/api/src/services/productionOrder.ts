@@ -19,6 +19,11 @@ import { withTransaction, type TxClient } from '../db/index.js';
 import { AppError } from '../errors/index.js';
 import { writeAudit } from '../lib/audit.js';
 import { applyMovement } from './stockMovement.js';
+import {
+  createNotificationsForRecipients,
+  getLocationManager,
+  getUsersByRole,
+} from './notify.js';
 
 export type ProductionOrderRow = {
   id: number;
@@ -165,6 +170,49 @@ export async function finishProductionOrder(
       entityId: orderId,
       payload: { product_id: order.product_id, qty: Number(order.qty) },
     });
+
+    // M9 — production_order_done notification (spec §7). The output landed
+    // in `target_location_id` (the central warehouse). Notify that
+    // warehouse's manager plus every `pm` user. Same transaction — if the
+    // BOM consume + ledger write rolls back, no orphan notification is
+    // left in `notifications`.
+    if (order.target_location_id !== null) {
+      const recipients: number[] = [];
+      const cwManager = await getLocationManager(client, order.target_location_id);
+      if (cwManager !== null) recipients.push(cwManager);
+      // Every active `central_warehouse_manager` (in case multiple warehouses
+      // exist) — and every `pm` for chain-wide visibility.
+      const cwRoleHolders = await getUsersByRole(client, 'central_warehouse_manager');
+      for (const id of cwRoleHolders) if (!recipients.includes(id)) recipients.push(id);
+      const pms = await getUsersByRole(client, 'pm');
+      for (const id of pms) if (!recipients.includes(id)) recipients.push(id);
+
+      if (recipients.length > 0) {
+        const { rows: ctx } = await client.query<{
+          product_name: string;
+          product_unit: string;
+        }>(
+          `SELECT name AS product_name, unit AS product_unit
+             FROM products WHERE id = $1`,
+          [order.product_id],
+        );
+        const productName = ctx[0]?.product_name ?? `#${order.product_id}`;
+        const productUnit = ctx[0]?.product_unit ?? '';
+        await createNotificationsForRecipients(client, recipients, {
+          type: 'production_order_done',
+          title: `Zayafka tayyor #${orderId}`,
+          body:
+            `Zayafka #${orderId} tayyor: ${Number(order.qty)} ${productUnit} ` +
+            `${productName} markaziy skladga keldi.`,
+          payload: {
+            production_order_id: orderId,
+            product_id: order.product_id,
+            qty: Number(order.qty),
+            target_location_id: order.target_location_id,
+          },
+        });
+      }
+    }
 
     return result;
   };

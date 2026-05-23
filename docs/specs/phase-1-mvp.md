@@ -434,12 +434,20 @@ chaqirilib, javob ingredient tarkibini qaytarish-qaytarmasligi aniqlanadi. Natij
 `docs/adia-poster-api.md` ga qayd etiladi va shu spec'ning §5.5 holati yangilanadi.
 Bu tekshiruv import-vs-qo'lda yo'lini yakuniy belgilaydi — boshqa M2/M5 ishlaridan oldin.
 
-**HOLAT (backend-engineer, 2026-05-22 — Sprint 1):** ⚠️ Tekshiruv **bloklangan** —
-`.env` dagi `POSTER_TOKEN` bo'sh (Poster admin panelida hali yaratilmagan). To'liq
-qayd: `docs/adia-poster-api.md` §8. **Oraliq qaror:** M2 BOM oqimi token kelguncha
-**qo'lda kiritish yo'li** (`PUT /api/products/:id/recipe`) bilan quriladi — bu
-fallback shu §5.5 da ko'zda tutilgan. Token kelgach import oqimi qo'shimcha
-sifatida qo'shiladi; qo'lda yo'l saqlanib qoladi.
+**HOLAT (backend-engineer, 2026-05-23 — Sprint 3, M7):** ✅ Tekshiruv **bajarildi
+— BOM import to'liq imkoni bor**. To'liq qayd va real javob namunalari:
+`docs/adia-poster-api.md` §8. Asosiy natija:
+- `menu.getProduct?product_id=X` type=2 (oddiy taom) mahsulot uchun `ingredients`
+  array qaytaradi — har element `ingredient_id` + `structure_brutto/netto` +
+  `structure_unit` + `structure_type` bilan.
+- `menu.getPrepacks` 1121 ta yarim tayyor qaytaradi — har biri ichida `ingredients`
+  array to'liq beradi va `out` (batch yield) maydoni mavjud.
+- type=3 mahsulotlar (84 ta — masalan tarif/porsiyali) `ingredients` qaytarmaydi;
+  modifikatsiyalar orqali ishlaydi — ular uchun qo'lda yo'l ishlatiladi.
+
+M7 import oqimi `menu.getIngredients` → `menu.getPrepacks` → `menu.getProducts`
+ketma-ketligi bilan ishlaydi; qo'lda yo'l (`PUT /api/products/:id/recipe`)
+saqlanib qoladi va PM override sifatida ishlatadi.
 
 ---
 

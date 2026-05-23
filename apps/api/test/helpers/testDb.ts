@@ -16,15 +16,16 @@
  * `TEST_DATABASE_URL` at it and nothing else changes — the per-suite schema
  * keeps suites isolated regardless of the database.
  */
-import { readFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { readdir, readFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { Pool } from 'pg';
 import type { QueryResultRow } from 'pg';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const MIGRATION_FILE = resolve(HERE, '../../migrations/0001_init.sql');
+const MIGRATIONS_DIR = resolve(HERE, '../../migrations');
+const MIGRATION_FILE_RE = /^\d{4}_[\w-]+\.sql$/;
 
 /**
  * Resolve the test connection string. `TEST_DATABASE_URL` wins.
@@ -82,18 +83,24 @@ export async function setupTestSchema(): Promise<TestDb> {
     options: `-c search_path=${schema}`,
   });
 
-  // Apply the migration SQL inside the schema, in one transaction.
-  const sql = await readFile(MIGRATION_FILE, 'utf8');
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(sql);
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    throw err;
-  } finally {
-    client.release();
+  // Apply every migration file inside the schema, in lexical order, each in
+  // its own transaction. Mirrors the production runner so suites see the same
+  // schema state the deployed API sees.
+  const entries = await readdir(MIGRATIONS_DIR);
+  const files = entries.filter((f) => MIGRATION_FILE_RE.test(f)).sort((a, b) => a.localeCompare(b));
+  for (const file of files) {
+    const sql = await readFile(join(MIGRATIONS_DIR, file), 'utf8');
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(sql);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   active = { pool, schema };

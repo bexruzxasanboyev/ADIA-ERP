@@ -546,31 +546,81 @@ Javobda `access_token` keladi (2 yil amal qiladi).
 
 ---
 
-## 8. BOM import tekshiruvi (VAZIFA 0 — backend-engineer, 2026-05-22)
+## 8. BOM import tekshiruvi (VAZIFA 0 — backend-engineer, 2026-05-23)
 
 Spec §5.5 talab qilgan real API tekshiruvi: `menu.getProduct` va `menu.getPrepacks`
 javobi ingredient/retsept tarkibini qaytaradimi.
 
-**Holat: BAJARILMADI — bloklangan.** Sabab: `.env` dagi `POSTER_TOKEN` **bo'sh**
-(13-qator: `POSTER_TOKEN=`). Token hali Poster admin panelida yaratilmagan
-(Доступ → Интеграции → "+ Yangi token"). Tokensiz har qanday chaqiruv
-`{"error":{"code":10,"message":"Access token is not defined"}}` qaytaradi.
+**Holat: BAJARILDI — BOM import to'liq imkoni bor.** `.env` dagi `POSTER_TOKEN`
+ishlaydi (`menu.getProducts` 293 mahsulot qaytaradi). Quyidagi real chaqiruvlar
+o'tkazildi va javoblar tahlil qilindi.
 
-Tekshirilgan chaqiruvlar (hammasi `code:10`):
-- `menu.getProducts` — subdomain (`adia.joinposter.com`) va global (`joinposter.com`);
-- `clients.getGroups` — token haqiqiyligini tasdiqlash uchun.
+### 8.1. `menu.getProducts` — ro'yxat (293 ta)
 
-`POSTER_APP_ID` va `POSTER_APP_SECRET` to'ldirilgan, lekin ular OAuth ilova
-kalitlari — REST API chaqiruvlari uchun **Personal Integration token** kerak.
+Ro'yxatda ingredient tarkibi **YO'Q**. Lekin har qatorda `product_id`, `ingredient_id`
+(stocked product uchun), `type` (`2` = oddiy taom/mahsulot, `3` = modifikatsiyali —
+masalan tarif/porsiyali), `menu_category_id`, `workshop` mavjud. Type taqsimoti:
+type=2 — 209 ta, type=3 — 84 ta.
 
-**Egadan kerak:** Poster admin panelida Personal Integration token yaratib,
-`.env` ga `POSTER_TOKEN=<account>:<32-hex>` ko'rinishida qo'yish. Token kelgach
-bu tekshiruv (`menu.getProduct` bitta `product_id` bilan + `menu.getPrepacks`)
-qayta o'tkaziladi va natija shu yerga yoziladi.
+### 8.2. `menu.getProduct?product_id=X` — bitta mahsulot
 
-**Oraliq qaror (M2 ga ta'sir):** token kelguncha M2 BOM oqimi **qo'lda kiritish
-yo'li** (`PUT /api/products/:id/recipe`) bo'yicha quriladi. Bu yo'l spec §5.5 da
-fallback sifatida allaqachon ko'zda tutilgan va import oqimi qo'shilganda ham
-saqlanadi — ya'ni hozir qurilgan kod keyin Poster import bilan to'ldiriladi,
-qayta yozilmaydi.
+**type=2 mahsulotlar — `ingredients` array QAYTARADI.** Misol: `product_id=847`
+("ПЕЧЕНЬЕ ШОКОЛАДНОЕ", `ingredient_id=1434`) 8 ta ingredient qaytarib berdi.
+Har element shu kalitlarni o'z ichiga oladi:
+
+```json
+{
+  "structure_id": "22208",
+  "ingredient_id": "1431",
+  "structure_unit": "g",            // brutto miqdor birligi
+  "structure_type": "1",            // 1=ingredient, 2=prepack (yarim fabrika)
+  "structure_brutto": 2000,         // BOM kirim miqdori
+  "structure_netto": 2000,
+  "structure_lock": "0",
+  "structure_selfprice": "30872434",
+  "ingredient_name": "бон шоколад черный",
+  "ingredient_unit": "kg"           // ingredient o'lchov birligi
+}
+```
+
+Mapping qoidasi:
+- ADIA `recipes.qty_per_unit` ← Poster `structure_netto` (yoki `structure_brutto`).
+  `structure_unit` "g" bo'lib, `ingredient_unit` "kg" bo'lsa — `/1000` ga aylantirib
+  kg ga keltirish kerak. `structure_unit==ingredient_unit` bo'lganda to'g'ridan to'g'ri.
+- ADIA `recipes.component_product_id` ← `products.poster_ingredient_id` orqali yechiladi.
+- Recipe parent (`recipes.product_id`) ← `products.poster_product_id` (parent menu mahsuloti).
+
+**type=3 mahsulot — `ingredients` YO'Q.** Misol: `product_id=477` ("Adia") — type=3,
+modifikatsiyalar bilan keladi (har modifikatsiyaning o'z `ingredient_id` si), lekin
+to'g'ridan-to'g'ri retsept biriktirilmagan. Type=3 mahsulotlar ADIA Faza-1 da
+**alohida hisobga olinmaydi** — modifikatsiya ingredient_id orqali ostatka kamayadi.
+Agar PM bunday mahsulot uchun retsept kerak deb topsa — `PUT /api/products/:id/recipe`
+qo'lda yo'l ishlatiladi.
+
+### 8.3. `menu.getPrepacks` — yarim tayyorlar (1121 ta)
+
+**HAR PREPACK ICHIDA `ingredients` array TO'LIQ QAYTADI.** Misol: prepack
+`product_id=978` ("Г/П ПИРОГ С ТВОРОГОМ КВ (ЦЕЛЫЙ)", `ingredient_id=2402`) —
+`out: 1000` (yield), `ingredients: [...]`. `structure_type` qiymati 1 yoki 2 —
+ya'ni yarim tayyor boshqa yarim tayyordan ham yasalishi mumkin (rekursiv BOM —
+ADR-0004 §"semi-finished dual flow"). `out` — bir batch yarim tovardan chiqish
+miqdori (yield); `recipes.qty_per_unit` ni hisoblashda komponentlar `out` ga
+nisbatan normallashtirilishi mumkin.
+
+### 8.4. Yakuniy qaror — BOM IMPORT TO'LIQ
+
+Spec §5.5 ning "agar mumkin bo'lsa" sharti **bajarildi**. M7 seed/sync chaqiruvi
+quyidagilarni amalga oshiradi:
+
+1. `menu.getIngredients` → `products(type='raw', poster_ingredient_id=...)` upsert.
+2. `menu.getPrepacks` → `products(type='semi', poster_ingredient_id, poster_product_id)`
+   upsert + har biri uchun `recipes` to'ldirish.
+3. `menu.getProducts` → `products(type='finished', poster_product_id, poster_ingredient_id)`
+   upsert; har type=2 mahsulot uchun `menu.getProduct?product_id=X` chaqirib BOM
+   olib `recipes` ga yoziladi (rate-limit ~5 req/sec).
+4. Qo'lda yo'l (`PUT /api/products/:id/recipe`) — saqlanadi (override yo'li sifatida).
+
+> Eslatma: birlik konversiyasi (`structure_unit='g'` ↔ `ingredient_unit='kg'`) —
+> import qatlamida amalga oshiriladi; ADIA ichida har doim `ingredient_unit` da
+> normallashtiriladi.
 

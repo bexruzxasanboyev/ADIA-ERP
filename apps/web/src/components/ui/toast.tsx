@@ -64,13 +64,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             className={cn(
               'pointer-events-auto flex items-start gap-3 rounded-md border p-3 text-sm shadow-lg',
               toast.variant === 'success'
-                ? 'border-emerald-500/30 bg-card text-foreground'
+                ? 'border-success/30 bg-card text-foreground'
                 : 'border-destructive/40 bg-card text-foreground',
             )}
           >
             {toast.variant === 'success' ? (
               <CheckCircle2
-                className="mt-0.5 size-4 shrink-0 text-emerald-400"
+                className="mt-0.5 size-4 shrink-0 text-success"
                 aria-hidden="true"
               />
             ) : (

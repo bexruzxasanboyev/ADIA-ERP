@@ -279,6 +279,80 @@ export type PurchaseOrderStatus =
 /** Two-step approval step identifier — purchaseOrder.ts ApprovalStep. */
 export type PurchaseApprovalStep = 'manager' | 'keeper';
 
+// ---------------------------------------------------------------------------
+// Sprint 3 — M8 Dashboard overview.
+// Mirrors `apps/api/src/routes/dashboard.ts` OverviewResponse.
+// ---------------------------------------------------------------------------
+
+/** Below-min row embedded in `DashboardOverview.below_min`. */
+export interface DashboardBelowMinItem {
+  location_id: number;
+  location_name: string;
+  product_id: number;
+  product_name: string;
+  product_unit: Unit;
+  qty: number;
+  min_level: number;
+  max_level: number;
+  /** The open replenishment request id, if any (invariant 2: at most one). */
+  open_request_id: number | null;
+  /** Backend serialises the status enum as string; null when no open request. */
+  open_request_status: ReplenishmentStatus | null;
+}
+
+/** Production plan row embedded in `DashboardOverview.production_plan`. */
+export interface DashboardProductionPlanItem {
+  id: number;
+  product_id: number;
+  product_name: string;
+  qty: number;
+  status: ProductionOrderStatus;
+  location_id: number;
+  location_name: string;
+  target_location_id: number | null;
+  target_location_name: string | null;
+  /** Date-only `YYYY-MM-DD` or null. */
+  deadline: string | null;
+}
+
+/** Recent movement row embedded in `DashboardOverview.recent_movements`. */
+export interface DashboardRecentMovementItem {
+  id: number;
+  created_at: string;
+  product_id: number;
+  product_name: string;
+  product_unit: Unit;
+  from_location_id: number | null;
+  from_location_name: string | null;
+  to_location_id: number | null;
+  to_location_name: string | null;
+  qty: number;
+  reason: MovementReason;
+}
+
+/**
+ * `GET /api/dashboard/overview` envelope. Wired to the backend
+ * `OverviewResponse` shape (phase-1-mvp.md §4.8, §2.8).
+ */
+export interface DashboardOverview {
+  below_min: DashboardBelowMinItem[];
+  open_requests: {
+    /** Counts keyed by open replenishment status (terminal ones excluded). */
+    by_status: Partial<Record<ReplenishmentStatus, number>>;
+    total: number;
+    /** ISO timestamp of the oldest open request, or null. */
+    oldest_created_at: string | null;
+  };
+  production_plan: DashboardProductionPlanItem[];
+  recent_movements: DashboardRecentMovementItem[];
+  kpis: {
+    total_open_requests: number;
+    below_min_count: number;
+    active_production_orders: number;
+    pending_approvals: number;
+  };
+}
+
 /**
  * A single purchase_orders row.
  * `qty` is a JS `number` — see the NUMERIC parser note on

@@ -4,43 +4,74 @@
 
 /*
  * ADIA ERP — dark premium design system.
+ *
+ * Palette: Graphite + Amber (Treasury / Bank-ERP).
+ * Rationale: "industrial ERP, treasury-grade" aesthetic — Mercury Banking,
+ * Stripe Treasury, Bloomberg Terminal, classic operations dashboards.
+ * Background is a true neutral graphite with a faint cool undertone, so
+ * it never washes blue. Primary lives in the warm amber zone (36°) — the
+ * "money / machinery / operations" hue, maximally far from violet and
+ * far from every semantic status hue, so badges and the below-min red
+ * indicator stay maximally legible. WCAG 2.1 AA: primary on bg ~10:1,
+ * body text on bg ~17:1.
+ *
  * Dark theme is the default and only theme for Faza-1.
  */
 @layer base {
   :root,
   .dark {
-    --background: 240 10% 6%;
-    --foreground: 0 0% 96%;
+    /* Surfaces — neutral graphite, no blue cast */
+    --background: 222 15% 7%;          /* #0e1014 — true graphite */
+    --foreground: 220 14% 96%;         /* #f3f4f6 — cool white */
 
-    --card: 240 9% 9%;
-    --card-foreground: 0 0% 96%;
+    --card: 220 13% 11%;               /* #181b21 — one tier up */
+    --card-foreground: 220 14% 96%;
 
-    --popover: 240 9% 9%;
-    --popover-foreground: 0 0% 96%;
+    --popover: 220 13% 12%;            /* #1b1e25 — slightly above card */
+    --popover-foreground: 220 14% 96%;
 
-    --primary: 263 70% 60%;
-    --primary-foreground: 0 0% 100%;
+    /* Primary — amber/gold, treasury & industrial accent */
+    --primary: 36 96% 56%;             /* #f6a623 — confident amber */
+    --primary-foreground: 24 60% 8%;   /* #21130a — deep brown-black */
 
-    --secondary: 240 6% 16%;
-    --secondary-foreground: 0 0% 96%;
+    /* Secondary / muted / accent — graphite tiers, neutral */
+    --secondary: 220 11% 17%;          /* #262931 */
+    --secondary-foreground: 220 14% 96%;
 
-    --muted: 240 6% 14%;
-    --muted-foreground: 240 5% 60%;
+    --muted: 220 11% 14%;              /* #1f2229 */
+    --muted-foreground: 220 9% 64%;    /* #969aa3 — body-secondary */
 
-    --accent: 240 6% 18%;
-    --accent-foreground: 0 0% 96%;
+    --accent: 220 11% 18%;             /* #292c34 — hover surface */
+    --accent-foreground: 220 14% 96%;
 
-    --destructive: 0 72% 51%;
+    /* Status — each on a distinct hue, none collide with amber primary (36°).
+       destructive 0°  → red,    far from amber, max alert
+       success    152° → emerald
+       warning    28°  → orange — yellower-redder than primary, distinct in context
+       info       200° → cyan
+    */
+    --destructive: 0 84% 60%;          /* #ef4444 — alert red */
     --destructive-foreground: 0 0% 100%;
 
-    --border: 240 6% 18%;
-    --input: 240 6% 18%;
-    --ring: 263 70% 60%;
+    --success: 152 56% 48%;            /* #36b27a — emerald */
+    --success-foreground: 152 100% 6%;
 
-    --sidebar: 240 10% 8%;
-    --sidebar-foreground: 0 0% 90%;
-    --sidebar-accent: 240 6% 16%;
-    --sidebar-border: 240 6% 16%;
+    --warning: 28 90% 58%;             /* #f08a30 — distinct from amber primary */
+    --warning-foreground: 28 100% 8%;
+
+    --info: 200 88% 56%;               /* #1fb8e0 — cyan */
+    --info-foreground: 200 100% 8%;
+
+    /* Borders & inputs — slightly lifted from card */
+    --border: 220 10% 18%;             /* #2a2d34 */
+    --input: 220 10% 17%;              /* #272a30 */
+    --ring: 36 96% 56%;                /* matches primary amber */
+
+    /* Sidebar — deeper than background for depth and rail feel */
+    --sidebar: 222 18% 6%;             /* #0a0c10 — deepest surface */
+    --sidebar-foreground: 220 12% 88%;
+    --sidebar-accent: 220 11% 14%;     /* hover row */
+    --sidebar-border: 220 11% 13%;
 
     --radius: 0.625rem;
   }

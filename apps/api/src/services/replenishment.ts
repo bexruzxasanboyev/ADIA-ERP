@@ -26,6 +26,11 @@ import { query, withTransaction, type TxClient } from '../db/index.js';
 import { AppError } from '../errors/index.js';
 import { writeAudit } from '../lib/audit.js';
 import { applyMovement } from './stockMovement.js';
+import {
+  createNotification,
+  createNotificationsForRecipients,
+  getLocationManager,
+} from './notify.js';
 
 // -----------------------------------------------------------------------------
 // Types
@@ -171,6 +176,14 @@ export async function createRequest(opts: {
           qty_needed: opts.qtyNeeded,
         },
       });
+      // M9 — replenishment_created notification (spec §7). The requester
+      // location manager is the primary owner of the request; the target
+      // location is not yet resolved here (NEW state — `advanceNew` fills
+      // `target_location_id`), so the target manager nudge is sent at the
+      // first transition (CHECK_STORE_SUPPLIER). The optional `actorUserId`
+      // is also notified when it is NOT the location manager (a `pm` raising
+      // a manual request gets visibility on it).
+      await notifyReplenishmentCreated(tx, row, opts.actorUserId);
       return row;
     });
   } catch (err) {
@@ -697,6 +710,11 @@ async function advanceShipToRequester(
     entityId: request.id,
     payload: { shipped_qty: shipQty, movement_id: movementId },
   });
+  // M9 — shipment_created notification (spec §7). The shipment IS the
+  // CLOSED transition, so this is the moment the requester location's
+  // manager needs to know "your goods have left the warehouse". Best-effort
+  // — a notification failure must not block the transfer.
+  await notifyShipmentCreated(tx, request, shipQty, movementId);
   return { advanced: true, request: updated, reason: 'shipped' };
 }
 
@@ -982,6 +1000,27 @@ export async function runEngineCycle(opts: { actorUserId?: number | null } = {})
   const below = await scanBelowMin();
   let created = 0;
   for (const row of below) {
+    // M9 — stock_below_min notification (spec §7). Fired for EVERY scan row,
+    // not just rows that created a request: a long-running open request is
+    // still a "below min" signal the location manager needs to see. The 24h
+    // dedupe (`createNotification`'s `dedupeKey`) keeps the noise down.
+    try {
+      await withTransaction((tx) =>
+        notifyStockBelowMin(tx, {
+          productId: row.product_id,
+          locationId: row.location_id,
+          qty: row.qty,
+          minLevel: row.min_level,
+        }),
+      );
+    } catch (err) {
+      // Notification failures must never block engine work — log and move on.
+      console.error(
+        '[replenishment-engine] stock_below_min notify failed:',
+        (err as Error).message,
+      );
+    }
+
     const qtyNeeded = row.max_level - row.qty;
     if (qtyNeeded <= 0) {
       continue;
@@ -1025,4 +1064,155 @@ export async function runEngineCycle(opts: { actorUserId?: number | null } = {})
     }
   }
   return { scanned: below.length, created, advanced };
+}
+
+
+// -----------------------------------------------------------------------------
+// M9 — Notification helpers (spec §7)
+// -----------------------------------------------------------------------------
+
+/**
+ * Fetch the product name + unit + the location name for one (product, location)
+ * pair. Used by every notification message in this file.
+ */
+async function fetchProductAndLocation(
+  tx: TxClient,
+  productId: number,
+  locationId: number,
+): Promise<{
+  productName: string;
+  productUnit: string;
+  locationName: string;
+}> {
+  const { rows } = await tx.query<{
+    product_name: string;
+    product_unit: string;
+    location_name: string;
+  }>(
+    `SELECT p.name AS product_name, p.unit AS product_unit, l.name AS location_name
+       FROM products p, locations l
+      WHERE p.id = $1 AND l.id = $2`,
+    [productId, locationId],
+  );
+  const row = rows[0];
+  if (row === undefined) {
+    return { productName: `#${productId}`, productUnit: '', locationName: `#${locationId}` };
+  }
+  return {
+    productName: row.product_name,
+    productUnit: row.product_unit,
+    locationName: row.location_name,
+  };
+}
+
+/**
+ * Send a `stock_below_min` notification — once per (product, location) per
+ * 24h (the dedupe key). The location manager is the recipient; if no
+ * manager is set on the location the notification is skipped.
+ */
+async function notifyStockBelowMin(
+  tx: TxClient,
+  opts: {
+    productId: number;
+    locationId: number;
+    qty: number;
+    minLevel: number;
+  },
+): Promise<void> {
+  const managerId = await getLocationManager(tx, opts.locationId);
+  if (managerId === null) return;
+  const { productName, productUnit, locationName } = await fetchProductAndLocation(
+    tx,
+    opts.productId,
+    opts.locationId,
+  );
+  await createNotification(tx, {
+    recipientUserId: managerId,
+    type: 'stock_below_min',
+    title: 'Ostatka min dan tushdi',
+    body:
+      `${productName} (${locationName}) — ${opts.qty} ${productUnit}, ` +
+      `min: ${opts.minLevel} ${productUnit}.`,
+    payload: {
+      product_id: opts.productId,
+      location_id: opts.locationId,
+      qty: opts.qty,
+      min_level: opts.minLevel,
+    },
+    // One Telegram per (product, location) per 24h (spec §2.9). The dedupe
+    // key includes 'stock_below_min' so it never collides with another type.
+    dedupeKey: `stock_below_min:${opts.productId}:${opts.locationId}`,
+    dedupeWindowMinutes: 24 * 60,
+  });
+}
+
+/**
+ * Send a `replenishment_created` notification to the requester's manager
+ * (and to the actor when the actor is not the manager). The target manager
+ * is notified by the SHIP_TO_REQUESTER hop, since the target is unknown
+ * at NEW time.
+ */
+async function notifyReplenishmentCreated(
+  tx: TxClient,
+  request: ReplenishmentRow,
+  actorUserId: number | null,
+): Promise<void> {
+  const requesterManagerId = await getLocationManager(tx, request.requester_location_id);
+  const recipients: number[] = [];
+  if (requesterManagerId !== null) recipients.push(requesterManagerId);
+  if (actorUserId !== null && !recipients.includes(actorUserId)) {
+    recipients.push(actorUserId);
+  }
+  if (recipients.length === 0) return;
+  const { productName, productUnit, locationName } = await fetchProductAndLocation(
+    tx,
+    request.product_id,
+    request.requester_location_id,
+  );
+  await createNotificationsForRecipients(tx, recipients, {
+    type: 'replenishment_created',
+    title: `Yangi to'ldirish so'rovi #${request.id}`,
+    body:
+      `So'rov #${request.id}: ${productName} ${request.qty_needed} ${productUnit} ` +
+      `— ${locationName} uchun.`,
+    payload: {
+      replenishment_id: request.id,
+      product_id: request.product_id,
+      qty_needed: request.qty_needed,
+      requester_location_id: request.requester_location_id,
+    },
+  });
+}
+
+/**
+ * Send a `shipment_created` notification to the requester's manager (the
+ * goods have left the central warehouse). Best-effort.
+ */
+async function notifyShipmentCreated(
+  tx: TxClient,
+  request: ReplenishmentRow,
+  shippedQty: number,
+  movementId: number,
+): Promise<void> {
+  const requesterManagerId = await getLocationManager(tx, request.requester_location_id);
+  if (requesterManagerId === null) return;
+  const { productName, productUnit, locationName } = await fetchProductAndLocation(
+    tx,
+    request.product_id,
+    request.requester_location_id,
+  );
+  await createNotification(tx, {
+    recipientUserId: requesterManagerId,
+    type: 'shipment_created',
+    title: `Jo'natma yo'lda #${request.id}`,
+    body:
+      `Jo'natma: ${productName} ${shippedQty} ${productUnit} ` +
+      `— ${locationName} uchun yo'lga chiqdi.`,
+    payload: {
+      replenishment_id: request.id,
+      product_id: request.product_id,
+      qty: shippedQty,
+      movement_id: movementId,
+    },
+  });
 }

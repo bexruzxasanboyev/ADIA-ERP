@@ -21,6 +21,11 @@ import { withTransaction, type TxClient } from '../db/index.js';
 import { AppError } from '../errors/index.js';
 import { writeAudit } from '../lib/audit.js';
 import { applyMovement } from './stockMovement.js';
+import {
+  createNotificationsForRecipients,
+  getLocationManager,
+  getUsersByRole,
+} from './notify.js';
 
 export type PurchaseOrderRow = {
   id: number;
@@ -119,6 +124,48 @@ export async function approvePurchaseOrder(
       entityId: orderId,
       payload: { step, status: nextStatus },
     });
+
+    // M9 — purchase_request_approved notification (spec §7). Fires only when
+    // BOTH approval steps have been recorded and the status flipped to
+    // `approved`. Recipients: every raw_warehouse_manager (they need to
+    // expect the goods) + the target location's manager + every `pm`.
+    if (bothApproved) {
+      const rawMgrs = await getUsersByRole(client, 'raw_warehouse_manager');
+      const locationMgr = await getLocationManager(client, Number(result.target_location_id));
+      const pms = await getUsersByRole(client, 'pm');
+      const recipients: number[] = [];
+      for (const id of [...rawMgrs, ...pms]) {
+        if (!recipients.includes(id)) recipients.push(id);
+      }
+      if (locationMgr !== null && !recipients.includes(locationMgr)) {
+        recipients.push(locationMgr);
+      }
+      if (recipients.length > 0) {
+        const { rows: ctx } = await client.query<{
+          product_name: string;
+          product_unit: string;
+        }>(
+          `SELECT name AS product_name, unit AS product_unit
+             FROM products WHERE id = $1`,
+          [result.product_id],
+        );
+        const productName = ctx[0]?.product_name ?? `#${result.product_id}`;
+        const productUnit = ctx[0]?.product_unit ?? '';
+        await createNotificationsForRecipients(client, recipients, {
+          type: 'purchase_request_approved',
+          title: `Ta'minot tasdiqlandi #${orderId}`,
+          body:
+            `Ta'minot #${orderId}: ${Number(result.qty)} ${productUnit} ` +
+            `${productName} — tasdiqlandi, qabul kutilmoqda.`,
+          payload: {
+            purchase_order_id: orderId,
+            product_id: result.product_id,
+            qty: Number(result.qty),
+            target_location_id: result.target_location_id,
+          },
+        });
+      }
+    }
 
     return result;
   };

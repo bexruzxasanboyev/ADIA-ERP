@@ -13,6 +13,7 @@ import { ReplenishmentPage } from '@/pages/replenishment/ReplenishmentPage';
 import { ReplenishmentDetailPage } from '@/pages/replenishment/ReplenishmentDetailPage';
 import { ProductionOrdersPage } from '@/pages/production-orders/ProductionOrdersPage';
 import { PurchaseOrdersPage } from '@/pages/purchase-orders/PurchaseOrdersPage';
+import { DashboardPage } from '@/pages/dashboard/DashboardPage';
 
 /**
  * Application routes (phase-1-mvp.md §2, §6).
@@ -37,15 +38,7 @@ export function AppRouter() {
       >
         <Route index element={<Navigate to="/dashboard" replace />} />
 
-        <Route
-          path="/dashboard"
-          element={
-            <PlaceholderPage
-              title="Boshqaruv paneli"
-              description="Butun zanjir holati, ogohlantirishlar va kunlik reja."
-            />
-          }
-        />
+        <Route path="/dashboard" element={<DashboardPage />} />
 
         {/* M3 — stock screens. Each reuses StockPage; the backend scopes
             /api/stock by the caller's role and location. */}

@@ -1,0 +1,218 @@
+/**
+ * Stock sync — Poster `storage.getStorageLeftovers` -> ADIA `stock` (ADR-0002 §2).
+ *
+ * For every active `locations` row with `poster_storage_id` set:
+ *   1. fetch the storage leftovers,
+ *   2. for each leftover element (type=1 AND type=2 — both keyed by
+ *      `ingredient_id` per ADR-0002 §1), resolve `products.poster_ingredient_id`,
+ *   3. compare Poster `storage_ingredient_left` with ADIA `stock.qty`:
+ *        - difference > 0 -> apply an `adjust` movement to align (invariant 1),
+ *        - difference < 0 -> apply an `adjust` movement decreasing ADIA qty,
+ *        - difference = 0 -> no-op.
+ *   4. when Poster `storage_ingredient_left < 0` -> CLAMP ADIA qty to 0 and
+ *      raise `negative_stock_detected` notification (invariant 3 — qty never
+ *      negative; Poster bookkeeping anomalies are surfaced, not propagated).
+ *
+ * Idempotent — running the sync twice with no Poster movement is a no-op.
+ */
+import { applyMovement } from '../../services/stockMovement.js';
+import { query } from '../../db/index.js';
+import type { PosterClient, PosterLeftover } from './client.js';
+import {
+  finishSyncRun,
+  notifyPosterSyncFailed,
+  startSyncRun,
+  type SyncTrigger,
+} from './syncLog.js';
+
+export type StockSyncResult = {
+  readonly storagesScanned: number;
+  readonly adjustments: number;
+  readonly negativesClamped: number;
+  readonly skippedNoProduct: number;
+};
+
+/** Read all active locations with a Poster storage id. */
+async function listStorageLocations(): Promise<{ id: number; posterStorageId: number; name: string }[]> {
+  const { rows } = await query<{ id: number; poster_storage_id: number; name: string }>(
+    `SELECT id, poster_storage_id, name FROM locations
+      WHERE poster_storage_id IS NOT NULL AND is_active = TRUE`,
+  );
+  return rows.map((r) => ({ id: r.id, posterStorageId: r.poster_storage_id, name: r.name }));
+}
+
+/** Resolve ADIA product_id for a Poster ingredient_id (the universal join key). */
+async function resolveProductIdByIngredient(posterIngredientId: number): Promise<number | null> {
+  const { rows } = await query<{ id: number }>(
+    `SELECT id FROM products WHERE poster_ingredient_id = $1`,
+    [posterIngredientId],
+  );
+  return rows[0]?.id ?? null;
+}
+
+/** Read the current ADIA qty for `(location, product)`, defaulting to 0. */
+async function readQty(locationId: number, productId: number): Promise<number> {
+  const { rows } = await query<{ qty: number }>(
+    `SELECT qty FROM stock WHERE location_id = $1 AND product_id = $2`,
+    [locationId, productId],
+  );
+  return rows[0]?.qty ?? 0;
+}
+
+/** Push a `negative_stock_detected` notification to PMs + the location manager. */
+async function notifyNegative(
+  locationId: number,
+  productId: number,
+  posterQty: number,
+): Promise<void> {
+  try {
+    const { rows } = await query<{ id: number }>(
+      `SELECT id FROM users
+        WHERE is_active = TRUE
+          AND (role = 'pm' OR id IN (SELECT manager_user_id FROM locations WHERE id = $1))`,
+      [locationId],
+    );
+    for (const r of rows) {
+      await query(
+        `INSERT INTO notifications (recipient_user_id, type, title, body, payload)
+         VALUES ($1, 'negative_stock_detected', $2, $3, $4)`,
+        [
+          r.id,
+          'Poster: negative stock detected',
+          `Poster qty ${posterQty} at location ${locationId} for product ${productId}; clamped to 0.`,
+          JSON.stringify({ location_id: locationId, product_id: productId, poster_qty: posterQty }),
+        ],
+      );
+    }
+  } catch (err) {
+    console.error('[poster] notifyNegative swallow:', (err as Error).message);
+  }
+}
+
+/**
+ * Apply one Poster leftover row to ADIA stock. Returns one of:
+ *   - 'no-product' when no ADIA product matches the Poster ingredient_id;
+ *   - 'noop'       when qty matches and no clamp was needed;
+ *   - 'adjusted'   when one or more `adjust` movements were written;
+ *   - 'clamped'    when negative Poster qty triggered a clamp + notification.
+ */
+async function applyLeftover(
+  locationId: number,
+  leftover: PosterLeftover,
+): Promise<'no-product' | 'noop' | 'adjusted' | 'clamped'> {
+  const posterIngredientId = Number(leftover.ingredient_id);
+  if (!Number.isInteger(posterIngredientId) || posterIngredientId <= 0) return 'no-product';
+
+  const productId = await resolveProductIdByIngredient(posterIngredientId);
+  if (productId === null) return 'no-product';
+
+  const posterQty = Number(leftover.storage_ingredient_left);
+  if (!Number.isFinite(posterQty)) return 'noop';
+
+  // Negative Poster qty is a bookkeeping artefact — clamp to 0 in ADIA and
+  // notify, never write a negative row (invariant 3).
+  if (posterQty < 0) {
+    const current = await readQty(locationId, productId);
+    if (current > 0) {
+      await applyMovement({
+        productId,
+        fromLocationId: locationId,
+        toLocationId: null,
+        qty: current,
+        reason: 'adjust',
+        actorUserId: null,
+        note: `Poster clamp: storage_ingredient_left=${posterQty}`,
+      });
+    }
+    await notifyNegative(locationId, productId, posterQty);
+    return 'clamped';
+  }
+
+  const current = await readQty(locationId, productId);
+  const diff = posterQty - current;
+  // Tolerate float noise — 0.0001 is below the schema precision.
+  if (Math.abs(diff) < 0.0001) return 'noop';
+
+  if (diff > 0) {
+    // ADIA below Poster — receipt the difference.
+    await applyMovement({
+      productId,
+      fromLocationId: null,
+      toLocationId: locationId,
+      qty: diff,
+      reason: 'adjust',
+      actorUserId: null,
+      note: 'Poster leftover reconcile (+)',
+    });
+  } else {
+    // ADIA above Poster — issue the absolute difference.
+    await applyMovement({
+      productId,
+      fromLocationId: locationId,
+      toLocationId: null,
+      qty: -diff,
+      reason: 'adjust',
+      actorUserId: null,
+      note: 'Poster leftover reconcile (-)',
+    });
+  }
+  return 'adjusted';
+}
+
+/**
+ * One run of the leftover sync over every Poster-mapped location.
+ * Returns a per-run summary that the worker logs and the sync log records.
+ */
+export async function syncStockLeftovers(
+  client: PosterClient,
+  trigger: SyncTrigger = 'poll',
+): Promise<StockSyncResult> {
+  const runId = await startSyncRun('leftovers', trigger);
+  const summary: { storagesScanned: number; adjustments: number; negativesClamped: number; skippedNoProduct: number } =
+    { storagesScanned: 0, adjustments: 0, negativesClamped: 0, skippedNoProduct: 0 };
+  let recordsIn = 0;
+  let recordsApplied = 0;
+  try {
+    const locations = await listStorageLocations();
+    for (const loc of locations) {
+      let leftovers: PosterLeftover[];
+      try {
+        leftovers = await client.getStorageLeftovers(loc.posterStorageId);
+      } catch (err) {
+        console.error(
+          `[poster] leftovers for storage_id=${loc.posterStorageId} failed:`,
+          (err as Error).message,
+        );
+        continue;
+      }
+      summary.storagesScanned += 1;
+      recordsIn += leftovers.length;
+      for (const lo of leftovers) {
+        try {
+          const outcome = await applyLeftover(loc.id, lo);
+          if (outcome === 'no-product') summary.skippedNoProduct += 1;
+          else if (outcome === 'adjusted') {
+            summary.adjustments += 1;
+            recordsApplied += 1;
+          } else if (outcome === 'clamped') {
+            summary.negativesClamped += 1;
+            recordsApplied += 1;
+          }
+        } catch (err) {
+          console.error(
+            '[poster] leftover row failed for ingredient_id=',
+            lo.ingredient_id,
+            (err as Error).message,
+          );
+        }
+      }
+    }
+    await finishSyncRun(runId, 'ok', { recordsIn, recordsApplied });
+    return summary;
+  } catch (err) {
+    const detail = (err as Error).message;
+    await finishSyncRun(runId, 'failed', { recordsIn, recordsApplied }, detail);
+    await notifyPosterSyncFailed('leftovers', detail);
+    throw err;
+  }
+}

@@ -11,6 +11,18 @@ import {
   startReplenishmentScanWorker,
   stopReplenishmentScanWorker,
 } from './workers/replenishmentScan.js';
+import {
+  startPosterStockSyncWorker,
+  stopPosterStockSyncWorker,
+} from './workers/posterStockSync.js';
+import {
+  startPosterSalesWorker,
+  stopPosterSalesWorker,
+} from './workers/posterSalesSync.js';
+import {
+  startTelegramOutboxWorker,
+  stopTelegramOutboxWorker,
+} from './workers/telegramOutbox.js';
 
 function main(): void {
   const cfg = loadConfig(); // throws clearly on missing/invalid env
@@ -25,9 +37,33 @@ function main(): void {
   startReplenishmentScanWorker();
   console.log('[server] replenishment scan worker started (*/5 * * * *)');
 
+  // Poster integration workers only run when a token is configured — saves
+  // log spam and avoids hammering Poster on a fresh install.
+  if (cfg.poster.token !== '') {
+    startPosterStockSyncWorker();
+    console.log('[server] poster stock sync worker started (*/15 * * * *)');
+    startPosterSalesWorker();
+    console.log('[server] poster sales sync workers started (webhook 1m, fallback 30m)');
+  } else {
+    console.log('[server] poster workers skipped — POSTER_TOKEN is empty');
+  }
+
+  // Telegram outbox worker — only started when BOT_TOKEN is configured. The
+  // outbox stays dormant in dev/test (the notifications still queue up; they
+  // simply do not leave the database). Outbound-only — no `bot.start()` here.
+  if (cfg.bot.token !== '') {
+    startTelegramOutboxWorker();
+    console.log('[server] telegram outbox worker started (*/30 seconds)');
+  } else {
+    console.log('[server] telegram outbox worker skipped — BOT_TOKEN is empty');
+  }
+
   const shutdown = (signal: string): void => {
     console.log(`[server] ${signal} received — shutting down.`);
     stopReplenishmentScanWorker();
+    stopPosterStockSyncWorker();
+    stopPosterSalesWorker();
+    stopTelegramOutboxWorker();
     server.close(() => {
       void closePool().finally(() => process.exit(0));
     });

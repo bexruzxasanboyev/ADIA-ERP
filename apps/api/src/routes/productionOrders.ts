@@ -35,6 +35,10 @@ import {
   type ProductionOrderRow,
 } from '../services/productionOrder.js';
 import { advance } from '../services/replenishment.js';
+import {
+  createNotificationsForRecipients,
+  getUsersByRole,
+} from '../services/notify.js';
 
 export const productionOrdersRouter: Router = Router();
 
@@ -143,6 +147,35 @@ productionOrdersRouter.post(
         entityId: row.id,
         payload: { product_id: productId, qty, location_id: locationId },
       });
+      // M9 — production_order_created notification (spec §7). Notify every
+      // active production_manager so the production location is informed
+      // immediately, plus all `pm` users (super-admin visibility). The
+      // notification participates in the SAME transaction as the insert.
+      const productionManagers = await getUsersByRole(tx, 'production_manager');
+      const pms = await getUsersByRole(tx, 'pm');
+      const recipients = [...productionManagers, ...pms];
+      if (recipients.length > 0) {
+        const { rows: ctx } = await tx.query<{ product_name: string; product_unit: string }>(
+          `SELECT name AS product_name, unit AS product_unit
+             FROM products WHERE id = $1`,
+          [productId],
+        );
+        const productName = ctx[0]?.product_name ?? `#${productId}`;
+        const productUnit = ctx[0]?.product_unit ?? '';
+        await createNotificationsForRecipients(tx, recipients, {
+          type: 'production_order_created',
+          title: `Yangi zayafka #${row.id}`,
+          body:
+            `Zayafka #${row.id}: ${qty} ${productUnit} ${productName} — ` +
+            `ishlab chiqarish kerak.`,
+          payload: {
+            production_order_id: row.id,
+            product_id: productId,
+            qty,
+            location_id: locationId,
+          },
+        });
+      }
       return row;
     });
 

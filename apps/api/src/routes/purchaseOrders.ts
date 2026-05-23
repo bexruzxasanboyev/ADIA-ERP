@@ -43,6 +43,11 @@ import {
   type PurchaseOrderRow,
 } from '../services/purchaseOrder.js';
 import { advance } from '../services/replenishment.js';
+import {
+  createNotificationsForRecipients,
+  getLocationManager,
+  getUsersByRole,
+} from '../services/notify.js';
 
 export const purchaseOrdersRouter: Router = Router();
 
@@ -137,23 +142,66 @@ purchaseOrdersRouter.post(
     const targetLocationId = requireId(body, 'target_location_id');
     const note = optionalString(body, 'note') ?? null;
 
-    const { rows } = await query<PurchaseOrderRow>(
-      `INSERT INTO purchase_orders
-         (product_id, qty, supplier_id, target_location_id, status, note, created_by)
-       VALUES ($1, $2, $3, $4, 'draft', $5, $6)
-       RETURNING ${PURCHASE_ORDER_COLUMNS}`,
-      [productId, qty, supplierId, targetLocationId, note, principal.userId],
-    );
-    const created = rows[0];
-    if (created === undefined) {
-      throw AppError.internal('Purchase order insert returned no row.');
-    }
-    await writeAudit(poolRunner, {
-      actorUserId: principal.userId,
-      action: 'purchase_order.create',
-      entity: 'purchase_orders',
-      entityId: created.id,
-      payload: { product_id: productId, qty, target_location_id: targetLocationId },
+    // M9 — wrap the insert + audit + notification in ONE transaction so the
+    // `purchase_request_created` row in `notifications` is rolled back with
+    // the insert on any failure (no orphan nudges).
+    const created = await withTransaction(async (tx) => {
+      const { rows } = await tx.query<PurchaseOrderRow>(
+        `INSERT INTO purchase_orders
+           (product_id, qty, supplier_id, target_location_id, status, note, created_by)
+         VALUES ($1, $2, $3, $4, 'draft', $5, $6)
+         RETURNING ${PURCHASE_ORDER_COLUMNS}`,
+        [productId, qty, supplierId, targetLocationId, note, principal.userId],
+      );
+      const inserted = rows[0];
+      if (inserted === undefined) {
+        throw AppError.internal('Purchase order insert returned no row.');
+      }
+      await writeAudit(tx, {
+        actorUserId: principal.userId,
+        action: 'purchase_order.create',
+        entity: 'purchase_orders',
+        entityId: inserted.id,
+        payload: { product_id: productId, qty, target_location_id: targetLocationId },
+      });
+
+      // Recipients (spec §7): every active supply_manager and raw_warehouse_manager.
+      // The target raw warehouse's manager (if assigned) is included via
+      // `getLocationManager` so a single-warehouse setup with no role users
+      // still notifies the right person. PMs also get visibility.
+      const supplyMgrs = await getUsersByRole(tx, 'supply_manager');
+      const rawMgrs = await getUsersByRole(tx, 'raw_warehouse_manager');
+      const locationMgr = await getLocationManager(tx, targetLocationId);
+      const pms = await getUsersByRole(tx, 'pm');
+      const recipients: number[] = [];
+      for (const id of [...supplyMgrs, ...rawMgrs, ...pms]) {
+        if (!recipients.includes(id)) recipients.push(id);
+      }
+      if (locationMgr !== null && !recipients.includes(locationMgr)) {
+        recipients.push(locationMgr);
+      }
+
+      if (recipients.length > 0) {
+        const { rows: ctx } = await tx.query<{ product_name: string; product_unit: string }>(
+          `SELECT name AS product_name, unit AS product_unit FROM products WHERE id = $1`,
+          [productId],
+        );
+        const productName = ctx[0]?.product_name ?? `#${productId}`;
+        const productUnit = ctx[0]?.product_unit ?? '';
+        await createNotificationsForRecipients(tx, recipients, {
+          type: 'purchase_request_created',
+          title: `Yangi ta'minot so'rovi #${inserted.id}`,
+          body:
+            `Ta'minot: ${qty} ${productUnit} ${productName} — tasdiq kutilmoqda.`,
+          payload: {
+            purchase_order_id: inserted.id,
+            product_id: productId,
+            qty,
+            target_location_id: targetLocationId,
+          },
+        });
+      }
+      return inserted;
     });
     res.status(201).json({ purchase_order: created });
   }),

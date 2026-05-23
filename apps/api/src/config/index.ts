@@ -33,9 +33,25 @@ export type AppConfig = {
     readonly appId: string;
     readonly appSecret: string;
     readonly token: string;
+    /**
+     * Shared secret embedded in the webhook URL Poster posts to. Used by the
+     * `/api/integrations/poster/webhook[/:secret]` handler with a
+     * constant-time compare. Empty -> the webhook endpoint refuses all calls.
+     */
+    readonly webhookSecret: string;
   };
   readonly telegram: {
     readonly botToken: string;
+  };
+  /**
+   * Telegram bot identity used by the M9 outbox worker. Optional — when
+   * `token` is empty the outbox worker is not started (development /
+   * integration-test mode). `username` is informational (e.g. for help
+   * messages and links) and never required.
+   */
+  readonly bot: {
+    readonly token: string;
+    readonly username: string;
   };
 };
 
@@ -119,9 +135,17 @@ export function loadConfig(): AppConfig {
       appId: optional('POSTER_APP_ID', ''),
       appSecret: optional('POSTER_APP_SECRET', ''),
       token: optional('POSTER_TOKEN', ''),
+      webhookSecret: optional('POSTER_WEBHOOK_SECRET', ''),
     }),
     telegram: Object.freeze({
       botToken: optional('TELEGRAM_BOT_TOKEN', ''),
+    }),
+    bot: Object.freeze({
+      // M9 — Grammy bot token / username (see `.env` BOT_TOKEN / BOT_USERNAME).
+      // Outbound-only: the outbox worker pushes Telegram messages and does NOT
+      // start polling. Optional so dev / test work with an empty token.
+      token: optional('BOT_TOKEN', ''),
+      username: optional('BOT_USERNAME', ''),
     }),
   });
 

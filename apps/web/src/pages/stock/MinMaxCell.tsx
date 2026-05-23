@@ -127,7 +127,7 @@ export function MinMaxCell({ row, canEdit, onSaved }: MinMaxCellProps) {
         {isSaving ? (
           <Loader2 className="size-3.5 animate-spin" />
         ) : (
-          <Check className="size-3.5 text-emerald-400" />
+          <Check className="size-3.5 text-success" />
         )}
       </Button>
       <Button
