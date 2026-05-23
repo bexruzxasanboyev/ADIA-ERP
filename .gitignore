@@ -14,6 +14,13 @@ out/
 .env.*
 !.env.example
 
+# Google Cloud service account keys — NEVER commit
+*-gcp-key.json
+*service-account*.json
+big-quanta-*.json
+credentials.json
+gcp-credentials.json
+
 # Logs
 *.log
 npm-debug.log*

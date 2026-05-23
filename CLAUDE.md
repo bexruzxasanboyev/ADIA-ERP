@@ -58,7 +58,7 @@ Qaytarib bo'lmaydigan amallar (deploy, real ma'lumotni o'chirish, tashqi xizmatg
 | Auth | JWT + RBAC middleware |
 | Fon ishlar | node-cron / BullMQ (replenishment skan, min/max qayta hisob) |
 | Bot | Grammy (Telegram) |
-| AI | Claude — tool/function calling DB ustida |
+| AI | Vertex AI Gemini (Google Cloud) — function calling DB ustida; SDK: `@google-cloud/vertexai` |
 | Integratsiya | Poster POS API — savdo, cheklar, ombor qoldig'i sinxronizatsiyasi (`docs/adia-poster-api.md`) |
 | Deploy | Hetzner VPS · PM2 · Nginx |
 
