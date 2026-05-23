@@ -9,10 +9,10 @@
 import { resolve } from 'node:path';
 import { config as loadDotenv } from 'dotenv';
 
-// The repo root holds the single shared `.env` (two levels up from apps/api).
+// The repo root holds the single shared `.env` (two levels up from apps/backend).
 const REPO_ROOT = resolve(process.cwd(), '../..');
 loadDotenv({ path: resolve(REPO_ROOT, '.env') });
-// Also try a local apps/api/.env (does not override repo-root values).
+// Also try a local apps/backend/.env (does not override repo-root values).
 loadDotenv({ path: resolve(process.cwd(), '.env') });
 
 export type AppConfig = {

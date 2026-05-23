@@ -5,7 +5,7 @@
  * `DashboardOverview` envelope) to the rendered UI: KPI numbers,
  * below-min table rows, the open-requests legend, the production-plan
  * row, and the recent-movements feed entry all derive from a mocked
- * backend payload that mirrors `apps/api/src/routes/dashboard.ts`.
+ * backend payload that mirrors `apps/backend/src/routes/dashboard.ts`.
  *
  * Drift in either direction (renamed field, missing nested object,
  * different status enum value) breaks this test loudly.

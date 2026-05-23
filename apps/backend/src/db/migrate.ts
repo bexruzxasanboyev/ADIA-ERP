@@ -1,7 +1,7 @@
 /**
  * Minimal SQL migration runner.
  *
- * Migrations are plain `.sql` files in `apps/api/migrations/`, named
+ * Migrations are plain `.sql` files in `apps/backend/migrations/`, named
  * `NNNN_description.sql` (e.g. `0001_init.sql`). They apply in lexical
  * (numeric) order. A `schema_migrations` table records which files have
  * already run, so re-running is a no-op for applied migrations.
@@ -13,7 +13,7 @@
  * their own `BEGIN;` / `COMMIT;` (that would close the runner's
  * transaction early and leave the bookkeeping INSERT outside it).
  *
- * Usage:  npm run migrate            (from apps/api)
+ * Usage:  npm run migrate            (from apps/backend)
  *         tsx src/db/migrate.ts
  */
 import { readdir, readFile } from 'node:fs/promises';

@@ -1,4 +1,4 @@
-# @adia/web — ADIA ERP frontend
+# @adia/frontend — ADIA ERP frontend
 
 ADIA ERP web mijozi — React + Vite + TypeScript. Bu paket monorepo
 (`apps/*` npm workspace) a'zosi.
@@ -41,14 +41,14 @@ cp .env.example .env
 
 | O'zgaruvchi | Tavsif | Standart |
 |---|---|---|
-| `VITE_API_BASE_URL` | Backend (`apps/api`) bazaviy URL | `http://localhost:3000` |
+| `VITE_API_BASE_URL` | Backend (`apps/backend`) bazaviy URL | `http://localhost:3000` |
 
 `.env` git'ga yuklanmaydi.
 
 ## Skriptlar
 
-Hammasi `apps/web` ichidan ishga tushiriladi (yoki ildizdan
-`npm run <script> -w @adia/web`):
+Hammasi `apps/frontend` ichidan ishga tushiriladi (yoki ildizdan
+`npm run <script> -w @adia/frontend`):
 
 | Komanda | Vazifa |
 |---|---|
@@ -62,7 +62,7 @@ Hammasi `apps/web` ichidan ishga tushiriladi (yoki ildizdan
 ## Ishga tushirish
 
 ```bash
-cd apps/web
+cd apps/frontend
 npm run dev
 ```
 
@@ -91,7 +91,7 @@ Kod: `src/components/DevAgentation.tsx`.
 ## Papka strukturasi
 
 ```
-apps/web/
+apps/frontend/
 ├── index.html
 ├── vite.config.ts          Vite + Vitest konfiguratsiyasi
 ├── tailwind.config.js      Tailwind + dark mavzu tokenlari

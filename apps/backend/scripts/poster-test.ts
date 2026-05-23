@@ -2,7 +2,7 @@
  * Manual smoke test for the Poster client — exercises a few read-only
  * endpoints against the real Poster account and prints a short summary.
  *
- * Run with: `npm run poster:test -w @adia/api`
+ * Run with: `npm run poster:test -w @adia/backend`
  *
  * Idempotent and read-only — never writes to the local DB.
  */

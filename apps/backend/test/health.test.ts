@@ -5,7 +5,7 @@
  * middleware is wired. Business-logic tests arrive with M1-M9.
  *
  * Requires the local dev database (`adia_erp_dev`) to be reachable so the
- * DB ping inside /health can run. See apps/api/README.md.
+ * DB ping inside /health can run. See apps/backend/README.md.
  */
 import { afterAll, describe, expect, it } from 'vitest';
 import request from 'supertest';

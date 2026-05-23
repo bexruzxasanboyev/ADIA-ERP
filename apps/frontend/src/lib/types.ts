@@ -149,7 +149,7 @@ export interface MovementsResponse {
 
 // ---------------------------------------------------------------------------
 // Sprint 2 — replenishment, production orders, purchase orders.
-// Mirrors `apps/api/src/services/{replenishment,productionOrder,purchaseOrder}.ts`.
+// Mirrors `apps/backend/src/services/{replenishment,productionOrder,purchaseOrder}.ts`.
 // ---------------------------------------------------------------------------
 
 /** Replenishment state machine — phase-1-mvp.md §3 (10 holat). */
@@ -173,7 +173,7 @@ export const TERMINAL_REPLENISHMENT_STATUSES: readonly ReplenishmentStatus[] = [
 
 /**
  * A single replenishment_requests row.
- * `qty_needed` is a JS `number`: the backend pool (`apps/api/src/db/pool.ts`)
+ * `qty_needed` is a JS `number`: the backend pool (`apps/backend/src/db/pool.ts`)
  * registers a NUMERIC (OID 1700) type parser that calls `parseFloat`, so every
  * NUMERIC column arrives on the wire and at this client as a plain number.
  * Faza-1 columns are NUMERIC(14,4) / NUMERIC(14,2) — well within JS exact
@@ -281,7 +281,7 @@ export type PurchaseApprovalStep = 'manager' | 'keeper';
 
 // ---------------------------------------------------------------------------
 // Sprint 3 — M8 Dashboard overview.
-// Mirrors `apps/api/src/routes/dashboard.ts` OverviewResponse.
+// Mirrors `apps/backend/src/routes/dashboard.ts` OverviewResponse.
 // ---------------------------------------------------------------------------
 
 /** Below-min row embedded in `DashboardOverview.below_min`. */

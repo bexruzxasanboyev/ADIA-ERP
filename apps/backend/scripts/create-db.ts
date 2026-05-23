@@ -4,7 +4,7 @@
  * Creates the `adia_erp_dev` database if it does not already exist.
  * LOCAL DEV ONLY — never run against production.
  *
- * Usage:  npm run db:create   (from apps/api)
+ * Usage:  npm run db:create   (from apps/backend)
  */
 import { Client } from 'pg';
 

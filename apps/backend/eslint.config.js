@@ -1,4 +1,4 @@
-// ESLint flat config for @adia/api — TypeScript strict.
+// ESLint flat config for @adia/backend — TypeScript strict.
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 

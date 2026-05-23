@@ -1,4 +1,4 @@
-# @adia/api — ADIA ERP backend
+# @adia/backend — ADIA ERP backend
 
 ADIA ERP backend API. Node.js + Express + TypeScript (strict),
 PostgreSQL with a raw-SQL query layer (no ORM), JWT + RBAC.
@@ -37,7 +37,7 @@ Barcha komandalar monorepo ildizidan ishga tushiriladi.
 npm install
 
 # 2. Lokal dev DB yaratish (adia_erp_dev)
-npm run db:create --workspace @adia/api
+npm run db:create --workspace @adia/backend
 ```
 
 > **DB yaratish huquqi.** `db:create` ishlashi uchun PostgreSQL roli
@@ -52,13 +52,13 @@ npm run db:create --workspace @adia/api
 
 ```bash
 # 3. Migratsiyalarni qo'llash
-npm run migrate --workspace @adia/api
+npm run migrate --workspace @adia/backend
 
 # 4. Dev serverni ishga tushirish (tsx watch)
-npm run dev --workspace @adia/api
+npm run dev --workspace @adia/backend
 
 # Smoke test
-npm run test --workspace @adia/api
+npm run test --workspace @adia/backend
 ```
 
 Tekshirish: `curl http://localhost:3001/health`
@@ -78,7 +78,7 @@ Tekshirish: `curl http://localhost:3001/health`
 ## Struktura
 
 ```
-apps/api/
+apps/backend/
   migrations/        — ketma-ket SQL migratsiyalar (NNNN_*.sql)
   scripts/           — dev tooling (create-db)
   src/

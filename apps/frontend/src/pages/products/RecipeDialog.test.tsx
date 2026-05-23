@@ -2,7 +2,7 @@
  * Regression — RecipeDialog must parse the wrapped response shape.
  *
  * `GET /api/products/:id/recipe` returns `{ product_id, recipe: [...] }`
- * (apps/api/src/routes/products.ts, asserted by apps/api/test/products.test.ts
+ * (apps/backend/src/routes/products.ts, asserted by apps/backend/test/products.test.ts
  * with `res.body.recipe`). The dialog calls
  * `apiRequest<RecipeLine[]>(...)` and then `.map(...)`'s the result —
  * which throws on the wrapped object and renders the toast

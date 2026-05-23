@@ -16,7 +16,7 @@
  *   - a starting raw-warehouse stock for every raw ingredient so the engine
  *     finds enough input to issue a production order.
  *
- * Usage:  npm run seed:dev    (from apps/api)
+ * Usage:  npm run seed:dev    (from apps/backend)
  */
 import bcrypt from 'bcryptjs';
 import { query, closePool } from '../src/db/index.js';

@@ -3,7 +3,7 @@
 - Status: Qabul qilingan (Sprint 2 auditidan keyin aniqlangan, 2026-05-23)
 - Sana: 2026-05-22 (Sprint 2 aniqliklari: 2026-05-23)
 - Muallif: system-architect
-- Bog'liq: TZ §8.2, `docs/specs/phase-1-mvp.md` §3, `apps/api/src/services/replenishment.ts`
+- Bog'liq: TZ §8.2, `docs/specs/phase-1-mvp.md` §3, `apps/backend/src/services/replenishment.ts`
 
 ## Versiya tarixi
 - **2026-05-22 (v1):** Dastlabki dizayn — 10 holat, partial UNIQUE indeks, ilova qatlamida transition jadval, `advance` bitta tranzaksiyada, kutuv holatlari no-op.
@@ -184,7 +184,7 @@ guard bajarilmagan bo'lsa xatosiz "hali tayyor emas" qaytaradi. Jarayonni `purch
 | 7 | `raw_warehouse → production` transfer `CREATE_PRODUCTION_ORDER` action'ida | branch (b)/(c) ikkalasi | `replenishment.ts` `advanceCheckProductionInput` ichiga `applyMovement(transfer)` loop |
 | 8 | Skip-state semantics — bir `advance` zanjir qiladi | `new → done` foydalanuvchi sakrashlari | `advance` ichida forward chain loop, har qadam alohida audit |
 | 9 | `target_location_id` har doim `central_warehouse` | NEW va `production_order.target` mutanosib | `advanceNew` `parent_id` o'rniga `resolveTopology().centralWarehouseLocationId` |
-| 10 | `advance` HTTP `200 OK`, javob `{advanced, status, reason, request}` | API kontrakt aniqligi | `apps/api/src/routes/replenishment.ts` (mavjud kod allaqachon shunday qaytaradi — spec'ni moslash) |
+| 10 | `advance` HTTP `200 OK`, javob `{advanced, status, reason, request}` | API kontrakt aniqligi | `apps/backend/src/routes/replenishment.ts` (mavjud kod allaqachon shunday qaytaradi — spec'ni moslash) |
 | 11 | `production_order → cancelled` ruxsat (faqat `new`/`in_progress` dan) | yangi PATCH qiymati | `production_orders.ts` service va spec §4.6 |
 | 12 | Multi-shortage sekvensial; `purchase_order_id` qayta yozilmasin (NULL → yangi); M:N Faza-2 | audit yo'qolmaydi | `advanceCheckProductionInput` yangi PO'dan oldin `purchase_order_id = NULL` + audit `replenishment.purchase_order.unlink` |
 

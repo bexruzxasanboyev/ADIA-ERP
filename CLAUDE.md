@@ -101,12 +101,19 @@ Command'lar: `/spec` `/plan` `/build` `/test` `/review` `/code-simplify` `/ship`
 
 ```
 .claude/    — agents/, skills/, commands/, hooks/, settings.json
-docs/       — TZ.md, SETUP.md, adia-poster-api.md, references/, architecture/
-apps/       — (Faza 1 da yaratiladi) api/ + web/
+docs/       — TZ.md, SETUP.md, adia-poster-api.md, references/, architecture/, specs/
+apps/
+  backend/  — Express + TypeScript + raw SQL (paket: @adia/backend)
+  frontend/ — React + Vite + TypeScript + shadcn/Tailwind (paket: @adia/frontend)
+packages/   — kelajakda umumiy TS tiplari uchun (hozir bo'sh)
 .mcp.json   — MCP serverlar
 .env        — maxfiy kalitlar (git'ga yuklanmaydi); namuna: .env.example
 CLAUDE.md   — bu fayl
 ```
+
+Workspace komandalar:
+- Backend: `npm run dev -w @adia/backend`, `npm test -w @adia/backend`
+- Frontend: `npm run dev -w @adia/frontend`, `npm test -w @adia/frontend`
 
 ## 11. Joriy holat
 
