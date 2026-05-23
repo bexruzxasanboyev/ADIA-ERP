@@ -199,6 +199,18 @@ purchaseOrdersRouter.post(
             qty,
             target_location_id: targetLocationId,
           },
+          // F3.3 / ADR-0011 — Tasdiqlash takes whichever step the presser
+          // is eligible for (manager vs keeper); idempotency on the
+          // approval rules out double-execution.
+          inlineCallback: {
+            buttons: [
+              [
+                { text: '✅ Tasdiqlash', data: `apprv:po:${inserted.id}` },
+                { text: '❌ Rad qilish', data: `rej:po:${inserted.id}` },
+              ],
+              [{ text: "📋 Ko'rish", data: `view:po:${inserted.id}` }],
+            ],
+          },
         });
       }
       return inserted;

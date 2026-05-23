@@ -174,6 +174,17 @@ productionOrdersRouter.post(
             qty,
             location_id: locationId,
           },
+          // F3.3 / ADR-0011 — Boshladim flips status `new -> in_progress`;
+          // the dispatcher enforces production_manager scope before the
+          // domain service runs.
+          inlineCallback: {
+            buttons: [
+              [
+                { text: '▶️ Boshladim', data: `start:prod:${row.id}` },
+                { text: "📋 Ko'rish", data: `view:prod:${row.id}` },
+              ],
+            ],
+          },
         });
       }
       return row;

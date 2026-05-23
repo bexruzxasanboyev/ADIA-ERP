@@ -64,6 +64,14 @@ export type AppConfig = {
   readonly bot: {
     readonly token: string;
     readonly username: string;
+    /**
+     * F3.3 / ADR-0011 — shared secret Telegram sends in the
+     * `X-Telegram-Bot-Api-Secret-Token` header on every webhook POST.
+     * Used by `routes/telegramWebhook.ts` with `timingSafeEqual`. Empty
+     * in dev (long polling); REQUIRED in production webhook mode (the
+     * route refuses every request when empty).
+     */
+    readonly webhookSecret: string;
   };
   /**
    * Phase-2 F2.2 — Vertex AI Gemini configuration for the AI assistant
@@ -186,10 +194,11 @@ export function loadConfig(): AppConfig {
     }),
     bot: Object.freeze({
       // M9 — Grammy bot token / username (see `.env` BOT_TOKEN / BOT_USERNAME).
-      // Outbound-only: the outbox worker pushes Telegram messages and does NOT
-      // start polling. Optional so dev / test work with an empty token.
+      // F3.3 — webhook secret (TELEGRAM_WEBHOOK_SECRET) used by the prod
+      // webhook endpoint. Optional so dev / test work with empty values.
       token: optional('BOT_TOKEN', ''),
       username: optional('BOT_USERNAME', ''),
+      webhookSecret: optional('TELEGRAM_WEBHOOK_SECRET', ''),
     }),
     vertex: Object.freeze({
       // F2.2 — AI assistant. Enabled only when project + service account

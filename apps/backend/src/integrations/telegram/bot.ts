@@ -1,22 +1,38 @@
 /**
- * Grammy bot — outbound only (M9, spec §2.9).
+ * Grammy bot — outbound + inbound (F3.3 / ADR-0011).
  *
- * Faza-1 uses Telegram as a one-way notification channel: the
+ * Faza-1 used Telegram as a one-way notification channel: the
  * `telegramOutbox` worker reads `notifications` rows where
  * `telegram_sent = FALSE` and pushes each one through `bot.api.sendMessage`.
  *
- * We never call `bot.start()` — polling (or webhook intake) is Faza-3 work
- * (inline-button confirmations). Holding off on `start()` also keeps the bot
- * usable in tests where the token is empty.
+ * Faza-3 turns the bot two-way: managers tap inline buttons under those
+ * notifications, the bot receives a `callback_query`, validates the
+ * presser against `users.telegram_id`, enforces RBAC, runs the matching
+ * domain service, and answers the callback.
  *
- * The factory is lazy: the first call constructs a Grammy `Bot`, every later
- * call returns the cached instance. `resetBotCache()` exists for tests that
- * mock `Bot` and need a fresh build.
+ * Deploy modes (ADR-0011 §1):
+ *   - Development: long polling (`bot.start()`) — no public URL needed.
+ *   - Production:  webhook (`POST /api/telegram/webhook`) — Express
+ *     hands each Telegram update to `bot.handleUpdate(req.body)`.
+ *
+ * Test mode is a no-op — the integration tests never construct a real
+ * Grammy `Bot` (empty BOT_TOKEN → `getTelegramBot()` throws, the outbox
+ * worker bails, callback handlers are never wired).
+ *
+ * The factory is lazy: the first call constructs a Grammy `Bot`, every
+ * later call returns the cached instance. `resetBotCache()` exists for
+ * tests that mock `Bot` and need a fresh build.
  */
 import { Bot, type BotConfig } from 'grammy';
 import { loadConfig } from '../../config/index.js';
+import { handleCallbackQuery, type CallbackContext } from './callbackHandler.js';
 
-/** Minimal surface the outbox worker needs from a Grammy bot. */
+/**
+ * Minimal surface the outbox worker needs from a Grammy bot. Kept narrow
+ * so tests can pass a `vi.fn()` stub instead of a real Grammy client.
+ *
+ * `sendMessage(other)` carries `reply_markup` for F3.3 inline keyboards.
+ */
 export type SendableBot = {
   api: {
     sendMessage(
@@ -27,7 +43,19 @@ export type SendableBot = {
   };
 };
 
+/**
+ * Inbound surface used by the webhook route. `handleUpdate` is Grammy's
+ * native entry point — `apps/backend/src/routes/telegramWebhook.ts`
+ * forwards parsed JSON updates to it.
+ */
+export type InboundBot = SendableBot & {
+  handleUpdate(update: unknown): Promise<void>;
+  start(opts?: { drop_pending_updates?: boolean }): Promise<void>;
+  stop(): Promise<void>;
+};
+
 let cached: SendableBot | undefined;
+let inboundWired = false;
 
 /**
  * Return a Grammy bot built from `cfg.bot.token`. Throws if the token is
@@ -50,12 +78,101 @@ export function getTelegramBot(options?: BotConfig<never>): SendableBot {
 }
 
 /**
+ * Wire the `callback_query:data` handler onto the cached bot. Idempotent
+ * — calling twice is harmless because Grammy `bot.on` is additive but we
+ * gate the registration on a module-level flag.
+ *
+ * Test mode (no BOT_TOKEN) is a no-op.
+ */
+export function ensureCallbackHandlerWired(): void {
+  if (inboundWired) return;
+  const cfg = loadConfig();
+  if (cfg.bot.token === '') return;
+  const bot = getTelegramBot() as unknown as Bot;
+  bot.on('callback_query:data', async (ctx) => {
+    // Defensive — Grammy guarantees `callbackQuery` exists for this
+    // event, but the dispatcher needs `update_id`, `from.id`, `data`,
+    // and `id` so we re-extract them through an opaque CallbackContext
+    // (the handler is unit-tested with a plain object).
+    const update = ctx.update;
+    const cq = ctx.callbackQuery;
+    if (cq === undefined) return;
+    const ctxAdapter: CallbackContext = {
+      updateId: update.update_id,
+      callbackQueryId: cq.id,
+      fromTelegramId: cq.from.id,
+      data: cq.data ?? '',
+      chatId: cq.message?.chat?.id ?? null,
+      messageId: cq.message?.message_id ?? null,
+      answerCallbackQuery: (text, opts) =>
+        ctx.answerCallbackQuery({ text, show_alert: opts?.showAlert ?? false }),
+      sendMessage: (text) => {
+        const chatId = cq.message?.chat?.id;
+        if (chatId === undefined) return Promise.resolve();
+        return ctx.api.sendMessage(chatId, text).then(() => undefined);
+      },
+      editReplyMarkup: () => {
+        const chatId = cq.message?.chat?.id;
+        const messageId = cq.message?.message_id;
+        if (chatId === undefined || messageId === undefined) return Promise.resolve();
+        return ctx.api
+          .editMessageReplyMarkup(chatId, messageId, {
+            reply_markup: { inline_keyboard: [] },
+          })
+          .then(() => undefined)
+          .catch(() => undefined); // best-effort; failure is non-fatal
+      },
+    };
+    await handleCallbackQuery(ctxAdapter);
+  });
+  inboundWired = true;
+}
+
+/**
+ * Start long polling (development). Resolves once Grammy has confirmed
+ * `getMe` and is consuming updates. The caller MUST `await stopBot()`
+ * before exiting to drain in-flight handlers.
+ *
+ * In test mode (empty token) this is a no-op.
+ */
+export async function startBotLongPolling(): Promise<void> {
+  const cfg = loadConfig();
+  if (cfg.bot.token === '') return;
+  ensureCallbackHandlerWired();
+  const bot = getTelegramBot() as unknown as InboundBot;
+  // `drop_pending_updates: true` keeps a fresh dev restart from re-
+  // processing every press queued up while the server was down — those
+  // are likely stale anyway. Production webhooks deliver exactly-once
+  // semantics (modulo retries), so this flag is dev-specific.
+  // Fire-and-forget: Grammy's `bot.start()` runs until `bot.stop()`
+  // is called, so the caller must NOT await this directly.
+  void bot.start({ drop_pending_updates: true });
+}
+
+/**
+ * Stop the bot. Cancels polling (dev) and lets Grammy drain its
+ * in-flight handlers. Webhook mode has no long-running task to stop.
+ */
+export async function stopBot(): Promise<void> {
+  if (cached === undefined) return;
+  const bot = cached as unknown as InboundBot;
+  if (typeof bot.stop === 'function') {
+    try {
+      await bot.stop();
+    } catch {
+      // Grammy throws when `stop` is called before `start`; ignore.
+    }
+  }
+}
+
+/**
  * TEST-ONLY — wipe the cached bot so a new `getTelegramBot()` call returns
  * a fresh instance (used by mocked-Grammy unit tests). Production code never
  * calls this.
  */
 export function resetBotCache(): void {
   cached = undefined;
+  inboundWired = false;
 }
 
 /**
@@ -65,4 +182,5 @@ export function resetBotCache(): void {
  */
 export function setTelegramBotForTesting(bot: SendableBot | undefined): void {
   cached = bot;
+  inboundWired = false;
 }

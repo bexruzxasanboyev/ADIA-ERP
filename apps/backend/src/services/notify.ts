@@ -32,6 +32,26 @@ export type NotificationType =
   | 'poster_sync_failed'
   | 'negative_stock_detected';
 
+/**
+ * Inline keyboard payload persisted into `notifications.inline_callback`
+ * (ADR-0011). The outbox worker translates this into Telegram's
+ * `reply_markup.inline_keyboard` 2-D array. Each button's `data` must be
+ * the `verb:entity:id` form parsed by `callbackHandler.ts` and must stay
+ * within Telegram's 64-byte `callback_data` limit.
+ *
+ * The wrapping object (`{buttons}`) — rather than a bare 2-D array —
+ * leaves room to attach metadata (e.g. {expires_at}) later without
+ * another column migration.
+ */
+export type InlineCallbackButton = {
+  readonly text: string;
+  readonly data: string;
+};
+
+export type InlineCallback = {
+  readonly buttons: ReadonlyArray<ReadonlyArray<InlineCallbackButton>>;
+};
+
 export type NotificationInput = {
   /** Recipient user id. Use `null` ONLY for broadcasts (the worker skips them). */
   readonly recipientUserId: number;
@@ -50,6 +70,15 @@ export type NotificationInput = {
   readonly dedupeKey?: string;
   /** Lookback window in minutes for the dedupe check. Default 24h. */
   readonly dedupeWindowMinutes?: number;
+  /**
+   * Optional Telegram inline keyboard (F3.3 / ADR-0011). When supplied,
+   * the outbox worker attaches the buttons under the message; tapping a
+   * button sends a `callback_query` the bot handles.
+   *
+   * Pass `undefined` (or omit) to send a plain message — the legacy
+   * Faza-1 behaviour.
+   */
+  readonly inlineCallback?: InlineCallback | null;
 };
 
 export type CreatedNotification = {
@@ -85,8 +114,8 @@ export async function createNotification(
 
   const { rows } = await tx.query<{ id: number }>(
     `INSERT INTO notifications
-       (recipient_user_id, type, title, body, payload, dedupe_key)
-     VALUES ($1, $2, $3, $4, $5, $6)
+       (recipient_user_id, type, title, body, payload, dedupe_key, inline_callback)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING id`,
     [
       input.recipientUserId,
@@ -97,6 +126,9 @@ export async function createNotification(
         ? null
         : (JSON.stringify(input.payload) as unknown as string),
       input.dedupeKey ?? null,
+      input.inlineCallback === undefined || input.inlineCallback === null
+        ? null
+        : (JSON.stringify(input.inlineCallback) as unknown as string),
     ],
   );
   const id = rows[0]?.id;

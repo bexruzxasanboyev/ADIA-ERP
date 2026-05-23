@@ -1197,6 +1197,18 @@ async function notifyReplenishmentCreated(
       qty_needed: request.qty_needed,
       requester_location_id: request.requester_location_id,
     },
+    // F3.3 / ADR-0011 — "Tezda bajarish" advances the request one hop,
+    // "Ko'rish" sends a follow-up detail message. The dispatcher enforces
+    // RBAC (pm or target-loc manager) at press time, so the buttons are
+    // safe to attach for every recipient.
+    inlineCallback: {
+      buttons: [
+        [
+          { text: "🔄 Tezda bajarish", data: `fast:req:${request.id}` },
+          { text: "📋 Ko'rish", data: `view:req:${request.id}` },
+        ],
+      ],
+    },
   });
 }
 
@@ -1247,6 +1259,16 @@ async function notifyReplenishmentTargetSet(
     },
     dedupeKey: `replenishment_created:target:${request.id}`,
     dedupeWindowMinutes: 24 * 60,
+    // F3.3 — same inline buttons as the requester-side nudge: the target
+    // manager is exactly the person allowed to fast-advance the request.
+    inlineCallback: {
+      buttons: [
+        [
+          { text: "🔄 Tezda bajarish", data: `fast:req:${request.id}` },
+          { text: "📋 Ko'rish", data: `view:req:${request.id}` },
+        ],
+      ],
+    },
   });
 }
 

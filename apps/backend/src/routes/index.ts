@@ -24,6 +24,7 @@ import { posterIntegrationRouter } from './posterIntegration.js';
 import { dashboardRouter } from './dashboard.js';
 import { adminRouter } from './admin.js';
 import { assistantRouter } from './assistant.js';
+import { telegramWebhookRouter } from './telegramWebhook.js';
 
 export const apiRouter: Router = Router();
 
@@ -38,6 +39,10 @@ apiRouter.use('/purchase-orders', purchaseOrdersRouter);
 apiRouter.use('/dashboard', dashboardRouter);
 apiRouter.use('/admin', adminRouter);
 apiRouter.use('/assistant', assistantRouter);
+// F3.3 / ADR-0011 — Telegram webhook (public, secret-token authed).
+// Mounted before the Poster sub-router so the JSON body parser at the
+// app level handles Telegram's `application/json` payloads.
+apiRouter.use('/telegram', telegramWebhookRouter);
 // Poster sends webhook payloads as form-encoded by default; parse them on
 // this sub-tree only (JWT routes elsewhere remain JSON-only).
 apiRouter.use(

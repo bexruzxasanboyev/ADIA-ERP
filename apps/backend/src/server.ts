@@ -39,6 +39,11 @@ import {
   startActionExpireWorker,
   stopActionExpireWorker,
 } from './workers/actionExpireCron.js';
+import {
+  ensureCallbackHandlerWired,
+  startBotLongPolling,
+  stopBot,
+} from './integrations/telegram/bot.js';
 
 function main(): void {
   const cfg = loadConfig(); // throws clearly on missing/invalid env
@@ -82,10 +87,21 @@ function main(): void {
 
   // Telegram outbox worker — only started when BOT_TOKEN is configured. The
   // outbox stays dormant in dev/test (the notifications still queue up; they
-  // simply do not leave the database). Outbound-only — no `bot.start()` here.
+  // simply do not leave the database).
   if (cfg.bot.token !== '') {
     startTelegramOutboxWorker();
     console.log('[server] telegram outbox worker started (*/30 seconds)');
+    // F3.3 / ADR-0011 — wire the inline-button handler. In dev/non-prod,
+    // also start long polling so a developer can press buttons without a
+    // public webhook URL. In production we expect Telegram to POST to
+    // `/api/telegram/webhook`; the same handler runs there.
+    ensureCallbackHandlerWired();
+    if (cfg.nodeEnv !== 'production') {
+      void startBotLongPolling();
+      console.log('[server] telegram bot long-polling started (dev mode)');
+    } else {
+      console.log('[server] telegram bot in webhook mode — POST /api/telegram/webhook');
+    }
   } else {
     console.log('[server] telegram outbox worker skipped — BOT_TOKEN is empty');
   }
@@ -100,6 +116,8 @@ function main(): void {
     stopMinmaxRecalcWorker();
     stopRefreshTokenCleanupWorker();
     stopActionExpireWorker();
+    // F3.3 — stop long-polling (if running); webhook mode has no task.
+    void stopBot();
     server.close(() => {
       void closePool().finally(() => process.exit(0));
     });

@@ -100,8 +100,10 @@ export async function runOneCycle(botOverride?: SendableBot): Promise<void> {
       body: string;
       title: string;
       telegram_send_attempts: number;
+      inline_callback: unknown;
     }>(
-      `SELECT n.id, n.recipient_user_id, n.body, n.title, n.telegram_send_attempts
+      `SELECT n.id, n.recipient_user_id, n.body, n.title,
+              n.telegram_send_attempts, n.inline_callback
          FROM notifications n
         WHERE n.telegram_sent = FALSE
           AND n.telegram_send_attempts < $1
@@ -159,6 +161,13 @@ type OutboxRow = {
   body: string;
   title: string;
   telegram_send_attempts: number;
+  /**
+   * F3.3 / ADR-0011 — the JSONB `notifications.inline_callback` column.
+   * `pg` returns JSONB as already-parsed JS values (object | array | null),
+   * but we type it as `unknown` so the worker stays defensive against a
+   * malformed row leaking through (e.g. a hand-edited row in the DB).
+   */
+  inline_callback: unknown;
 };
 
 type Outcome = 'sent' | 'failed' | 'no-recipient';
@@ -210,9 +219,17 @@ async function deliverOne(bot: SendableBot, row: OutboxRow): Promise<Outcome> {
   // (it accepts string | number) to avoid precision loss for large ids.
   const chatId = typeof tgIdRaw === 'string' ? tgIdRaw : String(tgIdRaw);
   const text = formatMessage(row);
+  // F3.3 — attach the inline keyboard when the row has one. A malformed
+  // payload (`unknown` shape, missing buttons) silently degrades to "no
+  // keyboard"; we never want one bad row to abort the cycle.
+  const replyMarkup = buildReplyMarkup(row.inline_callback);
+  const sendOpts: Record<string, unknown> = {};
+  if (replyMarkup !== undefined) {
+    sendOpts.reply_markup = replyMarkup;
+  }
 
   try {
-    await bot.api.sendMessage(chatId, text);
+    await bot.api.sendMessage(chatId, text, sendOpts);
     await query(
       `UPDATE notifications
           SET telegram_sent = TRUE,
@@ -246,4 +263,41 @@ function formatMessage(row: OutboxRow): string {
   if (title === '') return body;
   if (body === '') return title;
   return `${title}\n${body}`;
+}
+
+/**
+ * Translate the stored `notifications.inline_callback` payload into a
+ * Grammy `reply_markup.inline_keyboard` 2-D array.
+ *
+ * Returns `undefined` when the row has no buttons OR when the JSONB shape
+ * is unrecognised (defensive — a single malformed row must NOT stop
+ * delivery of the rest of the batch).
+ *
+ * Each button text is truncated at 64 chars (Telegram's hard limit) and
+ * any `data` longer than 64 bytes is dropped, since Telegram would
+ * otherwise refuse the message and fail the send.
+ */
+function buildReplyMarkup(raw: unknown): { inline_keyboard: unknown[][] } | undefined {
+  if (raw === null || raw === undefined) return undefined;
+  if (typeof raw !== 'object') return undefined;
+  const buttons = (raw as { buttons?: unknown }).buttons;
+  if (!Array.isArray(buttons) || buttons.length === 0) return undefined;
+  const keyboard: { text: string; callback_data: string }[][] = [];
+  for (const row of buttons) {
+    if (!Array.isArray(row)) continue;
+    const line: { text: string; callback_data: string }[] = [];
+    for (const btn of row) {
+      if (btn === null || typeof btn !== 'object') continue;
+      const text = (btn as { text?: unknown }).text;
+      const data = (btn as { data?: unknown }).data;
+      if (typeof text !== 'string' || typeof data !== 'string') continue;
+      if (text.length === 0 || data.length === 0) continue;
+      // Telegram limits: text <= 64 chars (truncate), callback_data <= 64 bytes.
+      if (Buffer.byteLength(data, 'utf8') > 64) continue;
+      line.push({ text: text.slice(0, 64), callback_data: data });
+    }
+    if (line.length > 0) keyboard.push(line);
+  }
+  if (keyboard.length === 0) return undefined;
+  return { inline_keyboard: keyboard };
 }
