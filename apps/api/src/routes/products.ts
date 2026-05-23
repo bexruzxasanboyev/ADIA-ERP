@@ -16,7 +16,7 @@
  *   - deep cycle (A->B->A...)  : a recursive reachability walk before write.
  */
 import { Router } from 'express';
-import { query, withTransaction } from '../db/index.js';
+import { query, withTransaction, type TxClient } from '../db/index.js';
 import { AppError } from '../errors/index.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
@@ -159,8 +159,13 @@ productsRouter.get(
  * Reject a deep BOM cycle (AC2.2). Given the proposed direct components of
  * `productId`, walk the existing recipe graph from each component: if any
  * path reaches `productId`, adding it would close a cycle.
+ *
+ * Runs against a `TxClient` so the BFS, the DELETE and the INSERTs all live
+ * inside ONE transaction — that is the only way to keep two concurrent
+ * recipe writes from racing past each other's check and closing a cycle.
  */
 async function assertNoBomCycle(
+  client: TxClient,
   productId: number,
   componentIds: readonly number[],
 ): Promise<void> {
@@ -182,12 +187,12 @@ async function assertNoBomCycle(
       continue;
     }
     visited.add(current);
-    const { rows } = await query<{ component_product_id: number }>(
+    const { rows } = await client.query<{ component_product_id: number }>(
       'SELECT component_product_id FROM recipes WHERE product_id = $1',
       [current],
     );
     for (const row of rows) {
-      queue.push(row.component_product_id);
+      queue.push(Number(row.component_product_id));
     }
   }
 }
@@ -245,14 +250,16 @@ productsRouter.put(
       }
     }
 
-    // AC2.2 — deep cycle guard before writing.
-    await assertNoBomCycle(
-      productId,
-      items.map((it) => it.componentId),
-    );
-
-    // Full replace inside one transaction: delete old lines, insert new, audit.
+    // Full replace inside one transaction: cycle check + delete old lines +
+    // insert new + audit. AC2.2 — running the cycle BFS on the same client
+    // as the writes is the only way to keep two concurrent recipe writes
+    // from racing past each other's check and closing a cycle.
     const inserted = await withTransaction(async (tx) => {
+      await assertNoBomCycle(
+        tx,
+        productId,
+        items.map((it) => it.componentId),
+      );
       await tx.query('DELETE FROM recipes WHERE product_id = $1', [productId]);
       const out: RecipeRow[] = [];
       for (const it of items) {

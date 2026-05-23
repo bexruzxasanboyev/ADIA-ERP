@@ -21,6 +21,18 @@ export const REPLENISHMENT_SCAN_SCHEDULE = '*/5 * * * *';
 let task: cron.ScheduledTask | undefined;
 
 /**
+ * Re-entrancy guard — a cycle that runs longer than the 5-minute interval
+ * must not be overlapped by the next tick (it would create duplicate
+ * replenishment requests, race on the same rows, and double the DB load).
+ * Module scope is sufficient because the worker is a single Node process.
+ * For a multi-process deployment we would upgrade this to a PostgreSQL
+ * `pg_try_advisory_lock`; MVP runs as one PM2 process so the flag is enough.
+ *
+ * Exported for tests only.
+ */
+export const cronGuard: { running: boolean } = { running: false };
+
+/**
  * Start the cron loop. Safe to call once at server boot; calling twice is a
  * no-op (the second call is ignored). Returns the scheduled task for tests.
  */
@@ -48,6 +60,14 @@ export function stopReplenishmentScanWorker(): void {
  * synchronously rather than wait for the cron.
  */
 export async function runOneCycle(): Promise<void> {
+  // Re-entrancy guard — if the previous cycle is still in flight, skip this
+  // tick. The cron fires every 5 minutes; an in-progress cycle catches up on
+  // its next own tick.
+  if (cronGuard.running) {
+    console.log('[replenishment-scan] previous cycle still running, skipping');
+    return;
+  }
+  cronGuard.running = true;
   try {
     const summary = await runEngineCycle();
     if (summary.scanned > 0 || summary.created > 0 || summary.advanced > 0) {
@@ -57,5 +77,7 @@ export async function runOneCycle(): Promise<void> {
     }
   } catch (err) {
     console.error('[replenishment-scan] cycle failed:', (err as Error).message);
+  } finally {
+    cronGuard.running = false;
   }
 }

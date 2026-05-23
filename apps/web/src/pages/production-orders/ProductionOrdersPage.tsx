@@ -198,7 +198,7 @@ export function ProductionOrdersPage() {
                       {row.product_name}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {formatQty(Number(row.qty))} {unit}
+                      {formatQty(row.qty)} {unit}
                     </TableCell>
                     <TableCell>{row.location_name}</TableCell>
                     <TableCell className="text-muted-foreground">

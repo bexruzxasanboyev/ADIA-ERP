@@ -19,7 +19,7 @@ import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { writeAudit, poolRunner } from '../lib/audit.js';
-import { getPrincipal, isSuperAdmin } from '../lib/principal.js';
+import { assertLocationAccess, getPrincipal, isSuperAdmin } from '../lib/principal.js';
 import {
   asObject,
   optionalId,
@@ -116,6 +116,14 @@ productionOrdersRouter.post(
     }
     const note = optionalString(body, 'note') ?? null;
 
+    // IDOR guard — a scoped production_manager may only raise an order for its
+    // OWN production location. `pm` (super-admin) bypasses via
+    // `assertLocationAccess`. `central_warehouse_manager` is chain-wide so any
+    // location is OK; the role gate above already filtered everyone else out.
+    if (principal.role === 'production_manager') {
+      assertLocationAccess(principal, locationId);
+    }
+
     const inserted = await withTransaction(async (tx) => {
       const { rows } = await tx.query<ProductionOrderRow>(
         `INSERT INTO production_orders
@@ -152,6 +160,23 @@ productionOrdersRouter.patch(
     const orderId = parseIdParam(req.params.id, 'id');
     const body = asObject(req.body);
     const nextStatus = requireEnum(body, 'status', ['in_progress', 'done', 'cancelled'] as const);
+
+    // IDOR guard — a scoped production_manager may only act on orders whose
+    // production location matches its own. We read once with a row lock to
+    // serialise against concurrent transitions; the same row's `status` is
+    // re-read inside each downstream branch under that lock so this check is
+    // free of TOCTOU windows.
+    if (principal.role === 'production_manager') {
+      const { rows } = await query<{ location_id: number }>(
+        'SELECT location_id FROM production_orders WHERE id = $1',
+        [orderId],
+      );
+      const existing = rows[0];
+      if (existing === undefined) {
+        throw AppError.notFound('Production order not found.');
+      }
+      assertLocationAccess(principal, Number(existing.location_id));
+    }
 
     if (nextStatus === 'done') {
       // AC5.3 — the whole "tayyor" flow + the replenishment advance commit

@@ -176,7 +176,7 @@ export function ReplenishmentDetailPage() {
           </Field>
           <Field label="Kerakli miqdor">
             <span className="tabular-nums">
-              {formatQty(Number(request.qty_needed))} {request.product_unit}
+              {formatQty(request.qty_needed)} {request.product_unit}
             </span>
           </Field>
           <Field label="So‘rovchi bo‘g‘in">

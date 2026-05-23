@@ -98,8 +98,15 @@ describe('POST /api/purchase-orders/:id/approve — role gating + validation', (
     const supplyLoc = await makeLocation(ctx.db, { type: 'supply' });
     const product = await makeProduct(ctx.db, { type: 'raw' });
     const supplyMgrA = await makeUser(ctx.db, { role: 'supply_manager', locationId: supplyLoc });
-    const supplyMgrB = await makeUser(ctx.db, { role: 'supply_manager', locationId: supplyLoc });
-    const orderId = await makeDraftPO(product, rawWh);
+    // The PO is raised by supplyMgrA — the IDOR guard requires the approver
+    // to be the same user that created the order (only its author may
+    // collect the manager-side signature).
+    const { rows: poRow } = await ctx.db.query<{ id: number }>(
+      `INSERT INTO purchase_orders (product_id, qty, target_location_id, status, created_by)
+       VALUES ($1, 10, $2, 'draft', $3) RETURNING id`,
+      [product, rawWh, supplyMgrA.id],
+    );
+    const orderId = Number(poRow[0]?.id);
 
     const first = await request(ctx.app)
       .post(`/api/purchase-orders/${orderId}/approve`)
@@ -109,11 +116,11 @@ describe('POST /api/purchase-orders/:id/approve — role gating + validation', (
     expect(first.body.purchase_order?.manager_approved_by).toBe(supplyMgrA.id);
     expect(first.body.purchase_order?.status).toBe('draft');
 
-    // A second supply_manager taking the same step is rejected — the first
-    // approver stays on file (idempotency on (step, order)).
+    // The same supply_manager re-taking the same step is a no-op — the
+    // existing approver row stays on file (idempotency on (step, order)).
     const second = await request(ctx.app)
       .post(`/api/purchase-orders/${orderId}/approve`)
-      .set('Authorization', `Bearer ${supplyMgrB.token}`)
+      .set('Authorization', `Bearer ${supplyMgrA.token}`)
       .send({ step: 'manager' });
     expect(second.status).toBe(200);
     expect(second.body.purchase_order?.manager_approved_by).toBe(supplyMgrA.id);

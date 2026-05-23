@@ -173,16 +173,18 @@ export const TERMINAL_REPLENISHMENT_STATUSES: readonly ReplenishmentStatus[] = [
 
 /**
  * A single replenishment_requests row.
- * Note: `qty_needed` is returned as a numeric *string* by the backend
- * (PostgreSQL `NUMERIC` → JSON string). The client is responsible for
- * parsing it with `Number(...)` before formatting.
+ * `qty_needed` is a JS `number`: the backend pool (`apps/api/src/db/pool.ts`)
+ * registers a NUMERIC (OID 1700) type parser that calls `parseFloat`, so every
+ * NUMERIC column arrives on the wire and at this client as a plain number.
+ * Faza-1 columns are NUMERIC(14,4) / NUMERIC(14,2) — well within JS exact
+ * integer/float range.
  */
 export interface ReplenishmentRequest {
   id: number;
   product_id: number;
   requester_location_id: number;
   target_location_id: number | null;
-  qty_needed: string;
+  qty_needed: number;
   status: ReplenishmentStatus;
   production_order_id: number | null;
   purchase_order_id: number | null;
@@ -238,13 +240,14 @@ export type ProductionOrderStatus = 'new' | 'in_progress' | 'done' | 'cancelled'
 
 /**
  * A single production_orders row.
- * `qty` is a numeric string (NUMERIC → JSON).
+ * `qty` is a JS `number` — see the NUMERIC parser note on
+ * `ReplenishmentRequest.qty_needed`.
  * `deadline` is an ISO date (YYYY-MM-DD) or null.
  */
 export interface ProductionOrder {
   id: number;
   product_id: number;
-  qty: string;
+  qty: number;
   location_id: number;
   target_location_id: number | null;
   deadline: string | null;
@@ -278,12 +281,13 @@ export type PurchaseApprovalStep = 'manager' | 'keeper';
 
 /**
  * A single purchase_orders row.
- * `qty` is a numeric string. Approvals timestamps are ISO strings.
+ * `qty` is a JS `number` — see the NUMERIC parser note on
+ * `ReplenishmentRequest.qty_needed`. Approval timestamps are ISO strings.
  */
 export interface PurchaseOrder {
   id: number;
   product_id: number;
-  qty: string;
+  qty: number;
   supplier_id: number | null;
   target_location_id: number;
   status: PurchaseOrderStatus;

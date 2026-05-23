@@ -46,7 +46,7 @@ const REQUEST: ReplenishmentRequest = {
   product_id: 11,
   requester_location_id: 21,
   target_location_id: null,
-  qty_needed: '50',
+  qty_needed: 50,
   status: 'NEW',
   production_order_id: null,
   purchase_order_id: null,

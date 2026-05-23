@@ -38,7 +38,7 @@ const RAW_LOC = {
 const ORDER: PurchaseOrder = {
   id: 88,
   product_id: 3,
-  qty: '200',
+  qty: 200,
   supplier_id: null,
   target_location_id: 4,
   status: 'draft',

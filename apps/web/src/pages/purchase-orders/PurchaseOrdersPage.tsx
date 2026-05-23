@@ -148,7 +148,7 @@ export function PurchaseOrdersPage() {
                         {row.product_name}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
-                        {formatQty(Number(row.qty))} {unit}
+                        {formatQty(row.qty)} {unit}
                       </TableCell>
                       <TableCell>{row.target_location_name}</TableCell>
                       <TableCell>

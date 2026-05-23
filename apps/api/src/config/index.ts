@@ -19,6 +19,11 @@ export type AppConfig = {
   readonly nodeEnv: 'development' | 'test' | 'production';
   readonly port: number;
   readonly databaseUrl: string;
+  /**
+   * Allowed CORS origin for the web client (single-origin — this app is a
+   * single-tenant ERP, not a public API). Defaults to the Vite dev server.
+   */
+  readonly webOrigin: string;
   readonly jwt: {
     readonly secret: string;
     readonly expiresInSeconds: number;
@@ -101,6 +106,7 @@ export function loadConfig(): AppConfig {
     nodeEnv,
     port: parsePositiveInt('PORT', optional('PORT', '3001')),
     databaseUrl,
+    webOrigin: optional('WEB_ORIGIN', 'http://localhost:5173'),
     jwt: Object.freeze({
       secret: jwtSecret,
       expiresInSeconds: parsePositiveInt(

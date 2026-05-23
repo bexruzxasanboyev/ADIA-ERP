@@ -34,7 +34,11 @@ export function TransitionTimeline({ transitions }: TransitionTimelineProps) {
   }
 
   return (
-    <ol className="relative space-y-4 px-4 py-4" aria-label="O‘tishlar tarixi">
+    <ol
+      className="relative space-y-4 px-4 py-4"
+      aria-label="O‘tishlar tarixi"
+      aria-live="polite"
+    >
       {transitions.map((t, idx) => {
         const isLast = idx === transitions.length - 1;
         const actorLabel =

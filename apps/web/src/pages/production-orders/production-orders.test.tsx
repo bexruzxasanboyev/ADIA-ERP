@@ -39,7 +39,7 @@ const PROD_LOC = {
 const ORDER: ProductionOrder = {
   id: 77,
   product_id: 5,
-  qty: '10',
+  qty: 10,
   location_id: 9,
   target_location_id: null,
   deadline: null,

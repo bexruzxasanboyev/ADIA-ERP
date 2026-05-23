@@ -12,7 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runEngineCycle } from '../src/services/replenishment.js';
-import { runOneCycle } from '../src/workers/replenishmentScan.js';
+import { cronGuard, runOneCycle } from '../src/workers/replenishmentScan.js';
 
 vi.mock('../src/services/replenishment.js', () => ({
   // Mocked spy — every test sets its own behaviour via mockResolvedValueOnce
@@ -28,6 +28,9 @@ describe('runOneCycle (replenishment-scan worker)', () => {
 
   beforeEach(() => {
     mockedRunEngineCycle.mockReset();
+    // Reset the module-scope re-entrancy flag between tests — otherwise a
+    // mid-run failure could leak `running = true` into the next case.
+    cronGuard.running = false;
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
   });
@@ -74,5 +77,53 @@ describe('runOneCycle (replenishment-scan worker)', () => {
     expect(line).toContain('[replenishment-scan] cycle failed');
     const reason = String(errorSpy.mock.calls[0]?.[1] ?? '');
     expect(reason).toContain('boom');
+  });
+
+  it('skips overlapping ticks — only one cycle runs at a time (C3)', async () => {
+    // Make the first cycle take a measurable, controlled amount of time.
+    // While it is still running, fire a second `runOneCycle()` and check
+    // that the second call is skipped instead of starting a parallel
+    // `runEngineCycle()` (which would duplicate replenishment work).
+    let resolveFirst!: () => void;
+    mockedRunEngineCycle.mockImplementationOnce(
+      () =>
+        new Promise<{ scanned: number; created: number; advanced: number }>((resolve) => {
+          resolveFirst = () => resolve({ scanned: 0, created: 0, advanced: 0 });
+        }),
+    );
+
+    const firstCall = runOneCycle();
+    // Yield to the event loop so the guard flips to `running`.
+    await Promise.resolve();
+    expect(cronGuard.running).toBe(true);
+
+    const secondCall = runOneCycle();
+    await secondCall;
+    // The second call must NOT have invoked `runEngineCycle` again.
+    expect(mockedRunEngineCycle).toHaveBeenCalledTimes(1);
+    const skipLine = (logSpy.mock.calls.find((c) => String(c[0] ?? '').includes('skipping')) ?? [])[0];
+    expect(String(skipLine ?? '')).toContain('previous cycle still running');
+
+    // Let the first cycle finish.
+    resolveFirst();
+    await firstCall;
+    expect(cronGuard.running).toBe(false);
+  });
+
+  it('after a cycle completes the next tick may run again', async () => {
+    mockedRunEngineCycle.mockResolvedValueOnce({ scanned: 0, created: 0, advanced: 0 });
+    await runOneCycle();
+    expect(cronGuard.running).toBe(false);
+
+    // The next tick still works — the flag was correctly released.
+    mockedRunEngineCycle.mockResolvedValueOnce({ scanned: 1, created: 0, advanced: 0 });
+    await runOneCycle();
+    expect(mockedRunEngineCycle).toHaveBeenCalledTimes(2);
+  });
+
+  it('releases the guard even when the cycle throws', async () => {
+    mockedRunEngineCycle.mockRejectedValueOnce(new Error('boom2'));
+    await runOneCycle();
+    expect(cronGuard.running).toBe(false);
   });
 });

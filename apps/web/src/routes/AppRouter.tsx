@@ -80,19 +80,23 @@ export function AppRouter() {
         <Route
           path="/production"
           element={
-            <PlaceholderPage
-              title="Ishlab chiqarish"
-              description="Ishlab chiqarish zayafkalari va jarayoni."
-            />
+            <RoleRoute allow={['pm', 'production_manager']}>
+              <PlaceholderPage
+                title="Ishlab chiqarish"
+                description="Ishlab chiqarish zayafkalari va jarayoni."
+              />
+            </RoleRoute>
           }
         />
         <Route
           path="/supply"
           element={
-            <PlaceholderPage
-              title="Ta’minot"
-              description="Ta’minot so‘rovlari va yetkazib beruvchilar."
-            />
+            <RoleRoute allow={['pm', 'supply_manager']}>
+              <PlaceholderPage
+                title="Ta’minot"
+                description="Ta’minot so‘rovlari va yetkazib beruvchilar."
+              />
+            </RoleRoute>
           }
         />
         <Route path="/replenishment" element={<ReplenishmentPage />} />

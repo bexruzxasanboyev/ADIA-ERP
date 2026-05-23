@@ -134,7 +134,7 @@ export function ReplenishmentPage() {
                       {row.product_name}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {formatQty(Number(row.qty_needed))} {row.product_unit}
+                      {formatQty(row.qty_needed)} {row.product_unit}
                     </TableCell>
                     <TableCell>{row.requester_location_name}</TableCell>
                     <TableCell>
