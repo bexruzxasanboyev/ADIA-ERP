@@ -296,6 +296,149 @@ describe('Poster seedSync — ingredients + prepacks (BOM)', () => {
     expect(recipes[1]?.qty_per_unit).toBeCloseTo(0.0002, 6);
   });
 
+  it('isolates per-prepack failures so one bad row does NOT poison the rest (Prove-It regression)', async () => {
+    // Sprint 3 audit P1: against a real Poster account 1121 prepacks came
+    // down the wire but only ~109 landed — every prepack AFTER the first
+    // failure surfaced as "current transaction is aborted, commands ignored
+    // until end of transaction block". Root cause: an inner `try/catch`
+    // around `INSERT INTO recipes` inside `withTransaction` silently
+    // swallowed the error message but left the tx aborted (Postgres only
+    // allows a mid-tx recovery via SAVEPOINT). After the fix:
+    //   - per-row SAVEPOINT inside `replaceRecipe` so a single bad recipe
+    //     row does not abort the prepack's whole BOM;
+    //   - per-prepack `try/catch` in `syncPrepacks` so a hard upsert
+    //     failure on one prepack does not abort the loop;
+    //   - `failedItems` captured and surfaced as `partial` + `errorDetail`.
+    //
+    // We engineer a hard failure on prepack #2 by forcing a NUMERIC(14,4)
+    // overflow on `qty_per_unit` — `structure_brutto = 1e18`. The recipe
+    // INSERT raises a numeric_value_out_of_range (22003) inside the
+    // SAVEPOINT and is rolled back; the prepack itself still gets the
+    // upsert (no BOM rows survive), so `recordsApplied` counts prepacks
+    // attempted, but `failedItems` collects nothing for this case because
+    // SAVEPOINT swallows the recipe row failure cleanly. To prove the
+    // OUTER per-prepack catch we also force a true upsert failure on
+    // prepack #3 by pre-seeding a row that collides on the partial UNIQUE
+    // via a path the two-phase upsert CANNOT recover from.
+    //
+    // Pragmatic version: drive prepack #2 with a `qty_per_unit` overflow
+    // that fails inside replaceRecipe's SAVEPOINT (proves SAVEPOINT fix),
+    // and assert that prepack #1 AND prepack #3 BOTH land with recipes —
+    // before the fix prepack #3 would have surfaced "transaction is
+    // aborted" from prepack #2's poisoned outer tx.
+
+    const client = clientForResponses({
+      'menu.getIngredients': [
+        { ingredient_id: 100, ingredient_name: 'Flour', ingredient_unit: 'kg' },
+      ],
+      'menu.getPrepacks': [
+        // 1. clean prepack — must land with its recipe.
+        {
+          product_id: '500',
+          ingredient_id: '600',
+          product_name: 'Good prepack A',
+          out: 1,
+          ingredients: [
+            {
+              structure_id: 's1',
+              ingredient_id: '100',
+              structure_unit: 'kg',
+              structure_type: '1',
+              structure_brutto: 0.5,
+              ingredient_name: 'Flour',
+              ingredient_unit: 'kg',
+            },
+          ],
+        },
+        // 2. poisoned prepack — `structure_brutto = 1e18` overflows
+        // NUMERIC(14,4). Without SAVEPOINT, this aborts the whole tx and
+        // prepack #3 below would surface "transaction is aborted".
+        {
+          product_id: '502',
+          ingredient_id: '602',
+          product_name: 'Overflow prepack',
+          out: 1,
+          ingredients: [
+            {
+              structure_id: 's2',
+              ingredient_id: '100',
+              structure_unit: 'kg',
+              structure_type: '1',
+              structure_brutto: 1e18,
+              ingredient_name: 'Flour',
+              ingredient_unit: 'kg',
+            },
+          ],
+        },
+        // 3. clean prepack — REGRESSION ASSERTION: this must land. Before
+        // the fix prepack #2's aborted tx poisoned this whole iteration.
+        {
+          product_id: '503',
+          ingredient_id: '603',
+          product_name: 'Good prepack B',
+          out: 2,
+          ingredients: [
+            {
+              structure_id: 's3',
+              ingredient_id: '100',
+              structure_unit: 'kg',
+              structure_type: '1',
+              structure_brutto: 1,
+              ingredient_name: 'Flour',
+              ingredient_unit: 'kg',
+            },
+          ],
+        },
+      ],
+    });
+
+    await syncIngredients(client);
+    const r = await syncPrepacks(client);
+    // All three prepacks were ATTEMPTED — none threw out to the outer
+    // catch (SAVEPOINT contained the failure). recordsApplied counts
+    // prepacks that finished their loop body.
+    expect(r.recordsApplied).toBe(3);
+
+    // All three prepack rows are in the DB (the upsert happens before
+    // replaceRecipe).
+    const { rows: prepacks } = await ctx.db.query<{ poster_product_id: number; type: string }>(
+      `SELECT poster_product_id, type FROM products
+        WHERE poster_product_id IN (500, 502, 503) ORDER BY poster_product_id`,
+    );
+    expect(prepacks.map((p) => p.poster_product_id)).toEqual([500, 502, 503]);
+    expect(prepacks.every((p) => p.type === 'semi')).toBe(true);
+
+    // The CRITICAL regression assertion: prepack #3's BOM landed. Before
+    // the SAVEPOINT fix, prepack #2's overflow aborted the recipe tx and
+    // prepack #3 surfaced "current transaction is aborted, commands
+    // ignored until end of transaction block". After the fix, prepack #3
+    // has its recipe row.
+    const { rows: recipes } = await ctx.db.query<{
+      product_id: number;
+      qty_per_unit: string;
+    }>(
+      `SELECT r.product_id, r.qty_per_unit::text AS qty_per_unit
+         FROM recipes r
+         JOIN products p ON p.id = r.product_id
+        WHERE p.poster_product_id IN (500, 503)
+        ORDER BY p.poster_product_id`,
+    );
+    expect(recipes.length).toBe(2);
+    // Prepack #1 — 0.5 kg per 1 out = 0.5
+    expect(Number(recipes[0]?.qty_per_unit)).toBeCloseTo(0.5, 4);
+    // Prepack #3 — 1 kg per 2 out = 0.5
+    expect(Number(recipes[1]?.qty_per_unit)).toBeCloseTo(0.5, 4);
+
+    // Prepack #2 has NO recipe (the row failed inside its SAVEPOINT and
+    // was rolled back). This proves the SAVEPOINT scoping.
+    const { rows: badRecipes } = await ctx.db.query<{ product_id: number }>(
+      `SELECT r.product_id FROM recipes r
+         JOIN products p ON p.id = r.product_id
+        WHERE p.poster_product_id = 502`,
+    );
+    expect(badRecipes).toHaveLength(0);
+  });
+
   it('skips a prepack component whose ingredient is not yet seeded', async () => {
     const client = clientForResponses({
       'menu.getIngredients': [

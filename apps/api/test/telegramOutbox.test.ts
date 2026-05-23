@@ -142,12 +142,68 @@ describe('telegram outbox worker', () => {
     const { rows } = await ctx.db.query<{
       telegram_sent: boolean;
       error_detail: string | null;
+      telegram_send_attempts: number;
     }>(
-      `SELECT telegram_sent, error_detail FROM notifications WHERE id = $1`,
+      `SELECT telegram_sent, error_detail, telegram_send_attempts
+         FROM notifications WHERE id = $1`,
       [notifId],
     );
     expect(rows[0]?.telegram_sent).toBe(false);
     expect(rows[0]?.error_detail).toBe('no telegram_id');
+    // Regression guard (Sprint 3 audit P1): the cycle MUST cap
+    // `telegram_send_attempts` at MAX_SEND_ATTEMPTS so the SELECT's
+    // `attempts < MAX_SEND_ATTEMPTS` predicate filters this row out on the
+    // next tick — otherwise we'd re-SELECT + re-UPDATE this row every 30s
+    // forever (resource leak).
+    expect(rows[0]?.telegram_send_attempts).toBe(MAX_SEND_ATTEMPTS);
+  });
+
+  it('caps no-telegram_id rows so they stop being re-picked after MAX_SEND_ATTEMPTS (Prove-It regression)', async () => {
+    // Sprint 3 audit P1: previously the no-telegram_id branch wrote
+    // `error_detail` but left `telegram_send_attempts = 0`, so every 30s
+    // cycle would re-SELECT the row, re-UPDATE the same `error_detail`, and
+    // loop forever. After the fix, the FIRST cycle caps the counter and
+    // the SECOND cycle picks ZERO rows.
+    const userId = await makeUser({
+      email: 'cap@test.local',
+      role: 'pm',
+      telegramId: null,
+    });
+    const notifId = await makeNotification({ userId });
+    const { bot: bot1 } = makeStubBot();
+
+    // First cycle — the row is processed once, attempts get capped.
+    await runOneCycle(bot1);
+
+    // Inspect the row directly via the same predicate used by the worker.
+    const stillPickable = await ctx.db.query<{ id: number }>(
+      `SELECT id FROM notifications
+         WHERE telegram_sent = FALSE
+           AND telegram_send_attempts < $1
+           AND id = $2`,
+      [MAX_SEND_ATTEMPTS, notifId],
+    );
+    expect(stillPickable.rows).toHaveLength(0);
+
+    // Second cycle — nothing should happen. We use a fresh spy and assert
+    // that no SQL UPDATE touched the row by checking `updated_at` (or by
+    // re-reading the row and confirming attempts did NOT keep climbing).
+    const { bot: bot2, sendMessage: send2 } = makeStubBot();
+    const before = await ctx.db.query<{ telegram_send_attempts: number }>(
+      `SELECT telegram_send_attempts FROM notifications WHERE id = $1`,
+      [notifId],
+    );
+
+    await runOneCycle(bot2);
+
+    expect(send2).not.toHaveBeenCalled();
+    const after = await ctx.db.query<{ telegram_send_attempts: number }>(
+      `SELECT telegram_send_attempts FROM notifications WHERE id = $1`,
+      [notifId],
+    );
+    // Counter stays put — the worker did NOT re-touch this row.
+    expect(after.rows[0]?.telegram_send_attempts).toBe(before.rows[0]?.telegram_send_attempts);
+    expect(after.rows[0]?.telegram_send_attempts).toBe(MAX_SEND_ATTEMPTS);
   });
 
   it('increments telegram_send_attempts and stores error_detail on Grammy failure', async () => {

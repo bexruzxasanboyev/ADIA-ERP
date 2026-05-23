@@ -96,4 +96,93 @@ describe('PosterClient', () => {
   it('throws clearly when the token is empty', () => {
     expect(() => new PosterClient({ token: '   ' })).toThrow(/token is missing/);
   });
+
+  // Sprint 3 audit P2: `menu.getIngredients` surfaced as `fetch failed` on the
+  // very first call after process start (Poster's cold-start is 4–5s; old 10s
+  // timeout left no headroom). Fix: bump default timeout to 20s AND retry
+  // ONCE on transient failures (AbortError / `fetch failed`).
+  it('retries once on a transient `fetch failed` and succeeds on the second attempt', async () => {
+    let attempts = 0;
+    const client = new PosterClient({
+      token: 'acc:xxx',
+      minIntervalMs: 0,
+      fetcher: ((_url: unknown) => {
+        attempts += 1;
+        if (attempts === 1) {
+          // Mimic undici's bare network failure — no `.name = AbortError`.
+          return Promise.reject(new Error('fetch failed'));
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({ response: [{ spot_id: '1', name: 'Кукча' }] }), {
+            status: 200,
+          }),
+        );
+      }) as unknown as typeof fetch,
+    });
+    const spots = await client.getSpots();
+    expect(attempts).toBe(2);
+    expect(spots).toHaveLength(1);
+  });
+
+  it('retries once on AbortError (cold-start timeout) and succeeds on the second attempt', async () => {
+    let attempts = 0;
+    const client = new PosterClient({
+      token: 'acc:xxx',
+      minIntervalMs: 0,
+      timeoutMs: 30,
+      fetcher: ((_url: unknown, init?: RequestInit) => {
+        attempts += 1;
+        if (attempts === 1) {
+          // Never resolve on the first attempt — let the timeout abort it.
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+              const e = new Error('aborted');
+              e.name = 'AbortError';
+              reject(e);
+            });
+          });
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({ response: [] }), { status: 200 }),
+        );
+      }) as unknown as typeof fetch,
+    });
+    await client.getSpots();
+    expect(attempts).toBe(2);
+  });
+
+  it('does NOT retry on HTTP 4xx/5xx or Poster `{error}` envelopes', async () => {
+    let attempts = 0;
+    const client = new PosterClient({
+      token: 'acc:xxx',
+      minIntervalMs: 0,
+      fetcher: ((_url: unknown) => {
+        attempts += 1;
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: { code: 35, message: 'no access' } }), {
+            status: 200,
+          }),
+        );
+      }) as unknown as typeof fetch,
+    });
+    await expect(client.getSpots()).rejects.toBeInstanceOf(PosterApiError);
+    // Exactly one attempt — Poster error envelopes are deterministic and a
+    // retry would only waste a slot against the 5 req/sec ceiling.
+    expect(attempts).toBe(1);
+  });
+
+  it('default timeout is 20s (Sprint 3 audit P2 — Poster cold-start headroom)', () => {
+    // Construct without explicit `timeoutMs` and verify the default has
+    // been bumped from 10_000 to 20_000. We probe via behaviour: a fetch
+    // that resolves at 12s would have failed against the old default but
+    // succeeds against the new one. Rather than wait 12s in the test we
+    // assert the constructor stored the right value by inspecting the
+    // private field via a type-cast.
+    const client = new PosterClient({ token: 'acc:xxx' });
+    // Internal field access via `as any` keeps the API surface clean while
+    // letting the test pin the default — bumping it back to 10s would
+    // re-open the cold-start bug, so the regression guard is justified.
+    const timeoutMs = (client as unknown as { timeoutMs: number }).timeoutMs;
+    expect(timeoutMs).toBe(20_000);
+  });
 });

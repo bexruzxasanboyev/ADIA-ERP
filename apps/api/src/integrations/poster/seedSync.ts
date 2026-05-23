@@ -219,6 +219,16 @@ async function upsertMenuProduct(
 /**
  * Replace the BOM for `parentProductId` with `components`. The replace
  * happens in one transaction — partial BOMs are never visible.
+ *
+ * I9 (Sprint 3 audit): the inner per-row `try/catch` previously swallowed
+ * the error message but LEFT the transaction in an aborted state. Once one
+ * INSERT raised (e.g. 23505 / CHECK violation), every subsequent INSERT
+ * inside the same tx failed with "current transaction is aborted, commands
+ * ignored until end of transaction block" — so a single bad row sank the
+ * whole recipe AND the per-prepack caller. The fix is a SAVEPOINT per row:
+ * each row is its own sub-transaction; a failure rolls back ONLY that row
+ * and the parent transaction continues. This is the only Postgres-correct
+ * way to swallow a mid-tx error.
  */
 async function replaceRecipe(
   parentProductId: number,
@@ -231,7 +241,12 @@ async function replaceRecipe(
     for (const c of components) {
       if (c.componentProductId === parentProductId) continue; // chk_recipe_no_self
       if (c.qtyPerUnit <= 0) continue;
+      // SAVEPOINT name — sanitised, only alphanumerics + underscore. The
+      // identifier is server-side state, not user input, but we still avoid
+      // string templating into SQL anywhere unsafe.
+      const sp = `sp_recipe_${parentProductId}_${c.componentProductId}`;
       try {
+        await tx.query(`SAVEPOINT ${sp}`);
         await tx.query(
           `INSERT INTO recipes (product_id, component_product_id, qty_per_unit)
            VALUES ($1, $2, $3)
@@ -239,11 +254,20 @@ async function replaceRecipe(
              SET qty_per_unit = EXCLUDED.qty_per_unit`,
           [parentProductId, c.componentProductId, c.qtyPerUnit],
         );
+        await tx.query(`RELEASE SAVEPOINT ${sp}`);
         applied += 1;
       } catch (err) {
-        // A bad component (e.g. self-cycle) must not abort the rest — but the
-        // service caller still gets a final count of how many landed.
-        console.error('[poster] recipe row skipped:', redactUrl((err as Error).message));
+        // Roll back ONLY this row — the outer tx is still healthy.
+        try {
+          await tx.query(`ROLLBACK TO SAVEPOINT ${sp}`);
+          await tx.query(`RELEASE SAVEPOINT ${sp}`);
+        } catch {
+          // savepoint already released — ignore
+        }
+        const e = err as { message?: string; code?: string };
+        console.error(
+          `[poster] recipe row skipped product=${parentProductId} component=${c.componentProductId} code=${e.code ?? '-'} msg=${redactUrl(e.message ?? '')}`,
+        );
       }
     }
     await writeAudit(tx, {
@@ -411,7 +435,18 @@ export async function syncMenuProducts(
   }
 }
 
-/** Sync prepacks (semi-finished products) + their BOMs. */
+/**
+ * Sync prepacks (semi-finished products) + their BOMs.
+ *
+ * I9 (Sprint 3 audit P1): each prepack is handled in its OWN try/catch so
+ * one failure (23505 unique-key violation, CHECK constraint, an ingredient
+ * that has not been seeded yet, etc.) does not poison the rest of the run.
+ * Real Poster fixtures had 1121 prepacks where only ~109 landed before this
+ * fix — every failure after the first cascaded as
+ * "current transaction is aborted, commands ignored". Root-cause errors are
+ * collected in `failedItems` and surfaced in the final log + return payload
+ * so the next debugging session has the SQLSTATE code in hand.
+ */
 export async function syncPrepacks(
   client: PosterClient,
   trigger: SyncTrigger = 'manual',
@@ -419,6 +454,7 @@ export async function syncPrepacks(
   const runId = await startSyncRun('products', trigger);
   let applied = 0;
   let total = 0;
+  const failedItems: { posterProductId: number; code: string | undefined; message: string }[] = [];
   try {
     const list = await client.getPrepacks();
     total = list.length;
@@ -427,42 +463,70 @@ export async function syncPrepacks(
       const ping = Number(p.ingredient_id);
       if (!Number.isInteger(ppid) || ppid <= 0) continue;
       if (!Number.isInteger(ping) || ping <= 0) continue;
-      const parentId = await upsertPrepack(
-        ppid,
-        ping,
-        String(p.product_name ?? '').trim() || `Prepack ${ppid}`,
-      );
-      const out = Number(p.out);
-      const yieldQty = Number.isFinite(out) && out > 0 ? out : 1;
-      // structure_brutto already in `structure_unit`; convert to component
-      // `ingredient_unit`, then normalise by `out` so qty_per_unit is "per 1
-      // produced unit" not "per batch".
-      const components: { componentProductId: number; qtyPerUnit: number }[] = [];
-      for (const ing of p.ingredients ?? []) {
-        const compPing = Number(ing.ingredient_id);
-        if (!Number.isInteger(compPing) || compPing <= 0) continue;
-        const compRow = await query<{ id: number }>(
-          `SELECT id FROM products WHERE poster_ingredient_id = $1`,
-          [compPing],
+      try {
+        const parentId = await upsertPrepack(
+          ppid,
+          ping,
+          String(p.product_name ?? '').trim() || `Prepack ${ppid}`,
         );
-        const compId = compRow.rows[0]?.id;
-        if (compId === undefined) continue; // ingredient not yet seeded — skip
-        const qtyConverted = normaliseQty(
-          String(ing.structure_unit ?? ''),
-          String(ing.ingredient_unit ?? ''),
-          ing.structure_brutto,
-        );
-        const perUnit = qtyConverted / yieldQty;
-        if (perUnit > 0) {
-          components.push({ componentProductId: compId, qtyPerUnit: perUnit });
+        const out = Number(p.out);
+        const yieldQty = Number.isFinite(out) && out > 0 ? out : 1;
+        // structure_brutto already in `structure_unit`; convert to component
+        // `ingredient_unit`, then normalise by `out` so qty_per_unit is "per 1
+        // produced unit" not "per batch".
+        const components: { componentProductId: number; qtyPerUnit: number }[] = [];
+        for (const ing of p.ingredients ?? []) {
+          const compPing = Number(ing.ingredient_id);
+          if (!Number.isInteger(compPing) || compPing <= 0) continue;
+          const compRow = await query<{ id: number }>(
+            `SELECT id FROM products WHERE poster_ingredient_id = $1`,
+            [compPing],
+          );
+          const compId = compRow.rows[0]?.id;
+          if (compId === undefined) continue; // ingredient not yet seeded — skip
+          const qtyConverted = normaliseQty(
+            String(ing.structure_unit ?? ''),
+            String(ing.ingredient_unit ?? ''),
+            ing.structure_brutto,
+          );
+          const perUnit = qtyConverted / yieldQty;
+          if (perUnit > 0 && Number.isFinite(perUnit)) {
+            components.push({ componentProductId: compId, qtyPerUnit: perUnit });
+          }
         }
+        await replaceRecipe(parentId, components);
+        applied += 1;
+      } catch (err) {
+        // Per-prepack isolation: log the real Postgres code + message, push
+        // to failedItems, and continue with the next prepack. Without this
+        // catch one bad row aborted the loop AND surfaced as a useless
+        // "current transaction is aborted" against the NEXT prepack.
+        const e = err as { message?: string; code?: string };
+        const msg = redactUrl(e.message ?? 'unknown');
+        failedItems.push({ posterProductId: ppid, code: e.code, message: msg });
+        console.error(
+          `[poster:prepack] id=${ppid} code=${e.code ?? '-'} msg=${msg}`,
+        );
       }
-      await replaceRecipe(parentId, components);
-      applied += 1;
     }
-    await finishSyncRun(runId, 'ok', { recordsIn: total, recordsApplied: applied });
-    return { entity: 'products', status: 'ok', recordsIn: total, recordsApplied: applied };
+    // If any prepack failed, the run is `partial`, not `ok` — operators
+    // need to see this in `poster_sync_log` to drive the next fix.
+    const status: 'ok' | 'partial' = failedItems.length === 0 ? 'ok' : 'partial';
+    const summary =
+      failedItems.length === 0
+        ? undefined
+        : `${failedItems.length} prepack(s) failed (first: id=${failedItems[0]!.posterProductId} ` +
+          `code=${failedItems[0]!.code ?? '-'} ${failedItems[0]!.message.slice(0, 200)})`;
+    await finishSyncRun(runId, status, { recordsIn: total, recordsApplied: applied }, summary);
+    return {
+      entity: 'products',
+      status,
+      recordsIn: total,
+      recordsApplied: applied,
+      ...(summary !== undefined ? { errorDetail: summary } : {}),
+    };
   } catch (err) {
+    // Catastrophic outer failure — e.g. `client.getPrepacks()` itself threw.
     const detail = redactUrl((err as Error).message);
     await finishSyncRun(runId, 'partial', { recordsIn: total, recordsApplied: applied }, detail);
     await notifyPosterSyncFailed('products', detail);

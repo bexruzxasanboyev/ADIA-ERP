@@ -169,11 +169,16 @@ type Outcome = 'sent' | 'failed' | 'no-recipient';
  */
 async function deliverOne(bot: SendableBot, row: OutboxRow): Promise<Outcome> {
   if (row.recipient_user_id === null) {
+    // No recipient means we will NEVER be able to deliver this row — cap the
+    // attempts counter so the SELECT loop in `runOneCycle` filters this row
+    // out on subsequent ticks. Without the cap the row would be re-selected
+    // every 30s forever (resource leak — see Sprint 3 audit P1).
     await query(
       `UPDATE notifications
-          SET error_detail = $2
+          SET error_detail = $2,
+              telegram_send_attempts = $3
         WHERE id = $1`,
-      [row.id, 'no recipient_user_id'],
+      [row.id, 'no recipient_user_id', MAX_SEND_ATTEMPTS],
     );
     return 'no-recipient';
   }
@@ -184,11 +189,18 @@ async function deliverOne(bot: SendableBot, row: OutboxRow): Promise<Outcome> {
   );
   const tgIdRaw = userRows[0]?.telegram_id;
   if (tgIdRaw === null || tgIdRaw === undefined) {
+    // Same rationale as above — no telegram_id, no retry is meaningful. Cap
+    // `telegram_send_attempts` directly so the next SELECT cycle excludes
+    // the row (the WHERE clause is `telegram_send_attempts < MAX_SEND_ATTEMPTS`).
+    // If the user is later given a telegram_id the row will still be
+    // permanently capped — that is acceptable: the audit log holds the
+    // original notification and an admin can re-issue if needed.
     await query(
       `UPDATE notifications
-          SET error_detail = $2
+          SET error_detail = $2,
+              telegram_send_attempts = $3
         WHERE id = $1`,
-      [row.id, 'no telegram_id'],
+      [row.id, 'no telegram_id', MAX_SEND_ATTEMPTS],
     );
     return 'no-recipient';
   }

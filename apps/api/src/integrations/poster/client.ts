@@ -134,12 +134,26 @@ export type PosterClientOptions = {
   readonly token: string;
   /** Override the base URL (used by tests). Defaults to the public Poster host. */
   readonly baseUrl?: string;
-  /** Per-call timeout in ms. Default: 10_000 (10s). */
+  /**
+   * Per-call timeout in ms. Default: 20_000 (20s).
+   *
+   * I9 (Sprint 3 audit P2): Poster's first call after a cold idle window is
+   * 4–5s; the previous 10s default left almost no headroom and the FIRST
+   * `menu.getIngredients` after process start surfaced as `fetch failed`.
+   * 20s gives a comfortable margin while still bounding a stuck request.
+   */
   readonly timeoutMs?: number;
   /** Minimum gap between calls in ms. Default: 220 (≈4.5 req/sec, under 5). */
   readonly minIntervalMs?: number;
   /** Injection point for tests — default is the global `fetch`. */
   readonly fetcher?: typeof fetch;
+  /**
+   * Transient-failure retry attempts. Default: 1 (so up to 2 total attempts).
+   * Only `AbortError` (timeout) and bare `fetch failed` / network errors are
+   * retried — 4xx/5xx Poster envelopes pass through untouched. Backoff is a
+   * fixed 300ms gap before the retry.
+   */
+  readonly transientRetries?: number;
 };
 
 export class PosterApiError extends Error {
@@ -176,6 +190,7 @@ export class PosterClient {
   private readonly timeoutMs: number;
   private readonly minIntervalMs: number;
   private readonly fetcher: typeof fetch;
+  private readonly transientRetries: number;
   /** Serial gate — every call awaits this chain so requests run one at a time. */
   private gate: Promise<unknown> = Promise.resolve();
   private lastCallAt = 0;
@@ -189,9 +204,10 @@ export class PosterClient {
     }
     this.token = opts.token.trim();
     this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
-    this.timeoutMs = opts.timeoutMs ?? 10_000;
+    this.timeoutMs = opts.timeoutMs ?? 20_000;
     this.minIntervalMs = opts.minIntervalMs ?? 220;
     this.fetcher = opts.fetcher ?? globalThis.fetch.bind(globalThis);
+    this.transientRetries = opts.transientRetries ?? 1;
   }
 
   // --- Public API methods --------------------------------------------------
@@ -283,6 +299,32 @@ export class PosterClient {
     this.gate = ticket.catch(() => undefined);
     await ticket;
 
+    // I9 (Sprint 3 audit P2): retry once on transient network failures
+    // (`fetch failed` from undici, `AbortError` from our own timeout). Poster
+    // HTTP 4xx/5xx envelopes and `error: {...}` envelopes are NOT retried —
+    // they are deterministic API responses and a retry would be wasted work.
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= this.transientRetries; attempt += 1) {
+      try {
+        return await this.callOnce<T>(method, params);
+      } catch (err) {
+        lastErr = err;
+        if (!this.isTransient(err) || attempt === this.transientRetries) {
+          throw err;
+        }
+        // Fixed 300ms backoff — the rate-limit gate already enforces 220ms.
+        await delay(300);
+      }
+    }
+    // Unreachable — the loop either returns or throws.
+    throw lastErr;
+  }
+
+  /** Single HTTP attempt. The outer `call()` wraps this with retry. */
+  private async callOnce<T>(
+    method: string,
+    params: Readonly<Record<string, string>>,
+  ): Promise<T | null> {
     const url = this.buildUrl(method, params);
     const ctrl = new AbortController();
     const t = globalThis.setTimeout(() => ctrl.abort(), this.timeoutMs);
@@ -312,6 +354,25 @@ export class PosterClient {
     } finally {
       globalThis.clearTimeout(t);
     }
+  }
+
+  /**
+   * Decide whether an error is worth retrying. Transient = the call never
+   * reached a real Poster response (network drop, DNS, our own timeout).
+   * A `PosterApiError` with `status` set means we got an HTTP response from
+   * Poster (4xx/5xx) — that is NOT transient. A `PosterApiError` with
+   * `posterCode` set means Poster returned an `{error}` envelope — also
+   * not transient. Only timeouts and bare network failures retry.
+   */
+  private isTransient(err: unknown): boolean {
+    if (err instanceof PosterApiError) {
+      if (err.status !== undefined || err.posterCode !== undefined) return false;
+      const m = err.message ?? '';
+      return /timed out|fetch failed|ECONN|ENOTFOUND|EAI_AGAIN|socket hang up/i.test(m);
+    }
+    const e = err as { name?: string; message?: string };
+    if (e?.name === 'AbortError') return true;
+    return /fetch failed|ECONN|ENOTFOUND|EAI_AGAIN|socket hang up/i.test(e?.message ?? '');
   }
 
   private buildUrl(method: string, params: Readonly<Record<string, string>>): string {
