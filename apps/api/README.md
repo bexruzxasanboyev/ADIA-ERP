@@ -1,6 +1,6 @@
 # @adia/api — ADIA ERP backend
 
-ADIA ERP (CAKE ERP) backend API. Node.js + Express + TypeScript (strict),
+ADIA ERP backend API. Node.js + Express + TypeScript (strict),
 PostgreSQL with a raw-SQL query layer (no ORM), JWT + RBAC.
 
 > Sprint 0 status: infrastructure skeleton only. Business endpoints (M1-M9)

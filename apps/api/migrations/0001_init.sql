@@ -1,5 +1,5 @@
 -- =============================================================================
--- ADIA ERP (CAKE ERP) — Phase 1 (Extended MVP) PostgreSQL schema
+-- ADIA ERP — Phase 1 (Extended MVP) PostgreSQL schema
 -- =============================================================================
 -- Target: PostgreSQL 15+. Raw SQL query layer (no ORM).
 -- Single company — NOT multi-tenant. No tenant/organization abstraction.

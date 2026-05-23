@@ -69,7 +69,7 @@ export function LoginPage() {
       <Card className="w-full max-w-sm">
         <CardHeader className="items-center text-center">
           <CakeSlice className="size-9 text-primary" aria-hidden="true" />
-          <CardTitle className="text-xl">CAKE ERP</CardTitle>
+          <CardTitle className="text-xl">ADIA ERP</CardTitle>
           <CardDescription>Tizimga kirish</CardDescription>
         </CardHeader>
         <CardContent>

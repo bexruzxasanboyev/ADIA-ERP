@@ -2,7 +2,7 @@
   "name": "adia-erp",
   "version": "0.1.0",
   "private": true,
-  "description": "ADIA ERP (CAKE ERP) — self-correcting ERP for bakery production & supply chain",
+  "description": "ADIA ERP — self-correcting ERP for bakery production & supply chain",
   "workspaces": [
     "apps/*"
   ],

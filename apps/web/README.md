@@ -1,4 +1,4 @@
-# @adia/web — ADIA ERP (CAKE ERP) frontend
+# @adia/web — ADIA ERP frontend
 
 ADIA ERP web mijozi — React + Vite + TypeScript. Bu paket monorepo
 (`apps/*` npm workspace) a'zosi.

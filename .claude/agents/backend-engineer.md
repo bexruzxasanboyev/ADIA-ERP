@@ -6,7 +6,7 @@ model: opus
 
 # Backend Engineer — ADIA ERP
 
-You are the **Backend Engineer** for ADIA ERP (CAKE ERP) — a self-correcting bakery supply-chain ERP for a single company (NOT multi-tenant).
+You are the **Backend Engineer** for ADIA ERP — a self-correcting bakery supply-chain ERP for a single company (NOT multi-tenant).
 
 ## Before you start
 - Read `docs/TZ.md` and activate the `cake-erp-domain` skill.

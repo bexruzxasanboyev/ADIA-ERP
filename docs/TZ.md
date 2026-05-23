@@ -1,4 +1,4 @@
-# CAKE ERP — Texnik Topshiriq (TZ)
+# ADIA ERP — Texnik Topshiriq (TZ)
 PM nomidan full-stack jamoaga Versiya: 1.0 · Tayyorlandi: Rayyona (PM) uchun · Status: Draft (tasdiqlashga)
 
 

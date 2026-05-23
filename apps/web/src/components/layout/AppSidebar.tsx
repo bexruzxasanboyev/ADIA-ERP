@@ -21,7 +21,7 @@ export function AppSidebar() {
     <Sidebar>
       <SidebarHeader>
         <CakeSlice className="size-6 text-primary" aria-hidden="true" />
-        <span className="text-base font-semibold tracking-tight">CAKE ERP</span>
+        <span className="text-base font-semibold tracking-tight">ADIA ERP</span>
       </SidebarHeader>
 
       <SidebarContent>

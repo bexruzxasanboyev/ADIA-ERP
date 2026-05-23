@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "ADIA ERP (CAKE ERP) — backend API (Express + PostgreSQL, raw SQL)",
+  "description": "ADIA ERP — backend API (Express + PostgreSQL, raw SQL)",
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",

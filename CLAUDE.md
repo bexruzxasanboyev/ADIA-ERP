@@ -4,7 +4,7 @@ Bu fayl ADIA ERP loyihasida ishlaydigan har bir Claude Code sessiyasi va agent u
 
 ## 1. Loyiha
 
-**ADIA ERP** (mahsulot nomi: *CAKE ERP*) — non/tort/qandolat ishlab chiqarish va ta'minot zanjiri uchun **o'zini-o'zi to'g'rilaydigan ERP tizimi**.
+**ADIA ERP** — non/tort/qandolat ishlab chiqarish va ta'minot zanjiri uchun **o'zini-o'zi to'g'rilaydigan ERP tizimi**.
 
 - Zanjir: Xom-ashyo ombori → Ishlab chiqarish → Ta'minot bo'limlari → Markaziy sklad → Do'konlar.
 - Asosiy g'oya: har mahsulotga min/max belgilanadi; ostatka min'dan tushganda tizim avtomatik to'ldirish (replenishment) tsiklini ishga tushiradi. Eng tepada — AI assistant.

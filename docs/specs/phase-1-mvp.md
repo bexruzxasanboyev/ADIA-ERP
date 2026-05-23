@@ -4,7 +4,7 @@
 > Asos: `docs/TZ.md`, `docs/architecture/decisions.md` (D1–D6), `docs/adia-poster-api.md`
 > Holat: jamoa rahbari va loyiha egasi tasdig'iga
 
-Bu hujjat ADIA ERP (CAKE ERP) ning Faza-1 to'liq spetsifikatsiyasi. DB sxemasi:
+Bu hujjat ADIA ERP ning Faza-1 to'liq spetsifikatsiyasi. DB sxemasi:
 `docs/architecture/db-schema-phase-1.sql`. Arxitektura qarorlari: `docs/architecture/adr-0001..0004`.
 
 ---

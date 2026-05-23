@@ -1,11 +1,11 @@
 ---
 name: cake-erp-domain
-description: Domain knowledge for the ADIA / CAKE ERP project — the bakery production and supply-chain model, glossary, RBAC roles, the replenishment engine, min/max logic, the request state machine, the Poster POS integration, the data model, and core invariants. Use this skill whenever working on any ERP business logic, database schema, API, or UI tied to stock, orders, production, or replenishment.
+description: Domain knowledge for the ADIA ERP project — the bakery production and supply-chain model, glossary, RBAC roles, the replenishment engine, min/max logic, the request state machine, the Poster POS integration, the data model, and core invariants. Use this skill whenever working on any ERP business logic, database schema, API, or UI tied to stock, orders, production, or replenishment.
 ---
 
-# CAKE ERP — Domain Knowledge
+# ADIA ERP — Domain Knowledge
 
-ADIA ERP (product name: CAKE ERP) is a self-correcting ERP for a bakery / confectionery production and supply chain. **One company uses it — it is NOT multi-tenant.** Authoritative sources: `docs/TZ.md` (spec) and `docs/architecture/decisions.md` (resolved decisions).
+ADIA ERP is a self-correcting ERP for a bakery / confectionery production and supply chain. **One company uses it — it is NOT multi-tenant.** Authoritative sources: `docs/TZ.md` (spec) and `docs/architecture/decisions.md` (resolved decisions).
 
 ## Supply chain
 

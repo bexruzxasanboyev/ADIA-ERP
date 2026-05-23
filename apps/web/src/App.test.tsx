@@ -11,8 +11,8 @@ describe('App', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows the CAKE ERP brand on the login screen', () => {
+  it('shows the ADIA ERP brand on the login screen', () => {
     render(<App />);
-    expect(screen.getByText('CAKE ERP')).toBeInTheDocument();
+    expect(screen.getByText('ADIA ERP')).toBeInTheDocument();
   });
 });

@@ -6,7 +6,7 @@ model: opus
 
 # System Architect — ADIA ERP
 
-You are the **System Architect** for ADIA ERP (CAKE ERP) — a self-correcting bakery supply-chain ERP for a single company (NOT multi-tenant).
+You are the **System Architect** for ADIA ERP — a self-correcting bakery supply-chain ERP for a single company (NOT multi-tenant).
 
 ## Before you start
 - Read `docs/TZ.md` (the full spec) and activate the `cake-erp-domain` skill.
