@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MessageInput } from './MessageInput';
+import { useState } from 'react';
 
 describe('MessageInput', () => {
   it('calls onSend with trimmed text when Enter is pressed', async () => {
@@ -43,6 +44,56 @@ describe('MessageInput', () => {
     render(<MessageInput onSend={() => {}} isSending />);
     expect(screen.getByLabelText('AI yordamchiga xabar')).toBeDisabled();
     expect(screen.getByLabelText('Yuborish')).toBeDisabled();
+  });
+
+  it('re-applies a starter prompt when the same chip is clicked twice (preloadNonce)', async () => {
+    // Regression: the previous `value.length === 0` guard made the
+    // second click on a starter chip a no-op because the first click
+    // had already filled the textarea. The fix is `preloadNonce` —
+    // the parent bumps it on every click so MessageInput re-applies
+    // even when the string is identical.
+    function Host() {
+      const [prompt, setPrompt] = useState<string | undefined>(undefined);
+      const [nonce, setNonce] = useState(0);
+      return (
+        <div>
+          <button
+            type="button"
+            onClick={() => {
+              setPrompt('Bugungi ostatka qanday?');
+              setNonce((n) => n + 1);
+            }}
+          >
+            chip
+          </button>
+          <MessageInput
+            onSend={() => {}}
+            isSending={false}
+            initialValue={prompt}
+            preloadNonce={nonce}
+          />
+        </div>
+      );
+    }
+
+    const user = userEvent.setup();
+    render(<Host />);
+    const textarea = screen.getByLabelText(
+      'AI yordamchiga xabar',
+    ) as HTMLTextAreaElement;
+    const chip = screen.getByRole('button', { name: 'chip' });
+
+    // First click — textarea preloads.
+    await user.click(chip);
+    expect(textarea.value).toBe('Bugungi ostatka qanday?');
+
+    // Simulate the user clearing the textarea (e.g. after a send).
+    await user.clear(textarea);
+    expect(textarea.value).toBe('');
+
+    // Second click on the SAME chip — must preload again.
+    await user.click(chip);
+    expect(textarea.value).toBe('Bugungi ostatka qanday?');
   });
 
   it('clears the textarea after a successful send', async () => {

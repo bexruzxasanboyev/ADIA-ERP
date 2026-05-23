@@ -239,7 +239,7 @@ function renderDetail() {
     isAuthenticated: true,
     isHydrating: false,
     login: () => {},
-    logout: () => {},
+    logout: async () => {},
   };
   return render(
     <AuthContext.Provider value={auth}>

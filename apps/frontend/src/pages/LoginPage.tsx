@@ -46,7 +46,13 @@ export function LoginPage() {
         method: 'POST',
         body: { email, password },
       });
-      login(result.token, result.user);
+      login(
+        {
+          accessToken: result.access_token,
+          refreshToken: result.refresh_token,
+        },
+        result.user,
+      );
       navigate(redirectTo, { replace: true });
     } catch (err: unknown) {
       if (err instanceof ApiError) {

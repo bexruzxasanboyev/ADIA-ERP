@@ -8,8 +8,15 @@ interface MessageInputProps {
   onSend: (text: string) => void;
   /** When `true`, the textarea/send are disabled and the spinner shows. */
   isSending: boolean;
-  /** Optional controlled value (e.g. for "preload starter prompt then send"). */
+  /** Optional preload string (e.g. "preload starter prompt then send"). */
   initialValue?: string;
+  /**
+   * Bump this value to force a re-preload of `initialValue` even when
+   * the string itself is unchanged (e.g. the user re-clicks the same
+   * starter chip after the textarea was cleared by a previous send).
+   * If unset, `initialValue` alone drives the preload effect.
+   */
+  preloadNonce?: number;
   /** Placeholder text. */
   placeholder?: string;
   /** Autofocus textarea on mount (drawer opens with focus on input). */
@@ -31,20 +38,26 @@ export function MessageInput({
   onSend,
   isSending,
   initialValue,
+  preloadNonce,
   placeholder = 'AI yordamchidan so‘rang…',
   autoFocus = false,
 }: MessageInputProps) {
   const [value, setValue] = useState(initialValue ?? '');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // External preload (starter prompt clicked). When `initialValue` changes,
-  // overwrite the field — but only if the user hasn't already typed.
+  // External preload (starter prompt clicked). Each time `initialValue`
+  // changes — OR the parent bumps `preloadNonce` to signal "re-preload
+  // the same string" — overwrite the textarea. The previous guard
+  // (`value.length === 0`) made the second click on a starter chip a
+  // no-op because the first click had already filled the textarea.
+  // The empty-string short-circuit keeps the parent from wiping a
+  // user's in-progress draft when it re-renders with a stale default
+  // of "" (the mount case is handled by `useState(initialValue)`).
   useEffect(() => {
-    if (initialValue !== undefined && value.length === 0) {
+    if (initialValue !== undefined && initialValue !== '') {
       setValue(initialValue);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialValue]);
+  }, [initialValue, preloadNonce]);
 
   // Auto-grow up to ~6 lines.
   useEffect(() => {

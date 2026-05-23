@@ -36,10 +36,12 @@ export function AssistantDrawer({ open, onOpenChange }: AssistantDrawerProps) {
   const chat = useAssistantChat(open);
 
   // Carry a one-shot starter prompt from the empty-state button into
-  // the textarea. Cleared as soon as the user presses Send.
+  // the textarea. `preloadNonce` is bumped on every click so MessageInput
+  // re-applies the preload even when the user picks the same chip twice.
   const [pendingPrompt, setPendingPrompt] = useState<string | undefined>(
     undefined,
   );
+  const [preloadNonce, setPreloadNonce] = useState(0);
 
   useEffect(() => {
     if (!open) setPendingPrompt(undefined);
@@ -48,6 +50,11 @@ export function AssistantDrawer({ open, onOpenChange }: AssistantDrawerProps) {
   async function handleSend(text: string) {
     setPendingPrompt(undefined);
     await chat.send(text);
+  }
+
+  function handleSelectPrompt(prompt: string) {
+    setPendingPrompt(prompt);
+    setPreloadNonce((n) => n + 1);
   }
 
   return (
@@ -114,12 +121,13 @@ export function AssistantDrawer({ open, onOpenChange }: AssistantDrawerProps) {
               <MessageList
                 messages={chat.messages}
                 isThinking={chat.isSending}
-                onSelectPrompt={(prompt) => setPendingPrompt(prompt)}
+                onSelectPrompt={handleSelectPrompt}
               />
               <MessageInput
                 onSend={handleSend}
                 isSending={chat.isSending}
                 initialValue={pendingPrompt}
+                preloadNonce={preloadNonce}
                 autoFocus={open}
               />
             </div>

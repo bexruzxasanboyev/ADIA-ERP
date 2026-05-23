@@ -18,9 +18,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import { AuthProvider } from './AuthProvider';
 import { useAuth } from './useAuth';
+import { clearTokens } from '@/lib/auth-storage';
 import { jsonResponse } from '@/test/render-helpers';
 
-const STORAGE_KEY = 'adia.token';
+const ACCESS_KEY = 'adia.access_token';
+const REFRESH_KEY = 'adia.refresh_token';
 
 function Probe() {
   const { user, isHydrating } = useAuth();
@@ -35,11 +37,15 @@ function Probe() {
 
 describe('AuthProvider — /api/auth/me hydration', () => {
   beforeEach(() => {
-    localStorage.setItem(STORAGE_KEY, 'fake-jwt');
+    clearTokens(); // reset the auth-storage memory cache too
+    localStorage.setItem(ACCESS_KEY, 'fake-access');
+    localStorage.setItem(REFRESH_KEY, 'fake-refresh');
   });
 
   afterEach(() => {
-    localStorage.removeItem(STORAGE_KEY);
+    clearTokens();
+    localStorage.removeItem(ACCESS_KEY);
+    localStorage.removeItem(REFRESH_KEY);
     vi.restoreAllMocks();
   });
 

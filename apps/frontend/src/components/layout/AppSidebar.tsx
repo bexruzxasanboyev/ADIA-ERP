@@ -65,7 +65,9 @@ export function AppSidebar() {
           variant="ghost"
           size="sm"
           className="w-full justify-start text-muted-foreground"
-          onClick={logout}
+          onClick={() => {
+            void logout();
+          }}
         >
           <LogOut className="size-4" aria-hidden="true" />
           Chiqish

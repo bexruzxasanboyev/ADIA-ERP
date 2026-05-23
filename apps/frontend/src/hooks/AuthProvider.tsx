@@ -5,42 +5,73 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { getToken, setToken, clearToken } from '@/lib/auth-storage';
+import {
+  getAccessToken,
+  getRefreshToken,
+  setTokens,
+  clearTokens,
+} from '@/lib/auth-storage';
 import { apiRequest, ApiError } from '@/lib/api-client';
+import { env } from '@/lib/env';
 import type { User } from '@/lib/types';
 import { AuthContext, type AuthContextValue } from './auth-context';
 
 /**
  * Auth state holder.
  *
- * On mount, if a JWT is already stored, the session is re-hydrated via
- * `GET /api/auth/me` (Sprint 0 left this as debt). While that request is
- * in flight `isHydrating` is true so the router can hold rendering and
- * avoid a flash of the login screen for an already-valid session.
+ * On mount, if an access token is already stored, the session is
+ * re-hydrated via `GET /api/auth/me`. While that request is in flight
+ * `isHydrating` is true so the router can hold rendering and avoid a
+ * flash of the login screen for an already-valid session. If the
+ * stored access token is expired, `apiRequest` will transparently
+ * refresh it before failing the hydration call.
  *
- * JWT STORAGE DECISION (accepted technical debt — code-reviewer Sprint 0):
- * The JWT lives in localStorage (see `lib/auth-storage.ts`). Spec §4
- * requires `Authorization: Bearer <JWT>` on every endpoint, which rules
- * out an httpOnly cookie. ADIA is a single-company internal ERP, so the
- * Bearer-header + token-storage model is kept. The token is accessed ONLY
- * through the `auth-storage` module, keeping the XSS surface to a single
- * auditable point.
+ * Token storage tradeoff and rationale: see `lib/auth-storage.ts`.
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [token, setTokenState] = useState<string | null>(() => getToken());
+  const [token, setTokenState] = useState<string | null>(() =>
+    getAccessToken(),
+  );
   const [user, setUser] = useState<User | null>(null);
   const [isHydrating, setIsHydrating] = useState<boolean>(
-    () => getToken() !== null,
+    () => getAccessToken() !== null,
   );
 
-  const login = useCallback((nextToken: string, nextUser: User) => {
-    setToken(nextToken);
-    setTokenState(nextToken);
-    setUser(nextUser);
-  }, []);
+  const login = useCallback(
+    (
+      tokens: { accessToken: string; refreshToken: string },
+      nextUser: User,
+    ) => {
+      setTokens(tokens);
+      setTokenState(tokens.accessToken);
+      setUser(nextUser);
+    },
+    [],
+  );
 
-  const logout = useCallback(() => {
-    clearToken();
+  const logout = useCallback(async (): Promise<void> => {
+    const refreshToken = getRefreshToken();
+
+    // Best-effort, idempotent revoke. We deliberately use a plain
+    // `fetch` (not `apiRequest`) so a 401 here cannot recurse back
+    // into the refresh-retry loop. Any failure is swallowed — the
+    // local session is cleared regardless.
+    if (refreshToken !== null) {
+      try {
+        await fetch(`${env.apiBaseUrl}/api/auth/logout`, {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+      } catch {
+        /* offline / network — clear local state anyway */
+      }
+    }
+
+    clearTokens();
     setTokenState(null);
     setUser(null);
   }, []);
@@ -59,8 +90,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        // A 401 means the stored token is dead — drop the session.
-        // The api-client already clears the token on 401; mirror it here.
+        // A 401 means the stored tokens are dead — drop the session.
+        // The api-client already clears tokens on a terminal 401;
+        // mirror it here.
         if (err instanceof ApiError && err.status === 401) {
           setTokenState(null);
           setUser(null);

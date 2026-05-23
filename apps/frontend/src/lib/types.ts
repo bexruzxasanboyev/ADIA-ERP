@@ -130,8 +130,23 @@ export interface ApiErrorBody {
   };
 }
 
+/**
+ * `POST /api/auth/login` response — Sprint 3 added the refresh-token flow.
+ * `token` is a backward-compat alias for `access_token` (kept by the
+ * backend); the client prefers the explicit `access_token` field.
+ */
 export interface LoginResponse {
-  token: string;
+  access_token: string;
+  refresh_token: string;
+  /** Backward-compat alias for `access_token`. */
+  token?: string;
+  user: User;
+}
+
+/** `POST /api/auth/refresh` response — rotated token pair. */
+export interface RefreshResponse {
+  access_token: string;
+  refresh_token: string;
   user: User;
 }
 

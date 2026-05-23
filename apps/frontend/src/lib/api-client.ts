@@ -1,5 +1,10 @@
 import { env } from './env';
-import { getToken, clearToken } from './auth-storage';
+import {
+  getAccessToken,
+  getRefreshToken,
+  setTokens,
+  clearTokens,
+} from './auth-storage';
 import type { ApiErrorBody } from './types';
 
 /**
@@ -26,6 +31,9 @@ interface RequestOptions {
   signal?: AbortSignal;
 }
 
+/** Endpoint that mints tokens — must never trigger the refresh-retry loop. */
+const REFRESH_PATH = '/api/auth/refresh';
+
 function isApiErrorBody(value: unknown): value is ApiErrorBody {
   if (typeof value !== 'object' || value === null) return false;
   const err = (value as Record<string, unknown>).error;
@@ -36,12 +44,36 @@ function isApiErrorBody(value: unknown): value is ApiErrorBody {
 
 /**
  * Typed `fetch` wrapper for the ADIA ERP backend.
+ *
  * Attaches the JWT `Authorization: Bearer` header, sends/receives JSON,
  * and parses the standard error envelope into an `ApiError`.
+ *
+ * On a 401 response it transparently:
+ *   1. calls `POST /api/auth/refresh` with the stored refresh token,
+ *   2. saves the rotated `{access_token, refresh_token}` pair,
+ *   3. retries the original request once with the new access token.
+ *
+ * If the refresh fails (or no refresh token is stored, or the failing
+ * call IS the refresh endpoint), tokens are cleared and the browser is
+ * sent to /login.
+ *
+ * Concurrent 401s share a single refresh: the first one in flight
+ * stores a Promise on `refreshInFlight`; every other caller awaits it
+ * instead of starting its own refresh. This prevents a thundering herd
+ * of refresh requests from invalidating each other (refresh-token
+ * rotation makes the older token unusable after a successful refresh).
  */
 export async function apiRequest<T>(
   path: string,
   options: RequestOptions = {},
+): Promise<T> {
+  return executeRequest<T>(path, options, /* allowRefresh */ true);
+}
+
+async function executeRequest<T>(
+  path: string,
+  options: RequestOptions,
+  allowRefresh: boolean,
 ): Promise<T> {
   const { method = 'GET', body, headers = {}, signal } = options;
 
@@ -50,7 +82,7 @@ export async function apiRequest<T>(
     ...headers,
   };
 
-  const token = getToken();
+  const token = getAccessToken();
   if (token) {
     finalHeaders.Authorization = `Bearer ${token}`;
   }
@@ -76,9 +108,24 @@ export async function apiRequest<T>(
   if (!response.ok) {
     const code = isApiErrorBody(payload) ? payload.error.code : 'UNKNOWN_ERROR';
 
-    // Central session-expiry handling: a 401 means the stored JWT is
-    // missing/expired/invalid. Clear it and bounce the user to /login so
-    // no screen is left rendering against a dead session.
+    // 401 → try to refresh and replay the request. Eligible only when:
+    //   - this is the first attempt (`allowRefresh`), and
+    //   - the failing call isn't the refresh endpoint itself, and
+    //   - we actually have a refresh token to spend.
+    if (
+      response.status === 401 &&
+      allowRefresh &&
+      path !== REFRESH_PATH &&
+      getRefreshToken() !== null
+    ) {
+      const refreshed = await ensureRefresh();
+      if (refreshed) {
+        // Retry once with the new access token (set inside ensureRefresh).
+        return executeRequest<T>(path, options, /* allowRefresh */ false);
+      }
+      // Refresh failed — fall through to the standard 401 handler.
+    }
+
     if (response.status === 401) {
       handleUnauthenticated();
     }
@@ -92,15 +139,81 @@ export async function apiRequest<T>(
   return payload as T;
 }
 
+/** Module-level single-flight latch — see `ensureRefresh`. */
+let refreshInFlight: Promise<boolean> | null = null;
+
 /**
- * Reacts to a 401 response: drop the stale token and redirect to /login.
- * A hard `window.location` redirect (rather than the router) is used
- * deliberately — the fetch layer must stay decoupled from React/router,
- * and a full reload guarantees all in-memory app state is discarded.
- * Guarded so it is a no-op outside a browser (tests / SSR).
+ * Drive `POST /api/auth/refresh` at most once concurrently. Returns
+ * `true` if a fresh access token is now stored, `false` if the refresh
+ * was rejected (in which case tokens were cleared).
+ *
+ * Every concurrent caller awaits the same Promise so a burst of 401s
+ * triggers exactly one refresh — important because refresh-token
+ * rotation invalidates the old refresh on success, and two parallel
+ * refresh calls would race each other into a logout.
+ */
+function ensureRefresh(): Promise<boolean> {
+  if (refreshInFlight !== null) return refreshInFlight;
+
+  refreshInFlight = (async () => {
+    const refreshToken = getRefreshToken();
+    if (refreshToken === null) return false;
+
+    try {
+      const response = await fetch(`${env.apiBaseUrl}${REFRESH_PATH}`, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+
+      if (!response.ok) return false;
+
+      const text = await response.text();
+      const payload: unknown =
+        text.length > 0 ? safeJsonParse(text) : null;
+      if (!isRefreshResponse(payload)) return false;
+
+      setTokens({
+        accessToken: payload.access_token,
+        refreshToken: payload.refresh_token,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  })().finally(() => {
+    refreshInFlight = null;
+  });
+
+  return refreshInFlight;
+}
+
+interface RefreshResponseBody {
+  access_token: string;
+  refresh_token: string;
+}
+
+function isRefreshResponse(value: unknown): value is RefreshResponseBody {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.access_token === 'string' && typeof v.refresh_token === 'string'
+  );
+}
+
+/**
+ * Reacts to a 401 that we could not (or chose not to) refresh: drop
+ * both tokens and redirect to /login. A hard `window.location` redirect
+ * (rather than the router) is used deliberately — the fetch layer must
+ * stay decoupled from React/router, and a full reload guarantees all
+ * in-memory app state is discarded. Guarded so it is a no-op outside a
+ * browser (tests / SSR).
  */
 function handleUnauthenticated(): void {
-  clearToken();
+  clearTokens();
   if (typeof window === 'undefined') return;
   if (window.location.pathname !== '/login') {
     window.location.assign('/login');

@@ -31,7 +31,7 @@ function fakeAuth(user: User): AuthContextValue {
     isAuthenticated: true,
     isHydrating: false,
     login: () => {},
-    logout: () => {},
+    logout: async () => {},
   };
 }
 
