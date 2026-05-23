@@ -23,6 +23,7 @@ import type {
   ReplenishmentDetail,
 } from '@/lib/types';
 import { TERMINAL_REPLENISHMENT_STATUSES } from '@/lib/types';
+import { CancelDialog } from './CancelDialog';
 import { TransitionTimeline } from './TransitionTimeline';
 
 /**
@@ -53,6 +54,7 @@ export function ReplenishmentDetailPage() {
 
   const [isAdvancing, setIsAdvancing] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [isCancelDialogOpen, setIsCancelDialogOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   async function handleAdvance(): Promise<void> {
@@ -88,26 +90,26 @@ export function ReplenishmentDetailPage() {
     }
   }
 
-  async function handleCancel(): Promise<void> {
+  async function handleCancelConfirm(
+    reason: string | undefined,
+  ): Promise<void> {
     if (!id) return;
-    // TODO(faza-2): replace `window.prompt` with a styled reason dialog —
-    // the native prompt breaks the dark-premium aesthetic and skips
-    // accessibility hooks. Kept for Faza-1 because cancellations are rare
-    // and the value flows through unchanged.
-    const reason = window.prompt('Bekor qilish sababi (ixtiyoriy):') ?? '';
     setActionError(null);
     setIsCancelling(true);
     try {
       await apiRequest(`/api/replenishment/${id}/cancel`, {
         method: 'POST',
-        body: { reason: reason.trim() === '' ? undefined : reason.trim() },
+        body: { reason },
       });
       notify('success', 'So‘rov bekor qilindi.');
+      setIsCancelDialogOpen(false);
       detail.refetch();
     } catch (err: unknown) {
       setActionError(
         err instanceof ApiError ? err.message : 'Bekor qilib bo‘lmadi.',
       );
+      // Keep the dialog open so the operator can read the inline error
+      // and either retry or close manually.
     } finally {
       setIsCancelling(false);
     }
@@ -145,7 +147,10 @@ export function ReplenishmentDetailPage() {
             {canCancel && (
               <Button
                 variant="outline"
-                onClick={handleCancel}
+                onClick={() => {
+                  setActionError(null);
+                  setIsCancelDialogOpen(true);
+                }}
                 disabled={isCancelling}
               >
                 {isCancelling && (
@@ -225,6 +230,17 @@ export function ReplenishmentDetailPage() {
         </div>
         <TransitionTimeline transitions={transitions} />
       </Card>
+
+      {canCancel && (
+        <CancelDialog
+          open={isCancelDialogOpen}
+          onOpenChange={(next) => {
+            if (!isCancelling) setIsCancelDialogOpen(next);
+          }}
+          onConfirm={handleCancelConfirm}
+          isSubmitting={isCancelling}
+        />
+      )}
     </div>
   );
 }

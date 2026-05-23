@@ -26,7 +26,19 @@ export type AppConfig = {
   readonly webOrigin: string;
   readonly jwt: {
     readonly secret: string;
+    /**
+     * Legacy single-token TTL. Kept for backward compatibility with any
+     * caller still reading it; new code uses `accessTtlSeconds` and the
+     * refresh-token flow instead.
+     *
+     * @deprecated Sprint-3 (ADR-0005). Use `accessTtlSeconds` for access
+     *             token expiry and `refreshTtlDays` for refresh expiry.
+     */
     readonly expiresInSeconds: number;
+    /** Access-token TTL — short (1h default). */
+    readonly accessTtlSeconds: number;
+    /** Refresh-token TTL — long (30d default). */
+    readonly refreshTtlDays: number;
   };
   readonly poster: {
     readonly account: string;
@@ -139,13 +151,32 @@ export function loadConfig(): AppConfig {
     port: parsePositiveInt('PORT', optional('PORT', '3001')),
     databaseUrl,
     webOrigin: optional('WEB_ORIGIN', 'http://localhost:5173'),
-    jwt: Object.freeze({
-      secret: jwtSecret,
-      expiresInSeconds: parsePositiveInt(
+    jwt: (() => {
+      // Sprint-3 (ADR-0005): the single 12-hour JWT was split into a
+      // 1-hour access token + 30-day refresh token. The legacy
+      // `JWT_EXPIRES_IN_SECONDS` is honoured for the *access* token when
+      // `JWT_ACCESS_TTL_SECONDS` is not set, so old .env files keep
+      // working — but the new defaults (3600s / 30d) are picked up
+      // automatically by anyone who has not set either variable.
+      const legacyAccess = parsePositiveInt(
         'JWT_EXPIRES_IN_SECONDS',
-        optional('JWT_EXPIRES_IN_SECONDS', '43200'), // 12h
-      ),
-    }),
+        optional('JWT_EXPIRES_IN_SECONDS', '3600'),
+      );
+      const accessTtlSeconds = parsePositiveInt(
+        'JWT_ACCESS_TTL_SECONDS',
+        optional('JWT_ACCESS_TTL_SECONDS', String(legacyAccess)),
+      );
+      const refreshTtlDays = parsePositiveInt(
+        'JWT_REFRESH_TTL_DAYS',
+        optional('JWT_REFRESH_TTL_DAYS', '30'),
+      );
+      return Object.freeze({
+        secret: jwtSecret,
+        expiresInSeconds: accessTtlSeconds, // backward-compat alias
+        accessTtlSeconds,
+        refreshTtlDays,
+      });
+    })(),
     poster: Object.freeze({
       account: optional('POSTER_ACCOUNT', ''),
       appId: optional('POSTER_APP_ID', ''),

@@ -20,7 +20,7 @@ afterAll(async () => {
 });
 
 describe('POST /api/auth/login', () => {
-  it('returns a token and the public user for valid credentials', async () => {
+  it('returns access + refresh tokens and the public user for valid credentials', async () => {
     await makeUser(ctx.db, { role: 'pm', email: 'login-ok@test.local', password: 'secret-pass' });
 
     const res = await request(ctx.app)
@@ -28,7 +28,12 @@ describe('POST /api/auth/login', () => {
       .send({ email: 'login-ok@test.local', password: 'secret-pass' });
 
     expect(res.status).toBe(200);
-    expect(typeof res.body.token).toBe('string');
+    // Sprint-3 (ADR-0005) — login now returns BOTH tokens.
+    expect(typeof res.body.access_token).toBe('string');
+    expect(typeof res.body.refresh_token).toBe('string');
+    expect(res.body.refresh_token).toHaveLength(64); // 32 bytes -> 64 hex chars
+    // Backward-compat alias retained for one release.
+    expect(res.body.token).toBe(res.body.access_token);
     expect(res.body.user).toMatchObject({ email: 'login-ok@test.local', role: 'pm' });
     // The password hash must never be exposed.
     expect(res.body.user).not.toHaveProperty('password_hash');

@@ -31,6 +31,10 @@ import {
   startMinmaxRecalcWorker,
   stopMinmaxRecalcWorker,
 } from './workers/minmaxRecalcCron.js';
+import {
+  startRefreshTokenCleanupWorker,
+  stopRefreshTokenCleanupWorker,
+} from './workers/refreshTokenCleanupCron.js';
 
 function main(): void {
   const cfg = loadConfig(); // throws clearly on missing/invalid env
@@ -51,6 +55,10 @@ function main(): void {
   console.log('[server] sales aggregate worker started (0 3 * * *)');
   startMinmaxRecalcWorker();
   console.log('[server] minmax recalc worker started (0 4 * * *)');
+
+  // Sprint-3 (ADR-0005) — daily cleanup of expired refresh tokens at 02:00.
+  startRefreshTokenCleanupWorker();
+  console.log('[server] refresh-token cleanup worker started (0 2 * * *)');
 
   // Poster integration workers only run when a token is configured — saves
   // log spam and avoids hammering Poster on a fresh install.
@@ -81,6 +89,7 @@ function main(): void {
     stopTelegramOutboxWorker();
     stopSalesAggregateWorker();
     stopMinmaxRecalcWorker();
+    stopRefreshTokenCleanupWorker();
     server.close(() => {
       void closePool().finally(() => process.exit(0));
     });

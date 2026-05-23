@@ -80,6 +80,7 @@ const DETAIL: ReplenishmentDetail = {
 function mockFetch(options: {
   detail?: ReplenishmentDetail;
   advanceFails?: 'INVALID_TRANSITION';
+  onCancel?: (body: unknown) => void;
 } = {}) {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = typeof input === 'string' ? input : (input as Request).url;
@@ -110,6 +111,10 @@ function mockFetch(options: {
           request: { ...REQUEST, status: 'CHECK_STORE_SUPPLIER' },
         }),
       );
+    }
+    if (url.includes('/api/replenishment/1001/cancel') && method === 'POST') {
+      options.onCancel?.(init?.body ? JSON.parse(init.body as string) : null);
+      return Promise.resolve(jsonResponse(200, { ok: true }));
     }
     if (url.endsWith('/api/replenishment/1001')) {
       return Promise.resolve(
@@ -176,6 +181,47 @@ describe('Replenishment screens', () => {
         screen.getByText(/o.tishni amalga oshirib bo.lmaydi/i),
       ).toBeInTheDocument();
     });
+  });
+
+  it('opens the CancelDialog and POSTs the typed reason (no window.prompt)', async () => {
+    // window.prompt would have a jsdom default of null and the page
+    // historically called it inline — now the dialog must drive the flow.
+    const promptSpy = vi.spyOn(window, 'prompt');
+    let cancelBody: unknown = null;
+    const user = userEvent.setup();
+    mockFetch({
+      onCancel: (body) => {
+        cancelBody = body;
+      },
+    });
+    renderDetail();
+    await screen.findByText('So‘rov #1001');
+
+    // Two "Bekor qilish" controls exist — the one in the header opens
+    // the dialog; the destructive one inside the dialog submits.
+    const triggers = screen.getAllByRole('button', { name: 'Bekor qilish' });
+    const headerTrigger = triggers[0];
+    if (!headerTrigger) throw new Error('header cancel trigger not found');
+    await user.click(headerTrigger);
+
+    // The dialog now exists and the textarea is focused (auto-focus).
+    const dialog = await screen.findByRole('dialog', {
+      name: 'So‘rovni bekor qilish',
+    });
+    const textarea = screen.getByLabelText(/bekor qilish sababi/i);
+    await user.type(textarea, 'mahsulot keldi');
+
+    // Submit through the destructive button rendered inside the dialog.
+    const submit = dialog.querySelector<HTMLButtonElement>(
+      'button[type="submit"]',
+    );
+    if (!submit) throw new Error('dialog submit button not found');
+    await user.click(submit);
+
+    await waitFor(() => {
+      expect(cancelBody).toEqual({ reason: 'mahsulot keldi' });
+    });
+    expect(promptSpy).not.toHaveBeenCalled();
   });
 });
 

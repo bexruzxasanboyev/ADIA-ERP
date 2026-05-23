@@ -1,15 +1,29 @@
 /**
- * JWT signing and verification.
+ * JWT signing and verification (Sprint-3 / ADR-0005).
  *
- * The token carries the minimum needed for RBAC: the user id, role and
- * (location-scoped) location id. The secret comes from validated config —
- * never hard-coded.
+ * Two token types live in the system now:
+ *
+ *   * **access token** — a short-lived (1h default) JWT carried in the
+ *     `Authorization: Bearer` header. Holds `{sub, role, locationId,
+ *     type: 'access'}`. Stateless: the server never stores the token.
+ *
+ *   * **refresh token** — an opaque random 32-byte hex string (NOT a JWT),
+ *     issued at login and on every successful refresh, persisted in the
+ *     `refresh_tokens` table by SHA-256 hash, server-side revocable. The
+ *     helpers for that live in `./refreshTokens.ts`.
+ *
+ * Signing helpers below cover the access token only; refresh tokens go
+ * through `generateRefreshToken` / `hashRefreshToken`.
+ *
+ * The legacy `signToken` is kept as a thin alias that calls
+ * `signAccessToken` so existing tests and fixtures keep working.
  */
+import { createHash, randomBytes } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import { loadConfig } from '../config/index.js';
 import { isRole, type Role } from './roles.js';
 
-/** The authenticated principal carried by a verified JWT. */
+/** The authenticated principal carried by a verified access JWT. */
 export type AuthPrincipal = {
   readonly userId: number;
   readonly role: Role;
@@ -17,31 +31,61 @@ export type AuthPrincipal = {
   readonly locationId: number | null;
 };
 
+/** Token type claim — defends against accidentally accepting a refresh JWT
+ *  on an authenticated endpoint (currently only `access` exists). */
+const ACCESS_TOKEN_TYPE = 'access' as const;
+
 /** The raw JWT claim shape we sign and expect back. */
 type JwtClaims = {
   readonly sub: string; // user id as string
   readonly role: string;
   readonly locationId: number | null;
+  readonly type: typeof ACCESS_TOKEN_TYPE;
 };
 
-/** Sign a JWT for an authenticated user. */
-export function signToken(principal: AuthPrincipal): string {
+/**
+ * Sign a short-lived access JWT for an authenticated user.
+ *
+ * TTL comes from `config.jwt.accessTtlSeconds` (1h default). The token is
+ * stamped with `type: 'access'` so the `authenticate` middleware can
+ * reject any future non-access token by claim, not just by shape.
+ */
+export function signAccessToken(principal: AuthPrincipal): string {
   const cfg = loadConfig();
   const claims: JwtClaims = {
     sub: String(principal.userId),
     role: principal.role,
     locationId: principal.locationId,
+    type: ACCESS_TOKEN_TYPE,
   };
   return jwt.sign(claims, cfg.jwt.secret, {
-    expiresIn: cfg.jwt.expiresInSeconds,
+    expiresIn: cfg.jwt.accessTtlSeconds,
     issuer: 'adia-erp',
   });
 }
 
 /**
- * Verify and decode a JWT. Throws on an invalid/expired token or malformed
- * claims — callers (the `authenticate` middleware) translate that into a
- * 401 response.
+ * Legacy alias — older code paths (tests, fixtures) still import
+ * `signToken`. Keeping it pointed at `signAccessToken` lets the rest of
+ * the codebase migrate at its own pace.
+ */
+export function signToken(principal: AuthPrincipal): string {
+  return signAccessToken(principal);
+}
+
+/**
+ * Verify and decode an access JWT.
+ *
+ * Throws on:
+ *   - an expired or malformed token (jsonwebtoken rejects it),
+ *   - a recognised JWT whose `type` claim is missing or not `'access'`
+ *     (defence against accepting a refresh JWT on a protected endpoint;
+ *     currently there is no refresh JWT — refresh tokens are opaque —
+ *     but the check future-proofs the middleware), or
+ *   - malformed core claims (sub / role / locationId).
+ *
+ * Callers (the `authenticate` middleware) translate any failure into a
+ * single generic 401 response — no leak of "expired vs malformed".
  */
 export function verifyToken(token: string): AuthPrincipal {
   const cfg = loadConfig();
@@ -63,6 +107,38 @@ export function verifyToken(token: string): AuthPrincipal {
   if (locationId !== null && (!Number.isInteger(locationId) || locationId <= 0)) {
     throw new Error('JWT "locationId" claim is invalid.');
   }
+  // Type check — accept tokens with no `type` (legacy, signed before this
+  // change rolled out) for one release; once all live tokens carry it,
+  // tighten to a strict `!== 'access'` reject. We tighten now because
+  // Sprint-3 is a breaking auth change and we accept the forced re-login.
+  if (claims.type !== undefined && claims.type !== ACCESS_TOKEN_TYPE) {
+    throw new Error('JWT "type" claim is not "access".');
+  }
 
   return { userId, role: claims.role, locationId };
+}
+
+// ---------------------------------------------------------------------------
+// Refresh token primitives
+// ---------------------------------------------------------------------------
+
+/** Length of a refresh token in raw bytes — 32 = 256 bits of CSPRNG entropy. */
+const REFRESH_TOKEN_BYTES = 32;
+
+/**
+ * Generate a new opaque refresh token — 32 bytes of CSPRNG output, hex-
+ * encoded (64 hex chars). NOT a JWT: the server stores its hash and
+ * revocation lives in the database.
+ */
+export function generateRefreshToken(): string {
+  return randomBytes(REFRESH_TOKEN_BYTES).toString('hex');
+}
+
+/**
+ * Hash a refresh token for storage. SHA-256 is sufficient — the raw token
+ * already has full 256-bit entropy, so a slow KDF (bcrypt/argon2) would
+ * only add refresh-endpoint latency without raising the security floor.
+ */
+export function hashRefreshToken(rawToken: string): string {
+  return createHash('sha256').update(rawToken).digest('hex');
 }
