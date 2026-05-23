@@ -19,6 +19,9 @@ export const ErrorCode = {
   INVALID_TRANSITION: 'INVALID_TRANSITION',
   POSTER_SYNC_ERROR: 'POSTER_SYNC_ERROR',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
+  // Faza-3 F3.2 — AI write-action lifecycle (ADR-0009).
+  ACTION_NOT_PENDING: 'ACTION_NOT_PENDING',
+  ACTION_EXPIRED: 'ACTION_EXPIRED',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -34,6 +37,8 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   INVALID_TRANSITION: 409,
   POSTER_SYNC_ERROR: 502,
   INTERNAL_ERROR: 500,
+  ACTION_NOT_PENDING: 409,
+  ACTION_EXPIRED: 410,
 };
 
 /** The JSON body shape sent to clients. */

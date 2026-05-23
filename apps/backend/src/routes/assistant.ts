@@ -31,6 +31,12 @@ import {
   listSessionsForUser,
   runAssistantQuery,
 } from '../services/assistant.js';
+import {
+  confirmAction,
+  listActionsForUser,
+  rejectAction,
+  type AssistantActionStatus,
+} from '../services/assistantActions.js';
 
 export const assistantRouter: Router = Router();
 
@@ -145,5 +151,117 @@ assistantRouter.get(
       throw AppError.notFound('Assistant session not found.');
     }
     res.status(200).json(detail);
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// AI write actions (Faza-3 F3.2, ADR-0009)
+// ---------------------------------------------------------------------------
+
+const ACTION_STATUSES = ['pending', 'executed', 'rejected', 'expired', 'superseded'] as const;
+
+/**
+ * POST /api/assistant/actions/:id/confirm
+ *
+ * Confirm a pending assistant action. Idempotent — once a row leaves
+ * `pending` (executed/rejected/expired/superseded), every further confirm
+ * call returns 409 ACTION_NOT_PENDING.
+ *
+ * Mapped status codes:
+ *   * 200 — confirmed + executed; body `{ action, message_appended }`.
+ *   * 403 — caller is not the owner of the action.
+ *   * 404 — action id does not exist.
+ *   * 409 — action is no longer pending (already executed/rejected/superseded).
+ *   * 410 — action expired (5 minutes elapsed since creation).
+ *   * 422 — executor's `canExecute` denied the action at confirm time
+ *           (RBAC changed, or stock invariant fails).
+ */
+assistantRouter.post(
+  '/actions/:id/confirm',
+  authenticate,
+  authorize(...ALL_ROLES),
+  asyncHandler(async (req, res) => {
+    const id = parseIdParam(req.params.id, 'id');
+    const principal = getPrincipal(req);
+    const result = await confirmAction(id, principal);
+    // Status / HTTP codes come from AppError directly (ACTION_NOT_PENDING
+    // → 409, ACTION_EXPIRED → 410) — the global error-handler renders the
+    // spec body, no explicit mapping required here.
+    res.status(200).json({
+      action: result.action,
+      message_appended: result.appendedMessageId !== null,
+    });
+  }),
+);
+
+/**
+ * POST /api/assistant/actions/:id/reject
+ *
+ * Reject a pending action. Atomic — second reject returns 409.
+ */
+assistantRouter.post(
+  '/actions/:id/reject',
+  authenticate,
+  authorize(...ALL_ROLES),
+  asyncHandler(async (req, res) => {
+    const id = parseIdParam(req.params.id, 'id');
+    const principal = getPrincipal(req);
+    const action = await rejectAction(id, principal);
+    res.status(200).json({ action });
+  }),
+);
+
+/**
+ * GET /api/assistant/actions?session_id=&status=&limit=&offset=
+ *
+ * Paginated list of the caller's actions. PM does NOT see other users'
+ * actions here — every row is scoped by `user_id = principal.userId`
+ * (actions are personal intents, not chain-wide audit).
+ */
+assistantRouter.get(
+  '/actions',
+  authenticate,
+  authorize(...ALL_ROLES),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+
+    const sessionIdRaw =
+      typeof req.query.session_id === 'string' ? req.query.session_id : undefined;
+    const sessionId = sessionIdRaw === undefined
+      ? undefined
+      : parseIdParam(sessionIdRaw, 'session_id');
+
+    let status: AssistantActionStatus | undefined;
+    if (typeof req.query.status === 'string' && req.query.status !== '') {
+      const s = req.query.status as AssistantActionStatus;
+      if (!(ACTION_STATUSES as readonly string[]).includes(s)) {
+        throw AppError.validation(
+          `"status" must be one of ${ACTION_STATUSES.join(', ')}.`,
+        );
+      }
+      status = s;
+    }
+
+    const limitRaw = parseOptionalIdParam(
+      typeof req.query.limit === 'string' ? req.query.limit : undefined,
+      'limit',
+    );
+    const offsetRaw = req.query.offset;
+    const offsetParsed =
+      typeof offsetRaw === 'string' && offsetRaw !== '' ? Number(offsetRaw) : 0;
+    if (!Number.isInteger(offsetParsed) || offsetParsed < 0) {
+      throw AppError.validation('"offset" must be a non-negative integer.');
+    }
+    const limit = Math.min(limitRaw ?? DEFAULT_LIMIT, MAX_LIMIT);
+
+    // `exactOptionalPropertyTypes` — omit keys instead of passing undefined.
+    const opts = {
+      limit,
+      offset: offsetParsed,
+      ...(sessionId !== undefined ? { sessionId } : {}),
+      ...(status !== undefined ? { status } : {}),
+    };
+    const { items, total } = await listActionsForUser(principal, opts);
+    res.status(200).json({ items, total, limit, offset: offsetParsed });
   }),
 );

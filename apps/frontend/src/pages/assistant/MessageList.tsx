@@ -22,6 +22,14 @@ interface MessageListProps {
   isThinking: boolean;
   /** Click handler for an empty-state starter chip. */
   onSelectPrompt?: (prompt: string) => void;
+  /** Forwarded to `MessageItem` → `PendingActionCard`. */
+  onConfirmAction?: (actionId: number) => Promise<void>;
+  /** Forwarded to `MessageItem` → `PendingActionCard`. */
+  onRejectAction?: (actionId: number) => Promise<void>;
+  /** Currently in-flight confirm/reject request, or null. */
+  actionRequest?: { actionId: number; kind: 'confirm' | 'reject' } | null;
+  /** Map of action id → last error message from a failed confirm/reject. */
+  actionErrors?: Record<number, string>;
   className?: string;
 }
 
@@ -36,6 +44,10 @@ export function MessageList({
   messages,
   isThinking,
   onSelectPrompt,
+  onConfirmAction,
+  onRejectAction,
+  actionRequest = null,
+  actionErrors = {},
   className,
 }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -113,6 +125,10 @@ export function MessageList({
         <MessageItem
           key={`${message.role}-${idx}-${message.created_at}`}
           message={message}
+          onConfirmAction={onConfirmAction}
+          onRejectAction={onRejectAction}
+          actionRequest={actionRequest}
+          actionErrors={actionErrors}
         />
       ))}
       {isThinking && <ThinkingRow />}

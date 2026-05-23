@@ -171,3 +171,28 @@ export const PURCHASE_ORDER_STATUS_OPTIONS: {
 }[] = (
   Object.keys(PURCHASE_ORDER_STATUS_LABELS) as PurchaseOrderStatus[]
 ).map((value) => ({ value, label: PURCHASE_ORDER_STATUS_LABELS[value] }));
+
+// ---------------------------------------------------------------------------
+// Faza-3 F3.2 — AI write-action labels (PendingActionCard).
+// Keys match the backend tool registry; unknown keys fall back to the raw
+// tool name in the UI (consciously visible, not branded).
+// ---------------------------------------------------------------------------
+
+/**
+ * Uzbek labels for AI write tools. Each label is short enough to fit on
+ * a single line of the PendingActionCard header — emoji is part of the
+ * label so the badge reads visually at a glance.
+ */
+export const ASSISTANT_WRITE_TOOL_LABELS: Record<string, string> = {
+  transfer_stock: '🔄 Tovar ko‘chirish',
+  create_replenishment_request: '📋 Yangi so‘rov',
+  mark_production_order_done: '✅ Zayafkani yakunlash',
+  approve_purchase_order: '👍 Sotib olishni tasdiqlash',
+  update_minmax: '✏️ Min/Max o‘zgartirish',
+  create_production_order: '🏭 Yangi zayafka',
+};
+
+/** Lookup helper — falls back to the raw tool name when unmapped. */
+export function assistantWriteToolLabel(toolName: string): string {
+  return ASSISTANT_WRITE_TOOL_LABELS[toolName] ?? toolName;
+}

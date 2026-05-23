@@ -1,12 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, apiRequest } from '@/lib/api-client';
 import type {
+  AssistantActionResult,
+  AssistantConfirmActionResponse,
   AssistantMessage,
   AssistantQueryResponse,
+  AssistantRejectActionResponse,
   AssistantSessionDetail,
   AssistantSessionSummary,
   AssistantSessionsResponse,
 } from '@/lib/types';
+
+interface ActionRequestState {
+  /** Action id whose `/confirm` or `/reject` is currently in flight. */
+  actionId: number;
+  /** Which side the user pressed. */
+  kind: 'confirm' | 'reject';
+}
 
 interface ChatState {
   messages: AssistantMessage[];
@@ -16,6 +26,10 @@ interface ChatState {
   sessions: AssistantSessionSummary[];
   isLoadingSessions: boolean;
   sessionsError: string | null;
+  /** Tracks the in-flight confirm/reject request, if any. */
+  actionRequest: ActionRequestState | null;
+  /** Last error from a confirm/reject attempt, keyed by action id. */
+  actionErrors: Record<number, string>;
 }
 
 interface ChatApi extends ChatState {
@@ -25,6 +39,10 @@ interface ChatApi extends ChatState {
   reloadSessions: () => void;
   /** Clears any in-flight send error so the next attempt isn't blocked visually. */
   clearError: () => void;
+  /** Confirm a pending write action — `POST /api/assistant/actions/:id/confirm`. */
+  confirmAction: (actionId: number) => Promise<void>;
+  /** Reject a pending write action — `POST /api/assistant/actions/:id/reject`. */
+  rejectAction: (actionId: number) => Promise<void>;
 }
 
 /**
@@ -51,6 +69,34 @@ function localiseError(err: unknown): string {
 }
 
 /**
+ * Maps confirm/reject error codes to user-facing Uzbek messages.
+ * The two-phase commit has its own error codes (phase-3.md §3.4) that
+ * deserve dedicated copy so the user understands why the click didn't
+ * land.
+ */
+function localiseActionError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.code === 'ACTION_EXPIRED' || err.status === 410) {
+      return 'Amal muddati o‘tdi (5 daqiqa). Iltimos, AI yordamchidan qaytadan so‘rang.';
+    }
+    if (err.code === 'ACTION_NOT_PENDING' || err.status === 409) {
+      return 'Bu amal allaqachon bajarilgan yoki rad etilgan.';
+    }
+    if (err.code === 'ACTION_FORBIDDEN' || err.status === 403) {
+      return 'Bu amalni tasdiqlash huquqingiz yo‘q.';
+    }
+    if (err.code === 'INSUFFICIENT_STOCK' || err.status === 422) {
+      return 'Omborda yetarli tovar yo‘q — amal bajarilmadi.';
+    }
+    if (err.code === 'ACTION_NOT_FOUND' || err.status === 404) {
+      return 'Amal topilmadi.';
+    }
+    return err.message;
+  }
+  return 'Amalni qayta ishlashda xato yuz berdi.';
+}
+
+/**
  * Stateful AI-chat hook used by `AssistantDrawer`.
  *
  * Lifecycle:
@@ -71,6 +117,8 @@ export function useAssistantChat(enabled: boolean): ChatApi {
     sessions: [],
     isLoadingSessions: false,
     sessionsError: null,
+    actionRequest: null,
+    actionErrors: {},
   });
 
   // Live mirror of `sessionId` for the async `send` flow — avoids the
@@ -138,11 +186,16 @@ export function useAssistantChat(enabled: boolean): ChatApi {
         role: 'assistant',
         content: result.response,
         tool_calls: result.tool_calls,
+        pending_action: result.pending_action,
         created_at: new Date().toISOString(),
       };
       setState((s) => ({
         ...s,
-        messages: [...s.messages, assistantMessage],
+        // A new pending action supersedes any earlier still-pending one
+        // in this session (phase-3.md §3.1 — bitta sessiyada bir vaqtda
+        // bitta pending action). Reflect that locally so the UI doesn't
+        // show two simultaneous "Bajarilishi kutilmoqda" cards.
+        messages: appendAssistantTurn(s.messages, assistantMessage),
         sessionId: result.session_id,
         isSending: false,
         // Refresh sessions list so the new title shows up at the top.
@@ -203,6 +256,60 @@ export function useAssistantChat(enabled: boolean): ChatApi {
     setState((s) => ({ ...s, sendError: null }));
   }, []);
 
+  const resolveAction = useCallback(
+    async (actionId: number, kind: 'confirm' | 'reject') => {
+      // Mark this card busy and clear any prior error on this id so the
+      // user sees the spinner immediately.
+      setState((s) => {
+        const nextErrors = { ...s.actionErrors };
+        delete nextErrors[actionId];
+        return {
+          ...s,
+          actionRequest: { actionId, kind },
+          actionErrors: nextErrors,
+        };
+      });
+
+      try {
+        const path = `/api/assistant/actions/${actionId}/${kind}`;
+        const response = await apiRequest<
+          AssistantConfirmActionResponse | AssistantRejectActionResponse
+        >(path, { method: 'POST' });
+        setState((s) => ({
+          ...s,
+          actionRequest: null,
+          messages: replaceActionInMessages(s.messages, response.action),
+        }));
+      } catch (err) {
+        setState((s) => ({
+          ...s,
+          actionRequest: null,
+          actionErrors: {
+            ...s.actionErrors,
+            [actionId]: localiseActionError(err),
+          },
+          // If the server reports ACTION_NOT_PENDING / ACTION_EXPIRED,
+          // the card should still flip to its terminal state so the user
+          // can no longer click. We can't know the true status without
+          // another round-trip, so we conservatively show `expired` when
+          // the API tells us the action is no longer pending.
+          messages: maybeMarkActionTerminalOnError(s.messages, actionId, err),
+        }));
+      }
+    },
+    [],
+  );
+
+  const confirmAction = useCallback(
+    (actionId: number) => resolveAction(actionId, 'confirm'),
+    [resolveAction],
+  );
+
+  const rejectAction = useCallback(
+    (actionId: number) => resolveAction(actionId, 'reject'),
+    [resolveAction],
+  );
+
   return {
     ...state,
     send,
@@ -210,7 +317,95 @@ export function useAssistantChat(enabled: boolean): ChatApi {
     openSession,
     reloadSessions,
     clearError,
+    confirmAction,
+    rejectAction,
   };
+}
+
+/**
+ * Walks the message list and:
+ *   1. Demotes any prior still-pending action to `superseded` (a brand-new
+ *      assistant turn with its own pending action wins).
+ *   2. Appends the new assistant turn at the tail.
+ */
+function appendAssistantTurn(
+  messages: AssistantMessage[],
+  next: AssistantMessage,
+): AssistantMessage[] {
+  if (next.pending_action === undefined) {
+    return [...messages, next];
+  }
+  const demoted = messages.map<AssistantMessage>((msg) => {
+    if (msg.pending_action === undefined) return msg;
+    const supersededResult: AssistantActionResult = {
+      action_id: msg.pending_action.action_id,
+      tool_name: msg.pending_action.tool_name,
+      summary: msg.pending_action.summary,
+      status: 'superseded',
+    };
+    return {
+      ...msg,
+      pending_action: undefined,
+      action_result: supersededResult,
+    };
+  });
+  return [...demoted, next];
+}
+
+/**
+ * Swap the `pending_action` on the message that holds this action id
+ * for the resolved `action_result` returned by `/confirm` or `/reject`.
+ * If the resolved row arrived via session history, the matching row
+ * already has `action_result` set — overwrite it in place.
+ */
+function replaceActionInMessages(
+  messages: AssistantMessage[],
+  result: AssistantActionResult,
+): AssistantMessage[] {
+  return messages.map<AssistantMessage>((msg) => {
+    const isMatch =
+      msg.pending_action?.action_id === result.action_id ||
+      msg.action_result?.action_id === result.action_id;
+    if (!isMatch) return msg;
+    return {
+      ...msg,
+      pending_action: undefined,
+      action_result: result,
+    };
+  });
+}
+
+/**
+ * If the server told us the action is no longer pending (`409`/`410`),
+ * flip the local row to a terminal state so the buttons disappear.
+ * We use `expired` as the safe fallback — the user can re-ask the
+ * assistant to retry.
+ */
+function maybeMarkActionTerminalOnError(
+  messages: AssistantMessage[],
+  actionId: number,
+  err: unknown,
+): AssistantMessage[] {
+  if (!(err instanceof ApiError)) return messages;
+  const terminal =
+    err.code === 'ACTION_EXPIRED' ||
+    err.status === 410 ||
+    err.code === 'ACTION_NOT_PENDING' ||
+    err.status === 409;
+  if (!terminal) return messages;
+  return messages.map<AssistantMessage>((msg) => {
+    if (msg.pending_action?.action_id !== actionId) return msg;
+    return {
+      ...msg,
+      pending_action: undefined,
+      action_result: {
+        action_id: msg.pending_action.action_id,
+        tool_name: msg.pending_action.tool_name,
+        summary: msg.pending_action.summary,
+        status: err.code === 'ACTION_NOT_PENDING' ? 'superseded' : 'expired',
+      },
+    };
+  });
 }
 
 function upsertSessionAtTop(

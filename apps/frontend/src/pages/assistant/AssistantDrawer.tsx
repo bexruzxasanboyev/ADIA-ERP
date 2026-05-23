@@ -122,6 +122,10 @@ export function AssistantDrawer({ open, onOpenChange }: AssistantDrawerProps) {
                 messages={chat.messages}
                 isThinking={chat.isSending}
                 onSelectPrompt={handleSelectPrompt}
+                onConfirmAction={chat.confirmAction}
+                onRejectAction={chat.rejectAction}
+                actionRequest={chat.actionRequest}
+                actionErrors={chat.actionErrors}
               />
               <MessageInput
                 onSend={handleSend}

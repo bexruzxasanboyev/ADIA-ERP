@@ -35,6 +35,10 @@ import {
   startRefreshTokenCleanupWorker,
   stopRefreshTokenCleanupWorker,
 } from './workers/refreshTokenCleanupCron.js';
+import {
+  startActionExpireWorker,
+  stopActionExpireWorker,
+} from './workers/actionExpireCron.js';
 
 function main(): void {
   const cfg = loadConfig(); // throws clearly on missing/invalid env
@@ -59,6 +63,11 @@ function main(): void {
   // Sprint-3 (ADR-0005) — daily cleanup of expired refresh tokens at 02:00.
   startRefreshTokenCleanupWorker();
   console.log('[server] refresh-token cleanup worker started (0 2 * * *)');
+
+  // Faza-3 F3.2 (ADR-0009) — sweep pending AI write actions whose 5-minute
+  // TTL has elapsed. One UPDATE per minute, atomic and idempotent.
+  startActionExpireWorker();
+  console.log('[server] assistant action expire worker started (* * * * *)');
 
   // Poster integration workers only run when a token is configured — saves
   // log spam and avoids hammering Poster on a fresh install.
@@ -90,6 +99,7 @@ function main(): void {
     stopSalesAggregateWorker();
     stopMinmaxRecalcWorker();
     stopRefreshTokenCleanupWorker();
+    stopActionExpireWorker();
     server.close(() => {
       void closePool().finally(() => process.exit(0));
     });

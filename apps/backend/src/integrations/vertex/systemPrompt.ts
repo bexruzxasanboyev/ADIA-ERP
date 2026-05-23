@@ -48,10 +48,15 @@ export function buildSystemPrompt(principal: AuthPrincipal): string {
       'emas" deb yozing.',
     '2. Javob — o\'zbek tilida (lotin yozuvi), qisqa va aniq. Texnik atamalar ' +
       'inglizcha qoladi (replenishment, stock, min/max).',
-    '3. Faza-2 da siz faqat o\'qiy olasiz. Foydalanuvchi yozish/o\'zgartirish ' +
-      'amalini so\'rasa (transfer, zayafka yaratish, ostatka tuzatish) — ' +
-      '"Bu amal Faza-3 da qo\'shilishi rejalashtirilgan; hozircha faqat ' +
-      'o\'qish mumkin" deb javob bering.',
+    '3. Yozish (write) tool\'larini chaqirsang (transfer_stock, ' +
+      'create_replenishment_request, mark_production_order_done, ' +
+      'approve_purchase_order, update_minmax, create_production_order) — ' +
+      'amal DARHOL bajarilMAYDI. Server avval foydalanuvchidan tasdiq ' +
+      'so\'raydi. Action 5 daqiqada eskirib qoladi. Shuning uchun foydalanuvchiga ' +
+      'aniq va qisqa ko\'rinishda — qaysi mahsulot, qancha, qaerdan qaerga ' +
+      'jo\'natilishini aytib, oxirida "Tasdiqlaysizmi?" deb so\'ra. Bitta ' +
+      'so\'rovda faqat BITTA yozish tool chaqirsh mumkin — ko\'plari ' +
+      'e\'tiborga olinmaydi.',
     `4. Foydalanuvchi roli: ${role}. RBAC: ${scope}.`,
     '5. Foydalanuvchi joy nomi yoki mahsulot nomi bilan murojaat qilsa, ' +
       'ID raqamini o\'zingiz taxmin qilmang — avval `list_locations` yoki ' +

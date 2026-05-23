@@ -121,6 +121,170 @@ describe('AssistantDrawer', () => {
     ).toBeInTheDocument();
   });
 
+  it('renders a PendingActionCard when the backend returns pending_action and confirms it', async () => {
+    fetchMock
+      .mockResolvedValueOnce(stubSessions([]))
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          session_id: 13,
+          response:
+            'Quyidagi amalni tasdiqlaysizmi: Markaziy sklad → Filial-2 ga 5 dona Tort?',
+          tool_calls: [],
+          pending_action: {
+            action_id: 501,
+            tool_name: 'transfer_stock',
+            summary: 'Markaziy sklad → Filial-2: 5 dona Tort Napoleon',
+            args: {
+              product_id: 42,
+              from_location_id: 1,
+              to_location_id: 2,
+              qty: 5,
+            },
+            expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+          },
+        } satisfies AssistantQueryResponse),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          action: {
+            action_id: 501,
+            tool_name: 'transfer_stock',
+            summary: 'Markaziy sklad → Filial-2: 5 dona Tort Napoleon',
+            status: 'executed',
+            result: { stock_movement_id: 9001 },
+          },
+        }),
+      );
+
+    const user = userEvent.setup();
+    renderWithProviders(<Harness />);
+
+    const textarea = await screen.findByLabelText('AI yordamchiga xabar');
+    await user.type(textarea, 'Filial-2 ga 5 ta tort jo‘nat');
+    await user.keyboard('{Enter}');
+
+    // The card appears under the assistant message.
+    const card = await screen.findByTestId('pending-action-card');
+    expect(card).toBeInTheDocument();
+    expect(card.getAttribute('data-action-status')).toBe('pending');
+    expect(
+      screen.getByText(/Markaziy sklad → Filial-2: 5 dona Tort Napoleon/),
+    ).toBeInTheDocument();
+
+    // Confirm the action.
+    await user.click(screen.getByTestId('pending-action-confirm'));
+
+    // Backend confirm endpoint was called.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const confirmCall = fetchMock.mock.calls[2];
+    if (confirmCall === undefined) throw new Error('expected confirm call');
+    expect(confirmCall[0]).toContain('/api/assistant/actions/501/confirm');
+    expect((confirmCall[1] as RequestInit).method).toBe('POST');
+
+    // The card flips to the executed outcome strip.
+    await waitFor(() => {
+      const updated = screen.getByTestId('pending-action-card');
+      expect(updated.getAttribute('data-action-status')).toBe('executed');
+    });
+    expect(screen.getByText(/Bajarildi/)).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('pending-action-confirm'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('rejects a pending action and shows the rejected outcome', async () => {
+    fetchMock
+      .mockResolvedValueOnce(stubSessions([]))
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          session_id: 14,
+          response: 'Tasdiqlaysizmi?',
+          tool_calls: [],
+          pending_action: {
+            action_id: 777,
+            tool_name: 'transfer_stock',
+            summary: 'Markaziy sklad → Filial-2: 5 dona Tort Napoleon',
+            args: {},
+            expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+          },
+        } satisfies AssistantQueryResponse),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          action: {
+            action_id: 777,
+            tool_name: 'transfer_stock',
+            summary: 'Markaziy sklad → Filial-2: 5 dona Tort Napoleon',
+            status: 'rejected',
+          },
+        }),
+      );
+
+    const user = userEvent.setup();
+    renderWithProviders(<Harness />);
+
+    const textarea = await screen.findByLabelText('AI yordamchiga xabar');
+    await user.type(textarea, 'jo‘nat');
+    await user.keyboard('{Enter}');
+
+    await screen.findByTestId('pending-action-card');
+    await user.click(screen.getByTestId('pending-action-reject'));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const rejectCall = fetchMock.mock.calls[2];
+    if (rejectCall === undefined) throw new Error('expected reject call');
+    expect(rejectCall[0]).toContain('/api/assistant/actions/777/reject');
+
+    await waitFor(() => {
+      const updated = screen.getByTestId('pending-action-card');
+      expect(updated.getAttribute('data-action-status')).toBe('rejected');
+    });
+    expect(screen.getByText(/Rad qilindi/)).toBeInTheDocument();
+  });
+
+  it('shows a localised error when /confirm returns 410 expired and disables the buttons', async () => {
+    fetchMock
+      .mockResolvedValueOnce(stubSessions([]))
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          session_id: 15,
+          response: 'Tasdiqlaysizmi?',
+          tool_calls: [],
+          pending_action: {
+            action_id: 808,
+            tool_name: 'transfer_stock',
+            summary: 'Test summary',
+            args: {},
+            expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+          },
+        } satisfies AssistantQueryResponse),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(410, {
+          error: { code: 'ACTION_EXPIRED', message: 'expired' },
+        }),
+      );
+
+    const user = userEvent.setup();
+    renderWithProviders(<Harness />);
+
+    const textarea = await screen.findByLabelText('AI yordamchiga xabar');
+    await user.type(textarea, 'test');
+    await user.keyboard('{Enter}');
+
+    await screen.findByTestId('pending-action-card');
+    await user.click(screen.getByTestId('pending-action-confirm'));
+
+    // Card flips to expired (terminal) and the confirm button is gone.
+    await waitFor(() => {
+      const updated = screen.getByTestId('pending-action-card');
+      expect(updated.getAttribute('data-action-status')).toBe('expired');
+    });
+    expect(
+      screen.queryByTestId('pending-action-confirm'),
+    ).not.toBeInTheDocument();
+  });
+
   it('reuses session_id on the second turn', async () => {
     fetchMock
       .mockResolvedValueOnce(stubSessions([]))

@@ -79,6 +79,51 @@ describe('MessageList', () => {
     expect(screen.getByText(/AI o.ylamoqda/)).toBeInTheDocument();
   });
 
+  it('renders a PendingActionCard on the assistant turn when a pending_action is attached', () => {
+    render(
+      <MessageList
+        messages={[
+          makeMessage('assistant', 'Tasdiqlaysizmi?', {
+            pending_action: {
+              action_id: 1,
+              tool_name: 'transfer_stock',
+              summary: 'Markaziy sklad → Filial-2: 5 dona Tort',
+              args: { qty: 5 },
+              expires_at: new Date(Date.now() + 60_000).toISOString(),
+            },
+          }),
+        ]}
+        isThinking={false}
+      />,
+    );
+    const card = screen.getByTestId('pending-action-card');
+    expect(card).toBeInTheDocument();
+    expect(card.getAttribute('data-action-status')).toBe('pending');
+  });
+
+  it('renders a resolved action_result card (executed) without buttons', () => {
+    render(
+      <MessageList
+        messages={[
+          makeMessage('assistant', 'Bajardim', {
+            action_result: {
+              action_id: 7,
+              tool_name: 'transfer_stock',
+              summary: 'Markaziy sklad → Filial-2: 5 dona Tort',
+              status: 'executed',
+            },
+          }),
+        ]}
+        isThinking={false}
+      />,
+    );
+    const card = screen.getByTestId('pending-action-card');
+    expect(card.getAttribute('data-action-status')).toBe('executed');
+    expect(
+      screen.queryByTestId('pending-action-confirm'),
+    ).not.toBeInTheDocument();
+  });
+
   it('renders the assistant tool-call chips when provided', () => {
     render(
       <MessageList

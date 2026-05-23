@@ -427,14 +427,72 @@ export interface AssistantToolCall {
 }
 
 /**
+ * Faza-3 F3.2 — AI write-action two-phase commit.
+ * Mirrors `assistant_actions.status` enum on the backend.
+ */
+export type AssistantActionStatus =
+  | 'pending'
+  | 'executed'
+  | 'rejected'
+  | 'expired'
+  | 'superseded';
+
+/**
+ * Pending write-action surfaced by the backend when the model invoked a
+ * write tool. The UI renders a `PendingActionCard` and the user must
+ * either `/confirm` or `/reject` before the side-effect lands.
+ * Carried both inline (in `AssistantQueryResponse.pending_action`) and
+ * attached to the assistant turn in `AssistantMessage.pending_action`.
+ */
+export interface AssistantPendingAction {
+  action_id: number;
+  tool_name: string;
+  /** Human-readable one-line Uzbek summary of the action. */
+  summary: string;
+  args: Record<string, unknown>;
+  /** ISO timestamp — action turns to `expired` after this moment. */
+  expires_at: string;
+}
+
+/**
+ * Resolved action — i.e. one that the user has confirmed or rejected,
+ * or which the server has marked expired/superseded. Surfaces in the
+ * message timeline (rebuilt from session history) and as the response of
+ * `/confirm` and `/reject`.
+ */
+export interface AssistantActionResult {
+  action_id: number;
+  tool_name: string;
+  summary: string;
+  status: AssistantActionStatus;
+  /** Tool-specific success payload; null on rejected/expired. */
+  result?: unknown;
+}
+
+/**
  * `POST /api/assistant/query` response envelope.
  * `session_id` is returned even on the first turn (the backend created a new session).
+ * `pending_action` is present when the model invoked a write tool — UI must surface it.
  */
 export interface AssistantQueryResponse {
   session_id: number;
   /** Final assistant text — markdown allowed. */
   response: string;
   tool_calls: AssistantToolCall[];
+  pending_action?: AssistantPendingAction;
+}
+
+/**
+ * `POST /api/assistant/actions/:id/confirm` response envelope.
+ * Returns the resolved action (status `executed`) plus tool-specific result.
+ */
+export interface AssistantConfirmActionResponse {
+  action: AssistantActionResult;
+}
+
+/** `POST /api/assistant/actions/:id/reject` response envelope. */
+export interface AssistantRejectActionResponse {
+  action: AssistantActionResult;
 }
 
 /** A single chat message row, both for the live UI and for session history. */
@@ -446,6 +504,17 @@ export interface AssistantMessage {
   content: string;
   /** Tool-calls emitted for an `assistant` turn (or describing the `tool` row). */
   tool_calls?: AssistantToolCall[];
+  /**
+   * Live pending write-action attached to this assistant turn (Faza-3 F3.2).
+   * Mutually exclusive with `action_result` — once the user confirms/rejects
+   * or the action expires, the UI replaces this with the resolved row.
+   */
+  pending_action?: AssistantPendingAction;
+  /**
+   * Resolved write-action surfaced after confirm/reject/expire, or hydrated
+   * from session history. The card switches to a read-only outcome strip.
+   */
+  action_result?: AssistantActionResult;
   created_at: string;
 }
 

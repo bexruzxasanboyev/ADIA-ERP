@@ -40,12 +40,19 @@ import {
   toolDeclarations,
   type ToolRow,
 } from '../integrations/vertex/tools.js';
+import {
+  getWriteTool,
+  isWriteToolName,
+  writeToolDeclarations,
+  type CanExecuteDenial,
+} from '../integrations/vertex/tools/write.js';
 import { loadConfig } from '../config/index.js';
 import type {
   Content,
   FunctionCall,
   GenerateContentResponse,
   Part,
+  Tool,
 } from '@google/genai';
 
 // ---------------------------------------------------------------------------
@@ -73,10 +80,26 @@ export type RunAssistantQueryInput = {
   readonly client?: VertexClient;
 };
 
+/**
+ * `pending_action` is included in the API response when the model proposed a
+ * write tool that the server accepted (RBAC-passed, args-valid). The UI shows
+ * a confirm dialog with `summary`; the user then calls `/actions/:id/confirm`
+ * to actually run the executor. ADR-0009.
+ */
+export type PendingActionView = {
+  readonly action_id: number;
+  readonly tool_name: string;
+  readonly args: Record<string, unknown>;
+  readonly summary: string;
+  readonly expires_at: string;
+};
+
 export type RunAssistantQueryResult = {
   readonly session_id: number;
   readonly response: string;
   readonly tool_calls: AssistantToolCallView[];
+  /** Set when the model proposed a write tool the server staged as pending. */
+  readonly pending_action?: PendingActionView;
 };
 
 // ---------------------------------------------------------------------------
@@ -136,7 +159,21 @@ type ExecutedToolCall = {
   readonly result: unknown;
   /** Short human-readable summary for the API view. */
   readonly summary: string;
+  /** Discriminator — read tools run for real, write tools stage a pending action. */
+  readonly kind: 'read' | 'write_pending' | 'write_denied' | 'unknown';
 };
+
+/** Internal — a successfully staged pending action. */
+type StagedAction = {
+  readonly actionId: number;
+  readonly toolName: string;
+  readonly args: Record<string, unknown>;
+  readonly summary: string;
+  readonly expiresAt: Date;
+};
+
+/** Pending action lifetime — ADR-0009 §1 says 5 minutes. */
+const PENDING_ACTION_TTL_MINUTES = 5;
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -185,8 +222,13 @@ export async function runAssistantQuery(
 
   // 4. Multi-turn tool loop.
   const systemInstruction = buildSystemPrompt(principal);
-  const tools = toolDeclarations();
+  const tools = mergedToolDeclarations();
   const executedTools: ExecutedToolCall[] = [];
+  // At most one pending write action per assistant query — ADR-0009 §8
+  // "Multi-call: only the first write tool stages an action, the rest are
+  // ignored." We honour that by ignoring further write calls once one has
+  // been staged.
+  let stagedAction: StagedAction | null = null;
 
   let finalText = '';
   for (let turn = 0; turn <= cfg.vertex.maxToolCallsPerTurn; turn += 1) {
@@ -227,6 +269,66 @@ export async function runAssistantQuery(
 
     const responseParts: Part[] = [];
     for (const call of functionCalls) {
+      const callName = call.name ?? '';
+      // Write tool path — stage a pending_action (no DB mutation) and feed
+      // a structured response back to the model so it knows the action is
+      // awaiting user confirmation. After the first write tool is staged,
+      // every additional write call in the same turn is ignored (ADR-0009).
+      if (isWriteToolName(callName)) {
+        if (stagedAction !== null) {
+          const ignoredSummary = `${callName}: ignored — another write action is already pending`;
+          executedTools.push({
+            name: callName,
+            args: (call.args ?? {}) as Record<string, unknown>,
+            ok: false,
+            result: { error: 'pending_action_already_staged' },
+            summary: clip(ignoredSummary, RESULT_SUMMARY_MAX_LEN),
+            kind: 'write_denied',
+          });
+          responseParts.push({
+            functionResponse: {
+              name: callName,
+              response: {
+                error:
+                  'Another write action is already awaiting user confirmation; this call was ignored.',
+              },
+            },
+          });
+          continue;
+        }
+        const staged = await handleWriteToolCall(
+          callName,
+          (call.args ?? {}) as Record<string, unknown>,
+          principal,
+          session.id,
+        );
+        executedTools.push(staged.executed);
+        if (staged.staged !== null) {
+          stagedAction = staged.staged;
+          responseParts.push({
+            functionResponse: {
+              name: callName,
+              response: {
+                pending_action: {
+                  action_id: staged.staged.actionId,
+                  summary: staged.staged.summary,
+                  expires_at: staged.staged.expiresAt.toISOString(),
+                },
+              },
+            },
+          });
+        } else {
+          responseParts.push({
+            functionResponse: {
+              name: callName,
+              response: { error: staged.executed.summary },
+            },
+          });
+        }
+        continue;
+      }
+
+      // Read tool path — execute immediately and feed the rows back.
       const executed = await executeOneToolCall(call, principal);
       executedTools.push(executed);
       responseParts.push({
@@ -259,11 +361,38 @@ export async function runAssistantQuery(
     result_summary: t.summary,
   }));
 
-  return {
+  const result: RunAssistantQueryResult = {
     session_id: session.id,
     response: finalText,
     tool_calls: toolCallsView,
   };
+  if (stagedAction !== null) {
+    return {
+      ...result,
+      pending_action: {
+        action_id: stagedAction.actionId,
+        tool_name: stagedAction.toolName,
+        args: stagedAction.args,
+        summary: stagedAction.summary,
+        expires_at: stagedAction.expiresAt.toISOString(),
+      },
+    };
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Tool declarations — read tools (Faza-2) + write tools (Faza-3 F3.2)
+// ---------------------------------------------------------------------------
+
+function mergedToolDeclarations(): Tool[] {
+  const readTools = toolDeclarations();
+  const readDecls = readTools[0]?.functionDeclarations ?? [];
+  return [
+    {
+      functionDeclarations: [...readDecls, ...writeToolDeclarations()],
+    },
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -385,12 +514,12 @@ async function executeOneToolCall(
   const executor = name === '' ? undefined : getToolExecutor(name);
   if (executor === undefined) {
     const summary = `Unknown tool "${name}".`;
-    return { name, args, ok: false, result: { error: summary }, summary };
+    return { name, args, ok: false, result: { error: summary }, summary, kind: 'unknown' };
   }
   try {
     const rows = await executor.execute(args, principal);
     const summary = summariseToolResult(name, rows);
-    return { name, args, ok: true, result: rows, summary };
+    return { name, args, ok: true, result: rows, summary, kind: 'read' };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return {
@@ -399,6 +528,172 @@ async function executeOneToolCall(
       ok: false,
       result: { error: message },
       summary: clip(`error: ${message}`, RESULT_SUMMARY_MAX_LEN),
+      kind: 'read',
+    };
+  }
+}
+
+/**
+ * Handle one write functionCall: validate args, RBAC pre-check, build the
+ * summary, and stage an `assistant_actions` row. The DB transaction also
+ * supersedes any prior pending action in the same session so the
+ * one-pending-per-session invariant holds (ADR-0009 §4).
+ *
+ * Returns `staged: null` when the call is rejected (args invalid or RBAC
+ * denied); the model receives an `error` functionResponse in that case and
+ * `executedTools` records the failure for audit / UI display.
+ */
+async function handleWriteToolCall(
+  toolName: string,
+  args: Record<string, unknown>,
+  principal: AuthPrincipal,
+  sessionId: number,
+): Promise<{ executed: ExecutedToolCall; staged: StagedAction | null }> {
+  const tool = getWriteTool(toolName);
+  if (tool === undefined) {
+    const msg = `Unknown write tool "${toolName}".`;
+    return {
+      executed: {
+        name: toolName,
+        args,
+        ok: false,
+        result: { error: msg },
+        summary: clip(msg, RESULT_SUMMARY_MAX_LEN),
+        kind: 'unknown',
+      },
+      staged: null,
+    };
+  }
+
+  // 1. Argument validation (zod-equivalent — each tool throws AppError.validation).
+  let validatedArgs: Record<string, unknown>;
+  try {
+    validatedArgs = tool.validateArgs(args);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const summary = clip(`invalid_args: ${message}`, RESULT_SUMMARY_MAX_LEN);
+    return {
+      executed: {
+        name: toolName,
+        args,
+        ok: false,
+        result: { error: message, code: 'invalid_args' },
+        summary,
+        kind: 'write_denied',
+      },
+      staged: null,
+    };
+  }
+
+  // 2. RBAC pre-check + summary + INSERT, all in one atomic transaction.
+  try {
+    const result = await withTransaction(async (tx) => {
+      const decision = await tool.canExecute(validatedArgs, principal, tx);
+      if (decision !== 'allowed') {
+        return { denied: decision as CanExecuteDenial };
+      }
+      const summary = await tool.summarize(validatedArgs, principal, tx);
+      const expiresAt = new Date(Date.now() + PENDING_ACTION_TTL_MINUTES * 60_000);
+
+      // Supersede any prior pending action in this session BEFORE inserting
+      // the new one (one-pending-per-session invariant, ADR-0009 §4).
+      await tx.query(
+        `UPDATE assistant_actions
+            SET status = 'superseded'
+          WHERE session_id = $1 AND status = 'pending'`,
+        [sessionId],
+      );
+
+      const { rows } = await tx.query<{ id: string }>(
+        `INSERT INTO assistant_actions
+           (session_id, user_id, tool_name, args, summary, status, expires_at)
+         VALUES ($1, $2, $3, $4, $5, 'pending', $6)
+         RETURNING id`,
+        [
+          sessionId,
+          principal.userId,
+          toolName,
+          jsonOrNull(validatedArgs),
+          summary,
+          expiresAt.toISOString(),
+        ],
+      );
+      const idRaw = rows[0]?.id;
+      if (idRaw === undefined) {
+        throw AppError.internal('assistant_actions insert returned no row.');
+      }
+      const actionId = Number(idRaw);
+
+      // Intent audit (ADR-0009 §5 — one row at intent time, another at execute).
+      await writeAudit(tx, {
+        actorUserId: principal.userId,
+        action: 'assistant_action.create',
+        entity: 'assistant_action',
+        entityId: actionId,
+        payload: {
+          tool: toolName,
+          args: validatedArgs,
+          session_id: sessionId,
+          summary,
+        },
+      });
+
+      return {
+        staged: {
+          actionId,
+          toolName,
+          args: validatedArgs,
+          summary,
+          expiresAt,
+        },
+      };
+    });
+
+    if ('denied' in result) {
+      const summary = clip(
+        `denied: ${result.denied.code} — ${result.denied.reason}`,
+        RESULT_SUMMARY_MAX_LEN,
+      );
+      return {
+        executed: {
+          name: toolName,
+          args: validatedArgs,
+          ok: false,
+          result: { error: result.denied.reason, code: result.denied.code },
+          summary,
+          kind: 'write_denied',
+        },
+        staged: null,
+      };
+    }
+
+    const staged = result.staged;
+    return {
+      executed: {
+        name: toolName,
+        args: validatedArgs,
+        ok: true,
+        result: {
+          pending_action_id: staged.actionId,
+          expires_at: staged.expiresAt.toISOString(),
+        },
+        summary: clip(`pending: ${staged.summary}`, RESULT_SUMMARY_MAX_LEN),
+        kind: 'write_pending',
+      },
+      staged,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      executed: {
+        name: toolName,
+        args: validatedArgs,
+        ok: false,
+        result: { error: message },
+        summary: clip(`error: ${message}`, RESULT_SUMMARY_MAX_LEN),
+        kind: 'write_denied',
+      },
+      staged: null,
     };
   }
 }

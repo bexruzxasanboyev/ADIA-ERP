@@ -12,6 +12,8 @@ import {
   PRODUCTION_ORDER_STATUS_OPTIONS,
   PURCHASE_ORDER_STATUS_LABELS,
   PURCHASE_ORDER_STATUS_OPTIONS,
+  ASSISTANT_WRITE_TOOL_LABELS,
+  assistantWriteToolLabel,
 } from './labels';
 
 describe('domain labels', () => {
@@ -48,5 +50,34 @@ describe('domain labels', () => {
     expect(PURCHASE_ORDER_STATUS_OPTIONS).toHaveLength(5);
     expect(PURCHASE_ORDER_STATUS_LABELS.draft).toBe('Loyiha');
     expect(PURCHASE_ORDER_STATUS_LABELS.received).toBe('Qabul qilingan');
+  });
+
+  it('covers all 6 AI write tools with Uzbek labels', () => {
+    expect(Object.keys(ASSISTANT_WRITE_TOOL_LABELS)).toHaveLength(6);
+    expect(ASSISTANT_WRITE_TOOL_LABELS.transfer_stock).toBe(
+      '🔄 Tovar ko‘chirish',
+    );
+    expect(ASSISTANT_WRITE_TOOL_LABELS.create_replenishment_request).toBe(
+      '📋 Yangi so‘rov',
+    );
+    expect(ASSISTANT_WRITE_TOOL_LABELS.mark_production_order_done).toBe(
+      '✅ Zayafkani yakunlash',
+    );
+    expect(ASSISTANT_WRITE_TOOL_LABELS.approve_purchase_order).toBe(
+      '👍 Sotib olishni tasdiqlash',
+    );
+    expect(ASSISTANT_WRITE_TOOL_LABELS.update_minmax).toBe(
+      '✏️ Min/Max o‘zgartirish',
+    );
+    expect(ASSISTANT_WRITE_TOOL_LABELS.create_production_order).toBe(
+      '🏭 Yangi zayafka',
+    );
+  });
+
+  it('falls back to the raw tool name when the key is unknown', () => {
+    expect(assistantWriteToolLabel('unknown_tool')).toBe('unknown_tool');
+    expect(assistantWriteToolLabel('transfer_stock')).toBe(
+      '🔄 Tovar ko‘chirish',
+    );
   });
 });
