@@ -20,6 +20,7 @@
  */
 import { query, withTransaction } from '../../db/index.js';
 import { writeAudit } from '../../lib/audit.js';
+import { recordImportWarning } from '../../services/importWarnings.js';
 import { PosterClient } from './client.js';
 import {
   finishSyncRun,
@@ -507,6 +508,23 @@ export async function syncPrepacks(
         console.error(
           `[poster:prepack] id=${ppid} code=${e.code ?? '-'} msg=${msg}`,
         );
+        // F2.3 — persist the per-item failure to `import_warnings` so PM
+        // sees it on the dashboard without scanning the server log. The
+        // helper is best-effort: a failure here must not abort the loop.
+        try {
+          await recordImportWarning({
+            source: 'poster.prepack',
+            entity: `product:${ppid}`,
+            severity: 'warning',
+            message: msg,
+            payload: { poster_product_id: ppid, code: e.code ?? null },
+          });
+        } catch (warnErr) {
+          console.error(
+            '[poster:prepack] failed to record import_warning:',
+            (warnErr as Error).message,
+          );
+        }
       }
     }
     // If any prepack failed, the run is `partial`, not `ok` — operators

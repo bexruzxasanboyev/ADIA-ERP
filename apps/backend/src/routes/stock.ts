@@ -175,6 +175,68 @@ stockRouter.patch(
   }),
 );
 
+// PATCH /api/stock/minmax-mode — Phase-2 F2.1 dynamic/manual toggle.
+//   Body: { location_id, product_id, mode: 'manual' | 'dynamic' }
+//
+// RBAC: pm everywhere; a scoped manager only on its own location. The
+// row is upserted — a (location, product) pair without a stock row yet is
+// created with qty=0 so the mode can be set up front (PM seeding the
+// chain). The mode flip itself is durable: the next minmax_recalc cron
+// pass will start (or stop) recalculating this row immediately.
+stockRouter.patch(
+  '/minmax-mode',
+  authenticate,
+  authorize(
+    'pm',
+    'raw_warehouse_manager',
+    'production_manager',
+    'supply_manager',
+    'central_warehouse_manager',
+    'store_manager',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const body = asObject(req.body);
+    const locationId = requireId(body, 'location_id');
+    const productId = requireId(body, 'product_id');
+    const modeRaw = body.mode;
+    if (modeRaw !== 'manual' && modeRaw !== 'dynamic') {
+      throw AppError.validation('Field "mode" must be "manual" or "dynamic".');
+    }
+    const mode: 'manual' | 'dynamic' = modeRaw;
+    assertLocationAccess(principal, locationId);
+
+    const { rows } = await query<{
+      location_id: number;
+      product_id: number;
+      qty: number;
+      min_level: number;
+      max_level: number;
+      minmax_mode: string;
+      updated_at: Date;
+    }>(
+      `INSERT INTO stock (location_id, product_id, qty, min_level, max_level, minmax_mode)
+       VALUES ($1, $2, 0, 0, 0, $3)
+       ON CONFLICT (location_id, product_id)
+       DO UPDATE SET minmax_mode = EXCLUDED.minmax_mode
+       RETURNING location_id, product_id, qty, min_level, max_level, minmax_mode, updated_at`,
+      [locationId, productId, mode],
+    );
+    const updated = rows[0];
+    if (updated === undefined) {
+      throw AppError.internal('Stock minmax-mode upsert returned no row.');
+    }
+    await writeAudit(poolRunner, {
+      actorUserId: principal.userId,
+      action: 'stock.minmax_mode.update',
+      entity: 'stock',
+      entityId: null,
+      payload: { location_id: locationId, product_id: productId, mode },
+    });
+    res.status(200).json({ stock: updated });
+  }),
+);
+
 // POST /api/stock/movement
 stockRouter.post(
   '/movement',

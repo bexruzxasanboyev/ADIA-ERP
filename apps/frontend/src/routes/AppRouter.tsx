@@ -14,6 +14,7 @@ import { ReplenishmentDetailPage } from '@/pages/replenishment/ReplenishmentDeta
 import { ProductionOrdersPage } from '@/pages/production-orders/ProductionOrdersPage';
 import { PurchaseOrdersPage } from '@/pages/purchase-orders/PurchaseOrdersPage';
 import { DashboardPage } from '@/pages/dashboard/DashboardPage';
+import { ImportWarningsPage } from '@/pages/admin/ImportWarningsPage';
 
 /**
  * Application routes (phase-1-mvp.md §2, §6).
@@ -137,6 +138,16 @@ export function AppRouter() {
           element={
             <RoleRoute allow={['pm']}>
               <UsersPage />
+            </RoleRoute>
+          }
+        />
+
+        {/* Faza-2 F2.3 — PM-only import-warnings admin panel. */}
+        <Route
+          path="/admin/import-warnings"
+          element={
+            <RoleRoute allow={['pm']}>
+              <ImportWarningsPage />
             </RoleRoute>
           }
         />

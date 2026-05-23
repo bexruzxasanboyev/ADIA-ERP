@@ -1,11 +1,19 @@
 import { useState } from 'react';
-import { ArrowLeftRight } from 'lucide-react';
+import { ArrowLeftRight, Calculator, Loader2 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
 import { Select } from '@/components/ui/select';
 import { Tabs } from '@/components/ui/tabs';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   Table,
   TableBody,
@@ -23,12 +31,24 @@ import {
 } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
+import { useToast } from '@/components/ui/toast';
+import { apiRequest, ApiError } from '@/lib/api-client';
 import { UNIT_LABELS } from '@/lib/labels';
 import { formatDateTime, formatQty } from '@/lib/format';
 import type { Location, Product, StockRow } from '@/lib/types';
 import { MinMaxCell } from './MinMaxCell';
 import { MovementDialog } from './MovementDialog';
 import { MovementHistory } from './MovementHistory';
+
+/**
+ * `POST /api/admin/recalc-minmax` response envelope (phase-2.md §4.3).
+ * `errors` is present but optional — backend returns `[]` on success.
+ */
+interface RecalcResponse {
+  updated_count: number;
+  skipped_count: number;
+  errors?: Array<{ location_id: number; product_id: number; message: string }>;
+}
 
 type StockTab = 'stock' | 'history';
 
@@ -54,14 +74,19 @@ export function StockPage({
   description?: string;
 }) {
   const { user } = useAuth();
+  const { notify } = useToast();
   // store_manager may not record movements (§6: stock/movement W = no store).
   const canMove = user?.role !== 'store_manager';
   // Everyone with stock access (except ai) may edit min/max (§6).
   const canEditMinMax = true;
+  // Manual recalc trigger is PM-only (phase-2.md §6 RBAC matrix).
+  const canRecalc = user?.role === 'pm';
 
   const [tab, setTab] = useState<StockTab>('stock');
   const [locationFilter, setLocationFilter] = useState<string>('');
   const [movementOpen, setMovementOpen] = useState(false);
+  const [recalcDialogOpen, setRecalcDialogOpen] = useState(false);
+  const [isRecalculating, setIsRecalculating] = useState(false);
 
   const locations = useApiQuery<Location[]>('/api/locations');
   const products = useApiQuery<Product[]>('/api/products');
@@ -77,18 +102,58 @@ export function StockPage({
   const rows = stock.data ?? [];
   const belowMin = rows.filter((r) => r.qty <= r.min_level).length;
 
+  async function runRecalc() {
+    setIsRecalculating(true);
+    try {
+      const body =
+        locationFilter === ''
+          ? {}
+          : { location_id: Number(locationFilter) };
+      const res = await apiRequest<RecalcResponse>(
+        '/api/admin/recalc-minmax',
+        { method: 'POST', body },
+      );
+      const errorCount = res.errors?.length ?? 0;
+      notify(
+        'success',
+        `${res.updated_count} qator yangilandi, ${res.skipped_count} sotuv tarixi yetishmasligi tufayli o‘tib yuborildi.` +
+          (errorCount > 0 ? ` ${errorCount} qatorda xato.` : ''),
+      );
+      setRecalcDialogOpen(false);
+      stock.refetch();
+    } catch (err: unknown) {
+      notify(
+        'error',
+        err instanceof ApiError ? err.message : 'Qayta hisob bajarilmadi.',
+      );
+    } finally {
+      setIsRecalculating(false);
+    }
+  }
+
   return (
     <div className="mx-auto max-w-6xl space-y-6">
       <PageHeader
         title={title}
         description={description ?? 'Bo‘g‘inlar bo‘yicha ostatka va harakatlar.'}
         action={
-          canMove ? (
-            <Button onClick={() => setMovementOpen(true)}>
-              <ArrowLeftRight className="size-4" aria-hidden="true" />
-              Harakat qo‘shish
-            </Button>
-          ) : undefined
+          <div className="flex flex-wrap items-center gap-2">
+            {canRecalc && (
+              <Button
+                variant="outline"
+                onClick={() => setRecalcDialogOpen(true)}
+              >
+                <Calculator className="size-4" aria-hidden="true" />
+                Min/max qayta hisob
+              </Button>
+            )}
+            {canMove && (
+              <Button onClick={() => setMovementOpen(true)}>
+                <ArrowLeftRight className="size-4" aria-hidden="true" />
+                Harakat qo‘shish
+              </Button>
+            )}
+          </div>
         }
       />
 
@@ -213,6 +278,38 @@ export function StockPage({
           }
           onSaved={stock.refetch}
         />
+      )}
+
+      {canRecalc && (
+        <Dialog open={recalcDialogOpen} onOpenChange={setRecalcDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Min/max ni qayta hisoblaymi?</DialogTitle>
+              <DialogDescription>
+                Hozirgi dynamic qatorlarni sales tarixiga qarab qayta hisoblayman.
+                {locationFilter !== ''
+                  ? ' Faqat tanlangan bo‘g‘in qatorlari ko‘rib chiqiladi.'
+                  : ' Butun zanjirdagi dynamic qatorlar ko‘rib chiqiladi.'}{' '}
+                Manual qatorlarga tegmayman. Davom?
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setRecalcDialogOpen(false)}
+                disabled={isRecalculating}
+              >
+                Bekor qilish
+              </Button>
+              <Button onClick={runRecalc} disabled={isRecalculating}>
+                {isRecalculating && (
+                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                )}
+                Qayta hisoblash
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   );

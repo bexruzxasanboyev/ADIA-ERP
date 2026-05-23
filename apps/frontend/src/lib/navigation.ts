@@ -11,6 +11,7 @@ import {
   Users,
   ClipboardList,
   ShoppingCart,
+  AlertTriangle,
   type LucideIcon,
 } from 'lucide-react';
 import type { Role } from './types';
@@ -138,6 +139,12 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         path: '/users',
         label: 'Foydalanuvchilar',
         icon: Users,
+        roles: ['pm'],
+      },
+      {
+        path: '/admin/import-warnings',
+        label: 'Sync ogohlantirishlar',
+        icon: AlertTriangle,
         roles: ['pm'],
       },
     ],

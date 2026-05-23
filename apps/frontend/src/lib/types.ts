@@ -353,6 +353,45 @@ export interface DashboardOverview {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Faza-2 — F2.1 dynamic min/max + F2.3 import warnings admin.
+// Mirrors `apps/backend/src/routes/admin.ts` (phase-2.md §4.3, §7.3).
+// ---------------------------------------------------------------------------
+
+/** `import_warnings.severity` enum (phase-2.md §7.3). */
+export type ImportWarningSeverity = 'info' | 'warning' | 'error';
+
+/**
+ * A single `import_warnings` row — Poster sync / BOM mismatch /
+ * dynamic-recalc anomalies surface here for the PM (phase-2.md §2.3.3).
+ */
+export interface ImportWarning {
+  id: number;
+  source: string;
+  entity: string | null;
+  severity: ImportWarningSeverity;
+  message: string;
+  payload: Record<string, unknown> | null;
+  resolved: boolean;
+  resolved_at: string | null;
+  created_at: string;
+}
+
+/** `GET /api/admin/import-warnings` envelope (phase-2.md §4.3). */
+export interface ImportWarningsResponse {
+  items: ImportWarning[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** `POST /api/admin/recalc-minmax` response (phase-2.md §4.3). */
+export interface RecalcMinMaxResponse {
+  updated_count: number;
+  skipped_count: number;
+  errors: Array<{ location_id: number; product_id: number; message: string }>;
+}
+
 /**
  * A single purchase_orders row.
  * `qty` is a JS `number` — see the NUMERIC parser note on

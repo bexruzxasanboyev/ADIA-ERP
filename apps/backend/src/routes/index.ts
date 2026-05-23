@@ -22,6 +22,7 @@ import { productionOrdersRouter } from './productionOrders.js';
 import { purchaseOrdersRouter } from './purchaseOrders.js';
 import { posterIntegrationRouter } from './posterIntegration.js';
 import { dashboardRouter } from './dashboard.js';
+import { adminRouter } from './admin.js';
 
 export const apiRouter: Router = Router();
 
@@ -34,6 +35,7 @@ apiRouter.use('/replenishment', replenishmentRouter);
 apiRouter.use('/production-orders', productionOrdersRouter);
 apiRouter.use('/purchase-orders', purchaseOrdersRouter);
 apiRouter.use('/dashboard', dashboardRouter);
+apiRouter.use('/admin', adminRouter);
 // Poster sends webhook payloads as form-encoded by default; parse them on
 // this sub-tree only (JWT routes elsewhere remain JSON-only).
 apiRouter.use(

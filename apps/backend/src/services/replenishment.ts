@@ -110,7 +110,11 @@ const ALLOWED_TRANSITIONS: Readonly<Record<ReplenishmentStatus, readonly Repleni
   NEW: ['CHECK_STORE_SUPPLIER', 'CANCELLED'],
   CHECK_STORE_SUPPLIER: ['SHIP_TO_REQUESTER', 'CHECK_PRODUCTION_INPUT', 'CANCELLED'],
   CHECK_PRODUCTION_INPUT: ['CREATE_PRODUCTION_ORDER', 'CREATE_PURCHASE_ORDER', 'CANCELLED'],
-  CREATE_PURCHASE_ORDER: ['CREATE_PRODUCTION_ORDER', 'CANCELLED'],
+  // Phase-2 (F2.3): self-loop is allowed because a multi-shortage BOM creates
+  // POs one at a time — after PO1 is received we re-enter CHECK_PRODUCTION_INPUT
+  // and if PO2 is still needed we stay in CREATE_PURCHASE_ORDER with the new PO
+  // linked. The M:N `replenishment_purchase_orders` table retains every PO.
+  CREATE_PURCHASE_ORDER: ['CREATE_PURCHASE_ORDER', 'CREATE_PRODUCTION_ORDER', 'CANCELLED'],
   CREATE_PRODUCTION_ORDER: ['PRODUCING', 'CANCELLED'],
   PRODUCING: ['DONE_TO_WAREHOUSE', 'CANCELLED'],
   DONE_TO_WAREHOUSE: ['SHIP_TO_REQUESTER', 'CANCELLED'],
@@ -506,31 +510,15 @@ async function advanceCheckProductionInput(
   // (spec section 3.3 — purchase order created for missing component). When
   // multiple components are short, repeated `advance()` calls after each
   // purchase_received will create the next one if still short.
-  // ADR-0001 §12 — keep the FK consistent: if the request still points at a
-  // previous (already-received) PO, unlink it BEFORE creating the new one so
-  // a stale row never overwrites the link. The audit_log row preserves the
-  // bond between the request and the previous PO for forensic queries; the
-  // M:N table is Phase-2 work (spec §8.4).
+  // F2.3 (Phase-2) — the M:N `replenishment_purchase_orders` table is the
+  // permanent home for every PO ever attached to this request, so the
+  // earlier "unlink the previous PO before creating the next" step is no
+  // longer necessary: `createPurchaseOrderRow` appends to the M:N table,
+  // `transitionStatus` overwrites the deprecated single-FK column with the
+  // latest PO id, and the full history stays queryable via the join table.
   const firstShortage = shortages[0];
   if (firstShortage === undefined) {
     throw AppError.internal('shortages array unexpectedly empty.');
-  }
-  if (request.purchase_order_id !== null) {
-    const previousPoId = request.purchase_order_id;
-    await tx.query(
-      `UPDATE replenishment_requests SET purchase_order_id = NULL WHERE id = $1`,
-      [request.id],
-    );
-    await writeAudit(tx, {
-      actorUserId,
-      action: 'replenishment.purchase_order.unlink',
-      entity: 'replenishment_requests',
-      entityId: request.id,
-      payload: {
-        previous_purchase_order_id: previousPoId,
-        reason: `next shortage on component ${firstShortage.componentId}`,
-      },
-    });
   }
   const purchaseOrderId = await createPurchaseOrderRow(tx, {
     productId: firstShortage.componentId,
@@ -914,7 +902,19 @@ async function createProductionOrderRow(
   return id;
 }
 
-/** Create a `purchase_orders` row in `draft` status linked back to the request. */
+/**
+ * Create a `purchase_orders` row in `draft` status linked back to the
+ * request. Phase-2 (F2.3) — every PO is ALSO mirrored into the
+ * `replenishment_purchase_orders` M:N join table. The legacy
+ * `replenishment_requests.purchase_order_id` column keeps tracking the
+ * latest PO during the transition (it is deprecated and dropped in
+ * Phase-3); the M:N row is the permanent record so a request with several
+ * shortages (and therefore several POs) keeps its full history.
+ *
+ * `ON CONFLICT DO NOTHING` on the M:N insert is a belt-and-braces against
+ * the unusual case where this helper is called twice with the same PO id
+ * within a single transaction — the PK guards the table either way.
+ */
 async function createPurchaseOrderRow(
   tx: TxClient,
   opts: {
@@ -942,6 +942,16 @@ async function createPurchaseOrderRow(
   if (id === undefined) {
     throw AppError.internal('Purchase order insert returned no row.');
   }
+  // F2.3 — dual-write to the M:N join table. The legacy column
+  // (`replenishment_requests.purchase_order_id`) is updated by the caller
+  // (transitionStatus links.purchaseOrderId); we keep the historical link
+  // here so even after the deprecated column is removed (Phase-3) the
+  // full PO list per request is reachable.
+  await tx.query(
+    `INSERT INTO replenishment_purchase_orders (replenishment_id, purchase_order_id)
+     VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+    [opts.replenishmentId, id],
+  );
   await writeAudit(tx, {
     actorUserId: opts.actorUserId,
     action: 'purchase_order.create',

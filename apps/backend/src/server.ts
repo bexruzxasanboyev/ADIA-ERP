@@ -23,6 +23,14 @@ import {
   startTelegramOutboxWorker,
   stopTelegramOutboxWorker,
 } from './workers/telegramOutbox.js';
+import {
+  startSalesAggregateWorker,
+  stopSalesAggregateWorker,
+} from './workers/salesAggregateCron.js';
+import {
+  startMinmaxRecalcWorker,
+  stopMinmaxRecalcWorker,
+} from './workers/minmaxRecalcCron.js';
 
 function main(): void {
   const cfg = loadConfig(); // throws clearly on missing/invalid env
@@ -36,6 +44,13 @@ function main(): void {
   // worker runs every 5 minutes and is a no-op if the DB is empty.
   startReplenishmentScanWorker();
   console.log('[server] replenishment scan worker started (*/5 * * * *)');
+
+  // Phase-2 F2.1 — nightly sales aggregate + dynamic min/max recalc.
+  // The recalc reads the aggregate written one hour earlier (03:00 → 04:00).
+  startSalesAggregateWorker();
+  console.log('[server] sales aggregate worker started (0 3 * * *)');
+  startMinmaxRecalcWorker();
+  console.log('[server] minmax recalc worker started (0 4 * * *)');
 
   // Poster integration workers only run when a token is configured — saves
   // log spam and avoids hammering Poster on a fresh install.
@@ -64,6 +79,8 @@ function main(): void {
     stopPosterStockSyncWorker();
     stopPosterSalesWorker();
     stopTelegramOutboxWorker();
+    stopSalesAggregateWorker();
+    stopMinmaxRecalcWorker();
     server.close(() => {
       void closePool().finally(() => process.exit(0));
     });
