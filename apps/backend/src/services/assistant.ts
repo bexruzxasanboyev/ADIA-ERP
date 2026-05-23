@@ -46,7 +46,7 @@ import type {
   FunctionCall,
   GenerateContentResponse,
   Part,
-} from '@google-cloud/vertexai';
+} from '@google/genai';
 
 // ---------------------------------------------------------------------------
 // Public API types
@@ -190,15 +190,18 @@ export async function runAssistantQuery(
 
   let finalText = '';
   for (let turn = 0; turn <= cfg.vertex.maxToolCallsPerTurn; turn += 1) {
-    const result = await client.generate({ systemInstruction, contents, tools });
-    const response: GenerateContentResponse = result.response;
+    const response: GenerateContentResponse = await client.generate({
+      systemInstruction,
+      contents,
+      tools,
+    });
     const candidate = response.candidates?.[0];
     if (candidate === undefined) {
       // Safety block or empty response — surface gracefully, no crash.
       finalText = 'Ma\'lumot mavjud emas.';
       break;
     }
-    const parts = candidate.content.parts ?? [];
+    const parts = candidate.content?.parts ?? [];
     const functionCalls = collectFunctionCalls(parts);
 
     if (functionCalls.length === 0) {
@@ -374,9 +377,12 @@ async function executeOneToolCall(
   call: FunctionCall,
   principal: AuthPrincipal,
 ): Promise<ExecutedToolCall> {
-  const name = call.name;
+  // `FunctionCall.name` is optional in the @google/genai types; treat a
+  // missing name as an unknown tool (the model is free to misbehave, we
+  // don't crash).
+  const name = call.name ?? '';
   const args = (call.args ?? {}) as Record<string, unknown>;
-  const executor = getToolExecutor(name);
+  const executor = name === '' ? undefined : getToolExecutor(name);
   if (executor === undefined) {
     const summary = `Unknown tool "${name}".`;
     return { name, args, ok: false, result: { error: summary }, summary };

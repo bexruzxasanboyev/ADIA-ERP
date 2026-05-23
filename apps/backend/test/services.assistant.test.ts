@@ -14,7 +14,7 @@
  *      no DB write).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { GenerateContentResult } from '@google-cloud/vertexai';
+import type { GenerateContentResponse } from '@google/genai';
 import type { VertexClient } from '../src/integrations/vertex/client.js';
 import { runAssistantQuery } from '../src/services/assistant.js';
 import { createTestContext, type TestContext } from './helpers/context.js';
@@ -30,39 +30,35 @@ afterAll(async () => {
   await ctx.dispose();
 });
 
-function textResponse(text: string): GenerateContentResult {
+function textResponse(text: string): GenerateContentResponse {
   return {
-    response: {
-      candidates: [
-        {
-          content: { role: 'model', parts: [{ text }] },
-          index: 0,
-        } as unknown as GenerateContentResult['response']['candidates'][number],
-      ],
-    },
-  } as GenerateContentResult;
+    candidates: [
+      {
+        content: { role: 'model', parts: [{ text }] },
+        index: 0,
+      },
+    ],
+  } as unknown as GenerateContentResponse;
 }
 
 function callResponse(
   name: string,
   args: Record<string, unknown>,
-): GenerateContentResult {
+): GenerateContentResponse {
   return {
-    response: {
-      candidates: [
-        {
-          content: {
-            role: 'model',
-            parts: [{ functionCall: { name, args } }],
-          },
-          index: 0,
-        } as unknown as GenerateContentResult['response']['candidates'][number],
-      ],
-    },
-  } as GenerateContentResult;
+    candidates: [
+      {
+        content: {
+          role: 'model',
+          parts: [{ functionCall: { name, args } }],
+        },
+        index: 0,
+      },
+    ],
+  } as unknown as GenerateContentResponse;
 }
 
-function makeClient(queue: GenerateContentResult[], capture: {
+function makeClient(queue: GenerateContentResponse[], capture: {
   systemInstructions: string[];
 }): VertexClient {
   return {
@@ -106,7 +102,7 @@ describe('runAssistantQuery — tool-call chain limit', () => {
 
     // Push function-call responses indefinitely — the service must cap on
     // its own. Default cap = 5; queue 7 to be safe.
-    const queue: GenerateContentResult[] = [];
+    const queue: GenerateContentResponse[] = [];
     for (let i = 0; i < 7; i++) {
       queue.push(callResponse('get_below_min', {}));
     }

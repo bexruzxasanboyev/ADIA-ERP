@@ -13,7 +13,7 @@
  *   round-trip, the DB session, or the audit row.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { GenerateContentResult } from '@google-cloud/vertexai';
+import type { GenerateContentResponse } from '@google/genai';
 import type { VertexClient } from '../src/integrations/vertex/client.js';
 import { runAssistantQuery } from '../src/services/assistant.js';
 import { loadConfig } from '../src/config/index.js';
@@ -30,20 +30,18 @@ afterAll(async () => {
   await ctx.dispose();
 });
 
-function textResponse(text: string): GenerateContentResult {
+function textResponse(text: string): GenerateContentResponse {
   return {
-    response: {
-      candidates: [
-        {
-          content: { role: 'model', parts: [{ text }] },
-          index: 0,
-        } as unknown as GenerateContentResult['response']['candidates'][number],
-      ],
-    },
-  } as GenerateContentResult;
+    candidates: [
+      {
+        content: { role: 'model', parts: [{ text }] },
+        index: 0,
+      },
+    ],
+  } as unknown as GenerateContentResponse;
 }
 
-function fakeClient(queue: GenerateContentResult[]): VertexClient {
+function fakeClient(queue: GenerateContentResponse[]): VertexClient {
   return {
     enabled: true,
     async generate() {

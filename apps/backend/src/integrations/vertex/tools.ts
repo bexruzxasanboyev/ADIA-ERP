@@ -17,7 +17,7 @@
  *   3. Every result is row-limited (LIMIT 200 / max-100 client cap) so a
  *      large table cannot blow the LLM context window.
  */
-import { FunctionDeclarationSchemaType, type FunctionDeclaration } from '@google-cloud/vertexai';
+import { Type, type FunctionDeclaration, type Tool } from '@google/genai';
 import type { AuthPrincipal } from '../../auth/jwt.js';
 import { query, type SqlParam } from '../../db/index.js';
 
@@ -178,16 +178,16 @@ const listLocations: ToolExecutor = {
       'Optionally filter by `type` or a case-insensitive `name_contains` substring. ' +
       'RBAC: non-PM callers see only their own location.',
     parameters: {
-      type: FunctionDeclarationSchemaType.OBJECT,
+      type: Type.OBJECT,
       properties: {
         type: {
-          type: FunctionDeclarationSchemaType.STRING,
+          type: Type.STRING,
           description:
             'Optional location_type filter. One of: raw_warehouse, production, supply, ' +
             'central_warehouse, store.',
         },
         name_contains: {
-          type: FunctionDeclarationSchemaType.STRING,
+          type: Type.STRING,
           description:
             'Optional case-insensitive substring filter on the location name (max 100 chars).',
         },
@@ -243,19 +243,19 @@ const listProducts: ToolExecutor = {
       'numeric `product_id`. Optionally filter by `type` (raw, semi, finished) or a ' +
       'case-insensitive `name_contains` substring. Default limit 50, max 200.',
     parameters: {
-      type: FunctionDeclarationSchemaType.OBJECT,
+      type: Type.OBJECT,
       properties: {
         type: {
-          type: FunctionDeclarationSchemaType.STRING,
+          type: Type.STRING,
           description: 'Optional product_type filter. One of: raw, semi, finished.',
         },
         name_contains: {
-          type: FunctionDeclarationSchemaType.STRING,
+          type: Type.STRING,
           description:
             'Optional case-insensitive substring filter on the product name (max 100 chars).',
         },
         limit: {
-          type: FunctionDeclarationSchemaType.NUMBER,
+          type: Type.NUMBER,
           description: 'Optional row limit, default 50, max 200.',
         },
       },
@@ -307,18 +307,18 @@ const getStock: ToolExecutor = {
       'something is below min. RBAC is enforced server-side — a non-PM caller always sees ' +
       'only their own location regardless of `location_id`.',
     parameters: {
-      type: FunctionDeclarationSchemaType.OBJECT,
+      type: Type.OBJECT,
       properties: {
         location_id: {
-          type: FunctionDeclarationSchemaType.NUMBER,
+          type: Type.NUMBER,
           description: 'Optional location id. Ignored for non-PM callers (pinned to their own).',
         },
         product_id: {
-          type: FunctionDeclarationSchemaType.NUMBER,
+          type: Type.NUMBER,
           description: 'Optional product id; omit for all products.',
         },
         only_below_min: {
-          type: FunctionDeclarationSchemaType.BOOLEAN,
+          type: Type.BOOLEAN,
           description: 'When true, only rows where qty <= min_level.',
         },
       },
@@ -380,17 +380,17 @@ const getOpenRequests: ToolExecutor = {
       'by a specific status. Non-PM callers see only requests where their location is the ' +
       'requester or the target.',
     parameters: {
-      type: FunctionDeclarationSchemaType.OBJECT,
+      type: Type.OBJECT,
       properties: {
         status: {
-          type: FunctionDeclarationSchemaType.STRING,
+          type: Type.STRING,
           description:
             'Optional replenishment status filter. One of: NEW, CHECK_STORE_SUPPLIER, ' +
             'SHIP_TO_REQUESTER, CHECK_PRODUCTION_INPUT, CREATE_PURCHASE_ORDER, ' +
             'CREATE_PRODUCTION_ORDER, PRODUCING, DONE_TO_WAREHOUSE.',
         },
         location_id: {
-          type: FunctionDeclarationSchemaType.NUMBER,
+          type: Type.NUMBER,
           description: 'Optional location id (ignored for non-PM callers).',
         },
       },
@@ -450,18 +450,18 @@ const getProductionPlan: ToolExecutor = {
       'Returns production orders (zayafkalar) optionally filtered by deadline range or status. ' +
       'Non-PM callers see only orders produced at or targeting their location.',
     parameters: {
-      type: FunctionDeclarationSchemaType.OBJECT,
+      type: Type.OBJECT,
       properties: {
         date_from: {
-          type: FunctionDeclarationSchemaType.STRING,
+          type: Type.STRING,
           description: 'Optional ISO date (YYYY-MM-DD). Filters deadline >= date_from.',
         },
         date_to: {
-          type: FunctionDeclarationSchemaType.STRING,
+          type: Type.STRING,
           description: 'Optional ISO date (YYYY-MM-DD). Filters deadline <= date_to.',
         },
         status: {
-          type: FunctionDeclarationSchemaType.STRING,
+          type: Type.STRING,
           description: 'Optional production_order_status (new, in_progress, done, cancelled).',
         },
       },
@@ -528,10 +528,10 @@ const getBelowMin: ToolExecutor = {
       'Returns rows where stock.qty <= min_level — the red list of products that need ' +
       'replenishment. RBAC scoped server-side.',
     parameters: {
-      type: FunctionDeclarationSchemaType.OBJECT,
+      type: Type.OBJECT,
       properties: {
         location_id: {
-          type: FunctionDeclarationSchemaType.NUMBER,
+          type: Type.NUMBER,
           description: 'Optional location id (ignored for non-PM callers).',
         },
       },
@@ -578,18 +578,18 @@ const getRecentMovements: ToolExecutor = {
       'purchases, adjustments). Default 20 rows, max 100. Non-PM callers see only movements ' +
       'whose from or to location is theirs.',
     parameters: {
-      type: FunctionDeclarationSchemaType.OBJECT,
+      type: Type.OBJECT,
       properties: {
         location_id: {
-          type: FunctionDeclarationSchemaType.NUMBER,
+          type: Type.NUMBER,
           description: 'Optional location id (ignored for non-PM callers).',
         },
         product_id: {
-          type: FunctionDeclarationSchemaType.NUMBER,
+          type: Type.NUMBER,
           description: 'Optional product id.',
         },
         limit: {
-          type: FunctionDeclarationSchemaType.NUMBER,
+          type: Type.NUMBER,
           description: 'Optional row limit, default 20, max 100.',
         },
       },
@@ -648,18 +648,18 @@ const getSalesSummary: ToolExecutor = {
       'Sales live only at stores — non-store locations return empty. Non-PM callers see only ' +
       'their own location.',
     parameters: {
-      type: FunctionDeclarationSchemaType.OBJECT,
+      type: Type.OBJECT,
       properties: {
         location_id: {
-          type: FunctionDeclarationSchemaType.NUMBER,
+          type: Type.NUMBER,
           description: 'Optional store location id (ignored for non-PM callers).',
         },
         product_id: {
-          type: FunctionDeclarationSchemaType.NUMBER,
+          type: Type.NUMBER,
           description: 'Optional product id.',
         },
         days: {
-          type: FunctionDeclarationSchemaType.NUMBER,
+          type: Type.NUMBER,
           description: 'Window length in days (default 7, max 90).',
         },
       },
@@ -719,7 +719,7 @@ export const TOOL_REGISTRY: Record<ToolName, ToolExecutor> = {
 };
 
 /** All tool declarations as one Gemini `Tool[]` value. */
-export function toolDeclarations(): { functionDeclarations: FunctionDeclaration[] }[] {
+export function toolDeclarations(): Tool[] {
   return [
     {
       functionDeclarations: TOOL_NAMES.map((n) => TOOL_REGISTRY[n].declaration),

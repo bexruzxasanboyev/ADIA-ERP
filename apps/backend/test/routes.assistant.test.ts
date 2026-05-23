@@ -26,7 +26,7 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
-import type { GenerateContentResult, Content } from '@google-cloud/vertexai';
+import type { GenerateContentResponse, Content } from '@google/genai';
 import { createTestContext, type TestContext } from './helpers/context.js';
 import {
   makeLocation,
@@ -45,7 +45,7 @@ import {
 const gate = { enabled: true };
 
 // Queue of canned Vertex responses the next `generate()` calls will return.
-const generateQueue: GenerateContentResult[] = [];
+const generateQueue: GenerateContentResponse[] = [];
 
 // Captured arguments passed to `generate()` so we can assert system prompt
 // content + tool wiring without re-implementing the contract.
@@ -79,38 +79,32 @@ vi.mock('../src/integrations/vertex/client.js', () => ({
 // Helpers — build responses in the Vertex SDK shape
 // ---------------------------------------------------------------------------
 
-function textResponse(text: string): GenerateContentResult {
+function textResponse(text: string): GenerateContentResponse {
   return {
-    response: {
-      candidates: [
-        {
-          content: { role: 'model', parts: [{ text }] },
-          index: 0,
-          finishReason: undefined,
-          safetyRatings: undefined,
-        } as unknown as GenerateContentResult['response']['candidates'][number],
-      ],
-    },
-  } as GenerateContentResult;
+    candidates: [
+      {
+        content: { role: 'model', parts: [{ text }] },
+        index: 0,
+      },
+    ],
+  } as unknown as GenerateContentResponse;
 }
 
 function functionCallResponse(
   name: string,
   args: Record<string, unknown>,
-): GenerateContentResult {
+): GenerateContentResponse {
   return {
-    response: {
-      candidates: [
-        {
-          content: {
-            role: 'model',
-            parts: [{ functionCall: { name, args } }],
-          },
-          index: 0,
-        } as unknown as GenerateContentResult['response']['candidates'][number],
-      ],
-    },
-  } as GenerateContentResult;
+    candidates: [
+      {
+        content: {
+          role: 'model',
+          parts: [{ functionCall: { name, args } }],
+        },
+        index: 0,
+      },
+    ],
+  } as unknown as GenerateContentResponse;
 }
 
 // ---------------------------------------------------------------------------

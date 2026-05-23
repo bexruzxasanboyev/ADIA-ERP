@@ -19,7 +19,7 @@
     "vertex:test": "tsx scripts/vertex-test.ts"
   },
   "dependencies": {
-    "@google-cloud/vertexai": "^1.12.0",
+    "@google/genai": "^1.52.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",

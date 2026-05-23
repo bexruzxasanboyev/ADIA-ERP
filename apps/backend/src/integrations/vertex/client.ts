@@ -1,27 +1,28 @@
 /**
- * Vertex AI Gemini client wrapper — Phase-2 F2.2 (ADR-0006).
+ * Vertex AI Gemini client wrapper — Phase-2 F2.2 (ADR-0006), migrated to
+ * `@google/genai` (ADR-0008).
  *
  * Responsibilities:
- *  - lazily build a single `GenerativeModel` for the configured Gemini model
- *    using Application Default Credentials (ADC). The `@google-cloud/vertexai`
+ *  - lazily build a single `GoogleGenAI` client for the configured Gemini
+ *    model using Application Default Credentials (ADC). The `@google/genai`
  *    SDK reads `GOOGLE_APPLICATION_CREDENTIALS` automatically — we never
  *    parse service-account keys ourselves and never log their contents.
  *  - expose a single `generate()` entrypoint that issues one round-trip to
  *    Vertex. Multi-turn / multi-tool orchestration lives in the assistant
  *    service (`src/services/assistant.ts`).
- *  - stay completely silent in test / disabled mode so the existing 291
- *    tests do not touch GCP. `isVertexEnabled()` mirrors `cfg.vertex.enabled`;
+ *  - stay completely silent in test / disabled mode so the existing tests
+ *    do not touch GCP. `isVertexEnabled()` mirrors `cfg.vertex.enabled`;
  *    every caller MUST gate on it.
  *
  * The exported `VertexClient` interface lets tests inject a fake — see
- * `test/assistant.test.ts`.
+ * `test/services.assistant.test.ts`.
+ *
+ * SDK note (ADR-0008): unlike `@google-cloud/vertexai`, the new SDK has no
+ * "generative model" cache — every call is `ai.models.generateContent(...)`
+ * with the `model` string passed in. We still cache the `GoogleGenAI`
+ * instance itself because constructing it eagerly reads ADC credentials.
  */
-import { VertexAI, type GenerativeModel } from '@google-cloud/vertexai';
-import type {
-  Content,
-  GenerateContentResult,
-  Tool,
-} from '@google-cloud/vertexai';
+import { GoogleGenAI, type Content, type GenerateContentResponse, type Tool } from '@google/genai';
 import { loadConfig } from '../../config/index.js';
 
 /**
@@ -41,12 +42,12 @@ export type VertexClient = {
    * Issue a single `generateContent` round-trip. Throws on transport
    * errors; callers translate that into an `AI_TOOL_ERROR` response.
    */
-  generate(req: VertexGenerateRequest): Promise<GenerateContentResult>;
+  generate(req: VertexGenerateRequest): Promise<GenerateContentResponse>;
 };
 
-let cached: GenerativeModel | undefined;
+let cached: GoogleGenAI | undefined;
 
-function getModel(): GenerativeModel {
+function getAi(): GoogleGenAI {
   if (cached !== undefined) {
     return cached;
   }
@@ -58,16 +59,10 @@ function getModel(): GenerativeModel {
       'Vertex client is disabled — set VERTEX_PROJECT_ID and GOOGLE_APPLICATION_CREDENTIALS.',
     );
   }
-  const vertex = new VertexAI({
+  cached = new GoogleGenAI({
+    vertexai: true,
     project: cfg.vertex.projectId,
     location: cfg.vertex.region,
-  });
-  cached = vertex.getGenerativeModel({
-    model: cfg.vertex.model,
-    generationConfig: {
-      maxOutputTokens: cfg.vertex.maxOutputTokens,
-      temperature: 0.2, // deterministic-leaning — domain answers, not creative writing
-    },
   });
   return cached;
 }
@@ -84,17 +79,23 @@ export const defaultVertexClient: VertexClient = {
   get enabled(): boolean {
     return isVertexEnabled();
   },
-  async generate(req: VertexGenerateRequest): Promise<GenerateContentResult> {
-    const model = getModel();
-    return model.generateContent({
-      systemInstruction: { role: 'system', parts: [{ text: req.systemInstruction }] },
+  async generate(req: VertexGenerateRequest): Promise<GenerateContentResponse> {
+    const cfg = loadConfig();
+    const ai = getAi();
+    return ai.models.generateContent({
+      model: cfg.vertex.model,
       contents: req.contents,
-      tools: req.tools,
+      config: {
+        systemInstruction: req.systemInstruction,
+        tools: req.tools,
+        temperature: 0.2, // deterministic-leaning — domain answers, not creative writing
+        maxOutputTokens: cfg.vertex.maxOutputTokens,
+      },
     });
   },
 };
 
-/** TEST-ONLY: drop the memoised GenerativeModel so a new config takes effect. */
+/** TEST-ONLY: drop the memoised SDK client so a new config takes effect. */
 export function resetVertexClientCache(): void {
   cached = undefined;
 }
