@@ -3,6 +3,12 @@ node_modules/
 .pnp.*
 .yarn/*
 
+# Python venv + caches (forecaster sidecar)
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
 # Build output
 dist/
 build/
