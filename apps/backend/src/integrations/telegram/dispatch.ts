@@ -23,7 +23,7 @@
  */
 import { query, withTransaction, type TxClient } from '../../db/index.js';
 import type { Role } from '../../auth/roles.js';
-import { writeAudit } from '../../lib/audit.js';
+import { writeAudit, poolRunner } from '../../lib/audit.js';
 import {
   approvePurchaseOrder,
   PURCHASE_ORDER_COLUMNS,
@@ -36,6 +36,11 @@ import {
   type ProductionOrderRow,
 } from '../../services/productionOrder.js';
 import { advance } from '../../services/replenishment.js';
+import {
+  confirmAction,
+  rejectAction,
+} from '../../services/assistantActions.js';
+import type { AuthPrincipal } from '../../auth/jwt.js';
 
 /** A Telegram presser, post-spoofing-check. */
 export type CallbackPrincipal = {
@@ -51,41 +56,78 @@ export type DispatchOutcome =
   | { readonly kind: 'invalid'; readonly message: string }
   | { readonly kind: 'failed'; readonly message: string; readonly error: string };
 
-/** Recognised verbs (ADR-0011 §3). */
-export const CALLBACK_VERBS = ['view', 'apprv', 'rej', 'start', 'done', 'fast'] as const;
+/** Recognised verbs (ADR-0011 §3 + F4.3 / ADR-0014). */
+export const CALLBACK_VERBS = [
+  'view',
+  'apprv',
+  'rej',
+  'start',
+  'done',
+  'fast',
+  // F4.3 — voice flow.
+  'apprv_all',
+  'rej_all',
+  'clarify',
+] as const;
 export type CallbackVerb = (typeof CALLBACK_VERBS)[number];
 
-/** Recognised entities (ADR-0011 §3). */
-export const CALLBACK_ENTITIES = ['po', 'prod', 'req', 'mov'] as const;
+/** Recognised entities (ADR-0011 §3 + F4.3 / ADR-0014). */
+export const CALLBACK_ENTITIES = [
+  'po',
+  'prod',
+  'req',
+  'mov',
+  // F4.3 — `act` (assistant_action), `vmsg` (voice_message).
+  'act',
+  'vmsg',
+] as const;
 export type CallbackEntity = (typeof CALLBACK_ENTITIES)[number];
 
-/** Parsed `verb:entity:id` triple — null when the string is malformed. */
+/**
+ * Parsed callback data. Standard `verb:entity:id` triple plus optional
+ * `extraId` for 4-segment payloads (e.g. `clarify:vmsg:<voiceId>:<productId>`).
+ */
 export type ParsedCallback = {
   readonly verb: CallbackVerb;
   readonly entity: CallbackEntity;
   readonly id: number;
+  readonly extraId: number | null;
 };
 
 /**
- * Parse the raw `callback_data`. Returns `null` for anything that does
- * not match `verb:entity:id` exactly — the caller treats null as an
- * 'invalid' outcome (no domain call made).
+ * Parse the raw `callback_data`. Accepts:
+ *   - `verb:entity:id`               — 3 segments (standard).
+ *   - `verb:entity:id:extraId`       — 4 segments (e.g. `clarify:vmsg:42:7`).
+ *
+ * Returns `null` for anything else.
  */
 export function parseCallbackData(raw: string): ParsedCallback | null {
   if (typeof raw !== 'string' || raw.length === 0 || raw.length > 64) return null;
   const parts = raw.split(':');
-  if (parts.length !== 3) return null;
-  const [verbRaw, entityRaw, idRaw] = parts as [string, string, string];
+  if (parts.length !== 3 && parts.length !== 4) return null;
+  const verbRaw = parts[0]!;
+  const entityRaw = parts[1]!;
+  const idRaw = parts[2]!;
+  const extraRaw = parts[3];
   if (!(CALLBACK_VERBS as readonly string[]).includes(verbRaw)) return null;
   if (!(CALLBACK_ENTITIES as readonly string[]).includes(entityRaw)) return null;
-  // Allow only positive integers — never NaN, never decimals, never signed.
   if (!/^\d{1,15}$/.test(idRaw)) return null;
   const id = Number(idRaw);
   if (!Number.isInteger(id) || id <= 0) return null;
+  let extraId: number | null = null;
+  if (extraRaw !== undefined) {
+    if (!/^\d{1,15}$/.test(extraRaw)) return null;
+    const n = Number(extraRaw);
+    if (!Number.isInteger(n) || n <= 0) return null;
+    extraId = n;
+  }
+  // 4-segment formati faqat `clarify` verb uchun.
+  if (parts.length === 4 && verbRaw !== 'clarify') return null;
   return {
     verb: verbRaw as CallbackVerb,
     entity: entityRaw as CallbackEntity,
     id,
+    extraId,
   };
 }
 
@@ -124,6 +166,23 @@ export async function dispatchCallback(
   }
   if (verb === 'fast' && entity === 'req') {
     return fastReqCallback(id, principal);
+  }
+
+  // ---- F4.3 / ADR-0014 — voice flow batch + clarify verbs --------------
+  if (verb === 'apprv' && entity === 'act') {
+    return apprvActCallback(id, principal);
+  }
+  if (verb === 'rej' && entity === 'act') {
+    return rejActCallback(id, principal);
+  }
+  if (verb === 'apprv_all' && entity === 'vmsg') {
+    return apprvAllVoiceCallback(id, principal);
+  }
+  if (verb === 'rej_all' && entity === 'vmsg') {
+    return rejAllVoiceCallback(id, principal);
+  }
+  if (verb === 'clarify' && entity === 'vmsg' && parsed.extraId !== null) {
+    return clarifyVoiceCallback(id, parsed.extraId, principal);
   }
 
   return {
@@ -585,6 +644,231 @@ export const __forTestingOnly: DispatchInternalsForTesting = {
   query,
   withTransaction,
 };
+
+// -----------------------------------------------------------------------------
+// F4.3 / ADR-0014 — voice flow callback handlers
+// -----------------------------------------------------------------------------
+
+/**
+ * Telegram `CallbackPrincipal` ni `AuthPrincipal` ga aylantirish (voice flow).
+ * `assistantActions.confirmAction/rejectAction` to'liq AuthPrincipal kutadi.
+ * locationIds DB dan o'qiladi (M:N).
+ */
+async function toAuthPrincipal(
+  cp: CallbackPrincipal,
+): Promise<AuthPrincipal> {
+  const { rows } = await query<{ location_id: number }>(
+    `SELECT location_id FROM user_locations WHERE user_id = $1`,
+    [cp.userId],
+  );
+  const locationIds =
+    rows.length > 0
+      ? rows.map((r) => Number(r.location_id))
+      : cp.locationId === null
+        ? []
+        : [cp.locationId];
+  return {
+    userId: cp.userId,
+    role: cp.role,
+    locationId: cp.locationId,
+    locationIds,
+    activeLocationId: cp.locationId,
+  };
+}
+
+/** Single action confirm (apprv:act:<id>). */
+async function apprvActCallback(
+  actionId: number,
+  principal: CallbackPrincipal,
+): Promise<DispatchOutcome> {
+  try {
+    const auth = await toAuthPrincipal(principal);
+    const { action } = await confirmAction(actionId, auth);
+    return {
+      kind: 'ok',
+      message: `✅ Bajarildi: ${action.summary}`,
+      result: {
+        assistant_action_id: actionId,
+        tool_name: action.tool_name,
+        result: action.result,
+      },
+      removeButtons: true,
+    };
+  } catch (err) {
+    const message = (err as Error).message;
+    return {
+      kind: 'failed',
+      message: `Bajarib bo'lmadi`,
+      error: message,
+    };
+  }
+}
+
+/** Single action reject (rej:act:<id>). */
+async function rejActCallback(
+  actionId: number,
+  principal: CallbackPrincipal,
+): Promise<DispatchOutcome> {
+  try {
+    const auth = await toAuthPrincipal(principal);
+    const row = await rejectAction(actionId, auth);
+    return {
+      kind: 'ok',
+      message: `❌ Rad etildi: ${row.summary}`,
+      result: { assistant_action_id: actionId },
+      removeButtons: true,
+    };
+  } catch (err) {
+    return {
+      kind: 'failed',
+      message: 'Rad etib bo\'lmadi',
+      error: (err as Error).message,
+    };
+  }
+}
+
+/**
+ * "Hammasi tasdiq" — voice message ga bog'liq barcha pending action'larni
+ * topib, har birini alohida tranzaksiyada `confirmAction` orqali bajarish.
+ * Bitta action xato bo'lsa ham qolganlarini bajaramiz (per-action atomar).
+ */
+async function apprvAllVoiceCallback(
+  voiceId: number,
+  principal: CallbackPrincipal,
+): Promise<DispatchOutcome> {
+  const { rows } = await query<{ id: string; summary: string }>(
+    `SELECT id, summary FROM assistant_actions
+      WHERE voice_message_id = $1 AND status = 'pending' AND user_id = $2`,
+    [voiceId, principal.userId],
+  );
+  if (rows.length === 0) {
+    return {
+      kind: 'invalid',
+      message: "Bajariladigan amallar topilmadi (allaqachon yopilgan).",
+    };
+  }
+  const auth = await toAuthPrincipal(principal);
+  let ok = 0;
+  let failed = 0;
+  const errors: string[] = [];
+  for (const r of rows) {
+    try {
+      await confirmAction(Number(r.id), auth);
+      ok += 1;
+    } catch (err) {
+      failed += 1;
+      errors.push(`#${r.id}: ${(err as Error).message}`);
+    }
+  }
+  await markVoiceExecutedIfDone(voiceId);
+  const tail = errors.length === 0 ? '' : `\nXatolar:\n${errors.join('\n').slice(0, 300)}`;
+  return {
+    kind: 'ok',
+    message: `${ok} ta bajarildi${failed > 0 ? `, ${failed} ta rad/xato` : ''}.${tail}`,
+    result: { voice_message_id: voiceId, ok, failed },
+    removeButtons: true,
+  };
+}
+
+/** "Hammasi rad" — barcha pending'larni rad etish. */
+async function rejAllVoiceCallback(
+  voiceId: number,
+  principal: CallbackPrincipal,
+): Promise<DispatchOutcome> {
+  const { rows } = await query<{ id: string }>(
+    `SELECT id FROM assistant_actions
+      WHERE voice_message_id = $1 AND status = 'pending' AND user_id = $2`,
+    [voiceId, principal.userId],
+  );
+  if (rows.length === 0) {
+    return {
+      kind: 'invalid',
+      message: 'Bekor qilinadigan amallar topilmadi.',
+    };
+  }
+  const auth = await toAuthPrincipal(principal);
+  let rejected = 0;
+  for (const r of rows) {
+    try {
+      await rejectAction(Number(r.id), auth);
+      rejected += 1;
+    } catch {
+      // Already non-pending; skip.
+    }
+  }
+  await markVoiceExecutedIfDone(voiceId);
+  return {
+    kind: 'ok',
+    message: `${rejected} ta amal rad etildi.`,
+    result: { voice_message_id: voiceId, rejected },
+    removeButtons: true,
+  };
+}
+
+/**
+ * Clarify — voice message clarifying flow.
+ * Foydalanuvchi tanlagan productId asosida shu voice'dagi clarification
+ * action(lar) ni yangi pending `adjust_stock` ga aylantiradi.
+ *
+ * MVP yondashuvi: shu voice'da pending `clarify_product` qatorlari yo'q —
+ * clarification voice ichida product topilmaganda **action yaratilmagan**
+ * edi. Shuning uchun bu callback foydalanuvchi tanlovini audit ga yozadi
+ * va `voice_messages.intent_parse_result` ga tanlangan productId ni qo'shadi.
+ * Pending action keyingi voice xabarda yoki UI da yaratiladi (kelajak iter).
+ */
+async function clarifyVoiceCallback(
+  voiceId: number,
+  productId: number,
+  principal: CallbackPrincipal,
+): Promise<DispatchOutcome> {
+  const { rows } = await query<{ id: string; user_id: string; transcript: string | null }>(
+    `SELECT id, user_id, transcript FROM voice_messages WHERE id = $1`,
+    [voiceId],
+  );
+  const vm = rows[0];
+  if (vm === undefined) {
+    return { kind: 'invalid', message: 'Voice xabar topilmadi.' };
+  }
+  if (Number(vm.user_id) !== principal.userId && principal.role !== 'pm') {
+    return { kind: 'rbac', message: 'Bu voice xabar siznikiga tegishli emas.' };
+  }
+  // Mahsulot mavjudligini tasdiqlash.
+  const { rows: prodRows } = await query<{ id: string; name: string; unit: string }>(
+    `SELECT id, name, unit::text AS unit FROM products WHERE id = $1 AND is_active = TRUE`,
+    [productId],
+  );
+  if (prodRows[0] === undefined) {
+    return { kind: 'invalid', message: 'Mahsulot topilmadi.' };
+  }
+  await writeAudit(poolRunner, {
+    actorUserId: principal.userId,
+    action: 'voice_message.clarify',
+    entity: 'voice_messages',
+    entityId: voiceId,
+    payload: { selected_product_id: productId, transcript: vm.transcript },
+  });
+  return {
+    kind: 'ok',
+    message: `Tanlovingiz qabul qilindi: ${prodRows[0].name}. Iltimos, ovoz xabarini takrorlang yoki UI orqali harakat yarating.`,
+    result: { voice_message_id: voiceId, product_id: productId },
+    removeButtons: false,
+  };
+}
+
+async function markVoiceExecutedIfDone(voiceId: number): Promise<void> {
+  const { rows } = await query<{ remaining: string }>(
+    `SELECT count(*) AS remaining FROM assistant_actions
+      WHERE voice_message_id = $1 AND status = 'pending'`,
+    [voiceId],
+  );
+  const remaining = Number(rows[0]?.remaining ?? '0');
+  if (remaining > 0) return;
+  await query(
+    `UPDATE voice_messages SET status = 'executed', processed_at = now()
+      WHERE id = $1 AND status = 'actions_pending'`,
+    [voiceId],
+  );
+}
 
 /** Lookup the principal for a given Telegram numeric user id. */
 export async function lookupTelegramUser(

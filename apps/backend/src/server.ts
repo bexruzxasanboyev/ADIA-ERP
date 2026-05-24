@@ -44,6 +44,10 @@ import {
   stopForecastRefreshWorker,
 } from './workers/forecastRefreshCron.js';
 import {
+  startVoiceCleanupWorker,
+  stopVoiceCleanupWorker,
+} from './workers/voiceCleanupCron.js';
+import {
   ensureCallbackHandlerWired,
   startBotLongPolling,
   stopBot,
@@ -77,6 +81,10 @@ function main(): void {
   // TTL has elapsed. One UPDATE per minute, atomic and idempotent.
   startActionExpireWorker();
   console.log('[server] assistant action expire worker started (* * * * *)');
+
+  // F4.3 (ADR-0014) — har kuni 03:30 da eski voice tmp fayllarni tozalash.
+  startVoiceCleanupWorker();
+  console.log('[server] voice tmp cleanup worker started (30 3 * * *)');
 
   // Faza-3 F3.4 / ADR-0010 — Prophet forecaster sidecar refresh. Self-disables
   // when FORECASTER_URL / FORECASTER_SHARED_SECRET are not configured.
@@ -128,6 +136,7 @@ function main(): void {
     stopRefreshTokenCleanupWorker();
     stopActionExpireWorker();
     stopForecastRefreshWorker();
+    stopVoiceCleanupWorker();
     // F3.3 — stop long-polling (if running); webhook mode has no task.
     void stopBot();
     server.close(() => {

@@ -33,8 +33,9 @@ import { isRole, type Role } from '../auth/roles.js';
 import { AppError } from '../errors/index.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
-import { asObject, requireString } from '../lib/validate.js';
+import { asObject, requireId, requireString } from '../lib/validate.js';
 import { getPrincipal } from '../lib/principal.js';
+import { writeAudit, poolRunner } from '../lib/audit.js';
 import { loadConfig } from '../config/index.js';
 
 export const authRouter: Router = Router();
@@ -270,6 +271,80 @@ authRouter.get(
     if (user === undefined) {
       throw AppError.unauthenticated('User no longer exists or is inactive.');
     }
-    res.status(200).json({ user: toPublicUser(user) });
+    // F4.1 / ADR-0012 — enrich the response with the user's assigned
+    // locations (M:N) so the frontend can render a location switcher.
+    const { rows: locationRows } = await query<{
+      id: string;
+      name: string;
+      type: string;
+      is_primary: boolean;
+    }>(
+      `SELECT l.id, l.name, l.type::text AS type, ul.is_primary
+         FROM user_locations ul
+         JOIN locations l ON l.id = ul.location_id
+        WHERE ul.user_id = $1
+        ORDER BY ul.is_primary DESC, l.name`,
+      [principal.userId],
+    );
+    const locations = locationRows.map((r) => ({
+      id: Number(r.id),
+      name: r.name,
+      type: r.type,
+      is_primary: r.is_primary,
+    }));
+    res.status(200).json({
+      user: toPublicUser(user),
+      locations,
+      active_location_id: principal.activeLocationId,
+    });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// PATCH /api/auth/active-location — F4.1 (ADR-0012)
+// ---------------------------------------------------------------------------
+// Sets the request-scoped active location. The server is STATELESS — the
+// client must also send `X-Active-Location: <id>` on every subsequent
+// request. This endpoint validates the choice (must be assigned to the
+// user) and writes one audit-log row so forensic readers can answer
+// "when did this user start working under that location?".
+authRouter.patch(
+  '/active-location',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const body = asObject(req.body);
+    const locationId = requireId(body, 'location_id');
+
+    // PM (chain-wide) may pick any existing location; scoped users may pick
+    // only one from their M:N set.
+    if (principal.role !== 'pm' && !principal.locationIds.includes(locationId)) {
+      throw new AppError(
+        'FORBIDDEN',
+        'Active location is not assigned to this user.',
+      );
+    }
+    // For PM, sanity-check the id exists at all (better 422 than silent no-op).
+    if (principal.role === 'pm') {
+      const { rows } = await query<{ id: string }>(
+        `SELECT id FROM locations WHERE id = $1`,
+        [locationId],
+      );
+      if (rows[0] === undefined) {
+        throw AppError.notFound('Location not found.');
+      }
+    }
+
+    await writeAudit(poolRunner, {
+      actorUserId: principal.userId,
+      action: 'auth.active_location.set',
+      entity: 'users',
+      entityId: principal.userId,
+      payload: { location_id: locationId },
+      // Record the NEW active location so forensic readers see what
+      // context the user just switched into.
+      activeLocationId: locationId,
+    });
+    res.status(200).json({ active_location_id: locationId });
   }),
 );

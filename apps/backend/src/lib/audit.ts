@@ -28,6 +28,12 @@ export type AuditEntry = {
   readonly entityId: number | null;
   /** Arbitrary JSON detail (the changed values). */
   readonly payload?: unknown;
+  /**
+   * F4.1 / ADR-0012 — request-scoped active location. Optional: cron and
+   * system writes leave this null. Routes pass `principal.activeLocationId`
+   * so the audit log records which store the user was acting as.
+   */
+  readonly activeLocationId?: number | null;
 };
 
 /**
@@ -36,14 +42,15 @@ export type AuditEntry = {
  */
 export async function writeAudit(runner: TxClient, entry: AuditEntry): Promise<void> {
   await runner.query(
-    `INSERT INTO audit_log (actor_user_id, action, entity, entity_id, payload)
-     VALUES ($1, $2, $3, $4, $5)`,
+    `INSERT INTO audit_log (actor_user_id, action, entity, entity_id, payload, active_location_id)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
     [
       entry.actorUserId,
       entry.action,
       entry.entity,
       entry.entityId,
       entry.payload === undefined ? null : (JSON.stringify(entry.payload) as unknown as string),
+      entry.activeLocationId ?? null,
     ],
   );
 }

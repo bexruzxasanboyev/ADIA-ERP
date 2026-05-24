@@ -97,6 +97,21 @@ export type AppConfig = {
    * the cache table either way (last successful run survives until the
    * next overwrite).
    */
+  /**
+   * Faza-4 Sprint F4.2 / ADR-0013 — Yandex Cloud (Speech Kit STT v3 + Object
+   * Storage for voice clips). `enabled` is true only when ALL of
+   * `YANDEX_OAUTH_TOKEN`, `YANDEX_FOLDER_ID`, `YANDEX_BUCKET` are set. The
+   * service-account access keys are required for S3 PUT uploads; without
+   * them only the (small) sync recognize path works.
+   */
+  readonly yandex: {
+    readonly enabled: boolean;
+    readonly oauthToken: string;
+    readonly folderId: string;
+    readonly bucket: string;
+    readonly saAccessKey: string;
+    readonly saSecretKey: string;
+  };
   readonly forecaster: {
     readonly enabled: boolean;
     readonly url: string;
@@ -215,6 +230,23 @@ export function loadConfig(): AppConfig {
       token: optional('BOT_TOKEN', ''),
       username: optional('BOT_USERNAME', ''),
       webhookSecret: optional('TELEGRAM_WEBHOOK_SECRET', ''),
+    }),
+    yandex: Object.freeze({
+      // F4.2 / ADR-0013 — voice pipeline.
+      // OAuth token is the only secret stored long-term; IAM tokens are
+      // minted on demand by integrations/yandex/auth.ts and never persisted.
+      // The `enabled` gate ALSO short-circuits in NODE_ENV=test so unit
+      // tests never reach out to the real Yandex API by accident.
+      enabled:
+        optional('YANDEX_OAUTH_TOKEN', '') !== '' &&
+        optional('YANDEX_FOLDER_ID', '') !== '' &&
+        optional('YANDEX_BUCKET', '') !== '' &&
+        nodeEnv !== 'test',
+      oauthToken: optional('YANDEX_OAUTH_TOKEN', ''),
+      folderId: optional('YANDEX_FOLDER_ID', ''),
+      bucket: optional('YANDEX_BUCKET', ''),
+      saAccessKey: optional('YANDEX_SA_ACCESS_KEY', ''),
+      saSecretKey: optional('YANDEX_SA_SECRET_KEY', ''),
     }),
     forecaster: Object.freeze({
       // F3.4 / ADR-0010 — Prophet sidecar. Both URL and shared secret must

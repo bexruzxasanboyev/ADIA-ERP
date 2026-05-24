@@ -23,12 +23,32 @@ import jwt from 'jsonwebtoken';
 import { loadConfig } from '../config/index.js';
 import { isRole, type Role } from './roles.js';
 
-/** The authenticated principal carried by a verified access JWT. */
+/**
+ * The authenticated principal carried by a verified access JWT.
+ *
+ * F4.1 / ADR-0012 — multi-location extension. `locationId` (primary) stays
+ * in the JWT for backward-compat; `locationIds` and `activeLocationId` are
+ * filled in by the `authenticate` middleware from the DB (M:N) and the
+ * `X-Active-Location` header, NOT from the token. This keeps tokens stable
+ * across location-assignment changes (a freshly added location is visible
+ * on the next request, no re-issue needed).
+ */
 export type AuthPrincipal = {
   readonly userId: number;
   readonly role: Role;
-  /** null for chain-wide roles (pm, ai_assistant). */
+  /** Primary location id. null for chain-wide roles (pm, ai_assistant). */
   readonly locationId: number | null;
+  /**
+   * Every location the user is assigned to (primary + secondary).
+   * Empty for chain-wide roles (`pm`, `ai_assistant`).
+   */
+  readonly locationIds: number[];
+  /**
+   * Request-scoped active location. Set by `authenticate` middleware:
+   * `X-Active-Location` header (validated) > primary `locationId` >
+   * `null` (chain-wide).
+   */
+  readonly activeLocationId: number | null;
 };
 
 /** Token type claim — defends against accidentally accepting a refresh JWT
@@ -44,13 +64,25 @@ type JwtClaims = {
 };
 
 /**
+ * What `verifyToken` returns — the JWT-only fields. The `authenticate`
+ * middleware enriches this with `locationIds` (DB lookup) and
+ * `activeLocationId` (`X-Active-Location` header) to form the full
+ * `AuthPrincipal` attached to `req.auth`.
+ */
+export type JwtPrincipal = {
+  readonly userId: number;
+  readonly role: Role;
+  readonly locationId: number | null;
+};
+
+/**
  * Sign a short-lived access JWT for an authenticated user.
  *
  * TTL comes from `config.jwt.accessTtlSeconds` (1h default). The token is
  * stamped with `type: 'access'` so the `authenticate` middleware can
  * reject any future non-access token by claim, not just by shape.
  */
-export function signAccessToken(principal: AuthPrincipal): string {
+export function signAccessToken(principal: JwtPrincipal): string {
   const cfg = loadConfig();
   const claims: JwtClaims = {
     sub: String(principal.userId),
@@ -69,7 +101,7 @@ export function signAccessToken(principal: AuthPrincipal): string {
  * `signToken`. Keeping it pointed at `signAccessToken` lets the rest of
  * the codebase migrate at its own pace.
  */
-export function signToken(principal: AuthPrincipal): string {
+export function signToken(principal: JwtPrincipal): string {
   return signAccessToken(principal);
 }
 
@@ -87,7 +119,7 @@ export function signToken(principal: AuthPrincipal): string {
  * Callers (the `authenticate` middleware) translate any failure into a
  * single generic 401 response — no leak of "expired vs malformed".
  */
-export function verifyToken(token: string): AuthPrincipal {
+export function verifyToken(token: string): JwtPrincipal {
   const cfg = loadConfig();
   const decoded = jwt.verify(token, cfg.jwt.secret, { issuer: 'adia-erp' });
 

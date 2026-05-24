@@ -26,6 +26,7 @@
 import { Bot, type BotConfig } from 'grammy';
 import { loadConfig } from '../../config/index.js';
 import { handleCallbackQuery, type CallbackContext } from './callbackHandler.js';
+import { wireVoiceHandler } from './voiceHandler.js';
 
 /**
  * Minimal surface the outbox worker needs from a Grammy bot. Kept narrow
@@ -125,6 +126,10 @@ export function ensureCallbackHandlerWired(): void {
     };
     await handleCallbackQuery(ctxAdapter);
   });
+  // F4.3 / ADR-0014 — message:voice handler. `wireVoiceHandler` ham idempotent
+  // (Grammy bot.on additive, lekin `inboundWired` flag dublikatlarni
+  // bo'g'adi).
+  wireVoiceHandler(bot);
   inboundWired = true;
 }
 

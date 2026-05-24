@@ -36,8 +36,8 @@ function storeManagerPrincipal(locationId: number): AuthPrincipal {
 }
 
 describe('write-tool registry — shape', () => {
-  it('exposes all 6 write tool names', () => {
-    expect(WRITE_TOOL_NAMES).toHaveLength(6);
+  it('exposes all 7 write tool names', () => {
+    expect(WRITE_TOOL_NAMES).toHaveLength(7);
     expect(new Set(WRITE_TOOL_NAMES)).toEqual(
       new Set([
         'transfer_stock',
@@ -46,6 +46,7 @@ describe('write-tool registry — shape', () => {
         'approve_purchase_order',
         'update_minmax',
         'create_production_order',
+        'adjust_stock',
       ]),
     );
   });

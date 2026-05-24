@@ -16,7 +16,9 @@
     "db:create": "tsx scripts/create-db.ts",
     "seed:dev": "tsx scripts/seed-dev.ts",
     "poster:test": "tsx scripts/poster-test.ts",
-    "vertex:test": "tsx scripts/vertex-test.ts"
+    "vertex:test": "tsx scripts/vertex-test.ts",
+    "yandex:bootstrap": "tsx scripts/yandex-bootstrap.ts",
+    "yandex:test": "tsx scripts/yandex-test.ts"
   },
   "dependencies": {
     "@google/genai": "^1.52.0",

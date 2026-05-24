@@ -100,6 +100,7 @@ export const WRITE_TOOL_NAMES = [
   'approve_purchase_order',
   'update_minmax',
   'create_production_order',
+  'adjust_stock',
 ] as const;
 
 export type WriteToolName = (typeof WRITE_TOOL_NAMES)[number];
@@ -721,6 +722,109 @@ const createProductionOrder: WriteTool<CreateProductionOrderArgs> = {
 };
 
 // ---------------------------------------------------------------------------
+// 7. adjust_stock — voice flow: kirim (+delta) / chiqim (−delta) at one location
+// ---------------------------------------------------------------------------
+//
+// Voice oqimi (F4.3 / ADR-0014) uchun maxsus tool. Foydalanuvchi "omborga 500
+// kg un keldi" desa → `{delta: 500, location_id: <ombor>, product_id: <un>}`.
+// "5 ta tort buzildi" → `{delta: -5, ...}`. UI/AI chat dan ham chaqirilishi
+// mumkin, lekin asosiy ishlatuvchi voiceHandler.
+//
+// `applyMovement` ostida:
+//   - delta > 0  → fromLocationId=null, toLocationId=X   (kirim, reason='adjust')
+//   - delta < 0  → fromLocationId=X,    toLocationId=null (chiqim, reason='adjust')
+//
+// Invariant 3 (negative qty oldini olish) `applyMovement` ichidagi
+// guardedDecrement orqali saqlanadi — delta < 0 va |delta| > qty bo'lsa
+// INSUFFICIENT_STOCK ko'tariladi va tranzaksiya rollback bo'ladi.
+
+type AdjustStockArgs = {
+  product_id: number;
+  location_id: number;
+  delta: number;
+  note: string | null;
+};
+
+const adjustStock: WriteTool<AdjustStockArgs> = {
+  name: 'adjust_stock',
+  declaration: {
+    name: 'adjust_stock',
+    description:
+      'Adjust the stock of `product_id` at `location_id` by a signed `delta` ' +
+      '(positive = receipt/kirim, negative = issue/chiqim). Use this for voice ' +
+      'commands like "omborga 500 kg un keldi" (delta=+500) or "5 ta tort buzildi" ' +
+      '(delta=-5). The DB mutation is NOT applied until the user confirms. ' +
+      'RBAC: PM or the manager of `location_id`.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        product_id: { type: Type.NUMBER, description: 'Numeric product id (positive integer).' },
+        location_id: { type: Type.NUMBER, description: 'Numeric location id.' },
+        delta: {
+          type: Type.NUMBER,
+          description:
+            'Signed quantity change. Positive = receipt (kirim), negative = issue (chiqim). ' +
+            'Must be non-zero.',
+        },
+        note: { type: Type.STRING, description: 'Optional free-text note (Uzbek).' },
+      },
+      required: ['product_id', 'location_id', 'delta'],
+    },
+  },
+  validateArgs(args) {
+    const productId = requireId(args.product_id, 'product_id');
+    const locationId = requireId(args.location_id, 'location_id');
+    const deltaRaw = typeof args.delta === 'number' ? args.delta : Number(args.delta);
+    if (!Number.isFinite(deltaRaw) || deltaRaw === 0) {
+      throw AppError.validation('Field "delta" must be a non-zero finite number.');
+    }
+    return {
+      product_id: productId,
+      location_id: locationId,
+      delta: deltaRaw,
+      note: optionalString(args.note),
+    };
+  },
+  async canExecute(args, principal) {
+    if (!principalManagesLocation(principal, args.location_id)) {
+      return {
+        code: 'forbidden_for_role',
+        reason: 'Only PM or the location manager may adjust stock here.',
+      };
+    }
+    return 'allowed';
+  },
+  async summarize(args, _principal, tx) {
+    const [loc, product] = await Promise.all([
+      lookupLocation(tx, args.location_id),
+      lookupProduct(tx, args.product_id),
+    ]);
+    const locName = loc?.name ?? `#${args.location_id}`;
+    const productName = product?.name ?? `#${args.product_id}`;
+    const unit = product?.unit ?? '';
+    const sign = args.delta > 0 ? '+' : '−';
+    return `${locName}: ${sign}${Math.abs(args.delta)} ${unit} ${productName}`.trim();
+  },
+  async execute(args, _principal, actorUserId, tx) {
+    const fromLocationId = args.delta < 0 ? args.location_id : null;
+    const toLocationId = args.delta > 0 ? args.location_id : null;
+    const { movementId } = await applyMovement(
+      {
+        productId: args.product_id,
+        fromLocationId,
+        toLocationId,
+        qty: Math.abs(args.delta),
+        reason: 'adjust',
+        actorUserId,
+        note: args.note,
+      },
+      tx,
+    );
+    return { movement_id: movementId };
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 
@@ -731,6 +835,7 @@ export const WRITE_TOOL_REGISTRY: Record<WriteToolName, WriteTool> = {
   approve_purchase_order: approvePoTool as unknown as WriteTool,
   update_minmax: updateMinMax as unknown as WriteTool,
   create_production_order: createProductionOrder as unknown as WriteTool,
+  adjust_stock: adjustStock as unknown as WriteTool,
 };
 
 /** Is `name` a known write tool? */

@@ -39,6 +39,18 @@ export async function makeUser(
   }
   // BIGINT columns arrive as strings from pg — coerce to a number id.
   const id = Number(idRaw);
+  // F4.1 / ADR-0012 — mirror the primary location into the M:N junction so
+  // `authenticate` middleware sees the user's assigned location. The
+  // migration's back-fill only covers rows that existed at migrate time;
+  // every new insert in tests has to add the row explicitly.
+  if (locationId !== null) {
+    await db.query(
+      `INSERT INTO user_locations (user_id, location_id, is_primary)
+       VALUES ($1, $2, TRUE)
+       ON CONFLICT (user_id, location_id) DO NOTHING`,
+      [id, locationId],
+    );
+  }
   const token = signToken({ userId: id, role: opts.role, locationId });
   return { id, email, role: opts.role, locationId, token };
 }
