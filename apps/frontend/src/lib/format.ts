@@ -62,3 +62,100 @@ export function formatRelative(iso: string | null, now: Date = new Date()): stri
   }
   return formatDateTime(iso);
 }
+
+/**
+ * F4.7 — Compact currency formatter for hero KPI cards.
+ *
+ * Renders a large monetary value as a short executive-glanceable string:
+ *   2_400_000        → "2.4M"
+ *   1_250_000_000    → "1.25mlrd"
+ *   980_000          → "980K"
+ *   1_500            → "1 500"   (no abbreviation — full local grouping)
+ *
+ * Uses uz-UZ locale grouping below the abbreviation threshold; above it,
+ * suffixes are Uzbek (`K`, `M`, `mlrd`) so they read naturally on a
+ * boshliq dashboard.
+ */
+const compactFormatter = new Intl.NumberFormat('uz-UZ', {
+  maximumFractionDigits: 2,
+});
+
+export function formatCurrencyCompact(value: number): string {
+  if (!Number.isFinite(value)) return '—';
+  const abs = Math.abs(value);
+  const sign = value < 0 ? '-' : '';
+
+  if (abs >= 1_000_000_000) {
+    return `${sign}${compactFormatter.format(round(abs / 1_000_000_000, 2))}mlrd`;
+  }
+  if (abs >= 1_000_000) {
+    return `${sign}${compactFormatter.format(round(abs / 1_000_000, 1))}M`;
+  }
+  if (abs >= 10_000) {
+    return `${sign}${compactFormatter.format(round(abs / 1_000, 0))}K`;
+  }
+  return `${sign}${compactFormatter.format(Math.round(abs))}`;
+}
+
+function round(n: number, digits: number): number {
+  const factor = 10 ** digits;
+  return Math.round(n * factor) / factor;
+}
+
+/**
+ * F4.7 — Long Uzbek date string for the executive HeaderStrip.
+ *
+ * Format: "24-may 2026, yakshanba".
+ * Accepts an ISO `YYYY-MM-DD` or full timestamp; falls back to the raw
+ * input on invalid dates.
+ */
+const UZ_MONTHS = [
+  'yanvar',
+  'fevral',
+  'mart',
+  'aprel',
+  'may',
+  'iyun',
+  'iyul',
+  'avgust',
+  'sentyabr',
+  'oktyabr',
+  'noyabr',
+  'dekabr',
+];
+
+const UZ_WEEKDAYS = [
+  'yakshanba',
+  'dushanba',
+  'seshanba',
+  'chorshanba',
+  'payshanba',
+  'juma',
+  'shanba',
+];
+
+export function formatDateLong(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const day = date.getDate();
+  const month = UZ_MONTHS[date.getMonth()];
+  const year = date.getFullYear();
+  const weekday = UZ_WEEKDAYS[date.getDay()];
+  return `${day}-${month} ${year}, ${weekday}`;
+}
+
+/**
+ * F4.7 — Time-of-day Uzbek greeting for the executive HeaderStrip.
+ *
+ *   04:00–11:59 → "Xayrli tong"
+ *   12:00–17:59 → "Xayrli kun"
+ *   18:00–22:59 → "Xayrli kech"
+ *   23:00–03:59 → "Xayrli tun"
+ */
+export function getGreeting(date: Date = new Date()): string {
+  const hour = date.getHours();
+  if (hour >= 4 && hour < 12) return 'Xayrli tong';
+  if (hour >= 12 && hour < 18) return 'Xayrli kun';
+  if (hour >= 18 && hour < 23) return 'Xayrli kech';
+  return 'Xayrli tun';
+}

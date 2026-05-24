@@ -54,7 +54,7 @@ export const MOVEMENT_REASON_LABELS: Record<MovementReason, string> = {
   production_output: 'Ishlab chiqarishdan kirim',
   transfer: 'Ko‘chirish',
   purchase: 'Sotib olish',
-  adjust: 'Tuzatish',
+  adjust: 'Qo‘lda tuzatuv',
 };
 
 /**

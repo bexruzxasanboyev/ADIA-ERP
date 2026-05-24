@@ -14,6 +14,7 @@ import { ReplenishmentDetailPage } from '@/pages/replenishment/ReplenishmentDeta
 import { ProductionOrdersPage } from '@/pages/production-orders/ProductionOrdersPage';
 import { PurchaseOrdersPage } from '@/pages/purchase-orders/PurchaseOrdersPage';
 import { DashboardPage } from '@/pages/dashboard/DashboardPage';
+import { ExecutiveDashboardPage } from '@/pages/dashboard/executive/ExecutiveDashboardPage';
 import { ForecastsPage } from '@/pages/forecasts/ForecastsPage';
 import { ImportWarningsPage } from '@/pages/admin/ImportWarningsPage';
 import { RawWarehousePage } from '@/pages/chain/RawWarehousePage';
@@ -45,7 +46,11 @@ export function AppRouter() {
       >
         <Route index element={<Navigate to="/dashboard" replace />} />
 
-        <Route path="/dashboard" element={<DashboardPage />} />
+        {/* F4.7 — Executive (boshliq) dashboard at /dashboard; the
+            full operations view is parked at /dashboard/operations so
+            existing deep links stay live. */}
+        <Route path="/dashboard" element={<ExecutiveDashboardPage />} />
+        <Route path="/dashboard/operations" element={<DashboardPage />} />
 
         {/* F3.4 — Forecasts page (all authenticated roles, RBAC-scoped server-side). */}
         <Route path="/forecasts" element={<ForecastsPage />} />

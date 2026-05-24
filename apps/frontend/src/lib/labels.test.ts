@@ -31,6 +31,10 @@ describe('domain labels', () => {
   it('translates movement reasons', () => {
     expect(MOVEMENT_REASON_LABELS.transfer).toBe('Ko‘chirish');
     expect(MOVEMENT_REASON_LABELS.sale).toBe('Savdo');
+    // F4.7 — `adjust` reads as the explicit Uzbek phrase
+    // "Qo'lda tuzatuv" so a boshliq can see at a glance that the row
+    // is a manual override rather than a system movement.
+    expect(MOVEMENT_REASON_LABELS.adjust).toBe('Qo‘lda tuzatuv');
   });
 
   it('covers all 10 replenishment statuses with Uzbek labels', () => {
