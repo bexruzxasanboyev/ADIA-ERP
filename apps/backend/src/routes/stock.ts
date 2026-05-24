@@ -40,6 +40,19 @@ export const stockRouter: Router = Router();
 const MAX_PAGE_SIZE = 100;
 const DEFAULT_PAGE_SIZE = 50;
 
+/**
+ * Valid `location_type` values for the `/api/stock?location_type=` filter
+ * — must match the `location_type` enum in the database.
+ */
+const LOCATION_TYPES = [
+  'raw_warehouse',
+  'production',
+  'supply',
+  'central_warehouse',
+  'store',
+] as const;
+type LocationType = (typeof LOCATION_TYPES)[number];
+
 type StockRow = {
   location_id: number;
   product_id: number;
@@ -75,6 +88,42 @@ stockRouter.get(
       typeof req.query.location_id === 'string' ? req.query.location_id : undefined,
       'location_id',
     );
+    const locationTypeParam = parseOptionalLocationType(
+      typeof req.query.location_type === 'string' ? req.query.location_type : undefined,
+    );
+
+    // F4.6 — `location_type` filter aggregates every location of the given
+    // type (raw_warehouse / production / supply / central_warehouse / store).
+    // RBAC scoping: a scoped principal intersects the type set with its own
+    // assigned `locationIds`. Mutually exclusive with `location_id`.
+    if (locationTypeParam !== undefined) {
+      if (locationIdParam !== undefined) {
+        throw AppError.validation(
+          'Use either "location_id" or "location_type", not both.',
+        );
+      }
+      const params: (string | number | number[])[] = [locationTypeParam];
+      let where = 'WHERE l.type = $1';
+      if (!isSuperAdmin(principal) && principal.role !== 'ai_assistant') {
+        if (principal.locationIds.length === 0) {
+          res.status(200).json([]);
+          return;
+        }
+        params.push(principal.locationIds);
+        where += ` AND s.location_id = ANY($${params.length}::bigint[])`;
+      }
+      const { rows } = await query<StockRow>(
+        `SELECT ${STOCK_SELECT}
+         FROM stock s
+         JOIN products p ON p.id = s.product_id
+         JOIN locations l ON l.id = s.location_id
+         ${where}
+         ORDER BY s.location_id, s.product_id`,
+        params,
+      );
+      res.status(200).json(rows);
+      return;
+    }
 
     // Decide the effective location filter from RBAC scope.
     let effectiveLocationId: number | undefined;
@@ -420,6 +469,22 @@ function deriveManualReason(
     }
   }
   return derived;
+}
+
+/**
+ * Parse a query-string `location_type` parameter. Returns `undefined` when
+ * absent/empty; throws 422 when a value is provided but not a known type.
+ */
+function parseOptionalLocationType(raw: string | undefined): LocationType | undefined {
+  if (raw === undefined || raw === '') {
+    return undefined;
+  }
+  if (!(LOCATION_TYPES as readonly string[]).includes(raw)) {
+    throw AppError.validation(
+      `"location_type" must be one of: ${LOCATION_TYPES.join(', ')}.`,
+    );
+  }
+  return raw as LocationType;
 }
 
 /** Parse a query value as an integer clamped to [min, max], else fallback. */

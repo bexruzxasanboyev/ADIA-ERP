@@ -24,11 +24,13 @@
  */
 import { Router } from 'express';
 import { query, type SqlParam } from '../db/index.js';
+import { AppError } from '../errors/index.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { getPrincipal, isSuperAdmin } from '../lib/principal.js';
 import type { AuthPrincipal } from '../auth/jwt.js';
+import type { Role } from '../auth/roles.js';
 
 export const dashboardRouter: Router = Router();
 
@@ -885,5 +887,364 @@ function emptyEcosystem(): EcosystemResponse {
     chain_flow: [],
     alerts_feed: [],
     sales_chart: { days: [] },
+  };
+}
+
+// =============================================================================
+// F4.6 — GET /api/dashboard/chain-layer/:type
+// =============================================================================
+//
+// One aggregate the UI uses to render a single "chain layer" page (raw,
+// production, supply, central_warehouse, or store). Every layer page wants
+// the same skeleton — locations on this layer with per-location KPIs,
+// rolled-up totals, and the most recent movements — plus a few layer-specific
+// totals (active production orders for `production`, pending shipments for
+// `supply`/`central_warehouse`, today's sales count for `store`).
+//
+// RBAC:
+//   - pm + ai_assistant — every location of the requested type.
+//   - the matching layer's manager role — only locations from the type set
+//     that intersect their assigned `locationIds`.
+//   - any other role — 403 (the supply_manager has no business on the raw
+//     warehouse layer page, etc.).
+//
+// Performance: every sub-query is bounded (recent_movements LIMIT 20) and
+// fans out via Promise.all. Same < 1s budget as /overview.
+// -----------------------------------------------------------------------------
+
+const CHAIN_LAYER_RECENT_MOVEMENTS = 20;
+
+const CHAIN_LAYER_TYPES = [
+  'raw_warehouse',
+  'production',
+  'supply',
+  'central_warehouse',
+  'store',
+] as const;
+type ChainLayerType = (typeof CHAIN_LAYER_TYPES)[number];
+
+/** The single role that manages each layer. PM + ai_assistant pass any layer. */
+const LAYER_MANAGER_ROLE: Record<ChainLayerType, Role> = {
+  raw_warehouse: 'raw_warehouse_manager',
+  production: 'production_manager',
+  supply: 'supply_manager',
+  central_warehouse: 'central_warehouse_manager',
+  store: 'store_manager',
+};
+
+type ChainLayerLocation = {
+  id: number;
+  name: string;
+  type: ChainLayerType;
+  total_products: number;
+  below_min_count: number;
+  open_requests_count: number;
+};
+
+type ChainLayerTotals = {
+  total_locations: number;
+  total_products: number;
+  below_min_count: number;
+  open_requests_count: number;
+  active_production_orders?: number;
+  pending_shipments?: number;
+  sales_today_count?: number;
+};
+
+type ChainLayerResponse = {
+  layer_type: ChainLayerType;
+  locations: ChainLayerLocation[];
+  totals: ChainLayerTotals;
+  recent_movements: RecentMovementItem[];
+};
+
+type LayerScope =
+  | { kind: 'chain'; type: ChainLayerType }
+  | { kind: 'locations'; type: ChainLayerType; locationIds: number[] }
+  | { kind: 'empty'; type: ChainLayerType };
+
+dashboardRouter.get(
+  '/chain-layer/:type',
+  authenticate,
+  // Authorize is broad here — the handler narrows per-layer (`LAYER_MANAGER_ROLE`).
+  // A non-matching scoped role hits a clean 403 instead of a generic gate.
+  authorize(
+    'pm',
+    'ai_assistant',
+    'raw_warehouse_manager',
+    'production_manager',
+    'supply_manager',
+    'central_warehouse_manager',
+    'store_manager',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const rawType = req.params.type ?? '';
+    if (!(CHAIN_LAYER_TYPES as readonly string[]).includes(rawType)) {
+      throw AppError.validation(
+        `"type" must be one of: ${CHAIN_LAYER_TYPES.join(', ')}.`,
+      );
+    }
+    const layerType = rawType as ChainLayerType;
+
+    // RBAC: only pm / ai_assistant / the matching layer manager pass.
+    if (
+      !isSuperAdmin(principal) &&
+      principal.role !== 'ai_assistant' &&
+      principal.role !== LAYER_MANAGER_ROLE[layerType]
+    ) {
+      throw AppError.forbidden('You may not view this chain layer.');
+    }
+
+    const scope = resolveLayerScope(principal, layerType);
+    if (scope.kind === 'empty') {
+      res.status(200).json(emptyChainLayer(layerType));
+      return;
+    }
+
+    const [locations, layerExtras, recent] = await Promise.all([
+      fetchChainLayerLocations(scope),
+      fetchChainLayerExtras(scope),
+      fetchChainLayerRecentMovements(scope),
+    ]);
+
+    const totals: ChainLayerTotals = {
+      total_locations: locations.length,
+      total_products: locations.reduce((sum, l) => sum + l.total_products, 0),
+      below_min_count: locations.reduce((sum, l) => sum + l.below_min_count, 0),
+      open_requests_count: locations.reduce((sum, l) => sum + l.open_requests_count, 0),
+    };
+    if (layerType === 'production') {
+      totals.active_production_orders = layerExtras.activeProductionOrders;
+    }
+    if (layerType === 'supply' || layerType === 'central_warehouse') {
+      totals.pending_shipments = layerExtras.pendingShipments;
+    }
+    if (layerType === 'store') {
+      totals.sales_today_count = layerExtras.salesTodayCount;
+    }
+
+    const response: ChainLayerResponse = {
+      layer_type: layerType,
+      locations,
+      totals,
+      recent_movements: recent,
+    };
+    res.status(200).json(response);
+  }),
+);
+
+function resolveLayerScope(
+  principal: AuthPrincipal,
+  layerType: ChainLayerType,
+): LayerScope {
+  if (isSuperAdmin(principal) || principal.role === 'ai_assistant') {
+    return { kind: 'chain', type: layerType };
+  }
+  if (principal.locationIds.length === 0) {
+    return { kind: 'empty', type: layerType };
+  }
+  return {
+    kind: 'locations',
+    type: layerType,
+    locationIds: principal.locationIds,
+  };
+}
+
+/** One row per active location of the requested type, with KPIs. */
+async function fetchChainLayerLocations(
+  scope: Exclude<LayerScope, { kind: 'empty' }>,
+): Promise<ChainLayerLocation[]> {
+  const params: SqlParam[] = [scope.type];
+  let where = 'WHERE l.type = $1 AND l.is_active = TRUE';
+  if (scope.kind === 'locations') {
+    params.push(scope.locationIds);
+    where += ` AND l.id = ANY($${params.length}::bigint[])`;
+  }
+
+  const { rows } = await query<{
+    id: string;
+    name: string;
+    type: string;
+    total_products: string;
+    below_min_count: string;
+    open_requests_count: string;
+  }>(
+    `SELECT l.id, l.name, l.type::text AS type,
+            coalesce(tp.total_products, 0)       AS total_products,
+            coalesce(bm.below_min_count, 0)      AS below_min_count,
+            coalesce(orq.open_requests_count, 0) AS open_requests_count
+       FROM locations l
+       LEFT JOIN LATERAL (
+         SELECT count(*) AS total_products
+           FROM stock s WHERE s.location_id = l.id
+       ) tp ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT count(*) AS below_min_count
+           FROM stock s WHERE s.location_id = l.id AND s.qty <= s.min_level
+       ) bm ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT count(*) AS open_requests_count
+           FROM replenishment_requests rr
+          WHERE rr.requester_location_id = l.id
+            AND rr.status NOT IN ('CLOSED','CANCELLED')
+       ) orq ON TRUE
+       ${where}
+       ORDER BY l.id`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    id: Number(r.id),
+    name: r.name,
+    type: r.type as ChainLayerType,
+    total_products: Number(r.total_products),
+    below_min_count: Number(r.below_min_count),
+    open_requests_count: Number(r.open_requests_count),
+  }));
+}
+
+/**
+ * Layer-specific extras: active production orders (production layer), pending
+ * shipments (supply + central_warehouse layers), today's sales count (store
+ * layer). Always returns all three fields — the handler only emits the ones
+ * relevant to the requested layer.
+ */
+async function fetchChainLayerExtras(
+  scope: Exclude<LayerScope, { kind: 'empty' }>,
+): Promise<{
+  activeProductionOrders: number;
+  pendingShipments: number;
+  salesTodayCount: number;
+}> {
+  const layerType = scope.type;
+  const locFilter = scope.kind === 'locations' ? scope.locationIds : null;
+
+  // Active production orders — only when the layer is production. A PO lives
+  // on `production` locations, so the location filter is the scope's id set.
+  const activeProdPromise =
+    layerType === 'production'
+      ? (async () => {
+          const params: SqlParam[] = [];
+          let where = `WHERE po.status IN ('${ACTIVE_PO_STATUSES.join("','")}')`;
+          if (locFilter !== null) {
+            params.push(locFilter);
+            where += ` AND po.location_id = ANY($${params.length}::bigint[])`;
+          } else {
+            // chain — implicit `po.location_id IN (every production location)`,
+            // but every PO already targets a production location so no extra
+            // filter is needed.
+          }
+          const r = await query<SimpleCountRaw>(
+            `SELECT count(*) AS cnt FROM production_orders po ${where}`,
+            params,
+          );
+          return Number(r.rows[0]?.cnt ?? 0);
+        })()
+      : Promise.resolve(0);
+
+  // Pending shipments — open replenishment_requests where the target is one
+  // of the layer's locations. "Pending" = not yet terminal (per the
+  // `replenishment_status` enum, the terminal states are CLOSED and
+  // CANCELLED).
+  const pendingShipmentsPromise =
+    layerType === 'supply' || layerType === 'central_warehouse'
+      ? (async () => {
+          const params: SqlParam[] = [layerType];
+          let where =
+            `WHERE rr.status NOT IN ('CLOSED','CANCELLED') AND tl.type = $1`;
+          if (locFilter !== null) {
+            params.push(locFilter);
+            where += ` AND rr.target_location_id = ANY($${params.length}::bigint[])`;
+          }
+          const r = await query<SimpleCountRaw>(
+            `SELECT count(*) AS cnt
+               FROM replenishment_requests rr
+               JOIN locations tl ON tl.id = rr.target_location_id
+               ${where}`,
+            params,
+          );
+          return Number(r.rows[0]?.cnt ?? 0);
+        })()
+      : Promise.resolve(0);
+
+  // Today's sales count — only on the store layer.
+  const salesTodayPromise =
+    layerType === 'store'
+      ? (async () => {
+          const params: SqlParam[] = [];
+          let where = `WHERE sold_at >= date_trunc('day', now())`;
+          if (locFilter !== null) {
+            params.push(locFilter);
+            where += ` AND store_id = ANY($${params.length}::bigint[])`;
+          }
+          const r = await query<SimpleCountRaw>(
+            `SELECT count(*) AS cnt FROM sales ${where}`,
+            params,
+          );
+          return Number(r.rows[0]?.cnt ?? 0);
+        })()
+      : Promise.resolve(0);
+
+  const [activeProductionOrders, pendingShipments, salesTodayCount] =
+    await Promise.all([activeProdPromise, pendingShipmentsPromise, salesTodayPromise]);
+  return { activeProductionOrders, pendingShipments, salesTodayCount };
+}
+
+/**
+ * Recent movements touching the layer. A movement "touches" the layer when
+ * either its source or destination is a location of the requested type
+ * (and, for a scoped principal, also in their assigned set).
+ */
+async function fetchChainLayerRecentMovements(
+  scope: Exclude<LayerScope, { kind: 'empty' }>,
+): Promise<RecentMovementItem[]> {
+  const params: SqlParam[] = [scope.type];
+  let where =
+    `WHERE (fl.type = $1 OR tl.type = $1)`;
+  if (scope.kind === 'locations') {
+    params.push(scope.locationIds);
+    where +=
+      ` AND (m.from_location_id = ANY($${params.length}::bigint[]) ` +
+      `OR m.to_location_id = ANY($${params.length}::bigint[]))`;
+  }
+  params.push(CHAIN_LAYER_RECENT_MOVEMENTS);
+  const limitIdx = params.length;
+
+  const { rows } = await query<RecentMovementRaw>(
+    `SELECT m.id, m.created_at,
+            m.product_id, p.name AS product_name, p.unit AS product_unit,
+            m.from_location_id, fl.name AS from_location_name,
+            m.to_location_id,   tl.name AS to_location_name,
+            m.qty, m.reason::text AS reason
+       FROM stock_movements m
+       JOIN products p   ON p.id  = m.product_id
+       LEFT JOIN locations fl ON fl.id = m.from_location_id
+       LEFT JOIN locations tl ON tl.id = m.to_location_id
+       ${where}
+       ORDER BY m.created_at DESC, m.id DESC
+       LIMIT $${limitIdx}`,
+    params,
+  );
+  return rows.map(mapMovement);
+}
+
+function emptyChainLayer(layerType: ChainLayerType): ChainLayerResponse {
+  const totals: ChainLayerTotals = {
+    total_locations: 0,
+    total_products: 0,
+    below_min_count: 0,
+    open_requests_count: 0,
+  };
+  if (layerType === 'production') totals.active_production_orders = 0;
+  if (layerType === 'supply' || layerType === 'central_warehouse') {
+    totals.pending_shipments = 0;
+  }
+  if (layerType === 'store') totals.sales_today_count = 0;
+  return {
+    layer_type: layerType,
+    locations: [],
+    totals,
+    recent_movements: [],
   };
 }

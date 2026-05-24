@@ -743,3 +743,82 @@ export interface PurchaseOrder {
   keeper_approved_name: string | null;
   supplier_name: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Faza-4 — F4.6 chain-layer pages (raw / production / supply / central / stores).
+// Mirrors `apps/backend/src/routes/dashboard.ts` GET /api/dashboard/chain-layer/:type
+// and GET /api/sales. Each chain-layer page consumes the same envelope so the
+// shared `ChainLayerLayout` can render KPI strip + locations grid + recent
+// movements consistently across the five module screens.
+// ---------------------------------------------------------------------------
+
+/** One location row inside the chain-layer locations grid. */
+export interface ChainLayerLocation {
+  id: number;
+  name: string;
+  type: LocationType;
+  total_products: number;
+  below_min_count: number;
+  open_requests_count: number;
+}
+
+/** Aggregate counters for a chain-layer KPI strip. */
+export interface ChainLayerTotals {
+  total_locations: number;
+  total_products: number;
+  below_min_count: number;
+  open_requests_count: number;
+  /** Only present for `location_type === 'production'`. */
+  active_production_orders?: number;
+  /** Only present for `location_type === 'supply'` / `central_warehouse`. */
+  pending_shipments?: number;
+  /** Only present for `location_type === 'store'`. */
+  sales_today_count?: number;
+}
+
+/** Recent movement row scoped to a chain-layer. */
+export interface ChainLayerMovement {
+  id: number;
+  created_at: string;
+  product_id: number;
+  product_name: string;
+  product_unit: Unit;
+  from_location_id: number | null;
+  from_location_name: string | null;
+  to_location_id: number | null;
+  to_location_name: string | null;
+  qty: number;
+  reason: MovementReason;
+}
+
+/**
+ * `GET /api/dashboard/chain-layer/:type` envelope.
+ *
+ * `:type` is one of the five `LocationType` enum values; the backend
+ * returns a payload tailored to that layer (aggregate counters tied to the
+ * layer's role in the supply chain plus the locations belonging to it).
+ */
+export interface ChainLayerOverview {
+  layer_type: LocationType;
+  locations: ChainLayerLocation[];
+  totals: ChainLayerTotals;
+  recent_movements: ChainLayerMovement[];
+}
+
+/**
+ * One row returned by `GET /api/sales?location_id=&from=&to=`.
+ * `qty` is the quantity sold in `product_unit` (kg / l / dona). `total`
+ * is the line total in local-currency major units (Poster gives us this
+ * pre-aggregated on the cheque line). `created_at` is the cheque time.
+ */
+export interface SaleRow {
+  id: number;
+  location_id: number;
+  location_name: string;
+  product_id: number;
+  product_name: string;
+  product_unit: Unit;
+  qty: number;
+  total: number;
+  created_at: string;
+}

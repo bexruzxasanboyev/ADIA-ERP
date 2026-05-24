@@ -4,7 +4,6 @@ import { ProtectedRoute } from './ProtectedRoute';
 import { RoleRoute } from './RoleRoute';
 import { LoginPage } from '@/pages/LoginPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
-import { PlaceholderPage } from '@/pages/PlaceholderPage';
 import { LocationsPage } from '@/pages/locations/LocationsPage';
 import { UsersPage } from '@/pages/users/UsersPage';
 import { EmployeesPage } from '@/pages/employees/EmployeesPage';
@@ -17,6 +16,11 @@ import { PurchaseOrdersPage } from '@/pages/purchase-orders/PurchaseOrdersPage';
 import { DashboardPage } from '@/pages/dashboard/DashboardPage';
 import { ForecastsPage } from '@/pages/forecasts/ForecastsPage';
 import { ImportWarningsPage } from '@/pages/admin/ImportWarningsPage';
+import { RawWarehousePage } from '@/pages/chain/RawWarehousePage';
+import { ProductionPage } from '@/pages/chain/ProductionPage';
+import { SupplyPage } from '@/pages/chain/SupplyPage';
+import { CentralWarehousePage } from '@/pages/chain/CentralWarehousePage';
+import { StoresPage } from '@/pages/chain/StoresPage';
 
 /**
  * Application routes (phase-1-mvp.md §2, §6).
@@ -46,44 +50,23 @@ export function AppRouter() {
         {/* F3.4 — Forecasts page (all authenticated roles, RBAC-scoped server-side). */}
         <Route path="/forecasts" element={<ForecastsPage />} />
 
-        {/* M3 — stock screens. Each reuses StockPage; the backend scopes
-            /api/stock by the caller's role and location. */}
+        {/* F4.6 — chain-layer module screens. Each composes the shared
+            ChainLayerLayout; the backend scopes the chain-layer
+            endpoint by the caller's role and active location. The
+            generic StockPage stays available at /stock. */}
         <Route
           path="/raw-warehouse"
           element={
-            <StockPage
-              title="Xom-ashyo ombori"
-              description="Xom-ashyo qoldig‘i va harakatlari."
-            />
+            <RoleRoute allow={['pm', 'raw_warehouse_manager']}>
+              <RawWarehousePage />
+            </RoleRoute>
           }
         />
-        <Route
-          path="/central-warehouse"
-          element={
-            <StockPage
-              title="Markaziy sklad"
-              description="Markaziy sklad qoldig‘i va jo‘natmalari."
-            />
-          }
-        />
-        <Route
-          path="/stores"
-          element={
-            <StockPage
-              title="Do‘konlar"
-              description="Do‘konlar qoldig‘i va savdo harakatlari."
-            />
-          }
-        />
-
         <Route
           path="/production"
           element={
             <RoleRoute allow={['pm', 'production_manager']}>
-              <PlaceholderPage
-                title="Ishlab chiqarish"
-                description="Ishlab chiqarish zayafkalari va jarayoni."
-              />
+              <ProductionPage />
             </RoleRoute>
           }
         />
@@ -91,13 +74,40 @@ export function AppRouter() {
           path="/supply"
           element={
             <RoleRoute allow={['pm', 'supply_manager']}>
-              <PlaceholderPage
-                title="Ta’minot"
-                description="Ta’minot so‘rovlari va yetkazib beruvchilar."
-              />
+              <SupplyPage />
             </RoleRoute>
           }
         />
+        <Route
+          path="/central-warehouse"
+          element={
+            <RoleRoute allow={['pm', 'central_warehouse_manager']}>
+              <CentralWarehousePage />
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/stores"
+          element={
+            <RoleRoute
+              allow={['pm', 'store_manager', 'central_warehouse_manager']}
+            >
+              <StoresPage />
+            </RoleRoute>
+          }
+        />
+
+        {/* Generic stock screen (PM debug / cross-layer view). */}
+        <Route
+          path="/stock"
+          element={
+            <StockPage
+              title="Ombor qoldig‘i"
+              description="Butun zanjir bo‘yicha qoldiq va harakatlar."
+            />
+          }
+        />
+
         <Route path="/replenishment" element={<ReplenishmentPage />} />
         <Route
           path="/replenishment/:id"
