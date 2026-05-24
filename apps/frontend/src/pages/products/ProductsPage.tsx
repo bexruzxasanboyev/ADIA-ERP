@@ -20,6 +20,7 @@ import {
   LoadingState,
   PageHeader,
 } from '@/components/PageState';
+import { ViewToggle, useViewMode } from '@/components/ViewToggle';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
@@ -57,6 +58,7 @@ export function ProductsPage() {
 
   const bp = useBreakpoint();
   const showMobileCards = bp === 'xs';
+  const [view, setView] = useViewMode('products', 'card');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [createOpen, setCreateOpen] = useState(false);
   const [recipeProduct, setRecipeProduct] = useState<Product | null>(null);
@@ -78,12 +80,15 @@ export function ProductsPage() {
         title="Mahsulotlar"
         description="Xom-ashyo, yarim tayyor va tayyor mahsulotlar."
         action={
-          canCreate ? (
-            <Button onClick={() => setCreateOpen(true)}>
-              <Plus className="size-4" aria-hidden="true" />
-              Yangi mahsulot
-            </Button>
-          ) : undefined
+          <div className="flex flex-wrap items-center gap-2">
+            <ViewToggle value={view} onChange={setView} />
+            {canCreate && (
+              <Button onClick={() => setCreateOpen(true)}>
+                <Plus className="size-4" aria-hidden="true" />
+                Yangi mahsulot
+              </Button>
+            )}
+          </div>
         }
       />
 
@@ -143,7 +148,52 @@ export function ProductsPage() {
             }))}
           />
         )}
-        {!isLoading && !error && products.length > 0 && !showMobileCards && (
+        {!isLoading && !error && products.length > 0 && !showMobileCards && view === 'card' && (
+          <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+            {products.map((p) => (
+              <div
+                key={p.id}
+                className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card/40 p-4 shadow-sm transition-colors hover:bg-card/70"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold">{p.name}</p>
+                    {p.sku && (
+                      <p className="truncate text-xs text-muted-foreground">
+                        SKU: {p.sku}
+                      </p>
+                    )}
+                  </div>
+                  <Badge variant={TYPE_BADGE[p.type]}>
+                    {PRODUCT_TYPE_LABELS[p.type]}
+                  </Badge>
+                </div>
+                <dl className="grid grid-cols-2 gap-2 text-xs">
+                  <div>
+                    <dt className="text-muted-foreground">Birlik</dt>
+                    <dd>{UNIT_LABELS[p.unit]}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted-foreground">Holat</dt>
+                    <dd>{p.is_active ? 'Faol' : 'Nofaol'}</dd>
+                  </div>
+                </dl>
+                {p.type !== 'raw' && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => setRecipeProduct(p)}
+                  >
+                    <ScrollText className="size-4" aria-hidden="true" />
+                    {canEditRecipe ? 'Retseptni tahrirlash' : 'Retseptni ko‘rish'}
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {!isLoading && !error && products.length > 0 && !showMobileCards && view === 'table' && (
           <Table>
             <TableHeader>
               <TableRow>

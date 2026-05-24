@@ -17,6 +17,7 @@ import {
   LoadingState,
   PageHeader,
 } from '@/components/PageState';
+import { ViewToggle, useViewMode } from '@/components/ViewToggle';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { ROLE_LABELS } from '@/lib/labels';
 import type { Location, User } from '@/lib/types';
@@ -29,6 +30,7 @@ export function UsersPage() {
   const users = useApiQuery<User[]>('/api/users');
   const locations = useApiQuery<Location[]>('/api/locations');
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [view, setView] = useViewMode('users', 'card');
 
   const locationName = useMemo(() => {
     const map = new Map<number, string>();
@@ -44,10 +46,13 @@ export function UsersPage() {
         title="Foydalanuvchilar"
         description="Tizim foydalanuvchilari va ularning rollari."
         action={
-          <Button onClick={() => setDialogOpen(true)}>
-            <Plus className="size-4" aria-hidden="true" />
-            Yangi foydalanuvchi
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <ViewToggle value={view} onChange={setView} />
+            <Button onClick={() => setDialogOpen(true)}>
+              <Plus className="size-4" aria-hidden="true" />
+              Yangi foydalanuvchi
+            </Button>
+          </div>
         }
       />
 
@@ -59,7 +64,46 @@ export function UsersPage() {
         {!users.isLoading && !users.error && rows.length === 0 && (
           <EmptyState message="Foydalanuvchilar topilmadi." />
         )}
-        {!users.isLoading && !users.error && rows.length > 0 && (
+        {!users.isLoading && !users.error && rows.length > 0 && view === 'card' && (
+          <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+            {rows.map((u) => {
+              const initials = u.name
+                .split(' ')
+                .map((s) => s[0])
+                .filter(Boolean)
+                .slice(0, 2)
+                .join('')
+                .toUpperCase();
+              return (
+                <div
+                  key={u.id}
+                  className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card/40 p-4 shadow-sm"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/15 text-sm font-semibold text-primary">
+                      {initials || '?'}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold">{u.name}</p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {u.email}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="outline">{ROLE_LABELS[u.role]}</Badge>
+                    <span className="truncate text-xs text-muted-foreground">
+                      {u.location_id
+                        ? (locationName.get(u.location_id) ?? `#${u.location_id}`)
+                        : 'Butun zanjir'}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {!users.isLoading && !users.error && rows.length > 0 && view === 'table' && (
           <Table>
             <TableHeader>
               <TableRow>

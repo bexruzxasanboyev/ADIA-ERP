@@ -17,6 +17,7 @@ import {
   LoadingState,
   PageHeader,
 } from '@/components/PageState';
+import { ViewToggle, useViewMode } from '@/components/ViewToggle';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { ROLE_LABELS } from '@/lib/labels';
 import type { Location, User } from '@/lib/types';
@@ -42,6 +43,7 @@ export function EmployeesPage() {
   const locations = useApiQuery<Location[]>('/api/locations');
   const [createOpen, setCreateOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [view, setView] = useViewMode('employees', 'card');
 
   const locationNameById = useMemo(() => {
     const map = new Map<number, string>();
@@ -57,10 +59,13 @@ export function EmployeesPage() {
         title="Hodimlar"
         description="Tizim foydalanuvchilari, rollar va biriktirilgan bo‘g‘inlar."
         action={
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus className="size-4" aria-hidden="true" />
-            Yangi hodim
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <ViewToggle value={view} onChange={setView} />
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus className="size-4" aria-hidden="true" />
+              Yangi hodim
+            </Button>
+          </div>
         }
       />
 
@@ -72,7 +77,51 @@ export function EmployeesPage() {
         {!users.isLoading && !users.error && rows.length === 0 && (
           <EmptyState message="Hodimlar topilmadi." />
         )}
-        {!users.isLoading && !users.error && rows.length > 0 && (
+        {!users.isLoading && !users.error && rows.length > 0 && view === 'card' && (
+          <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+            {rows.map((u) => {
+              const primary = u.location_id
+                ? (locationNameById.get(u.location_id) ?? `#${u.location_id}`)
+                : 'Butun zanjir';
+              const initials = u.name
+                .split(' ')
+                .map((s) => s[0])
+                .filter(Boolean)
+                .slice(0, 2)
+                .join('')
+                .toUpperCase();
+              return (
+                <button
+                  key={u.id}
+                  type="button"
+                  onClick={() => setEditingUser(u)}
+                  data-testid={`employee-card-${u.id}`}
+                  className="flex w-full flex-col gap-3 rounded-lg border border-border/60 bg-card/40 p-4 text-left shadow-sm transition-colors hover:bg-card/70"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/15 text-sm font-semibold text-primary">
+                      {initials || '?'}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold">{u.name}</p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {u.email}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="outline">{ROLE_LABELS[u.role]}</Badge>
+                    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                      <MapPin className="size-3" aria-hidden="true" />
+                      {primary}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {!users.isLoading && !users.error && rows.length > 0 && view === 'table' && (
           <Table>
             <TableHeader>
               <TableRow>

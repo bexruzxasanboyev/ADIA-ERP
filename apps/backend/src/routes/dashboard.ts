@@ -29,6 +29,7 @@ import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { getPrincipal, isSuperAdmin } from '../lib/principal.js';
+import { parseDateRange, type DateRange } from '../lib/dateRange.js';
 import type { AuthPrincipal } from '../auth/jwt.js';
 import type { Role } from '../auth/roles.js';
 
@@ -173,6 +174,11 @@ dashboardRouter.get(
     const principal = getPrincipal(req);
     const scope = resolveScope(principal);
 
+    // F4.9 — `?range` narrows time-bound aggregates (recent_movements here;
+    // below_min/open_requests/production_plan/KPIs are "current state" and
+    // intentionally ignore range).
+    const range = parseDateRange(req.query);
+
     // A location-scoped principal whose JWT has `locationId=null` sees
     // nothing — mirror the `GET /api/stock` behaviour for consistency.
     if (scope.kind === 'empty') {
@@ -185,7 +191,7 @@ dashboardRouter.get(
       fetchBelowMin(scope),
       fetchOpenRequestsByStatus(scope),
       fetchProductionPlan(scope),
-      fetchRecentMovements(scope),
+      fetchRecentMovements(scope, range),
       fetchKpiExtras(scope, principal),
     ]);
 
@@ -360,13 +366,22 @@ async function fetchProductionPlan(
  */
 async function fetchRecentMovements(
   scope: Exclude<Scope, { kind: 'empty' }>,
+  range: DateRange,
 ): Promise<RecentMovementRaw[]> {
   const params: SqlParam[] = [];
-  let where = '';
+  const conditions: string[] = [];
   if (scope.kind === 'location') {
     params.push(scope.locationId);
-    where = `WHERE (m.from_location_id = $${params.length} OR m.to_location_id = $${params.length})`;
+    conditions.push(
+      `(m.from_location_id = $${params.length} OR m.to_location_id = $${params.length})`,
+    );
   }
+  // F4.9 — clip to the requested range. Half-open: [from, to).
+  params.push(range.from);
+  conditions.push(`m.created_at >= $${params.length}`);
+  params.push(range.to);
+  conditions.push(`m.created_at < $${params.length}`);
+  const where = `WHERE ${conditions.join(' AND ')}`;
   params.push(RECENT_MOVEMENTS_LIMIT);
   const limitIdx = params.length;
   const { rows } = await query<RecentMovementRaw>(
@@ -571,7 +586,6 @@ function emptyOverview(): OverviewResponse {
 // -----------------------------------------------------------------------------
 
 const ALERTS_FEED_LIMIT = 20;
-const SALES_CHART_WINDOW_DAYS = 30;
 
 type EcosystemScope =
   | { kind: 'chain' } // pm / ai_assistant — every location.
@@ -635,16 +649,21 @@ dashboardRouter.get(
     const principal = getPrincipal(req);
     const scope = resolveEcosystemScope(principal);
 
+    // F4.9 — `?range` shrinks the sales aggregates and chart window. The
+    // chain_flow + alerts_feed are state snapshots and intentionally
+    // ignore range.
+    const range = parseDateRange(req.query);
+
     if (scope.kind === 'empty') {
       res.status(200).json(emptyEcosystem());
       return;
     }
 
     const [posterStatus, chainFlow, alertsFeed, salesChart] = await Promise.all([
-      fetchPosterStatus(scope),
+      fetchPosterStatus(scope, range),
       fetchChainFlow(scope),
       fetchAlertsFeed(),
-      fetchSalesChart(scope),
+      fetchSalesChart(scope, range),
     ]);
 
     const response: EcosystemResponse = {
@@ -677,9 +696,10 @@ function resolveEcosystemScope(principal: AuthPrincipal): EcosystemScope {
  */
 async function fetchPosterStatus(
   scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+  range: DateRange,
 ): Promise<PosterStatusBlock> {
-  const salesParams: SqlParam[] = [];
-  let salesWhere = 'WHERE sold_at >= date_trunc(\'day\', now())';
+  const salesParams: SqlParam[] = [range.from, range.to];
+  let salesWhere = 'WHERE sold_at >= $1 AND sold_at < $2';
   if (scope.kind === 'locations') {
     salesParams.push(scope.locationIds);
     salesWhere += ` AND store_id = ANY($${salesParams.length}::bigint[])`;
@@ -853,10 +873,19 @@ function severityFor(type: string): AlertSeverity {
  */
 async function fetchSalesChart(
   scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+  range: DateRange,
 ): Promise<SalesChartItem[]> {
-  const params: SqlParam[] = [];
-  let where = `WHERE stat_date >= CURRENT_DATE - ($1::int || ' days')::interval`;
-  params.push(SALES_CHART_WINDOW_DAYS);
+  // F4.9 — chart window equals the requested range. The aggregate table is
+  // keyed by `stat_date` (DATE, not TIMESTAMPTZ), so we compare against the
+  // calendar bounds, inclusive on both ends.
+  const fromDate = toIsoDate(range.from);
+  // Subtract 1 ms so a half-open `[from, to)` window maps back to the last
+  // inclusive calendar day in `to`. Without it `2026-05-25T00:00:00Z` would
+  // pull in 2026-05-25 even when the caller asked through 2026-05-24.
+  const toInclusive = new Date(range.to.getTime() - 1);
+  const toDate = toIsoDate(toInclusive);
+  const params: SqlParam[] = [fromDate, toDate];
+  let where = `WHERE stat_date >= $1::date AND stat_date <= $2::date`;
   if (scope.kind === 'locations') {
     params.push(scope.locationIds);
     where += ` AND location_id = ANY($${params.length}::bigint[])`;
@@ -996,6 +1025,9 @@ dashboardRouter.get(
       throw AppError.forbidden('You may not view this chain layer.');
     }
 
+    // F4.9 — recent_movements + (store layer) sales_today_count clip to range.
+    const range = parseDateRange(req.query);
+
     const scope = resolveLayerScope(principal, layerType);
     if (scope.kind === 'empty') {
       res.status(200).json(emptyChainLayer(layerType));
@@ -1004,8 +1036,8 @@ dashboardRouter.get(
 
     const [locations, layerExtras, recent] = await Promise.all([
       fetchChainLayerLocations(scope),
-      fetchChainLayerExtras(scope),
-      fetchChainLayerRecentMovements(scope),
+      fetchChainLayerExtras(scope, range),
+      fetchChainLayerRecentMovements(scope, range),
     ]);
 
     const totals: ChainLayerTotals = {
@@ -1112,6 +1144,7 @@ async function fetchChainLayerLocations(
  */
 async function fetchChainLayerExtras(
   scope: Exclude<LayerScope, { kind: 'empty' }>,
+  range: DateRange,
 ): Promise<{
   activeProductionOrders: number;
   pendingShipments: number;
@@ -1168,12 +1201,14 @@ async function fetchChainLayerExtras(
         })()
       : Promise.resolve(0);
 
-  // Today's sales count — only on the store layer.
+  // Sales count in the requested range — only on the store layer.
+  // (Field is named `salesTodayCount` for backward compat with the response
+  // schema; semantically it is "sales in range".)
   const salesTodayPromise =
     layerType === 'store'
       ? (async () => {
-          const params: SqlParam[] = [];
-          let where = `WHERE sold_at >= date_trunc('day', now())`;
+          const params: SqlParam[] = [range.from, range.to];
+          let where = `WHERE sold_at >= $1 AND sold_at < $2`;
           if (locFilter !== null) {
             params.push(locFilter);
             where += ` AND store_id = ANY($${params.length}::bigint[])`;
@@ -1198,6 +1233,7 @@ async function fetchChainLayerExtras(
  */
 async function fetchChainLayerRecentMovements(
   scope: Exclude<LayerScope, { kind: 'empty' }>,
+  range: DateRange,
 ): Promise<RecentMovementItem[]> {
   const params: SqlParam[] = [scope.type];
   let where =
@@ -1208,6 +1244,11 @@ async function fetchChainLayerRecentMovements(
       ` AND (m.from_location_id = ANY($${params.length}::bigint[]) ` +
       `OR m.to_location_id = ANY($${params.length}::bigint[]))`;
   }
+  // F4.9 — clip to range.
+  params.push(range.from);
+  where += ` AND m.created_at >= $${params.length}`;
+  params.push(range.to);
+  where += ` AND m.created_at < $${params.length}`;
   params.push(CHAIN_LAYER_RECENT_MOVEMENTS);
   const limitIdx = params.length;
 

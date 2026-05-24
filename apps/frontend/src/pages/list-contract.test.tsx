@@ -130,13 +130,13 @@ describe('list screen response contracts', () => {
   it('LocationsPage renders rows from a bare Location[] response', async () => {
     mockFetchByPath();
     renderWithProviders(<LocationsPage />);
-    // The lead-time cell (2 days) is unique to the table row, proving the
-    // bare Location[] response was consumed into a rendered row.
-    expect(await screen.findByRole('cell', { name: '2' })).toBeInTheDocument();
-    // The location name cell is also present (alongside the type badge).
-    expect(
-      screen.getAllByRole('cell', { name: 'Markaziy sklad' }).length,
-    ).toBeGreaterThan(0);
+    // F4.10 — the default view is the card grid. The lead-time (2 kun)
+    // is unique to the rendered card, proving the bare Location[]
+    // response was consumed into a rendered location. The name and
+    // type-label both happen to be "Markaziy sklad" in this fixture, so
+    // we look for the (n>=1) card name match plus the unique lead-time.
+    await screen.findByText('2 kun');
+    expect(screen.getAllByText('Markaziy sklad').length).toBeGreaterThan(0);
   });
 
   it('UsersPage renders rows from a bare User[] response', async () => {

@@ -20,6 +20,7 @@ import {
   LoadingState,
   PageHeader,
 } from '@/components/PageState';
+import { ViewToggle, useViewMode } from '@/components/ViewToggle';
 import { MobileCardList } from '@/components/ui/table-mobile';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
@@ -63,6 +64,7 @@ export function ProductionOrdersPage() {
   const showMobileCards = bp === 'xs';
   const [status, setStatus] = useState<ProductionOrderStatus | ''>('');
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [view, setView] = useViewMode('production-orders', 'card');
   const [busyId, setBusyId] = useState<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -128,12 +130,15 @@ export function ProductionOrdersPage() {
         title="Ishlab chiqarish zayafkalari"
         description="Ishlab chiqarish bo‘limidagi zayafkalar va ularning holati."
         action={
-          canCreate ? (
-            <Button onClick={() => setDialogOpen(true)}>
-              <Plus className="size-4" aria-hidden="true" />
-              Yangi zayafka
-            </Button>
-          ) : undefined
+          <div className="flex flex-wrap items-center gap-2">
+            <ViewToggle value={view} onChange={setView} />
+            {canCreate && (
+              <Button onClick={() => setDialogOpen(true)}>
+                <Plus className="size-4" aria-hidden="true" />
+                Yangi zayafka
+              </Button>
+            )}
+          </div>
         }
       />
 
@@ -246,7 +251,90 @@ export function ProductionOrdersPage() {
             })}
           />
         )}
-        {!isLoading && !error && rows.length > 0 && !showMobileCards && (
+        {!isLoading && !error && rows.length > 0 && !showMobileCards && view === 'card' && (
+          <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+            {rows.map((row) => {
+              const isBusy = busyId === row.id;
+              const unit = productById.get(row.product_id)?.unit ?? '';
+              return (
+                <div
+                  key={row.id}
+                  className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card/40 p-4 shadow-sm"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-xs text-muted-foreground">#{row.id}</p>
+                      <p className="truncate text-sm font-semibold">
+                        {row.product_name}
+                      </p>
+                    </div>
+                    <Badge variant={PRODUCTION_ORDER_STATUS_VARIANT[row.status]}>
+                      {PRODUCTION_ORDER_STATUS_LABELS[row.status]}
+                    </Badge>
+                  </div>
+                  <dl className="grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <dt className="text-muted-foreground">Miqdor</dt>
+                      <dd className="tabular-nums">
+                        {formatQty(row.qty)} {unit}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-muted-foreground">Muddat</dt>
+                      <dd>{row.deadline ?? '—'}</dd>
+                    </div>
+                    <div className="col-span-2">
+                      <dt className="text-muted-foreground">Bo‘g‘in</dt>
+                      <dd className="truncate">
+                        {row.location_name}
+                        {row.target_location_name && ` → ${row.target_location_name}`}
+                      </dd>
+                    </div>
+                  </dl>
+                  {canTransition &&
+                    (row.status === 'new' || row.status === 'in_progress') && (
+                      <div className="flex flex-wrap gap-2">
+                        {row.status === 'new' && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={isBusy}
+                            onClick={() => transition(row.id, 'in_progress')}
+                          >
+                            {isBusy && (
+                              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                            )}
+                            Boshlash
+                          </Button>
+                        )}
+                        {row.status === 'in_progress' && (
+                          <Button
+                            size="sm"
+                            disabled={isBusy}
+                            onClick={() => transition(row.id, 'done')}
+                          >
+                            {isBusy && (
+                              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                            )}
+                            Yakunlash
+                          </Button>
+                        )}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={isBusy}
+                          onClick={() => transition(row.id, 'cancelled')}
+                        >
+                          Bekor
+                        </Button>
+                      </div>
+                    )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {!isLoading && !error && rows.length > 0 && !showMobileCards && view === 'table' && (
           <Table>
             <TableHeader>
               <TableRow>

@@ -27,6 +27,7 @@ import { assistantRouter } from './assistant.js';
 import { telegramWebhookRouter } from './telegramWebhook.js';
 import { forecastsRouter } from './forecasts.js';
 import { salesRouter } from './sales.js';
+import { deliveryRouter } from './delivery.js';
 
 export const apiRouter: Router = Router();
 
@@ -45,6 +46,8 @@ apiRouter.use('/assistant', assistantRouter);
 apiRouter.use('/forecasts', forecastsRouter);
 // F4.6 — read-only sales window for the Stores layer page.
 apiRouter.use('/sales', salesRouter);
+// F4.9 — Delivery module (projection of replenishment_requests).
+apiRouter.use('/delivery', deliveryRouter);
 // F3.3 / ADR-0011 — Telegram webhook (public, secret-token authed).
 // Mounted before the Poster sub-router so the JSON body parser at the
 // app level handles Telegram's `application/json` payloads.

@@ -126,6 +126,47 @@ describe('locations RBAC (AC1.3 / AC1.2)', () => {
       .send({ name: 'Bad', type: 'spaceship' });
     expect(res.status).toBe(422);
   });
+
+  it('F4.9 — GET /api/locations?type=production filters by type', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const prodRoot = await makeLocation(ctx.db, {
+      type: 'production',
+      name: 'Prod root',
+    });
+    const cakeShop = await makeLocation(ctx.db, {
+      type: 'production',
+      name: 'Tort sexi',
+      parentId: prodRoot,
+    });
+    const wh = await makeLocation(ctx.db, { type: 'central_warehouse' });
+
+    const res = await request(ctx.app)
+      .get('/api/locations?type=production')
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(200);
+    const ids = (res.body as { id: number; parent_id: number | null }[]).map(
+      (l) => Number(l.id),
+    );
+    expect(ids).toContain(prodRoot);
+    expect(ids).toContain(cakeShop);
+    expect(ids).not.toContain(wh);
+
+    // parent_id of the sub-dept points to the root (frontend uses this to
+    // build the sub-tree).
+    const cakeRow = (res.body as { id: number; parent_id: number | null }[]).find(
+      (l) => Number(l.id) === cakeShop,
+    );
+    expect(cakeRow).toBeDefined();
+    expect(Number(cakeRow?.parent_id)).toBe(prodRoot);
+  });
+
+  it('F4.9 — GET /api/locations?type=bogus rejects with 422', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const res = await request(ctx.app)
+      .get('/api/locations?type=bogus')
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(422);
+  });
 });
 
 describe('users RBAC (pm only)', () => {

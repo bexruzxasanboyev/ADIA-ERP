@@ -12,8 +12,8 @@ import {
   UserCog,
   ClipboardList,
   ShoppingCart,
-  AlertTriangle,
   TrendingUp,
+  PackageCheck,
   type LucideIcon,
 } from 'lucide-react';
 import type { Role } from './types';
@@ -115,6 +115,17 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         roles: ALL_ROLES,
       },
       {
+        path: '/delivery',
+        label: 'Yetkazib berish',
+        icon: PackageCheck,
+        roles: [
+          'pm',
+          'central_warehouse_manager',
+          'supply_manager',
+          'store_manager',
+        ],
+      },
+      {
         path: '/production-orders',
         label: 'Ishlab chiqarish zayafkalari',
         icon: ClipboardList,
@@ -154,12 +165,6 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         path: '/employees',
         label: 'Hodimlar',
         icon: UserCog,
-        roles: ['pm'],
-      },
-      {
-        path: '/admin/import-warnings',
-        label: 'Sync ogohlantirishlar',
-        icon: AlertTriangle,
         roles: ['pm'],
       },
     ],

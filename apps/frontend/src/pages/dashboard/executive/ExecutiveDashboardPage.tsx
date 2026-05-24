@@ -1,6 +1,11 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Card } from '@/components/ui/card';
 import { ErrorState, LoadingState } from '@/components/PageState';
+import {
+  DateRangeFilter,
+  dateRangeToQuery,
+  type DateRangeValue,
+} from '@/components/DateRangeFilter';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
 import type {
@@ -34,10 +39,14 @@ import { DashboardSecondaryRow } from './DashboardSecondaryRow';
  */
 export function ExecutiveDashboardPage() {
   const { user } = useAuth();
+  const [range, setRange] = useState<DateRangeValue>({ range: 'today' });
+  const rangeQuery = dateRangeToQuery(range);
 
-  const overview = useApiQuery<DashboardOverview>('/api/dashboard/overview');
+  const overview = useApiQuery<DashboardOverview>(
+    `/api/dashboard/overview?${rangeQuery}`,
+  );
   const ecosystem = useApiQuery<DashboardEcosystem>(
-    '/api/dashboard/ecosystem',
+    `/api/dashboard/ecosystem?${rangeQuery}`,
   );
   const purchaseOrders = useApiQuery<PurchaseOrder[]>(
     '/api/purchase-orders?status=draft',
@@ -104,7 +113,13 @@ export function ExecutiveDashboardPage() {
   if (overview.isLoading && overview.data === null) {
     return (
       <div className="space-y-6">
-        <HeaderStrip userName={userName} isoDate={today} />
+        <HeaderStrip
+          userName={userName}
+          isoDate={today}
+          rangeFilter={
+            <DateRangeFilter value={range} onChange={setRange} />
+          }
+        />
         <LoadingState />
       </div>
     );
@@ -113,7 +128,13 @@ export function ExecutiveDashboardPage() {
   if (overview.error && overview.data === null) {
     return (
       <div className="space-y-6">
-        <HeaderStrip userName={userName} isoDate={today} />
+        <HeaderStrip
+          userName={userName}
+          isoDate={today}
+          rangeFilter={
+            <DateRangeFilter value={range} onChange={setRange} />
+          }
+        />
         <ErrorState message={overview.error} onRetry={overview.refetch} />
       </div>
     );
@@ -125,7 +146,11 @@ export function ExecutiveDashboardPage() {
 
   return (
     <div className="space-y-4 sm:space-y-6">
-      <HeaderStrip userName={userName} isoDate={today} />
+      <HeaderStrip
+        userName={userName}
+        isoDate={today}
+        rangeFilter={<DateRangeFilter value={range} onChange={setRange} />}
+      />
 
       <HeroKpiStrip cards={kpiCards} />
 

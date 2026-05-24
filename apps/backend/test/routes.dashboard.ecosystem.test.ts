@@ -218,8 +218,11 @@ async function seedWorld(): Promise<World> {
 describe('GET /api/dashboard/ecosystem', () => {
   it('returns the chain-wide ecosystem snapshot for pm', async () => {
     const w = await seedWorld();
+    // F4.9 — the default `?range=today` would clip 5-day-old seeded rows out
+    // of the sales_chart. The original assertions were written for the old
+    // 30-day window, so we pass `?range=month` to preserve them.
     const res = await request(ctx.app)
-      .get('/api/dashboard/ecosystem')
+      .get('/api/dashboard/ecosystem?range=month')
       .set('Authorization', `Bearer ${w.pm.token}`);
 
     expect(res.status).toBe(200);
@@ -295,8 +298,10 @@ describe('GET /api/dashboard/ecosystem', () => {
 
   it('scopes a store_manager to its own store (chain_flow + sales_chart)', async () => {
     const w = await seedWorld();
+    // F4.9 — pass range=month so the 5-day-back sales_stats_daily seed lands
+    // in the chart window (the test pre-dates the range parameter).
     const res = await request(ctx.app)
-      .get('/api/dashboard/ecosystem')
+      .get('/api/dashboard/ecosystem?range=month')
       .set('Authorization', `Bearer ${w.storeAManager.token}`);
 
     expect(res.status).toBe(200);

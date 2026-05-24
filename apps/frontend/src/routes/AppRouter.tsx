@@ -17,6 +17,7 @@ import { DashboardPage } from '@/pages/dashboard/DashboardPage';
 import { ExecutiveDashboardPage } from '@/pages/dashboard/executive/ExecutiveDashboardPage';
 import { ForecastsPage } from '@/pages/forecasts/ForecastsPage';
 import { ImportWarningsPage } from '@/pages/admin/ImportWarningsPage';
+import { DeliveryPage } from '@/pages/delivery/DeliveryPage';
 import { RawWarehousePage } from '@/pages/chain/RawWarehousePage';
 import { ProductionPage } from '@/pages/chain/ProductionPage';
 import { SupplyPage } from '@/pages/chain/SupplyPage';
@@ -117,6 +118,23 @@ export function AppRouter() {
         <Route
           path="/replenishment/:id"
           element={<ReplenishmentDetailPage />}
+        />
+
+        {/* F4.10 — Yetkazib berish (delivery) module. */}
+        <Route
+          path="/delivery"
+          element={
+            <RoleRoute
+              allow={[
+                'pm',
+                'central_warehouse_manager',
+                'supply_manager',
+                'store_manager',
+              ]}
+            >
+              <DeliveryPage />
+            </RoleRoute>
+          }
         />
 
         <Route

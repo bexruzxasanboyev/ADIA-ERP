@@ -73,10 +73,27 @@ locationsRouter.get(
   ),
   asyncHandler(async (req, res) => {
     const principal = getPrincipal(req);
+
+    // F4.9 — optional `?type=` filter (frontend builds the production sub-
+    // department tree by filtering on type and grouping by `parent_id`).
+    const typeRaw = typeof req.query.type === 'string' ? req.query.type : undefined;
+    if (typeRaw !== undefined && !(LOCATION_TYPES as readonly string[]).includes(typeRaw)) {
+      throw AppError.validation(
+        `Query "type" must be one of: ${LOCATION_TYPES.join(', ')}.`,
+      );
+    }
+
     // List endpoints return a bare array (spec section 4) — no envelope.
     if (isSuperAdmin(principal)) {
+      const params: (string | number)[] = [];
+      let where = '';
+      if (typeRaw !== undefined) {
+        params.push(typeRaw);
+        where = `WHERE type = $${params.length}`;
+      }
       const { rows } = await query<LocationRow>(
-        `SELECT ${SELECT_COLUMNS} FROM locations ORDER BY id`,
+        `SELECT ${SELECT_COLUMNS} FROM locations ${where} ORDER BY id`,
+        params,
       );
       res.status(200).json(rows);
       return;
@@ -86,9 +103,15 @@ locationsRouter.get(
       res.status(200).json([]);
       return;
     }
+    const params: (string | number)[] = [principal.locationId];
+    let where = 'WHERE id = $1';
+    if (typeRaw !== undefined) {
+      params.push(typeRaw);
+      where += ` AND type = $${params.length}`;
+    }
     const { rows } = await query<LocationRow>(
-      `SELECT ${SELECT_COLUMNS} FROM locations WHERE id = $1`,
-      [principal.locationId],
+      `SELECT ${SELECT_COLUMNS} FROM locations ${where}`,
+      params,
     );
     res.status(200).json(rows);
   }),

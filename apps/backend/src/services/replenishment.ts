@@ -85,11 +85,13 @@ export type ReplenishmentRow = {
   created_at: Date;
   updated_at: Date;
   closed_at: Date | null;
+  assigned_to_user_id: number | null;
 };
 
 export const REPLENISHMENT_COLUMNS = `id, product_id, requester_location_id,
   target_location_id, qty_needed, status, production_order_id, purchase_order_id,
-  shipment_movement_id, note, created_by, created_at, updated_at, closed_at`;
+  shipment_movement_id, note, created_by, created_at, updated_at, closed_at,
+  assigned_to_user_id`;
 
 /**
  * Possible outcomes of one `advance()` call. `advanced=false` means a wait

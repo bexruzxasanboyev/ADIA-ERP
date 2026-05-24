@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   AlertTriangle,
@@ -8,6 +8,7 @@ import {
   Factory,
   Loader2,
   PlayCircle,
+  Users as UsersIcon,
 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -38,8 +39,10 @@ import {
 import { ChainLayerLayout, type ChainKpi } from './ChainLayerLayout';
 import type {
   ChainLayerOverview,
+  Location,
   ProductionOrder,
   StockRow,
+  User,
 } from '@/lib/types';
 
 /**
@@ -68,6 +71,13 @@ export function ProductionPage() {
   const pending = useApiQuery<ProductionOrder[]>(
     '/api/production-orders?status=new',
   );
+  // F4.10 — sub-department tree. `parent_id` is non-null for sub-cehs
+  // (Tort sexi, Perojniy sexi, Yarim Fabrika sexi etc.). The endpoint
+  // already filters by `type=production`.
+  const productionLocations = useApiQuery<Location[]>(
+    '/api/locations?type=production',
+  );
+  const productionUsers = useApiQuery<User[]>('/api/users?role=production_manager');
 
   if (overview.isLoading && overview.data === null) {
     return (
@@ -143,6 +153,14 @@ export function ProductionPage() {
       recentMovements={recent_movements}
       widgets={
         <div className="space-y-6">
+          <SubDepartmentsPanel
+            locations={productionLocations.data ?? []}
+            users={productionUsers.data ?? []}
+            activeOrders={active.data ?? []}
+            isLoading={productionLocations.isLoading}
+            error={productionLocations.error}
+            onRetry={productionLocations.refetch}
+          />
           <ActiveOrdersPanel
             rows={active.data ?? []}
             isLoading={active.isLoading}
@@ -422,6 +440,153 @@ function PendingOrdersPanel({
 // ---------------------------------------------------------------------------
 // Widget: production locations' stock (raw inputs available right now).
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Widget: sub-department tree (F4.10). Roots have parent_id === null; their
+// children are sub-cehs (e.g. "Tort sexi" under "Ishlab chiqarish").
+// ---------------------------------------------------------------------------
+
+function SubDepartmentsPanel({
+  locations,
+  users,
+  activeOrders,
+  isLoading,
+  error,
+  onRetry,
+}: {
+  locations: Location[];
+  users: User[];
+  activeOrders: ProductionOrder[];
+  isLoading: boolean;
+  error: string | null;
+  onRetry: () => void;
+}) {
+  const tree = useMemo(() => {
+    const byParent = new Map<number | null, Location[]>();
+    for (const loc of locations) {
+      const key = loc.parent_id;
+      const bucket = byParent.get(key) ?? [];
+      bucket.push(loc);
+      byParent.set(key, bucket);
+    }
+    const roots = (byParent.get(null) ?? []).sort((a, b) =>
+      a.name.localeCompare(b.name, 'uz'),
+    );
+    return { roots, byParent };
+  }, [locations]);
+
+  // active orders count per location
+  const activeByLocation = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const o of activeOrders) {
+      m.set(o.location_id, (m.get(o.location_id) ?? 0) + 1);
+    }
+    return m;
+  }, [activeOrders]);
+
+  // users per location — uses primary `location_id`. The M:N junction is
+  // not flattened on /api/users, so this is a conservative undercount;
+  // it stays useful as a quick "who's primary here" hint.
+  const usersByLocation = useMemo(() => {
+    const m = new Map<number, User[]>();
+    for (const u of users) {
+      if (u.location_id === null) continue;
+      const bucket = m.get(u.location_id) ?? [];
+      bucket.push(u);
+      m.set(u.location_id, bucket);
+    }
+    return m;
+  }, [users]);
+
+  return (
+    <Card>
+      <header className="flex items-center justify-between gap-3 border-b border-border/60 p-5">
+        <div className="space-y-0.5">
+          <h2 className="flex items-center gap-2 text-base font-semibold">
+            <Factory className="size-4 text-amber-300" aria-hidden="true" />
+            Sub-bo‘limlar
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            Ishlab chiqarish bo‘g‘inining sub-sexlari, hodimlar va faol
+            zayafkalari.
+          </p>
+        </div>
+        <Button variant="ghost" size="sm" asChild>
+          <Link to="/locations">Boshqarish</Link>
+        </Button>
+      </header>
+      {isLoading && <LoadingState />}
+      {!isLoading && error && <ErrorState message={error} onRetry={onRetry} />}
+      {!isLoading && !error && tree.roots.length === 0 && (
+        <EmptyState message="Ishlab chiqarish bo‘g‘ini topilmadi." />
+      )}
+      {!isLoading && !error && tree.roots.length > 0 && (
+        <div className="space-y-4 p-5">
+          {tree.roots.map((root) => {
+            const subs = (tree.byParent.get(root.id) ?? []).sort((a, b) =>
+              a.name.localeCompare(b.name, 'uz'),
+            );
+            return (
+              <div key={root.id} className="space-y-3">
+                <header className="flex items-center gap-2">
+                  <Factory
+                    className="size-4 text-amber-300"
+                    aria-hidden="true"
+                  />
+                  <h3 className="text-sm font-semibold">{root.name}</h3>
+                  <Badge variant="outline" className="ml-1">
+                    {subs.length} sub-bo‘lim
+                  </Badge>
+                </header>
+                {subs.length === 0 ? (
+                  <p className="rounded-md border border-dashed border-border/60 px-3 py-2 text-xs text-muted-foreground">
+                    Sub-bo‘lim yo‘q. <Link to="/locations" className="underline">Qo‘shish</Link>
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {subs.map((sub) => {
+                      const subUsers = usersByLocation.get(sub.id) ?? [];
+                      const activeCount = activeByLocation.get(sub.id) ?? 0;
+                      return (
+                        <div
+                          key={sub.id}
+                          className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/40 p-3 shadow-sm"
+                          data-testid={`sub-department-${sub.id}`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="truncate text-sm font-semibold">
+                              {sub.name}
+                            </p>
+                            <Badge
+                              variant={activeCount > 0 ? 'warning' : 'outline'}
+                              className="tabular-nums"
+                            >
+                              {activeCount}
+                            </Badge>
+                          </div>
+                          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                            <UsersIcon className="size-3" aria-hidden="true" />
+                            {subUsers.length > 0 ? (
+                              <span className="truncate">
+                                {subUsers.map((u) => u.name).join(', ')}
+                              </span>
+                            ) : (
+                              <span>Hodim biriktirilmagan</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
+}
 
 function ProductionStockPanel({
   rows,
