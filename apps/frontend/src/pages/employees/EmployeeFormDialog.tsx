@@ -219,6 +219,7 @@ export function EmployeeFormDialog({
             <Input
               id="employee-name"
               name="name"
+              autoComplete="name"
               required
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}

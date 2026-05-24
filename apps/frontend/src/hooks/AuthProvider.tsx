@@ -44,8 +44,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [activeLocationId, setActiveLocationIdState] = useState<number | null>(
     () => getActiveLocation(),
   );
+  // Hydrate whenever EITHER token survives — even if the access token
+  // was evicted (e.g. browser cleared localStorage of just that key),
+  // a live refresh token can rotate us a fresh access on the very first
+  // /api/auth/me call.
   const [isHydrating, setIsHydrating] = useState<boolean>(
-    () => getAccessToken() !== null,
+    () => getAccessToken() !== null || getRefreshToken() !== null,
   );
 
   const login = useCallback(
@@ -122,7 +126,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Re-hydrate the user from a stored token on first load / reload.
   useEffect(() => {
-    if (token === null) {
+    // Only bail when *neither* token is present — if only the refresh
+    // token survived, apiRequest's 401 handler will rotate a new access
+    // before /api/auth/me completes.
+    if (token === null && getRefreshToken() === null) {
       setIsHydrating(false);
       return;
     }
@@ -131,6 +138,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     apiRequest<MeResponse>('/api/auth/me')
       .then((me) => {
         if (cancelled) return;
+        // The refresh-and-retry flow may have written a fresh access
+        // token to storage; mirror it into local state so the rest of
+        // the app sees the current pair.
+        const refreshed = getAccessToken();
+        if (refreshed !== null && refreshed !== token) {
+          setTokenState(refreshed);
+        }
         setUser(me.user);
         setLocations(me.locations ?? []);
         // Prefer the server-side `active_location_id` (it knows the
