@@ -20,10 +20,13 @@ export type AppConfig = {
   readonly port: number;
   readonly databaseUrl: string;
   /**
-   * Allowed CORS origin for the web client (single-origin — this app is a
-   * single-tenant ERP, not a public API). Defaults to the Vite dev server.
+   * Allowed CORS origins for the web client (single-tenant ERP, not a public
+   * API — but local dev and tests need both `localhost` and `127.0.0.1`).
+   * Parsed from a comma-separated `WEB_ORIGIN` env var; defaults to the Vite
+   * dev server. Bug-MAJ-02 (F4.11): single-string origin broke whichever host
+   * the env did not list.
    */
-  readonly webOrigin: string;
+  readonly webOrigins: readonly string[];
   readonly jwt: {
     readonly secret: string;
     /**
@@ -189,7 +192,16 @@ export function loadConfig(): AppConfig {
     nodeEnv,
     port: parsePositiveInt('PORT', optional('PORT', '3001')),
     databaseUrl,
-    webOrigin: optional('WEB_ORIGIN', 'http://localhost:5173'),
+    webOrigins: (() => {
+      // Comma-separated list. Empty entries are dropped so trailing commas /
+      // stray whitespace in `.env` do not become an "allow everything" hole.
+      const raw = optional('WEB_ORIGIN', 'http://localhost:5173');
+      const list = raw
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      return Object.freeze(list.length > 0 ? list : ['http://localhost:5173']);
+    })(),
     jwt: (() => {
       // Sprint-3 (ADR-0005): the single 12-hour JWT was split into a
       // 1-hour access token + 30-day refresh token. The legacy

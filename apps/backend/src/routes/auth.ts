@@ -14,7 +14,9 @@
  * never reveals whether the credential exists (no enumeration).
  *
  * Rate limits:
- *   /login   — 10 / 15 min / IP (brute-force guard)
+ *   /login   — 20 /  1 min / IP (brute-force guard, but loose enough for
+ *               legitimate multi-user manual test sessions — F4.11
+ *               Bug-MIN-04)
  *   /refresh — 5  /  1 min / IP (defends a refresh-replay storm)
  * Both are disabled under `nodeEnv === 'test'`.
  */
@@ -41,16 +43,22 @@ import { loadConfig } from '../config/index.js';
 export const authRouter: Router = Router();
 
 /**
- * Brute-force guard on the login endpoint: at most 10 attempts per IP per
- * 15-minute window. Disabled under `test` so in-process suites that log in
+ * Brute-force guard on the login endpoint: at most 20 attempts per IP per
+ * 1-minute window. Disabled under `test` so in-process suites that log in
  * repeatedly are not throttled. Over the limit -> 429.
+ *
+ * F4.11 Bug-MIN-04: the previous 10 / 15-min window blocked manual setup
+ * of the seven F4.11 test users from a single workstation. A 1-minute
+ * window is still a meaningful brute-force guard against blind credential
+ * stuffing (20 tries/min/IP is unusable against bcrypt) while letting
+ * legitimate manual test sessions flow.
  */
 const loginRateLimit: RequestHandler =
   loadConfig().nodeEnv === 'test'
     ? (_req, _res, next): void => next()
     : rateLimit({
-        windowMs: 15 * 60 * 1000,
-        limit: 10,
+        windowMs: 60 * 1000,
+        limit: 20,
         standardHeaders: true,
         legacyHeaders: false,
         handler: (_req, res): void => {

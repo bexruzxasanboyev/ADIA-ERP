@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Loader2 } from 'lucide-react';
 import {
   Dialog,
@@ -14,6 +14,7 @@ import { Label } from '@/components/ui/label';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/components/ui/toast';
+import { useApiQuery } from '@/hooks/useApiQuery';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import type { Location, Product } from '@/lib/types';
 
@@ -70,12 +71,40 @@ export function ProductionOrderFormDialog({
     }
   }, [open]);
 
-  // Useful subsets — production location for the "where" select, all
-  // locations for the optional target.
+  // Useful subsets — production locations for the "where" select.
   const productionLocations = locations.filter((l) => l.type === 'production');
   const eligibleProducts = products.filter(
     (p) => p.type === 'semi' || p.type === 'finished',
   );
+
+  // F4.11 Bug-MIN-01 — the "Maqsad bo'g'in" dropdown must list ALL
+  // valid output destinations (central warehouse + supply
+  // departments), not just whatever the parent page's
+  // `/api/locations` call happened to return. A scoped manager's
+  // /api/locations is filtered to their own row, which means
+  // production output had nowhere to go in the form.
+  //
+  // The backend `/api/locations?type=` filter (F4.9) takes a single
+  // type, so we fetch the two relevant types in parallel and merge
+  // them. Only fetch when the dialog is actually open to avoid
+  // hammering the API while the page sits idle.
+  const centralWarehouses = useApiQuery<Location[]>(
+    open ? '/api/locations?type=central_warehouse' : null,
+  );
+  const supplyLocations = useApiQuery<Location[]>(
+    open ? '/api/locations?type=supply' : null,
+  );
+  const targetLocations = useMemo<Location[]>(() => {
+    const rows = [
+      ...(centralWarehouses.data ?? []),
+      ...(supplyLocations.data ?? []),
+    ];
+    // De-dupe by id in case the parent's `locations` prop overlaps
+    // (a PM's `/api/locations` already returns the full list).
+    const byId = new Map<number, Location>();
+    for (const row of rows) byId.set(row.id, row);
+    return Array.from(byId.values());
+  }, [centralWarehouses.data, supplyLocations.data]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -197,7 +226,7 @@ export function ProductionOrderFormDialog({
                 }
               >
                 <option value="">— Tanlanmagan —</option>
-                {locations.map((l) => (
+                {targetLocations.map((l) => (
                   <option key={l.id} value={l.id}>
                     {l.name}
                   </option>

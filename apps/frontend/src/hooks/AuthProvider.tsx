@@ -60,12 +60,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setTokens(tokens);
       setTokenState(tokens.accessToken);
       setUser(nextUser);
-      // F4.1 — login does not yet know the user's locations. Clear any
-      // stale active-location from a previous session; the immediate
-      // `/api/auth/me` hydration that follows will repopulate state.
-      persistActiveLocation(null);
-      setActiveLocationIdState(null);
       setLocations([]);
+      // F4.11 Bug-MAJ-01 — the mount-time `/api/auth/me` hydration
+      // effect only runs once per <AuthProvider /> mount, so it does
+      // NOT re-fire after a fresh login. If we left the active
+      // location null here, the very next `apiRequest` (e.g. the
+      // dashboard's first call) would go out WITHOUT the
+      // `X-Active-Location` header — and any route that 500's on a
+      // missing header (e.g. `/api/supply`) would fail until the user
+      // refreshes the page.
+      //
+      // The login response carries the user's primary `location_id`
+      // (mirrored from `user_locations.is_primary=TRUE`), so we seed
+      // the active-location from it. Chain-wide roles (`pm`,
+      // `ai_assistant`) have `location_id === null`; for them we
+      // explicitly drop any stale value from a previous session so
+      // they start in chain-wide scope.
+      if (nextUser.location_id !== null && nextUser.location_id !== undefined) {
+        persistActiveLocation(nextUser.location_id);
+        setActiveLocationIdState(nextUser.location_id);
+      } else {
+        persistActiveLocation(null);
+        setActiveLocationIdState(null);
+      }
     },
     [],
   );

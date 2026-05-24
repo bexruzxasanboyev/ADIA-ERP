@@ -102,6 +102,73 @@ describe('LoginPage', () => {
     expect(window.localStorage.getItem('adia.token')).toBeNull();
   });
 
+  it('persists the user primary location_id as the active-location on login (Bug-MAJ-01)', async () => {
+    // F4.11 Bug-MAJ-01 — without this, a freshly-logged-in scoped
+    // manager has no `adia.active_location` in localStorage and the
+    // next `apiRequest` would skip the `X-Active-Location` header,
+    // breaking routes (`/api/supply`) that 500 on a missing header.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse(200, {
+        access_token: 'A',
+        refresh_token: 'R',
+        user: {
+          id: 7,
+          name: 'Supply menejeri',
+          email: 'supply@adia.local',
+          role: 'supply_manager',
+          location_id: 42,
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    renderLogin();
+
+    await user.type(
+      screen.getByLabelText('Elektron pochta'),
+      'supply@adia.local',
+    );
+    await user.type(screen.getByLabelText('Parol'), 'secret123');
+    await user.click(screen.getByRole('button', { name: 'Kirish' }));
+
+    await waitFor(() => {
+      // `adia.active_location` is the localStorage key written by
+      // `auth-storage.setActiveLocation`; the value mirrors the user's
+      // primary `location_id` from the login response.
+      expect(window.localStorage.getItem('adia.active_location')).toBe('42');
+    });
+  });
+
+  it('does NOT persist active-location for chain-wide roles (Bug-MAJ-01)', async () => {
+    // For `pm` / `ai_assistant` the login response carries
+    // `location_id: null`. We must explicitly drop any stale value
+    // from a previous session so the PM starts in chain-wide scope.
+    window.localStorage.setItem('adia.active_location', '99');
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse(200, {
+        access_token: 'A',
+        refresh_token: 'R',
+        user: {
+          id: 1,
+          name: 'PM',
+          email: 'pm@adia.local',
+          role: 'pm',
+          location_id: null,
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    renderLogin();
+
+    await user.type(screen.getByLabelText('Elektron pochta'), 'pm@adia.local');
+    await user.type(screen.getByLabelText('Parol'), 'secret123');
+    await user.click(screen.getByRole('button', { name: 'Kirish' }));
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem('adia.access_token')).toBe('A');
+    });
+    expect(window.localStorage.getItem('adia.active_location')).toBeNull();
+  });
+
   it('surfaces a network failure to the user', async () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('offline'));
     const user = userEvent.setup();

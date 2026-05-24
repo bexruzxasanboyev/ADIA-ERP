@@ -355,6 +355,104 @@ describe('GET /api/dashboard/ecosystem', () => {
     expect(res.status).toBe(401);
   });
 
+  // F4.11 Bug-MIN-03 — alerts_feed must be scoped to the principal.
+  it('scopes alerts_feed to a store_manager (own location + personal only)', async () => {
+    const w = await seedWorld();
+    // Strip the seedWorld notifications so this test owns the table state.
+    await ctx.db.query('DELETE FROM notifications');
+
+    // Three alerts: one tagged to storeA (visible), one tagged to storeB
+    // (must be hidden), one addressed personally to the storeA manager
+    // (visible) with no location tag.
+    await ctx.db.query(
+      `INSERT INTO notifications (recipient_user_id, type, title, body, payload, created_at)
+       VALUES (NULL,'stock_below_min','StoreA low','cake@StoreA',
+         $1::jsonb, now() - interval '3 minutes')`,
+      [JSON.stringify({ location_id: w.storeA })],
+    );
+    await ctx.db.query(
+      `INSERT INTO notifications (recipient_user_id, type, title, body, payload, created_at)
+       VALUES (NULL,'stock_below_min','StoreB low','cake@StoreB',
+         $1::jsonb, now() - interval '2 minutes')`,
+      [JSON.stringify({ location_id: w.storeB })],
+    );
+    await ctx.db.query(
+      `INSERT INTO notifications (recipient_user_id, type, title, body, payload, created_at)
+       VALUES ($1,'replenishment_created','Direct','for you',
+         '{}'::jsonb, now() - interval '1 minute')`,
+      [w.storeAManager.id],
+    );
+
+    const res = await request(ctx.app)
+      .get('/api/dashboard/ecosystem')
+      .set('Authorization', `Bearer ${w.storeAManager.token}`);
+
+    expect(res.status).toBe(200);
+    const titles = (res.body.alerts_feed as Array<{ title: string }>).map((a) => a.title);
+    expect(titles).toContain('StoreA low');
+    expect(titles).toContain('Direct');
+    expect(titles).not.toContain('StoreB low');
+  });
+
+  it('keeps alerts_feed chain-wide for pm', async () => {
+    const w = await seedWorld();
+    await ctx.db.query('DELETE FROM notifications');
+
+    await ctx.db.query(
+      `INSERT INTO notifications (recipient_user_id, type, title, body, payload, created_at)
+       VALUES (NULL,'stock_below_min','StoreA low','cake@StoreA',
+         $1::jsonb, now() - interval '2 minutes')`,
+      [JSON.stringify({ location_id: w.storeA })],
+    );
+    await ctx.db.query(
+      `INSERT INTO notifications (recipient_user_id, type, title, body, payload, created_at)
+       VALUES (NULL,'stock_below_min','StoreB low','cake@StoreB',
+         $1::jsonb, now() - interval '1 minute')`,
+      [JSON.stringify({ location_id: w.storeB })],
+    );
+
+    const res = await request(ctx.app)
+      .get('/api/dashboard/ecosystem')
+      .set('Authorization', `Bearer ${w.pm.token}`);
+
+    expect(res.status).toBe(200);
+    const titles = (res.body.alerts_feed as Array<{ title: string }>).map((a) => a.title);
+    expect(titles).toContain('StoreA low');
+    expect(titles).toContain('StoreB low');
+  });
+
+  it('keeps alerts_feed chain-wide for a central_warehouse_manager', async () => {
+    const w = await seedWorld();
+    await ctx.db.query('DELETE FROM notifications');
+
+    const cwManager = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager',
+      locationId: w.central,
+    });
+
+    await ctx.db.query(
+      `INSERT INTO notifications (recipient_user_id, type, title, body, payload, created_at)
+       VALUES (NULL,'stock_below_min','StoreA low','cake@StoreA',
+         $1::jsonb, now() - interval '2 minutes')`,
+      [JSON.stringify({ location_id: w.storeA })],
+    );
+    await ctx.db.query(
+      `INSERT INTO notifications (recipient_user_id, type, title, body, payload, created_at)
+       VALUES (NULL,'stock_below_min','StoreB low','cake@StoreB',
+         $1::jsonb, now() - interval '1 minute')`,
+      [JSON.stringify({ location_id: w.storeB })],
+    );
+
+    const res = await request(ctx.app)
+      .get('/api/dashboard/ecosystem')
+      .set('Authorization', `Bearer ${cwManager.token}`);
+
+    expect(res.status).toBe(200);
+    const titles = (res.body.alerts_feed as Array<{ title: string }>).map((a) => a.title);
+    expect(titles).toContain('StoreA low');
+    expect(titles).toContain('StoreB low');
+  });
+
   it('returns nulls in poster_status when no sync runs exist', async () => {
     const w = await seedWorld();
     await ctx.db.query('DELETE FROM poster_sync_log');

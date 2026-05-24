@@ -662,7 +662,7 @@ dashboardRouter.get(
     const [posterStatus, chainFlow, alertsFeed, salesChart] = await Promise.all([
       fetchPosterStatus(scope, range),
       fetchChainFlow(scope),
-      fetchAlertsFeed(),
+      fetchAlertsFeed(principal),
       fetchSalesChart(scope, range),
     ]);
 
@@ -685,6 +685,20 @@ function resolveEcosystemScope(principal: AuthPrincipal): EcosystemScope {
     return { kind: 'empty' };
   }
   return { kind: 'locations', locationIds: principal.locationIds };
+}
+
+/**
+ * Alerts-feed visibility — broader than `resolveEcosystemScope` because the
+ * central warehouse manager is the operational hub of the chain and needs
+ * the chain-wide alert stream even though their stock/sales views are
+ * location-scoped. Mirrors `pendingApprovalsClause` (D5).
+ */
+function isAlertsChainWide(principal: AuthPrincipal): boolean {
+  return (
+    isSuperAdmin(principal) ||
+    principal.role === 'ai_assistant' ||
+    principal.role === 'central_warehouse_manager'
+  );
 }
 
 /**
@@ -814,13 +828,50 @@ async function fetchChainFlow(
 }
 
 /**
- * The latest 20 notifications across the whole system. Per spec §2.4 the
- * AlertsFeed is operational visibility — it is NOT user-scoped, so a manager
- * sees the same recent alerts the PM sees. (Per-user filtering can come
- * later if needed.) Severity is derived from `notifications.type` per the
- * spec routing table.
+ * The latest 20 notifications, scoped to the principal.
+ *
+ * F4.11 Bug-MIN-03 — previously this fetched chain-wide for every role, so a
+ * store_manager saw alerts about locations they have no business seeing.
+ * Scoping rules now mirror the rest of the dashboard:
+ *
+ *   - pm / ai_assistant / central_warehouse_manager
+ *       chain-wide visibility (see `pendingApprovalsClause` for the same
+ *       three-role split).
+ *   - any other scoped role
+ *       only alerts addressed to them personally
+ *       (`notifications.recipient_user_id = principal.userId`)
+ *       OR alerts tagged with a location id in `payload.location_id` that
+ *       falls inside their assigned `locationIds` set.
+ *
+ * Severity is derived from `notifications.type` per the spec §2.4 routing
+ * table.
  */
-async function fetchAlertsFeed(): Promise<AlertsFeedItem[]> {
+async function fetchAlertsFeed(
+  principal: AuthPrincipal,
+): Promise<AlertsFeedItem[]> {
+  const params: SqlParam[] = [];
+  let where = '';
+  if (!isAlertsChainWide(principal)) {
+    // No assigned locations -> only personal alerts are reachable.
+    params.push(principal.userId);
+    const personalIdx = params.length;
+    if (principal.locationIds.length === 0) {
+      where = `WHERE recipient_user_id = $${personalIdx}`;
+    } else {
+      params.push(principal.locationIds);
+      const locsIdx = params.length;
+      // `payload->>'location_id'` is text in JSONB; cast both sides through
+      // bigint so numeric comparison works against the `bigint[]` ids.
+      where =
+        `WHERE recipient_user_id = $${personalIdx} ` +
+        `   OR (payload ? 'location_id' ` +
+        `       AND (payload->>'location_id') ~ '^[0-9]+$' ` +
+        `       AND (payload->>'location_id')::bigint = ANY($${locsIdx}::bigint[]))`;
+    }
+  }
+  params.push(ALERTS_FEED_LIMIT);
+  const limitIdx = params.length;
+
   const { rows } = await query<{
     id: string;
     type: string;
@@ -831,9 +882,10 @@ async function fetchAlertsFeed(): Promise<AlertsFeedItem[]> {
   }>(
     `SELECT id, type, title, body, payload, created_at
        FROM notifications
+       ${where}
        ORDER BY created_at DESC, id DESC
-       LIMIT $1`,
-    [ALERTS_FEED_LIMIT],
+       LIMIT $${limitIdx}`,
+    params,
   );
 
   return rows.map((r) => {
