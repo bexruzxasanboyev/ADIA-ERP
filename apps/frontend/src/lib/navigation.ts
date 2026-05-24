@@ -39,6 +39,10 @@ export interface NavSection {
   items: readonly NavItem[];
 }
 
+// TZ §3 — every authenticated role plus the AI assistant identity. The
+// AI assistant has Read + recommend access chain-wide (same scope as
+// PM for queries), so it should see every navigation entry an operator
+// would see; the backend RBAC layer is the final gate on writes.
 const ALL_ROLES: readonly Role[] = [
   'pm',
   'raw_warehouse_manager',
@@ -46,6 +50,7 @@ const ALL_ROLES: readonly Role[] = [
   'supply_manager',
   'central_warehouse_manager',
   'store_manager',
+  'ai_assistant',
 ];
 
 const MANAGER_ROLES: readonly Role[] = [
@@ -55,6 +60,7 @@ const MANAGER_ROLES: readonly Role[] = [
   'supply_manager',
   'central_warehouse_manager',
   'store_manager',
+  'ai_assistant',
 ];
 
 export const NAV_SECTIONS: readonly NavSection[] = [
