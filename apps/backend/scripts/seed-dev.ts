@@ -73,10 +73,20 @@ async function upsertUser(
     return existing.rows[0].id;
   }
   const hash = await bcrypt.hash(SEED_PASSWORD, BCRYPT_ROUNDS);
+  // F4.12 — derive a username from the email local-part. Must satisfy
+  // chk_users_username_format (`^[a-z0-9._-]{3,32}$`); fall back to
+  // `user_<role>_<random>` when the derivation is too short.
+  const cleaned = (email.split('@')[0] ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, '')
+    .slice(0, 24);
+  const username = cleaned.length >= 3
+    ? cleaned
+    : `user_${role}_${Math.random().toString(36).slice(2, 8)}`;
   const { rows } = await query<{ id: number }>(
-    `INSERT INTO users (name, email, password_hash, role, location_id)
-     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-    [name, email, hash, role, locationId],
+    `INSERT INTO users (name, email, username, password_hash, role, location_id)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [name, email, username, hash, role, locationId],
   );
   const row = rows[0];
   if (row === undefined) {

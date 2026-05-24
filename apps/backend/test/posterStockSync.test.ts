@@ -147,8 +147,10 @@ describe('Poster stockSync', () => {
       initialQty: 4,
     });
     // Seed a PM user so notifyNegative has at least one recipient.
+    // F4.12 — username constraint requires 3-32 chars; bare "pm" trips it.
     await ctx.db.query(
-      `INSERT INTO users (name, email, password_hash, role) VALUES ('pm','pm@t','x','pm')`,
+      `INSERT INTO users (name, email, username, password_hash, role)
+       VALUES ('pm','pm@t','pm_test','x','pm')`,
     );
     const client = clientWithLeftovers({
       3: [
@@ -211,8 +213,8 @@ describe('Poster stockSync', () => {
     // suite-unique email — other tests in this file seed `pm@t` and the
     // beforeEach hook does NOT wipe `users`.
     await ctx.db.query(
-      `INSERT INTO users (name, email, password_hash, role)
-       VALUES ('pm-c3','pm-c3@t','x','pm')
+      `INSERT INTO users (name, email, username, password_hash, role)
+       VALUES ('pm-c3','pm-c3@t','pm-c3','x','pm')
        ON CONFLICT (email) DO NOTHING`,
     );
     const client = clientWithLeftovers({

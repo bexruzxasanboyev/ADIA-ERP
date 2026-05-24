@@ -184,10 +184,11 @@ replenishmentRouter.get(
       reason: string | null;
       actor_user_id: number | null;
       actor_name: string | null;
+      actor_username: string | null;
       created_at: Date;
     }>(
       `SELECT t.id, t.from_status, t.to_status, t.reason, t.actor_user_id,
-              u.name AS actor_name, t.created_at
+              u.name AS actor_name, u.username AS actor_username, t.created_at
        FROM replenishment_transitions t
        LEFT JOIN users u ON u.id = t.actor_user_id
        WHERE t.replenishment_id = $1 ORDER BY t.id`,

@@ -75,6 +75,7 @@ const PRODUCTION_USERS: User[] = [
     id: 22,
     name: 'Hodim A',
     email: 'a@adia.test',
+    username: 'hodim.a',
     role: 'production_manager',
     location_id: 11,
   },

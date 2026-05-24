@@ -25,6 +25,7 @@ function makeAuth(
       id: 1,
       name: 'Test',
       email: 't@adia.test',
+      username: 'test',
       role: 'central_warehouse_manager',
       location_id: 10,
     },

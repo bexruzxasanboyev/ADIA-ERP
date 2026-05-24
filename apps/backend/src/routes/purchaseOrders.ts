@@ -104,7 +104,9 @@ purchaseOrdersRouter.get(
         product_name: string;
         target_location_name: string | null;
         manager_approved_name: string | null;
+        manager_approved_username: string | null;
         keeper_approved_name: string | null;
+        keeper_approved_username: string | null;
         supplier_name: string | null;
       }
     >(
@@ -112,7 +114,9 @@ purchaseOrdersRouter.get(
               p.name AS product_name,
               tl.name AS target_location_name,
               mu.name AS manager_approved_name,
+              mu.username AS manager_approved_username,
               ku.name AS keeper_approved_name,
+              ku.username AS keeper_approved_username,
               s.name AS supplier_name
        FROM purchase_orders po
        JOIN products p ON p.id = po.product_id

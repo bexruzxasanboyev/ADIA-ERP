@@ -232,6 +232,7 @@ function renderDetail() {
       id: 1,
       name: 'PM',
       email: 'pm@adia.test',
+      username: 'pm',
       role: 'pm' as const,
       location_id: null,
     },

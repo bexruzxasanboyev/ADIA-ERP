@@ -25,6 +25,7 @@ import { getPrincipal } from '../lib/principal.js';
 import {
   asObject,
   optionalId,
+  optionalString,
   parseIdParam,
   requireEnum,
   requireId,
@@ -43,6 +44,7 @@ type PublicUserRow = {
   id: number;
   name: string;
   email: string;
+  username: string;
   role: string;
   location_id: number | null;
   telegram_id: number | null;
@@ -50,10 +52,63 @@ type PublicUserRow = {
   created_at: Date;
 };
 
-const PUBLIC_COLUMNS = `id, name, email, role, location_id, telegram_id, is_active, created_at`;
+const PUBLIC_COLUMNS = `id, name, email, username, role, location_id, telegram_id, is_active, created_at`;
 
 // Roles that are chain-wide and may have a NULL location (DB check chk_users_location_required).
 const CHAIN_WIDE_ROLES = new Set<string>(['pm', 'ai_assistant']);
+
+/** F4.12 — must mirror chk_users_username_format on the table. */
+const USERNAME_RE = /^[a-z0-9._-]{3,32}$/;
+
+/**
+ * Validate a username candidate at the boundary, mirroring the DB CHECK.
+ * Throws 422 with a clear message so the caller does not have to read the
+ * raw constraint name from a 23514 error.
+ */
+function validateUsername(value: string): string {
+  const lowered = value.toLowerCase();
+  if (!USERNAME_RE.test(lowered)) {
+    throw AppError.validation(
+      'Field "username" must be 3-32 chars and contain only lowercase letters, digits, ".", "_" or "-".',
+    );
+  }
+  return lowered;
+}
+
+/**
+ * Derive a username from an email's local-part exactly like migration 0018:
+ * lowercase, strip everything outside [a-z0-9._-], cap at 24 chars. Returns
+ * `undefined` when the result is shorter than 3 chars — the caller should
+ * fall back to a `user_<id>` style handle.
+ */
+function deriveUsernameFromEmail(email: string): string | undefined {
+  const localPart = email.split('@')[0] ?? '';
+  const cleaned = localPart.toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 24);
+  return cleaned.length >= 3 ? cleaned : undefined;
+}
+
+/**
+ * Rethrow Postgres 23505 (unique violation) on `uq_users_username` /
+ * `users_email_key` as a 409 instead of a raw 500. Anything else is
+ * re-thrown unchanged so the central error-handler still sees it.
+ */
+function rethrowUserUniqueViolation(err: unknown): never {
+  if (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as { code: unknown }).code === '23505'
+  ) {
+    const constraint = (err as { constraint?: unknown }).constraint;
+    if (constraint === 'uq_users_username') {
+      throw AppError.conflict('Username is already taken.');
+    }
+    if (typeof constraint === 'string' && constraint.includes('email')) {
+      throw AppError.conflict('Email is already in use.');
+    }
+  }
+  throw err as Error;
+}
 
 /**
  * Parse optional `location_ids` (M:N) — must be a non-empty array of
@@ -117,6 +172,15 @@ usersRouter.post(
       );
     }
     const role = requireEnum(body, 'role', ROLES);
+    // F4.12 — optional `username`; falls back to a derivation from the email
+    // local-part so the column is never NULL. The DB still has the final say
+    // via the UNIQUE constraint and CHECK regex, which we map to 409 / 422
+    // via rethrowUserUniqueViolation below.
+    const usernameRaw = optionalString(body, 'username');
+    const username =
+      usernameRaw !== undefined
+        ? validateUsername(usernameRaw)
+        : deriveUsernameFromEmail(email) ?? null;
     const singleLocationId = optionalId(body, 'location_id');
     const locationIds = parseLocationIds(body);
     const primaryLocationId = optionalId(body, 'primary_location_id');
@@ -169,15 +233,44 @@ usersRouter.post(
 
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
     const created = await withTransaction(async (tx) => {
-      const { rows } = await tx.query<PublicUserRow>(
-        `INSERT INTO users (name, email, password_hash, role, location_id, telegram_id)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING ${PUBLIC_COLUMNS}`,
-        [name, email, passwordHash, role, primaryId, telegramId ?? null],
-      );
-      const row = rows[0];
-      if (row === undefined) {
-        throw AppError.internal('User insert returned no row.');
+      // Two-step username resolution: when the caller did not provide one
+      // AND we could not derive a valid 3-char handle from the email
+      // (e.g. a Cyrillic local-part), seed a transient placeholder, then
+      // re-write to `user_<id>` once Postgres has assigned an id. The
+      // placeholder uses crypto-random suffix so two simultaneous inserts
+      // never collide on it.
+      let initialUsername = username;
+      const needsRewrite = initialUsername === null;
+      if (initialUsername === null) {
+        initialUsername =
+          'tmp_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+      }
+      let row: PublicUserRow;
+      try {
+        const result = await tx.query<PublicUserRow>(
+          `INSERT INTO users (name, email, username, password_hash, role, location_id, telegram_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           RETURNING ${PUBLIC_COLUMNS}`,
+          [name, email, initialUsername, passwordHash, role, primaryId, telegramId ?? null],
+        );
+        const candidate = result.rows[0];
+        if (candidate === undefined) {
+          throw AppError.internal('User insert returned no row.');
+        }
+        row = candidate;
+      } catch (err) {
+        rethrowUserUniqueViolation(err);
+      }
+      // Rewrite placeholder -> `user_<id>` in the same transaction.
+      if (needsRewrite) {
+        const rewrite = await tx.query<PublicUserRow>(
+          `UPDATE users SET username = $2 WHERE id = $1 RETURNING ${PUBLIC_COLUMNS}`,
+          [row.id, `user_${row.id}`],
+        );
+        const updated = rewrite.rows[0];
+        if (updated !== undefined) {
+          row = updated;
+        }
       }
       // Mirror the assigned locations into the M:N junction. `is_primary`
       // tracks the same row as `users.location_id`.
@@ -194,11 +287,98 @@ usersRouter.post(
         action: 'user.create',
         entity: 'users',
         entityId: row.id,
-        payload: { email, role, location_ids: attached, primary_location_id: primaryId },
+        payload: {
+          email,
+          username: row.username,
+          role,
+          location_ids: attached,
+          primary_location_id: primaryId,
+        },
       });
       return row;
     });
     res.status(201).json({ user: created });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// PATCH /api/users/:id — pm only (F4.12)
+// ---------------------------------------------------------------------------
+// Partial update — currently supports `username` and `name`. Other fields
+// (role/location/email/password) remain owned by their dedicated endpoints
+// or are intentionally not exposed for ad-hoc updates.
+usersRouter.patch(
+  '/:id',
+  authenticate,
+  authorize('pm'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const userId = parseIdParam(req.params['id'], 'id');
+    const body = asObject(req.body);
+
+    const usernameRaw = optionalString(body, 'username');
+    const nameRaw = optionalString(body, 'name');
+    if (usernameRaw === undefined && nameRaw === undefined) {
+      throw AppError.validation('At least one of "username" or "name" must be provided.');
+    }
+    const newUsername = usernameRaw !== undefined ? validateUsername(usernameRaw) : undefined;
+
+    // Existence check — a missing id is 404 (so the caller sees a different
+    // status from "validation failed on the body").
+    const { rows: existing } = await query<{ id: string }>(
+      `SELECT id FROM users WHERE id = $1`,
+      [userId],
+    );
+    if (existing[0] === undefined) {
+      throw AppError.notFound('User not found.');
+    }
+
+    const updated = await withTransaction(async (tx) => {
+      // Build SET clause dynamically. The parameter-index discipline matches
+      // the rest of the codebase — no string-concat of user input.
+      const sets: string[] = [];
+      const params: (string | number)[] = [];
+      if (newUsername !== undefined) {
+        params.push(newUsername);
+        sets.push(`username = $${params.length}`);
+      }
+      if (nameRaw !== undefined) {
+        params.push(nameRaw);
+        sets.push(`name = $${params.length}`);
+      }
+      sets.push('updated_at = now()');
+      params.push(userId);
+      const idIdx = params.length;
+
+      let row: PublicUserRow;
+      try {
+        const result = await tx.query<PublicUserRow>(
+          `UPDATE users SET ${sets.join(', ')}
+            WHERE id = $${idIdx}
+            RETURNING ${PUBLIC_COLUMNS}`,
+          params,
+        );
+        const candidate = result.rows[0];
+        if (candidate === undefined) {
+          throw AppError.notFound('User not found.');
+        }
+        row = candidate;
+      } catch (err) {
+        rethrowUserUniqueViolation(err);
+      }
+      await writeAudit(tx, {
+        actorUserId: principal.userId,
+        action: 'user.update',
+        entity: 'users',
+        entityId: userId,
+        payload: {
+          username: newUsername ?? undefined,
+          name: nameRaw ?? undefined,
+        },
+      });
+      return row;
+    });
+    res.status(200).json({ user: updated });
   }),
 );
 

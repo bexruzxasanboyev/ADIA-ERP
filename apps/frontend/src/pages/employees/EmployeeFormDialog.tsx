@@ -42,6 +42,7 @@ interface EmployeeFormDialogProps {
 interface FormState {
   name: string;
   email: string;
+  username: string;
   password: string;
   role: Role;
   telegramId: string;
@@ -57,6 +58,7 @@ interface FormState {
 const EMPTY_FORM: FormState = {
   name: '',
   email: '',
+  username: '',
   password: '',
   role: 'store_manager',
   telegramId: '',
@@ -68,6 +70,11 @@ const EMPTY_FORM: FormState = {
 const CHAIN_WIDE_ROLES: ReadonlySet<Role> = new Set(['pm', 'ai_assistant']);
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/**
+ * F4.12 — same regex the backend enforces. Lowercase letters, digits,
+ * dot, underscore, hyphen; 3-32 chars total.
+ */
+const USERNAME_PATTERN = /^[a-z0-9._-]{3,32}$/;
 
 export function EmployeeFormDialog({
   open,
@@ -126,12 +133,22 @@ export function EmployeeFormDialog({
 
     const name = form.name.trim();
     const email = form.email.trim().toLowerCase();
+    const username = form.username.trim().toLowerCase();
     if (name === '') {
       setError('Ism-familiya bo‘sh bo‘lmasligi kerak.');
       return;
     }
     if (!EMAIL_PATTERN.test(email)) {
       setError('Elektron pochta noto‘g‘ri formatda.');
+      return;
+    }
+    // F4.12 — username is optional (the backend derives one from the
+    // email-local-part when blank), but if supplied it must match the
+    // same regex the backend enforces, or the server returns 422.
+    if (username !== '' && !USERNAME_PATTERN.test(username)) {
+      setError(
+        'Foydalanuvchi nomi 3-32 belgi, faqat kichik harf/raqam/. _ - bo‘lishi mumkin.',
+      );
       return;
     }
     if (form.password.length < 8) {
@@ -170,6 +187,11 @@ export function EmployeeFormDialog({
       password: form.password,
       role: form.role,
     };
+    // F4.12 — only send `username` when the PM typed something; an empty
+    // string would trip the backend's "3-32 chars" guard and 422.
+    if (username !== '') {
+      body['username'] = username;
+    }
     if (locationRequired) {
       body['location_ids'] = locationIds;
       body['primary_location_id'] = form.primaryLocationId;
@@ -237,6 +259,31 @@ export function EmployeeFormDialog({
               value={form.email}
               onChange={(e) => setForm({ ...form, email: e.target.value })}
             />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="employee-username">
+              Foydalanuvchi nomi (ixtiyoriy)
+            </Label>
+            <Input
+              id="employee-username"
+              name="username"
+              type="text"
+              autoComplete="username"
+              inputMode="text"
+              pattern="[a-z0-9._\-]{3,32}"
+              minLength={3}
+              maxLength={32}
+              placeholder="masalan: pm yoki anvar.k"
+              value={form.username}
+              onChange={(e) =>
+                setForm({ ...form, username: e.target.value })
+              }
+            />
+            <p className="text-xs text-muted-foreground">
+              Bo‘sh qoldirsangiz email’dan avtomatik yaratiladi. 3-32 belgi,
+              faqat kichik harf, raqam, <code>. _ -</code>.
+            </p>
           </div>
 
           <div className="space-y-2">

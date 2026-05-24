@@ -88,6 +88,11 @@ export function UsersPage() {
                       <p className="truncate text-xs text-muted-foreground">
                         {u.email}
                       </p>
+                      {u.username && (
+                        <p className="truncate font-mono text-[11px] text-muted-foreground/80">
+                          @{u.username}
+                        </p>
+                      )}
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -109,6 +114,7 @@ export function UsersPage() {
               <TableRow>
                 <TableHead>Ism-familiya</TableHead>
                 <TableHead>Elektron pochta</TableHead>
+                <TableHead>Foydalanuvchi nomi</TableHead>
                 <TableHead>Rol</TableHead>
                 <TableHead>Bo‘g‘in</TableHead>
               </TableRow>
@@ -119,6 +125,9 @@ export function UsersPage() {
                   <TableCell className="font-medium">{u.name}</TableCell>
                   <TableCell className="text-muted-foreground">
                     {u.email}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">
+                    {u.username ? `@${u.username}` : '—'}
                   </TableCell>
                   <TableCell>
                     <Badge variant="outline">{ROLE_LABELS[u.role]}</Badge>

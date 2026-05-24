@@ -56,6 +56,13 @@ export interface User {
   id: number;
   name: string;
   email: string;
+  /**
+   * F4.12 — short login handle (3-32 chars, `[a-z0-9._-]`). The backend
+   * guarantees this on every user record (it auto-derives one from the
+   * email-local-part when the PM does not supply it). Login accepts
+   * either `email` OR `username` via the unified `login` field.
+   */
+  username: string;
   role: Role;
   /**
    * Primary location id (mirrored from `user_locations.is_primary=TRUE`).
@@ -172,6 +179,17 @@ export interface ApiErrorBody {
     code: string;
     message: string;
   };
+}
+
+/**
+ * `POST /api/auth/login` request body — F4.12. The unified `login` field
+ * accepts either an email or a username (3-32 chars, `[a-z0-9._-]`).
+ * The backend still accepts the legacy `{email, password}` shape for
+ * back-compat, but the client always sends `login`.
+ */
+export interface LoginRequest {
+  login: string;
+  password: string;
 }
 
 /**

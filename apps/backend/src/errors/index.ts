@@ -17,6 +17,7 @@ export const ErrorCode = {
   INSUFFICIENT_STOCK: 'INSUFFICIENT_STOCK',
   OPEN_REQUEST_EXISTS: 'OPEN_REQUEST_EXISTS',
   INVALID_TRANSITION: 'INVALID_TRANSITION',
+  CONFLICT: 'CONFLICT',
   POSTER_SYNC_ERROR: 'POSTER_SYNC_ERROR',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
   // Faza-3 F3.2 — AI write-action lifecycle (ADR-0009).
@@ -37,6 +38,7 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   INSUFFICIENT_STOCK: 409,
   OPEN_REQUEST_EXISTS: 409,
   INVALID_TRANSITION: 409,
+  CONFLICT: 409,
   POSTER_SYNC_ERROR: 502,
   INTERNAL_ERROR: 500,
   ACTION_NOT_PENDING: 409,
@@ -96,5 +98,9 @@ export class AppError extends Error {
 
   static serviceUnavailable(message = 'Service is temporarily unavailable.'): AppError {
     return new AppError(ErrorCode.SERVICE_UNAVAILABLE, message);
+  }
+
+  static conflict(message: string): AppError {
+    return new AppError(ErrorCode.CONFLICT, message);
   }
 }

@@ -51,10 +51,21 @@ async function makeUser(opts: {
   role: string;
   telegramId: number | null;
 }): Promise<number> {
+  // F4.12 — username column is NOT NULL and must match [a-z0-9._-]{3,32}.
+  // Some fixtures use very short emails (e.g. "a@b.test"); pad with the
+  // random suffix so we always meet the 3-char floor.
+  const raw = (opts.email.split('@')[0] ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, '')
+    .slice(0, 24);
+  const username =
+    raw.length >= 3
+      ? raw
+      : `${raw}_u${Math.random().toString(36).slice(2, 8)}`.slice(0, 32);
   const { rows } = await ctx.db.query<{ id: number }>(
-    `INSERT INTO users (name, email, password_hash, role, telegram_id)
-     VALUES ($1, $2, 'x', $3, $4) RETURNING id`,
-    [opts.email, opts.email, opts.role, opts.telegramId],
+    `INSERT INTO users (name, email, username, password_hash, role, telegram_id)
+     VALUES ($1, $2, $3, 'x', $4, $5) RETURNING id`,
+    [opts.email, opts.email, username, opts.role, opts.telegramId],
   );
   return Number(rows[0]!.id);
 }

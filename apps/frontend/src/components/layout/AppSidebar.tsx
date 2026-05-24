@@ -67,6 +67,11 @@ export function AppSidebar({ onNavigate, inDrawer = false }: AppSidebarProps) {
           <div className="mb-2 px-1">
             <p className="truncate text-sm font-medium text-foreground">
               {user.name}
+              {user.username && (
+                <span className="ml-1 font-mono text-[11px] font-normal text-muted-foreground/80">
+                  @{user.username}
+                </span>
+              )}
             </p>
             <p className="truncate text-xs text-muted-foreground">
               {ROLE_LABELS[user.role]}

@@ -29,6 +29,7 @@ interface UserFormDialogProps {
 interface FormState {
   name: string;
   email: string;
+  username: string;
   password: string;
   role: Role;
   location_id: string;
@@ -37,10 +38,17 @@ interface FormState {
 const EMPTY_FORM: FormState = {
   name: '',
   email: '',
+  username: '',
   password: '',
   role: 'store_manager',
   location_id: '',
 };
+
+/**
+ * F4.12 — same regex the backend enforces. Lowercase letters, digits,
+ * dot, underscore, hyphen; 3-32 chars total.
+ */
+const USERNAME_PATTERN = /^[a-z0-9._-]{3,32}$/;
 
 /**
  * Create dialog for a user account (M1, `pm` only).
@@ -76,17 +84,29 @@ export function UserFormDialog({
       return;
     }
 
+    const username = form.username.trim().toLowerCase();
+    if (username !== '' && !USERNAME_PATTERN.test(username)) {
+      setError(
+        'Foydalanuvchi nomi 3-32 belgi, faqat kichik harf/raqam/. _ - bo‘lishi mumkin.',
+      );
+      return;
+    }
+
     setIsSubmitting(true);
     try {
+      const body: Record<string, unknown> = {
+        name: form.name.trim(),
+        email: form.email.trim(),
+        password: form.password,
+        role: form.role,
+        location_id: locationRequired ? Number(form.location_id) : null,
+      };
+      if (username !== '') {
+        body['username'] = username;
+      }
       await apiRequest('/api/users', {
         method: 'POST',
-        body: {
-          name: form.name.trim(),
-          email: form.email.trim(),
-          password: form.password,
-          role: form.role,
-          location_id: locationRequired ? Number(form.location_id) : null,
-        },
+        body,
       });
       notify('success', 'Foydalanuvchi qo‘shildi.');
       onOpenChange(false);
@@ -133,6 +153,28 @@ export function UserFormDialog({
               value={form.email}
               onChange={(e) => setForm({ ...form, email: e.target.value })}
             />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="user-username">
+              Foydalanuvchi nomi (ixtiyoriy)
+            </Label>
+            <Input
+              id="user-username"
+              name="username"
+              type="text"
+              autoComplete="username"
+              inputMode="text"
+              pattern="[a-z0-9._\-]{3,32}"
+              minLength={3}
+              maxLength={32}
+              placeholder="masalan: pm yoki anvar.k"
+              value={form.username}
+              onChange={(e) => setForm({ ...form, username: e.target.value })}
+            />
+            <p className="text-xs text-muted-foreground">
+              Bo‘sh qoldirsangiz email’dan avtomatik yaratiladi.
+            </p>
           </div>
 
           <div className="space-y-2">

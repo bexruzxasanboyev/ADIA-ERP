@@ -21,17 +21,38 @@ export type SeededUser = {
 /** Insert a user with a known password and return it plus a signed token. */
 export async function makeUser(
   db: TestDb,
-  opts: { role: Role; locationId?: number | null; email?: string; password?: string },
+  opts: {
+    role: Role;
+    locationId?: number | null;
+    email?: string;
+    password?: string;
+    /** F4.12 — explicit username override; default derives a unique one. */
+    username?: string;
+  },
 ): Promise<SeededUser> {
   const email = opts.email ?? `${opts.role}-${Math.random().toString(36).slice(2, 8)}@test.local`;
   const password = opts.password ?? 'password123';
   const locationId = opts.locationId ?? null;
   const hash = await bcrypt.hash(password, 6); // low rounds — tests favour speed.
+  // F4.12 — pick a unique username (the DB UNIQUE constraint would otherwise
+  // collide between parallel suites that all derive the same handle from the
+  // role-only default email). We hash the email so the username is
+  // deterministic for that user, and we strip everything outside the CHECK
+  // regex `[a-z0-9._-]{3,32}`.
+  const fallback = `u_${Math.random().toString(36).slice(2, 10)}`;
+  const sanitised = email
+    .split('@')[0]!
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, '')
+    .slice(0, 24);
+  const derivedUsername = opts.username ?? (sanitised || fallback);
+  const username =
+    derivedUsername.length >= 3 ? derivedUsername : fallback;
 
   const { rows } = await db.query<{ id: string }>(
-    `INSERT INTO users (name, email, password_hash, role, location_id)
-     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-    [`Test ${opts.role}`, email, hash, opts.role, locationId],
+    `INSERT INTO users (name, email, username, password_hash, role, location_id)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [`Test ${opts.role}`, email, username, hash, opts.role, locationId],
   );
   const idRaw = rows[0]?.id;
   if (idRaw === undefined) {

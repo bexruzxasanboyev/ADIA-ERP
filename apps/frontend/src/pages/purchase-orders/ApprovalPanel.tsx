@@ -102,14 +102,17 @@ export function ApprovalPanel({ order, onChanged }: ApprovalPanelProps) {
 
   return (
     <div className="space-y-4 p-4">
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      {/* lg+: side-by-side. Below lg (including the 3-up PO card grid):
+          stack vertically so the inner button text doesn't bleed out. */}
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 lg:gap-4">
         <StepCard
           title="Ta’minot boshlig‘i tasdig‘i"
           signed={managerSigned}
           actorId={order.manager_approved_by}
           actorName={order.manager_approved_name}
           at={order.manager_approved_at}
-          actionLabel="Tasdiqlash (boshliq)"
+          actionLabel="Tasdiqlash"
+          ariaActionLabel="Tasdiqlash (boshliq)"
           canAct={canManager && isDraft && !managerSigned}
           isBusy={busy === 'approve-manager'}
           onAct={() => approve('manager')}
@@ -120,7 +123,8 @@ export function ApprovalPanel({ order, onChanged }: ApprovalPanelProps) {
           actorId={order.keeper_approved_by}
           actorName={order.keeper_approved_name}
           at={order.keeper_approved_at}
-          actionLabel="Tasdiqlash (skladchi)"
+          actionLabel="Tasdiqlash"
+          ariaActionLabel="Tasdiqlash (skladchi)"
           canAct={canKeeper && isDraft && !keeperSigned}
           isBusy={busy === 'approve-keeper'}
           onAct={() => approve('keeper')}
@@ -184,6 +188,9 @@ interface StepCardProps {
   actorName: string | null;
   at: string | null;
   actionLabel: string;
+  /** Verbose label fed to `aria-label` so assistive tech (and tests) can
+   *  distinguish the two same-text buttons in the panel. */
+  ariaActionLabel: string;
   canAct: boolean;
   isBusy: boolean;
   onAct: () => void;
@@ -196,6 +203,7 @@ function StepCard({
   actorName,
   at,
   actionLabel,
+  ariaActionLabel,
   canAct,
   isBusy,
   onAct,
@@ -220,8 +228,8 @@ function StepCard({
           aria-hidden="true"
         />
       )}
-      <div className="flex-1 space-y-1">
-        <div className="text-sm font-medium">{title}</div>
+      <div className="min-w-0 flex-1 space-y-1">
+        <div className="break-words text-sm font-medium">{title}</div>
         {signed ? (
           <div className="text-xs text-muted-foreground">
             <span>{actorName ?? `Foydalanuvchi #${actorId ?? '—'}`}</span>
@@ -236,7 +244,12 @@ function StepCard({
           <div className="text-xs text-muted-foreground">Hali tasdiqlanmagan.</div>
         )}
         {canAct && (
-          <Button size="sm" disabled={isBusy} onClick={onAct}>
+          <Button
+            size="sm"
+            disabled={isBusy}
+            onClick={onAct}
+            aria-label={ariaActionLabel}
+          >
             {isBusy && (
               <Loader2 className="size-4 animate-spin" aria-hidden="true" />
             )}

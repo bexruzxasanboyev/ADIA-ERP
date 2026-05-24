@@ -1,7 +1,8 @@
 /**
  * M1 + Sprint-3 — Auth routes (spec section 4.1, ADR-0005).
  *
- *   POST /api/auth/login    — { email, password }
+ *   POST /api/auth/login    — { login, password }  (F4.12; also accepts
+ *                              the legacy `{ email, password }` shape)
  *                             -> { access_token, refresh_token, user }
  *   POST /api/auth/refresh  — { refresh_token }
  *                             -> { access_token, refresh_token, user }
@@ -35,7 +36,7 @@ import { isRole, type Role } from '../auth/roles.js';
 import { AppError } from '../errors/index.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
-import { asObject, requireId, requireString } from '../lib/validate.js';
+import { asObject, optionalString, requireId, requireString } from '../lib/validate.js';
 import { getPrincipal } from '../lib/principal.js';
 import { writeAudit, poolRunner } from '../lib/audit.js';
 import { loadConfig } from '../config/index.js';
@@ -100,6 +101,7 @@ type UserRow = {
   id: number;
   name: string;
   email: string;
+  username: string;
   password_hash: string;
   role: string;
   location_id: number | null;
@@ -112,6 +114,7 @@ type PublicUser = {
   id: number;
   name: string;
   email: string;
+  username: string;
   role: Role;
   location_id: number | null;
   telegram_id: number | null;
@@ -126,6 +129,7 @@ function toPublicUser(row: UserRow): PublicUser {
     id: row.id,
     name: row.name,
     email: row.email,
+    username: row.username,
     role: row.role,
     location_id: row.location_id,
     telegram_id: row.telegram_id,
@@ -148,18 +152,34 @@ authRouter.post(
   loginRateLimit,
   asyncHandler(async (req, res) => {
     const body = asObject(req.body);
-    const email = requireString(body, 'email').toLowerCase();
+    // F4.12 — accept both the new `{ login, password }` body and the
+    // legacy `{ email, password }` shape. The first non-empty value wins;
+    // when both are present, `login` takes precedence (frontend is
+    // migrating onto the new field name).
+    const loginRaw =
+      optionalString(body, 'login') ?? optionalString(body, 'email');
+    if (loginRaw === undefined) {
+      throw AppError.validation('Field "login" must be a non-empty string.');
+    }
     const password = requireString(body, 'password');
 
-    const { rows } = await query<UserRow>(
-      `SELECT id, name, email, password_hash, role, location_id, telegram_id, is_active
-       FROM users WHERE email = $1`,
-      [email],
-    );
+    // Anything with `@` is treated as an email (matched against
+    // users.email); everything else is matched against users.username.
+    // Both columns hold lowercased values, so a single normalisation pass
+    // here is enough.
+    const normalised = loginRaw.toLowerCase();
+    const isEmail = normalised.includes('@');
+    const sql = isEmail
+      ? `SELECT id, name, email, username, password_hash, role, location_id, telegram_id, is_active
+           FROM users WHERE email = $1`
+      : `SELECT id, name, email, username, password_hash, role, location_id, telegram_id, is_active
+           FROM users WHERE username = $1`;
+    const { rows } = await query<UserRow>(sql, [normalised]);
     const user = rows[0];
 
-    // Generic failure for missing user, wrong password or deactivated account.
-    const invalid = AppError.unauthenticated('Invalid email or password.');
+    // Generic failure for missing user, wrong password or deactivated account
+    // — never reveal which leg of the OR failed (no user enumeration).
+    const invalid = AppError.unauthenticated('Invalid login or password.');
     if (user === undefined || !user.is_active) {
       throw invalid;
     }
@@ -176,6 +196,16 @@ authRouter.post(
     });
     const issued = await issueRefreshToken(publicUser.id, {
       userAgent: readUserAgent(req),
+    });
+    // F4.12 — record the ORIGINAL login value (email or username, whichever
+    // the caller actually sent) so a forensic reader can answer "which
+    // handle was used to sign in?" without re-deriving it from the email.
+    await writeAudit(poolRunner, {
+      actorUserId: publicUser.id,
+      action: 'auth.login',
+      entity: 'users',
+      entityId: publicUser.id,
+      payload: { login: loginRaw, via: isEmail ? 'email' : 'username' },
     });
     // NOTE: `token` field retained for one release as a backward-compat
     // alias of `access_token` — the frontend migrates over Sprint-3 and
@@ -211,7 +241,7 @@ authRouter.post(
     // Re-read the user so the response carries fresh `name`, `email`,
     // `telegram_id`, etc., not just the columns the rotate path needs.
     const { rows } = await query<UserRow>(
-      `SELECT id, name, email, password_hash, role, location_id, telegram_id, is_active
+      `SELECT id, name, email, username, password_hash, role, location_id, telegram_id, is_active
        FROM users WHERE id = $1 AND is_active = TRUE`,
       [rotated.user.userId],
     );
@@ -271,7 +301,7 @@ authRouter.get(
   asyncHandler(async (req, res) => {
     const principal = getPrincipal(req);
     const { rows } = await query<UserRow>(
-      `SELECT id, name, email, password_hash, role, location_id, telegram_id, is_active
+      `SELECT id, name, email, username, password_hash, role, location_id, telegram_id, is_active
        FROM users WHERE id = $1 AND is_active = TRUE`,
       [principal.userId],
     );

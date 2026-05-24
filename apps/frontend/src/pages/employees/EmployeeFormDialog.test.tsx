@@ -133,6 +133,113 @@ describe('EmployeeFormDialog', () => {
     expect(body.primary_location_id).toBe(11);
   });
 
+  it('sends the optional username when supplied (F4.12)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse(201, { user: { id: 99 } }),
+    );
+
+    renderWithProviders(
+      <EmployeeFormDialog
+        open={true}
+        onOpenChange={() => {}}
+        locations={LOCATIONS}
+        onSaved={() => {}}
+      />,
+    );
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText('Ism-familiya'), 'Anvar K');
+    await user.type(
+      screen.getByLabelText('Elektron pochta'),
+      'anvar@adia.local',
+    );
+    await user.type(
+      screen.getByLabelText(/foydalanuvchi nomi/i),
+      'anvar.k',
+    );
+    await user.type(screen.getByLabelText('Parol'), 'pass1234');
+    await user.click(screen.getByLabelText('Filial-1'));
+
+    await user.click(screen.getByRole('button', { name: 'Saqlash' }));
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalled();
+    });
+    const body = JSON.parse(
+      (fetchSpy.mock.calls[0]![1] as RequestInit).body as string,
+    );
+    expect(body.username).toBe('anvar.k');
+  });
+
+  it('omits username from the body when the field is left blank (F4.12)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse(201, { user: { id: 99 } }),
+    );
+
+    renderWithProviders(
+      <EmployeeFormDialog
+        open={true}
+        onOpenChange={() => {}}
+        locations={LOCATIONS}
+        onSaved={() => {}}
+      />,
+    );
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText('Ism-familiya'), 'Test');
+    await user.type(
+      screen.getByLabelText('Elektron pochta'),
+      'test@adia.local',
+    );
+    await user.type(screen.getByLabelText('Parol'), 'pass1234');
+    await user.click(screen.getByLabelText('Filial-1'));
+
+    await user.click(screen.getByRole('button', { name: 'Saqlash' }));
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalled();
+    });
+    const body = JSON.parse(
+      (fetchSpy.mock.calls[0]![1] as RequestInit).body as string,
+    );
+    // No `username` key — the backend derives one from the email
+    // local-part. Sending an empty string would 422.
+    expect('username' in body).toBe(false);
+  });
+
+  it('rejects an invalid username pattern client-side (F4.12)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse(201, { user: { id: 99 } }),
+    );
+
+    renderWithProviders(
+      <EmployeeFormDialog
+        open={true}
+        onOpenChange={() => {}}
+        locations={LOCATIONS}
+        onSaved={() => {}}
+      />,
+    );
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText('Ism-familiya'), 'Test');
+    await user.type(
+      screen.getByLabelText('Elektron pochta'),
+      'test@adia.local',
+    );
+    // Capital letter + space + 2 chars — fails on both length and charset.
+    await user.type(screen.getByLabelText(/foydalanuvchi nomi/i), 'AB');
+    await user.type(screen.getByLabelText('Parol'), 'pass1234');
+    await user.click(screen.getByLabelText('Filial-1'));
+
+    await user.click(screen.getByRole('button', { name: 'Saqlash' }));
+
+    expect(screen.getByRole('alert').textContent).toMatch(
+      /foydalanuvchi nomi/i,
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('rejects a password shorter than 8 characters without firing a request', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       jsonResponse(201, { user: { id: 99 } }),

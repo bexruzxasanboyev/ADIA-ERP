@@ -39,15 +39,57 @@ describe('LoginPage', () => {
 
   it('labels every form field with an id (WCAG)', () => {
     renderLogin();
-    expect(screen.getByLabelText('Elektron pochta')).toHaveAttribute(
-      'id',
-      'email',
-    );
+    // F4.12 — single combined field; type=text accepts either an email
+    // or a short username handle.
+    expect(
+      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
+    ).toHaveAttribute('id', 'login');
     expect(screen.getByLabelText('Parol')).toHaveAttribute('id', 'password');
-    expect(screen.getByLabelText('Elektron pochta')).toHaveAttribute(
-      'name',
-      'email',
+    expect(
+      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
+    ).toHaveAttribute('name', 'login');
+    expect(
+      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
+    ).toHaveAttribute('type', 'text');
+    expect(
+      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
+    ).toHaveAttribute('autocomplete', 'username');
+  });
+
+  it('POSTs {login, password} (F4.12 unified handle field)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse(200, {
+        access_token: 'A',
+        refresh_token: 'R',
+        user: {
+          id: 1,
+          name: 'PM',
+          email: 'pm@adia.local',
+          username: 'pm',
+          role: 'pm',
+          location_id: null,
+        },
+      }),
     );
+    const user = userEvent.setup();
+    renderLogin();
+
+    // The username "pm" — not an email — must be sent in the `login` field.
+    await user.type(
+      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
+      'pm',
+    );
+    await user.type(screen.getByLabelText('Parol'), 'secret123');
+    await user.click(screen.getByRole('button', { name: 'Kirish' }));
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalled();
+    });
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
+    const body = JSON.parse(init.body as string);
+    expect(body).toEqual({ login: 'pm', password: 'secret123' });
+    // Explicitly: the legacy `email` field must NOT be sent.
+    expect(body.email).toBeUndefined();
   });
 
   it('shows an Uzbek error message on invalid credentials (401)', async () => {
@@ -59,13 +101,16 @@ describe('LoginPage', () => {
     const user = userEvent.setup();
     renderLogin();
 
-    await user.type(screen.getByLabelText('Elektron pochta'), 'x@adia.local');
+    await user.type(
+      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
+      'x@adia.local',
+    );
     await user.type(screen.getByLabelText('Parol'), 'wrongpass');
     await user.click(screen.getByRole('button', { name: 'Kirish' }));
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toHaveTextContent(
-        'Elektron pochta yoki parol noto‘g‘ri.',
+        'Login yoki parol noto‘g‘ri.',
       );
     });
   });
@@ -82,6 +127,7 @@ describe('LoginPage', () => {
           id: 1,
           name: 'PM',
           email: 'pm@adia.local',
+          username: 'pm',
           role: 'pm',
           location_id: null,
         },
@@ -90,7 +136,10 @@ describe('LoginPage', () => {
     const user = userEvent.setup();
     renderLogin();
 
-    await user.type(screen.getByLabelText('Elektron pochta'), 'pm@adia.local');
+    await user.type(
+      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
+      'pm@adia.local',
+    );
     await user.type(screen.getByLabelText('Parol'), 'secret123');
     await user.click(screen.getByRole('button', { name: 'Kirish' }));
 
@@ -115,6 +164,7 @@ describe('LoginPage', () => {
           id: 7,
           name: 'Supply menejeri',
           email: 'supply@adia.local',
+          username: 'supply',
           role: 'supply_manager',
           location_id: 42,
         },
@@ -124,7 +174,7 @@ describe('LoginPage', () => {
     renderLogin();
 
     await user.type(
-      screen.getByLabelText('Elektron pochta'),
+      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
       'supply@adia.local',
     );
     await user.type(screen.getByLabelText('Parol'), 'secret123');
@@ -151,6 +201,7 @@ describe('LoginPage', () => {
           id: 1,
           name: 'PM',
           email: 'pm@adia.local',
+          username: 'pm',
           role: 'pm',
           location_id: null,
         },
@@ -159,7 +210,10 @@ describe('LoginPage', () => {
     const user = userEvent.setup();
     renderLogin();
 
-    await user.type(screen.getByLabelText('Elektron pochta'), 'pm@adia.local');
+    await user.type(
+      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
+      'pm@adia.local',
+    );
     await user.type(screen.getByLabelText('Parol'), 'secret123');
     await user.click(screen.getByRole('button', { name: 'Kirish' }));
 
@@ -174,7 +228,10 @@ describe('LoginPage', () => {
     const user = userEvent.setup();
     renderLogin();
 
-    await user.type(screen.getByLabelText('Elektron pochta'), 'x@adia.local');
+    await user.type(
+      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
+      'x@adia.local',
+    );
     await user.type(screen.getByLabelText('Parol'), 'secret123');
     await user.click(screen.getByRole('button', { name: 'Kirish' }));
 

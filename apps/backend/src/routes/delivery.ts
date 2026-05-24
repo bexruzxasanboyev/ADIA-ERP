@@ -55,6 +55,7 @@ type DeliveryRow = ReplenishmentRow & {
   requester_location_name: string | null;
   target_location_name: string | null;
   assigned_to_user_name: string | null;
+  assigned_to_user_username: string | null;
 };
 
 // =============================================================================
@@ -152,7 +153,8 @@ deliveryRouter.get(
               p.unit AS product_unit,
               rl.name AS requester_location_name,
               tl.name AS target_location_name,
-              u.name  AS assigned_to_user_name
+              u.name  AS assigned_to_user_name,
+              u.username AS assigned_to_user_username
          FROM replenishment_requests r
          JOIN products p ON p.id = r.product_id
          LEFT JOIN locations rl ON rl.id = r.requester_location_id

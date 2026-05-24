@@ -13,7 +13,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/hooks/useAuth';
 import { apiRequest, ApiError } from '@/lib/api-client';
-import type { LoginResponse } from '@/lib/types';
+import type { LoginRequest, LoginResponse } from '@/lib/types';
 
 interface LocationState {
   from?: string;
@@ -21,14 +21,21 @@ interface LocationState {
 
 /**
  * Login page — wired to `POST /api/auth/login` (phase-1-mvp.md §4.1).
+ *
+ * F4.12 — the unified `login` field accepts either an email or a short
+ * username handle (3-32 chars, `[a-z0-9._-]`). The backend disambiguates
+ * server-side: it tries email first, then falls back to username. The
+ * legacy `{email, password}` shape is still accepted by the backend for
+ * back-compat, but the client always sends `{login, password}`.
+ *
  * On success the session is stored and the user is sent to the path
  * they originally requested (or the dashboard).
  */
 export function LoginPage() {
-  const { login } = useAuth();
+  const { login: loginToContext } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const [email, setEmail] = useState('');
+  const [login, setLogin] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -42,11 +49,12 @@ export function LoginPage() {
     setIsSubmitting(true);
 
     try {
+      const body: LoginRequest = { login: login.trim(), password };
       const result = await apiRequest<LoginResponse>('/api/auth/login', {
         method: 'POST',
-        body: { email, password },
+        body,
       });
-      login(
+      loginToContext(
         {
           accessToken: result.access_token,
           refreshToken: result.refresh_token,
@@ -59,7 +67,7 @@ export function LoginPage() {
         // 401 / 422 → bad credentials or invalid input.
         setError(
           err.status === 401 || err.status === 422
-            ? 'Elektron pochta yoki parol noto‘g‘ri.'
+            ? 'Login yoki parol noto‘g‘ri.'
             : err.message,
         );
       } else {
@@ -81,16 +89,16 @@ export function LoginPage() {
         <CardContent>
           <form className="space-y-4" onSubmit={handleSubmit} noValidate>
             <div className="space-y-2">
-              <Label htmlFor="email">Elektron pochta</Label>
+              <Label htmlFor="login">Email yoki foydalanuvchi nomi</Label>
               <Input
-                id="email"
-                name="email"
-                type="email"
-                autoComplete="email"
-                placeholder="pochta@adia.local"
+                id="login"
+                name="login"
+                type="text"
+                autoComplete="username"
+                placeholder="pm@adia.local yoki pm"
                 required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                value={login}
+                onChange={(e) => setLogin(e.target.value)}
                 disabled={isSubmitting}
                 aria-invalid={error !== null}
               />
