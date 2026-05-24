@@ -124,14 +124,14 @@ export function ExecutiveDashboardPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       <HeaderStrip userName={userName} isoDate={today} />
 
       <HeroKpiStrip cards={kpiCards} />
 
       <EcosystemHealthBar nodes={ecosystem.data?.chain_flow ?? []} />
 
-      <div className="grid gap-6 xl:grid-cols-12">
+      <div className="grid gap-4 sm:gap-6 xl:grid-cols-12">
         <CriticalAlerts
           belowMin={overview.data.below_min}
           alerts={ecosystem.data?.alerts_feed ?? []}

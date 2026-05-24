@@ -92,12 +92,12 @@ export function PurchaseOrdersPage() {
         }
       />
 
-      <div className="flex flex-wrap items-end gap-4">
+      <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4">
         <div className="space-y-1">
           <Label htmlFor="purch-status">Holat bo‘yicha</Label>
           <Select
             id="purch-status"
-            className="w-56"
+            className="w-full sm:w-56"
             value={status}
             onChange={(e) =>
               setStatus(e.target.value as PurchaseOrderStatus | '')

@@ -20,8 +20,10 @@ import {
   LoadingState,
   PageHeader,
 } from '@/components/PageState';
+import { MobileCardList } from '@/components/ui/table-mobile';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
+import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import { formatDateTime, formatQty } from '@/lib/format';
 import {
@@ -57,6 +59,8 @@ export function ProductionOrdersPage() {
     user?.role === 'pm' || user?.role === 'production_manager';
 
   const { notify } = useToast();
+  const bp = useBreakpoint();
+  const showMobileCards = bp === 'xs';
   const [status, setStatus] = useState<ProductionOrderStatus | ''>('');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -133,12 +137,12 @@ export function ProductionOrdersPage() {
         }
       />
 
-      <div className="flex flex-wrap items-end gap-4">
+      <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4">
         <div className="space-y-1">
           <Label htmlFor="po-status">Holat bo‘yicha</Label>
           <Select
             id="po-status"
-            className="w-56"
+            className="w-full sm:w-56"
             value={status}
             onChange={(e) =>
               setStatus(e.target.value as ProductionOrderStatus | '')
@@ -171,7 +175,78 @@ export function ProductionOrdersPage() {
         {!isLoading && !error && rows.length === 0 && (
           <EmptyState message="Zayafkalar topilmadi." />
         )}
-        {!isLoading && !error && rows.length > 0 && (
+        {!isLoading && !error && rows.length > 0 && showMobileCards && (
+          <MobileCardList
+            items={rows.map((row) => {
+              const isBusy = busyId === row.id;
+              const unit = productById.get(row.product_id)?.unit ?? '';
+              return {
+                id: row.id,
+                title: `#${row.id} · ${row.product_name}`,
+                subtitle: `${row.location_name}${row.target_location_name ? ` → ${row.target_location_name}` : ''}`,
+                badge: (
+                  <Badge variant={PRODUCTION_ORDER_STATUS_VARIANT[row.status]}>
+                    {PRODUCTION_ORDER_STATUS_LABELS[row.status]}
+                  </Badge>
+                ),
+                fields: [
+                  {
+                    label: 'Miqdor',
+                    value: `${formatQty(row.qty)} ${unit}`,
+                  },
+                  {
+                    label: 'Muddat',
+                    value: row.deadline ?? '—',
+                  },
+                  {
+                    label: 'Yaratilgan',
+                    value: formatDateTime(row.created_at),
+                  },
+                ],
+                footer:
+                  canTransition &&
+                  (row.status === 'new' || row.status === 'in_progress') ? (
+                    <div className="flex flex-wrap gap-2">
+                      {row.status === 'new' && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={isBusy}
+                          onClick={() => transition(row.id, 'in_progress')}
+                        >
+                          {isBusy && (
+                            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                          )}
+                          Boshlash
+                        </Button>
+                      )}
+                      {row.status === 'in_progress' && (
+                        <Button
+                          size="sm"
+                          disabled={isBusy}
+                          onClick={() => transition(row.id, 'done')}
+                        >
+                          {isBusy && (
+                            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                          )}
+                          Yakunlash
+                        </Button>
+                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={isBusy}
+                        onClick={() => transition(row.id, 'cancelled')}
+                      >
+                        Bekor
+                      </Button>
+                    </div>
+                  ) : undefined,
+              };
+            })}
+          />
+        )}
+        {!isLoading && !error && rows.length > 0 && !showMobileCards && (
           <Table>
             <TableHeader>
               <TableRow>

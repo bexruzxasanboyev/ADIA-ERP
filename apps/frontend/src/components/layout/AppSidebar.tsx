@@ -13,12 +13,23 @@ import { navSectionsForRole } from '@/lib/navigation';
 import { ROLE_LABELS } from '@/lib/labels';
 import { useAuth } from '@/hooks/useAuth';
 
-export function AppSidebar() {
+interface AppSidebarProps {
+  /**
+   * Called after a nav link is clicked. The mobile drawer wraps the
+   * sidebar in a Sheet and uses this hook to auto-close on navigate so
+   * the user lands on the target screen without manually dismissing.
+   */
+  onNavigate?: () => void;
+  /** When `true`, omit the `aside` chrome — caller supplies the shell. */
+  inDrawer?: boolean;
+}
+
+export function AppSidebar({ onNavigate, inDrawer = false }: AppSidebarProps) {
   const { user, logout } = useAuth();
   const sections = user ? navSectionsForRole(user.role) : [];
 
-  return (
-    <Sidebar>
+  const body = (
+    <>
       <SidebarHeader>
         <CakeSlice className="size-6 text-primary" aria-hidden="true" />
         <span className="text-base font-semibold tracking-tight">ADIA ERP</span>
@@ -32,9 +43,10 @@ export function AppSidebar() {
               <NavLink
                 key={item.path}
                 to={item.path}
+                onClick={onNavigate}
                 className={({ isActive }) =>
                   cn(
-                    'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                    'flex min-h-11 items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
                     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                     isActive
                       ? 'bg-sidebar-accent text-foreground'
@@ -73,6 +85,14 @@ export function AppSidebar() {
           Chiqish
         </Button>
       </SidebarFooter>
-    </Sidebar>
+    </>
   );
+
+  if (inDrawer) {
+    // Inside the Sheet drawer — no `aside` element so the Sheet wrapper
+    // owns the layout / border / focus chrome.
+    return <div className="flex h-full flex-col">{body}</div>;
+  }
+
+  return <Sidebar>{body}</Sidebar>;
 }

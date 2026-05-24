@@ -13,6 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { MobileCardList } from '@/components/ui/table-mobile';
 import {
   EmptyState,
   ErrorState,
@@ -21,6 +22,7 @@ import {
 } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
+import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { PRODUCT_TYPE_LABELS, UNIT_LABELS } from '@/lib/labels';
 import type { Product, ProductType } from '@/lib/types';
 import { ProductFormDialog } from './ProductFormDialog';
@@ -53,6 +55,8 @@ export function ProductsPage() {
   const canEditRecipe =
     user?.role === 'pm' || user?.role === 'production_manager';
 
+  const bp = useBreakpoint();
+  const showMobileCards = bp === 'xs';
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [createOpen, setCreateOpen] = useState(false);
   const [recipeProduct, setRecipeProduct] = useState<Product | null>(null);
@@ -83,12 +87,12 @@ export function ProductsPage() {
         }
       />
 
-      <div className="flex items-end gap-3">
+      <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-end">
         <div className="space-y-1">
           <Label htmlFor="type-filter">Tur bo‘yicha</Label>
           <Select
             id="type-filter"
-            className="w-52"
+            className="w-full sm:w-52"
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
           >
@@ -109,7 +113,37 @@ export function ProductsPage() {
         {!isLoading && !error && products.length === 0 && (
           <EmptyState message="Mahsulotlar topilmadi." />
         )}
-        {!isLoading && !error && products.length > 0 && (
+        {!isLoading && !error && products.length > 0 && showMobileCards && (
+          <MobileCardList
+            items={products.map((p) => ({
+              id: p.id,
+              title: p.name,
+              subtitle: p.sku ?? undefined,
+              badge: (
+                <Badge variant={TYPE_BADGE[p.type]}>
+                  {PRODUCT_TYPE_LABELS[p.type]}
+                </Badge>
+              ),
+              fields: [
+                { label: 'Birlik', value: UNIT_LABELS[p.unit] },
+                { label: 'Turi', value: PRODUCT_TYPE_LABELS[p.type] },
+              ],
+              footer:
+                p.type !== 'raw' ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => setRecipeProduct(p)}
+                  >
+                    <ScrollText className="size-4" aria-hidden="true" />
+                    {canEditRecipe ? 'Retseptni tahrirlash' : 'Retsept'}
+                  </Button>
+                ) : undefined,
+            }))}
+          />
+        )}
+        {!isLoading && !error && products.length > 0 && !showMobileCards && (
           <Table>
             <TableHeader>
               <TableRow>

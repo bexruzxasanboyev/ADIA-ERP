@@ -118,13 +118,16 @@ export function EcosystemHealthBar({
       <p className="mb-3 text-xs uppercase tracking-wider text-muted-foreground">
         Ekosistema sog‘lig‘i
       </p>
-      <div className="flex items-stretch gap-2">
+      <div className="flex flex-col gap-2 lg:flex-row lg:items-stretch">
         {STAGE_ORDER.map((type, idx) => {
           const agg = grouped[type];
           const Icon = STAGE_ICON[type];
           const status = stageStatus(agg);
           return (
-            <div key={type} className="flex flex-1 items-stretch gap-2">
+            <div
+              key={type}
+              className="flex items-stretch gap-2 lg:flex-1"
+            >
               <div
                 className="flex flex-1 items-center gap-3 rounded-md border border-border/60 bg-card/40 px-3 py-2.5"
                 data-testid={`health-pill-${type}`}
@@ -157,7 +160,7 @@ export function EcosystemHealthBar({
               </div>
               {idx < STAGE_ORDER.length - 1 && (
                 <ChevronRight
-                  className="size-4 shrink-0 self-center text-muted-foreground"
+                  className="hidden size-4 shrink-0 self-center text-muted-foreground lg:block"
                   aria-hidden="true"
                 />
               )}

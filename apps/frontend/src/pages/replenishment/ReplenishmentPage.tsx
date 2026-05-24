@@ -14,6 +14,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { MobileCardList } from '@/components/ui/table-mobile';
 import {
   EmptyState,
   ErrorState,
@@ -22,6 +23,7 @@ import {
 } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
+import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { formatDateTime, formatQty } from '@/lib/format';
 import {
   REPLENISHMENT_STATUS_LABELS,
@@ -47,6 +49,8 @@ export function ReplenishmentPage() {
   const canCreate =
     user?.role === 'pm' || user?.role === 'central_warehouse_manager';
 
+  const bp = useBreakpoint();
+  const showMobileCards = bp === 'xs';
   const [status, setStatus] = useState<ReplenishmentStatus | ''>('');
   const [dialogOpen, setDialogOpen] = useState(false);
 
@@ -81,12 +85,12 @@ export function ReplenishmentPage() {
         }
       />
 
-      <div className="flex flex-wrap items-end gap-4">
+      <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4">
         <div className="space-y-1">
           <Label htmlFor="repl-status">Holat bo‘yicha</Label>
           <Select
             id="repl-status"
-            className="w-64"
+            className="w-full sm:w-64"
             value={status}
             onChange={(e) =>
               setStatus(e.target.value as ReplenishmentStatus | '')
@@ -110,7 +114,33 @@ export function ReplenishmentPage() {
         {!isLoading && !error && rows.length === 0 && (
           <EmptyState message="So‘rovlar topilmadi." />
         )}
-        {!isLoading && !error && rows.length > 0 && (
+        {!isLoading && !error && rows.length > 0 && showMobileCards && (
+          <MobileCardList
+            items={rows.map((row) => ({
+              id: row.id,
+              title: `#${row.id} · ${row.product_name}`,
+              subtitle: row.requester_location_name,
+              badge: (
+                <Badge variant={REPLENISHMENT_STATUS_VARIANT[row.status]}>
+                  {REPLENISHMENT_STATUS_LABELS[row.status]}
+                </Badge>
+              ),
+              fields: [
+                {
+                  label: 'Miqdor',
+                  value: `${formatQty(row.qty_needed)} ${row.product_unit}`,
+                },
+                { label: 'Yaratilgan', value: formatDateTime(row.created_at) },
+              ],
+              footer: (
+                <Button variant="outline" size="sm" asChild className="w-full">
+                  <Link to={`/replenishment/${row.id}`}>Ochish</Link>
+                </Button>
+              ),
+            }))}
+          />
+        )}
+        {!isLoading && !error && rows.length > 0 && !showMobileCards && (
           <Table>
             <TableHeader>
               <TableRow>

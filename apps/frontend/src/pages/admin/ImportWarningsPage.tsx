@@ -111,12 +111,12 @@ export function ImportWarningsPage() {
         description="Poster sync, retsept mismatch va dynamic recalc anomaliyalari."
       />
 
-      <div className="flex flex-wrap items-end gap-4">
+      <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4">
         <div className="space-y-1">
           <Label htmlFor="warning-source">Manba</Label>
           <Select
             id="warning-source"
-            className="w-56"
+            className="w-full sm:w-56"
             value={source}
             onChange={(e) => setSource(e.target.value)}
           >
@@ -131,7 +131,7 @@ export function ImportWarningsPage() {
           <Label htmlFor="warning-resolved">Holat</Label>
           <Select
             id="warning-resolved"
-            className="w-56"
+            className="w-full sm:w-56"
             value={resolved}
             onChange={(e) => setResolved(e.target.value)}
           >

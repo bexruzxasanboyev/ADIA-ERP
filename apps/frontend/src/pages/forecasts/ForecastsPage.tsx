@@ -91,12 +91,12 @@ export function ForecastsPage() {
         description="Keyingi 14 kunlik sotuv bashorati (Prophet)."
       />
 
-      <div className="flex flex-wrap items-end gap-4">
+      <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4">
         <div className="space-y-1">
           <Label htmlFor="forecast-location">Bo‘g‘in</Label>
           <Select
             id="forecast-location"
-            className="w-56"
+            className="w-full sm:w-56"
             value={String(locationFilter)}
             onChange={(e) => {
               const v = e.target.value;

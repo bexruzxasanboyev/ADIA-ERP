@@ -22,6 +22,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { MobileCardList } from '@/components/ui/table-mobile';
+import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { cn } from '@/lib/utils';
 import {
   EmptyState,
@@ -82,6 +84,12 @@ export function StockPage({
   // Manual recalc trigger is PM-only (phase-2.md §6 RBAC matrix).
   const canRecalc = user?.role === 'pm';
 
+  const bp = useBreakpoint();
+  // Switch to the card-list rendering for `<md` (phone). At `sm` (640..1023)
+  // and below we still want the dense table once the user is on a tablet
+  // landscape — so keep `md` (768+) as the threshold for showing the table.
+  const showMobileCards = bp === 'xs';
+
   const [tab, setTab] = useState<StockTab>('stock');
   const [locationFilter, setLocationFilter] = useState<string>('');
   const [movementOpen, setMovementOpen] = useState(false);
@@ -132,7 +140,7 @@ export function StockPage({
   }
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <div className="mx-auto w-full max-w-6xl space-y-6">
       <PageHeader
         title={title}
         description={description ?? 'Bo‘g‘inlar bo‘yicha ostatka va harakatlar.'}
@@ -157,7 +165,7 @@ export function StockPage({
         }
       />
 
-      <div className="flex flex-wrap items-end justify-between gap-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between sm:gap-4">
         <Tabs
           value={tab}
           onValueChange={setTab}
@@ -168,7 +176,7 @@ export function StockPage({
           <Label htmlFor="stock-location">Bo‘g‘in bo‘yicha</Label>
           <Select
             id="stock-location"
-            className="w-56"
+            className="w-full sm:w-56"
             value={locationFilter}
             onChange={(e) => setLocationFilter(e.target.value)}
           >
@@ -202,61 +210,115 @@ export function StockPage({
             {!stock.isLoading && !stock.error && rows.length === 0 && (
               <EmptyState message="Qoldiq ma’lumotlari topilmadi." />
             )}
-            {!stock.isLoading && !stock.error && rows.length > 0 && (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Mahsulot</TableHead>
-                    <TableHead className="text-right">Qoldiq</TableHead>
-                    <TableHead>Min / Max</TableHead>
-                    <TableHead>Holat</TableHead>
-                    <TableHead>Yangilangan</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {rows.map((row) => {
+            {!stock.isLoading && !stock.error && rows.length > 0 && !showMobileCards && (
+              <>
+                <div>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Mahsulot</TableHead>
+                        <TableHead className="text-right">Qoldiq</TableHead>
+                        <TableHead>Min / Max</TableHead>
+                        <TableHead>Holat</TableHead>
+                        <TableHead>Yangilangan</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {rows.map((row) => {
+                        const isLow = row.qty <= row.min_level;
+                        const unit = UNIT_LABELS[row.product_unit];
+                        return (
+                          <TableRow
+                            key={`${row.location_id}-${row.product_id}`}
+                            className={cn(
+                              isLow && 'bg-destructive/10 hover:bg-destructive/15',
+                            )}
+                          >
+                            <TableCell className="font-medium">
+                              {row.product_name}
+                            </TableCell>
+                            <TableCell
+                              className={cn(
+                                'text-right tabular-nums',
+                                isLow && 'font-semibold text-destructive',
+                              )}
+                            >
+                              {formatQty(row.qty)} {unit}
+                            </TableCell>
+                            <TableCell>
+                              <MinMaxCell
+                                row={row}
+                                canEdit={canEditMinMax}
+                                onSaved={stock.refetch}
+                              />
+                            </TableCell>
+                            <TableCell>
+                              {isLow ? (
+                                <Badge variant="danger">Min dan past</Badge>
+                              ) : (
+                                <Badge variant="success">Yetarli</Badge>
+                              )}
+                            </TableCell>
+                            <TableCell className="whitespace-nowrap text-muted-foreground">
+                              {formatDateTime(row.updated_at)}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+              </>
+            )}
+            {!stock.isLoading && !stock.error && rows.length > 0 && showMobileCards && (
+              <>
+                <MobileCardList
+                  items={rows.map((row) => {
                     const isLow = row.qty <= row.min_level;
                     const unit = UNIT_LABELS[row.product_unit];
-                    return (
-                      <TableRow
-                        key={`${row.location_id}-${row.product_id}`}
-                        className={cn(
-                          isLow && 'bg-destructive/10 hover:bg-destructive/15',
-                        )}
-                      >
-                        <TableCell className="font-medium">
-                          {row.product_name}
-                        </TableCell>
-                        <TableCell
-                          className={cn(
-                            'text-right tabular-nums',
-                            isLow && 'font-semibold text-destructive',
-                          )}
-                        >
-                          {formatQty(row.qty)} {unit}
-                        </TableCell>
-                        <TableCell>
-                          <MinMaxCell
-                            row={row}
-                            canEdit={canEditMinMax}
-                            onSaved={stock.refetch}
-                          />
-                        </TableCell>
-                        <TableCell>
-                          {isLow ? (
-                            <Badge variant="danger">Min dan past</Badge>
-                          ) : (
-                            <Badge variant="success">Yetarli</Badge>
-                          )}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap text-muted-foreground">
-                          {formatDateTime(row.updated_at)}
-                        </TableCell>
-                      </TableRow>
-                    );
+                    return {
+                      id: `${row.location_id}-${row.product_id}`,
+                      title: row.product_name,
+                      accentClassName: isLow
+                        ? 'border-destructive/40 bg-destructive/10'
+                        : undefined,
+                      badge: isLow ? (
+                        <Badge variant="danger">Min dan past</Badge>
+                      ) : (
+                        <Badge variant="success">Yetarli</Badge>
+                      ),
+                      fields: [
+                        {
+                          label: 'Qoldiq',
+                          value: (
+                            <span
+                              className={cn(
+                                isLow && 'font-semibold text-destructive',
+                              )}
+                            >
+                              {formatQty(row.qty)} {unit}
+                            </span>
+                          ),
+                        },
+                        {
+                          label: 'Min / Max',
+                          value: (
+                            <MinMaxCell
+                              row={row}
+                              canEdit={canEditMinMax}
+                              onSaved={stock.refetch}
+                            />
+                          ),
+                        },
+                        {
+                          label: 'Yangilangan',
+                          value: formatDateTime(row.updated_at),
+                        },
+                      ],
+                    };
                   })}
-                </TableBody>
-              </Table>
+                />
+              </>
             )}
           </>
         ) : (

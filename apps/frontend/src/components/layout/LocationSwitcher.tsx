@@ -57,15 +57,15 @@ export function LocationSwitcher() {
   }
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex min-w-0 items-center gap-2">
       <MapPin
-        className="size-4 text-muted-foreground"
+        className="hidden size-4 shrink-0 text-muted-foreground sm:inline-block"
         aria-hidden="true"
       />
       <label htmlFor="location-switcher" className="sr-only">
         Aktiv bo‘g‘in
       </label>
-      <div className="relative w-56">
+      <div className="relative w-36 sm:w-56">
         <Select
           id="location-switcher"
           value={currentLocation?.id ?? ''}
