@@ -32,9 +32,10 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        // Mobile: full-screen sheet. Above `sm` (640): centered modal.
-        'fixed inset-x-0 top-0 z-50 grid h-[100dvh] w-full gap-4 overflow-y-auto border-border bg-card p-4 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out',
-        'sm:left-1/2 sm:top-1/2 sm:inset-x-auto sm:h-auto sm:max-h-[90vh] sm:w-full sm:max-w-lg sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-lg sm:border sm:p-6',
+        // Default (mobile <640): full-screen sheet from the top.
+        'fixed left-0 right-0 top-0 z-50 mx-auto grid h-[100dvh] w-full max-w-full gap-4 overflow-y-auto border-border bg-card p-4 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out',
+        // ≥ sm: centered modal. left/right unset, positioned by transform.
+        'sm:left-1/2 sm:right-auto sm:top-1/2 sm:h-auto sm:max-h-[90vh] sm:w-[calc(100vw-2rem)] sm:max-w-lg sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-lg sm:border sm:p-6',
         className,
       )}
       {...props}
