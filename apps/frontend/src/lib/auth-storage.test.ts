@@ -10,16 +10,20 @@ import {
   getRefreshToken,
   setTokens,
   clearTokens,
+  getActiveLocation,
+  setActiveLocation,
 } from './auth-storage';
 
 const ACCESS_KEY = 'adia.access_token';
 const REFRESH_KEY = 'adia.refresh_token';
+const ACTIVE_LOCATION_KEY = 'adia.active_location';
 
 describe('auth-storage', () => {
   beforeEach(() => {
     clearTokens();
     window.localStorage.removeItem(ACCESS_KEY);
     window.localStorage.removeItem(REFRESH_KEY);
+    window.localStorage.removeItem(ACTIVE_LOCATION_KEY);
   });
 
   it('returns null when no tokens are stored', () => {
@@ -65,5 +69,42 @@ describe('auth-storage', () => {
     window.localStorage.setItem(REFRESH_KEY, 'persisted-r');
     expect(getAccessToken()).toBe('persisted-a');
     expect(getRefreshToken()).toBe('persisted-r');
+  });
+
+  // F4.1 / ADR-0012 — active-location selection storage.
+  describe('active location (F4.1)', () => {
+    it('returns null when nothing is persisted', () => {
+      expect(getActiveLocation()).toBeNull();
+    });
+
+    it('persists and reads back the active-location id', () => {
+      setActiveLocation(42);
+      expect(getActiveLocation()).toBe(42);
+      expect(window.localStorage.getItem(ACTIVE_LOCATION_KEY)).toBe('42');
+    });
+
+    it('setActiveLocation(null) drops the value from storage', () => {
+      setActiveLocation(7);
+      setActiveLocation(null);
+      expect(getActiveLocation()).toBeNull();
+      expect(window.localStorage.getItem(ACTIVE_LOCATION_KEY)).toBeNull();
+    });
+
+    it('clearTokens() also clears the active-location selection', () => {
+      // Logout invariant — the next user must not inherit the previous
+      // user's scope.
+      setTokens({ accessToken: 'A', refreshToken: 'R' });
+      setActiveLocation(123);
+      clearTokens();
+      expect(getActiveLocation()).toBeNull();
+      expect(window.localStorage.getItem(ACTIVE_LOCATION_KEY)).toBeNull();
+    });
+
+    it('hydrates the active-location from localStorage on a fresh load', () => {
+      // Simulates a page reload: storage already has the value, the
+      // in-memory cache was just cleared.
+      window.localStorage.setItem(ACTIVE_LOCATION_KEY, '99');
+      expect(getActiveLocation()).toBe(99);
+    });
   });
 });

@@ -4,6 +4,7 @@ import {
   getRefreshToken,
   setTokens,
   clearTokens,
+  getActiveLocation,
 } from './auth-storage';
 import type { ApiErrorBody } from './types';
 
@@ -88,6 +89,15 @@ async function executeRequest<T>(
   }
   if (body !== undefined) {
     finalHeaders['Content-Type'] = 'application/json';
+  }
+  // F4.1 / ADR-0012 — every authed request advertises the active
+  // location so the backend can scope the RBAC view to the user's
+  // currently selected bo'g'in. The header is omitted when no choice
+  // has been made (the server then falls back to the user's primary).
+  // Explicit per-call overrides in `headers` always win.
+  const activeLocation = getActiveLocation();
+  if (activeLocation !== null && finalHeaders['X-Active-Location'] === undefined) {
+    finalHeaders['X-Active-Location'] = String(activeLocation);
   }
 
   let response: Response;

@@ -10,10 +10,12 @@ import {
   getRefreshToken,
   setTokens,
   clearTokens,
+  getActiveLocation,
+  setActiveLocation as persistActiveLocation,
 } from '@/lib/auth-storage';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import { env } from '@/lib/env';
-import type { User } from '@/lib/types';
+import type { MeLocation, MeResponse, User } from '@/lib/types';
 import { AuthContext, type AuthContextValue } from './auth-context';
 
 /**
@@ -26,6 +28,11 @@ import { AuthContext, type AuthContextValue } from './auth-context';
  * stored access token is expired, `apiRequest` will transparently
  * refresh it before failing the hydration call.
  *
+ * F4.1 (ADR-0012) — the `/api/auth/me` envelope now also carries the
+ * user's M:N locations and the server-derived `active_location_id`.
+ * AuthProvider mirrors both into context so the header LocationSwitcher
+ * and any RBAC-aware screen can read them without an extra fetch.
+ *
  * Token storage tradeoff and rationale: see `lib/auth-storage.ts`.
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -33,6 +40,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     getAccessToken(),
   );
   const [user, setUser] = useState<User | null>(null);
+  const [locations, setLocations] = useState<MeLocation[]>([]);
+  const [activeLocationId, setActiveLocationIdState] = useState<number | null>(
+    () => getActiveLocation(),
+  );
   const [isHydrating, setIsHydrating] = useState<boolean>(
     () => getAccessToken() !== null,
   );
@@ -45,6 +56,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setTokens(tokens);
       setTokenState(tokens.accessToken);
       setUser(nextUser);
+      // F4.1 — login does not yet know the user's locations. Clear any
+      // stale active-location from a previous session; the immediate
+      // `/api/auth/me` hydration that follows will repopulate state.
+      persistActiveLocation(null);
+      setActiveLocationIdState(null);
+      setLocations([]);
     },
     [],
   );
@@ -71,9 +88,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }
 
+    // `clearTokens()` also drops the active-location selection — see
+    // `lib/auth-storage.ts`. Mirror those drops into React state so
+    // every consumer (sidebar, header switcher) re-renders cleanly.
     clearTokens();
     setTokenState(null);
     setUser(null);
+    setLocations([]);
+    setActiveLocationIdState(null);
+  }, []);
+
+  /**
+   * F4.1 — switch the user's active bo'g'in. Persists to localStorage
+   * (so subsequent `apiRequest` calls carry `X-Active-Location`),
+   * tells the server (audit row + 403 if the user is not assigned),
+   * and updates context state. Rethrows on failure so the caller can
+   * toast an error and roll back its optimistic UI.
+   */
+  const setActiveLocation = useCallback(async (id: number): Promise<void> => {
+    await apiRequest<{ active_location_id: number }>(
+      '/api/auth/active-location',
+      {
+        method: 'PATCH',
+        body: { location_id: id },
+        // Send the NEW id explicitly so the audit row records the
+        // user's intent — not the previously-active scope.
+        headers: { 'X-Active-Location': String(id) },
+      },
+    );
+    persistActiveLocation(id);
+    setActiveLocationIdState(id);
   }, []);
 
   // Re-hydrate the user from a stored token on first load / reload.
@@ -84,9 +128,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     let cancelled = false;
 
-    apiRequest<{ user: User }>('/api/auth/me')
+    apiRequest<MeResponse>('/api/auth/me')
       .then((me) => {
-        if (!cancelled) setUser(me.user);
+        if (cancelled) return;
+        setUser(me.user);
+        setLocations(me.locations ?? []);
+        // Prefer the server-side `active_location_id` (it knows the
+        // user's primary) over the localStorage value, which may be
+        // stale if the user was reassigned elsewhere. The server has
+        // already validated the choice — mirror it into storage so
+        // every later request sends the matching `X-Active-Location`.
+        if (me.active_location_id !== null && me.active_location_id !== undefined) {
+          persistActiveLocation(me.active_location_id);
+          setActiveLocationIdState(me.active_location_id);
+        } else {
+          persistActiveLocation(null);
+          setActiveLocationIdState(null);
+        }
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -96,6 +154,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (err instanceof ApiError && err.status === 401) {
           setTokenState(null);
           setUser(null);
+          setLocations([]);
+          setActiveLocationIdState(null);
         }
       })
       .finally(() => {
@@ -116,10 +176,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       token,
       isAuthenticated: token !== null,
       isHydrating,
+      locations,
+      activeLocationId,
       login,
       logout,
+      setActiveLocation,
     }),
-    [user, token, isHydrating, login, logout],
+    [
+      user,
+      token,
+      isHydrating,
+      locations,
+      activeLocationId,
+      login,
+      logout,
+      setActiveLocation,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

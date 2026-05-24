@@ -25,12 +25,19 @@ const ACCESS_KEY = 'adia.access_token';
 const REFRESH_KEY = 'adia.refresh_token';
 
 function Probe() {
-  const { user, isHydrating } = useAuth();
+  const { user, isHydrating, locations, activeLocationId } = useAuth();
   if (isHydrating) return <div>hydrating</div>;
   return (
     <div>
       <span data-testid="role">{user?.role ?? 'NONE'}</span>
       <span data-testid="name">{user?.name ?? 'NONE'}</span>
+      <span data-testid="locations-count">{locations.length}</span>
+      <span data-testid="active-location">
+        {activeLocationId === null ? 'NONE' : String(activeLocationId)}
+      </span>
+      <span data-testid="primary-location-name">
+        {locations.find((l) => l.is_primary)?.name ?? 'NONE'}
+      </span>
     </div>
   );
 }
@@ -79,5 +86,44 @@ describe('AuthProvider — /api/auth/me hydration', () => {
       expect(screen.getByTestId('role').textContent).toBe('pm');
     });
     expect(screen.getByTestId('name').textContent).toBe('Loyiha menejeri');
+  });
+
+  it('exposes me.locations and active_location_id from the F4.1 envelope', async () => {
+    // F4.1 — `/api/auth/me` enriches the envelope with the user's M:N
+    // assignments and a server-derived `active_location_id`. The
+    // AuthProvider mirrors both into context so the header switcher
+    // and any RBAC-aware screen can read them without an extra fetch.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse(200, {
+        user: {
+          id: 9,
+          name: 'Filial menejeri',
+          email: 'store@adia.local',
+          role: 'store_manager',
+          location_id: 11,
+        },
+        locations: [
+          { id: 11, name: 'Filial-1', type: 'store', is_primary: true },
+          { id: 12, name: 'Filial-2', type: 'store', is_primary: false },
+        ],
+        active_location_id: 12,
+      }),
+    );
+
+    await act(async () => {
+      render(
+        <AuthProvider>
+          <Probe />
+        </AuthProvider>,
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('locations-count').textContent).toBe('2');
+    });
+    expect(screen.getByTestId('primary-location-name').textContent).toBe(
+      'Filial-1',
+    );
+    expect(screen.getByTestId('active-location').textContent).toBe('12');
   });
 });

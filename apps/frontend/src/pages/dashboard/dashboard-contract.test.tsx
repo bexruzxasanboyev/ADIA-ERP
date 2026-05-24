@@ -101,6 +101,25 @@ function mockOverview(body: DashboardOverview) {
     if (url.includes('/api/forecasts')) {
       return Promise.resolve(jsonResponse(200, { items: [] }));
     }
+    // F4.4 — the dashboard fetches the ecosystem envelope (poster /
+    // chain flow / alerts / sales). Stub with an empty payload so the
+    // overview-focused assertions in this file are not coupled to it.
+    if (url.includes('/api/dashboard/ecosystem')) {
+      return Promise.resolve(
+        jsonResponse(200, {
+          poster_status: {
+            last_sync_at: null,
+            last_sync_status: null,
+            sync_errors_24h: 0,
+            sales_today_count: 0,
+            sales_today_sum: 0,
+          },
+          chain_flow: [],
+          alerts_feed: [],
+          sales_chart: { days: [] },
+        }),
+      );
+    }
     return Promise.reject(new Error(`unexpected fetch: ${url}`));
   });
 }

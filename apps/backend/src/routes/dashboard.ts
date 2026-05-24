@@ -543,3 +543,347 @@ function emptyOverview(): OverviewResponse {
     },
   };
 }
+
+// =============================================================================
+// F4.4 — GET /api/dashboard/ecosystem
+// =============================================================================
+//
+// One payload, four blocks:
+//   - poster_status: last sync run + 24h failure count + today's sales pulse
+//   - chain_flow:    every location with below-min / open-request counts,
+//                    ordered by type so the UI can render the supply chain
+//                    left-to-right (raw -> production -> supply -> central
+//                    -> store).
+//   - alerts_feed:   the latest 20 notifications with a derived severity.
+//   - sales_chart:   the last 30 days of daily sales (per scoped location set).
+//
+// RBAC mirrors M8 dashboard/overview — every authenticated business role can
+// hit the endpoint; non-chain roles are scoped to their assigned locations
+// (M:N — F4.1 / ADR-0012) for `chain_flow`, `sales_chart`, and the
+// `sales_today_*` fields of `poster_status`. `poster_status` headline metrics
+// (last sync, sync_errors_24h) are intentionally chain-wide — Poster sync is
+// a backend-wide event, not a per-location one.
+//
+// AC4.4.6 — endpoint P95 < 1000ms. Four queries fan out in parallel via
+// Promise.all; each one is bounded (sales_chart 30 rows, alerts_feed 20).
+// -----------------------------------------------------------------------------
+
+const ALERTS_FEED_LIMIT = 20;
+const SALES_CHART_WINDOW_DAYS = 30;
+
+type EcosystemScope =
+  | { kind: 'chain' } // pm / ai_assistant — every location.
+  | { kind: 'locations'; locationIds: number[] } // scoped principal.
+  | { kind: 'empty' }; // scoped principal with no assigned locations.
+
+type PosterStatusBlock = {
+  last_sync_at: string | null;
+  last_sync_status: 'ok' | 'partial' | 'failed' | null;
+  sync_errors_24h: number;
+  sales_today_count: number;
+  sales_today_sum: number;
+};
+
+type ChainFlowItem = {
+  location_id: number;
+  location_name: string;
+  location_type: string;
+  below_min_count: number;
+  open_requests_count: number;
+  total_products: number;
+};
+
+type AlertSeverity = 'info' | 'warning' | 'danger';
+
+type AlertsFeedItem = {
+  id: number;
+  type: string;
+  severity: AlertSeverity;
+  title: string;
+  message: string;
+  location_id: number | null;
+  created_at: string;
+};
+
+type SalesChartItem = {
+  date: string; // YYYY-MM-DD
+  qty: number;
+};
+
+type EcosystemResponse = {
+  poster_status: PosterStatusBlock;
+  chain_flow: ChainFlowItem[];
+  alerts_feed: AlertsFeedItem[];
+  sales_chart: { days: SalesChartItem[] };
+};
+
+dashboardRouter.get(
+  '/ecosystem',
+  authenticate,
+  authorize(
+    'pm',
+    'raw_warehouse_manager',
+    'production_manager',
+    'supply_manager',
+    'central_warehouse_manager',
+    'store_manager',
+    'ai_assistant',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const scope = resolveEcosystemScope(principal);
+
+    if (scope.kind === 'empty') {
+      res.status(200).json(emptyEcosystem());
+      return;
+    }
+
+    const [posterStatus, chainFlow, alertsFeed, salesChart] = await Promise.all([
+      fetchPosterStatus(scope),
+      fetchChainFlow(scope),
+      fetchAlertsFeed(),
+      fetchSalesChart(scope),
+    ]);
+
+    const response: EcosystemResponse = {
+      poster_status: posterStatus,
+      chain_flow: chainFlow,
+      alerts_feed: alertsFeed,
+      sales_chart: { days: salesChart },
+    };
+    res.status(200).json(response);
+  }),
+);
+
+function resolveEcosystemScope(principal: AuthPrincipal): EcosystemScope {
+  if (isSuperAdmin(principal) || principal.role === 'ai_assistant') {
+    return { kind: 'chain' };
+  }
+  // M:N — every assigned location. Empty array -> empty payload.
+  if (principal.locationIds.length === 0) {
+    return { kind: 'empty' };
+  }
+  return { kind: 'locations', locationIds: principal.locationIds };
+}
+
+/**
+ * Poster status block.
+ *   - last_sync_*  : the most recent `poster_sync_log` row (any entity).
+ *   - sync_errors_24h: count of `failed` rows in the last 24h.
+ *   - sales_today_* : today's `sales` rows; for a scoped principal, filtered
+ *     to their assigned stores. Stock movements/sync are chain-wide.
+ */
+async function fetchPosterStatus(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+): Promise<PosterStatusBlock> {
+  const salesParams: SqlParam[] = [];
+  let salesWhere = 'WHERE sold_at >= date_trunc(\'day\', now())';
+  if (scope.kind === 'locations') {
+    salesParams.push(scope.locationIds);
+    salesWhere += ` AND store_id = ANY($${salesParams.length}::bigint[])`;
+  }
+
+  const [lastSync, errors24h, salesToday] = await Promise.all([
+    query<{ finished_at: Date | null; started_at: Date; status: 'ok' | 'partial' | 'failed' }>(
+      // Order by `started_at` (NOT by id) — id reflects insert order, which
+      // is fine for the common case, but back-fills or replayed rows could
+      // arrive out of chronological order. The "last sync" the dashboard
+      // should show is the most recent one in real time.
+      `SELECT finished_at, started_at, status::text AS status
+         FROM poster_sync_log
+         ORDER BY started_at DESC, id DESC
+         LIMIT 1`,
+    ),
+    query<{ cnt: string }>(
+      `SELECT count(*) AS cnt
+         FROM poster_sync_log
+         WHERE status = 'failed'
+           AND started_at > now() - interval '24 hours'`,
+    ),
+    query<{ cnt: string; total: string | null }>(
+      `SELECT count(*) AS cnt, coalesce(sum(qty),0) AS total
+         FROM sales
+         ${salesWhere}`,
+      salesParams,
+    ),
+  ]);
+
+  const lastRow = lastSync.rows[0];
+  const lastWhen = lastRow?.finished_at ?? lastRow?.started_at ?? null;
+
+  return {
+    last_sync_at: lastWhen === null ? null : lastWhen.toISOString(),
+    last_sync_status: lastRow?.status ?? null,
+    sync_errors_24h: Number(errors24h.rows[0]?.cnt ?? 0),
+    sales_today_count: Number(salesToday.rows[0]?.cnt ?? 0),
+    sales_today_sum: Number(salesToday.rows[0]?.total ?? 0),
+  };
+}
+
+/**
+ * One row per location. `below_min_count` and `open_requests_count` are
+ * computed in SQL with LEFT JOIN sub-aggregates — keeps the result one
+ * query, scales linearly with location count (small — single digits in MVP).
+ *
+ * Ordering: type rank (raw -> production -> supply -> central -> store),
+ * then by id for a stable left-to-right render.
+ */
+async function fetchChainFlow(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+): Promise<ChainFlowItem[]> {
+  const params: SqlParam[] = [];
+  let where = 'WHERE l.is_active = TRUE';
+  if (scope.kind === 'locations') {
+    params.push(scope.locationIds);
+    where += ` AND l.id = ANY($${params.length}::bigint[])`;
+  }
+
+  const { rows } = await query<{
+    location_id: string;
+    location_name: string;
+    location_type: string;
+    below_min_count: string;
+    open_requests_count: string;
+    total_products: string;
+  }>(
+    `SELECT l.id              AS location_id,
+            l.name            AS location_name,
+            l.type::text      AS location_type,
+            coalesce(bm.below_min_count, 0)   AS below_min_count,
+            coalesce(orq.open_requests_count, 0) AS open_requests_count,
+            coalesce(tp.total_products, 0)    AS total_products
+       FROM locations l
+       LEFT JOIN LATERAL (
+         SELECT count(*) AS below_min_count
+           FROM stock s
+          WHERE s.location_id = l.id AND s.qty <= s.min_level
+       ) bm ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT count(*) AS open_requests_count
+           FROM replenishment_requests rr
+          WHERE rr.requester_location_id = l.id
+            AND rr.status NOT IN ('CLOSED','CANCELLED')
+       ) orq ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT count(*) AS total_products
+           FROM stock s2 WHERE s2.location_id = l.id
+       ) tp ON TRUE
+       ${where}
+       ORDER BY CASE l.type
+                  WHEN 'raw_warehouse'      THEN 1
+                  WHEN 'production'         THEN 2
+                  WHEN 'supply'             THEN 3
+                  WHEN 'central_warehouse'  THEN 4
+                  WHEN 'store'              THEN 5
+                  ELSE 6
+                END,
+                l.id`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    location_id: Number(r.location_id),
+    location_name: r.location_name,
+    location_type: r.location_type,
+    below_min_count: Number(r.below_min_count),
+    open_requests_count: Number(r.open_requests_count),
+    total_products: Number(r.total_products),
+  }));
+}
+
+/**
+ * The latest 20 notifications across the whole system. Per spec §2.4 the
+ * AlertsFeed is operational visibility — it is NOT user-scoped, so a manager
+ * sees the same recent alerts the PM sees. (Per-user filtering can come
+ * later if needed.) Severity is derived from `notifications.type` per the
+ * spec routing table.
+ */
+async function fetchAlertsFeed(): Promise<AlertsFeedItem[]> {
+  const { rows } = await query<{
+    id: string;
+    type: string;
+    title: string;
+    body: string;
+    payload: { location_id?: number | string } | null;
+    created_at: Date;
+  }>(
+    `SELECT id, type, title, body, payload, created_at
+       FROM notifications
+       ORDER BY created_at DESC, id DESC
+       LIMIT $1`,
+    [ALERTS_FEED_LIMIT],
+  );
+
+  return rows.map((r) => {
+    const payloadLoc = r.payload?.location_id;
+    const locationId =
+      payloadLoc === undefined || payloadLoc === null ? null : Number(payloadLoc);
+    return {
+      id: Number(r.id),
+      type: r.type,
+      severity: severityFor(r.type),
+      title: r.title,
+      message: r.body,
+      location_id: Number.isFinite(locationId as number) ? (locationId as number) : null,
+      created_at: r.created_at.toISOString(),
+    };
+  });
+}
+
+/** Spec §2.4 severity routing. Unknown types default to `info`. */
+function severityFor(type: string): AlertSeverity {
+  switch (type) {
+    case 'negative_stock_detected':
+    case 'poster_sync_failed':
+      return 'danger';
+    case 'stock_below_min':
+      return 'warning';
+    default:
+      return 'info';
+  }
+}
+
+/**
+ * Last 30 days of sales, aggregated from `sales_stats_daily`. For a scoped
+ * principal, only their assigned locations contribute. The chart is fed by
+ * the nightly `salesAggregateCron`, so per-day rows always exist for days
+ * that had sales.
+ */
+async function fetchSalesChart(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+): Promise<SalesChartItem[]> {
+  const params: SqlParam[] = [];
+  let where = `WHERE stat_date >= CURRENT_DATE - ($1::int || ' days')::interval`;
+  params.push(SALES_CHART_WINDOW_DAYS);
+  if (scope.kind === 'locations') {
+    params.push(scope.locationIds);
+    where += ` AND location_id = ANY($${params.length}::bigint[])`;
+  }
+  const { rows } = await query<{ stat_date: Date; qty: string }>(
+    `SELECT stat_date, sum(qty_sold) AS qty
+       FROM sales_stats_daily
+       ${where}
+       GROUP BY stat_date
+       ORDER BY stat_date`,
+    params,
+  );
+  return rows.map((r) => ({
+    date: toIsoDate(r.stat_date),
+    qty: Number(r.qty),
+  }));
+}
+
+function emptyEcosystem(): EcosystemResponse {
+  return {
+    poster_status: {
+      last_sync_at: null,
+      last_sync_status: null,
+      sync_errors_24h: 0,
+      sales_today_count: 0,
+      sales_today_sum: 0,
+    },
+    chain_flow: [],
+    alerts_feed: [],
+    sales_chart: { days: [] },
+  };
+}

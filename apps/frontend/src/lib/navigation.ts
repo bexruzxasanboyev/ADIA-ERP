@@ -9,6 +9,7 @@ import {
   MapPin,
   Package,
   Users,
+  UserCog,
   ClipboardList,
   ShoppingCart,
   AlertTriangle,
@@ -146,6 +147,13 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         path: '/users',
         label: 'Foydalanuvchilar',
         icon: Users,
+        roles: ['pm'],
+      },
+      {
+        // F4.1 — extended employees admin with M:N location flow.
+        path: '/employees',
+        label: 'Hodimlar',
+        icon: UserCog,
         roles: ['pm'],
       },
       {

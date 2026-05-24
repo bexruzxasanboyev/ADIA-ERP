@@ -35,12 +35,17 @@ import {
   UNIT_LABELS,
 } from '@/lib/labels';
 import type {
+  DashboardEcosystem,
   DashboardOverview,
   ReplenishmentStatus,
 } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { OpenRequestsChart } from './OpenRequestsChart';
 import { ForecastsPanel } from './ForecastsPanel';
+import { PosterStatusCard } from './PosterStatusCard';
+import { EcosystemFlow } from './EcosystemFlow';
+import { AlertsFeed } from './AlertsFeed';
+import { SalesChart } from './SalesChart';
 
 /**
  * M8 — Boshqaruv paneli (phase-1-mvp.md §2.8, §4.8).
@@ -62,8 +67,12 @@ export function DashboardPage() {
   const { data, isLoading, error, refetch } = useApiQuery<DashboardOverview>(
     '/api/dashboard/overview',
   );
+  const ecosystem = useApiQuery<DashboardEcosystem>(
+    '/api/dashboard/ecosystem',
+  );
 
   // Auto-refresh — 30 s when the tab is visible, paused when hidden.
+  // The ecosystem widgets share the same cadence as the overview.
   useEffect(() => {
     const REFRESH_MS = 30_000;
     let timer: number | null = null;
@@ -71,7 +80,10 @@ export function DashboardPage() {
     const start = () => {
       if (timer !== null) return;
       timer = window.setInterval(() => {
-        if (!document.hidden) refetch();
+        if (!document.hidden) {
+          refetch();
+          ecosystem.refetch();
+        }
       }, REFRESH_MS);
     };
     const stop = () => {
@@ -92,7 +104,7 @@ export function DashboardPage() {
       stop();
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [refetch]);
+  }, [refetch, ecosystem.refetch]);
 
   if (isLoading && data === null) {
     return (
@@ -138,16 +150,32 @@ export function DashboardPage() {
 
       <KpiStrip overview={data} />
 
+      {ecosystem.data !== null && (
+        <EcosystemFlow nodes={ecosystem.data.chain_flow} />
+      )}
+
       {isEmpty ? (
         <Card className="p-6">
           <EmptyState message="Hozircha kuzatish uchun ma’lumot yo‘q." />
         </Card>
       ) : (
         <>
-          <div className="grid gap-6 xl:grid-cols-5">
-            <BelowMinPanel overview={data} className="xl:col-span-3" />
-            <OpenRequestsPanel overview={data} className="xl:col-span-2" />
+          <div className="grid gap-6 xl:grid-cols-2">
+            <div className="space-y-6">
+              <BelowMinPanel overview={data} />
+              <OpenRequestsPanel overview={data} />
+            </div>
+            <div className="space-y-6">
+              <PosterStatusCard
+                status={ecosystem.data?.poster_status ?? null}
+              />
+              <AlertsFeed alerts={ecosystem.data?.alerts_feed ?? []} />
+            </div>
           </div>
+
+          {ecosystem.data !== null && (
+            <SalesChart points={ecosystem.data.sales_chart.days} />
+          )}
 
           <ForecastsPanel />
 

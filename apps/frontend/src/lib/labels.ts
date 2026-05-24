@@ -3,8 +3,10 @@
  * UI text is Uzbek (CLAUDE.md §2); enum keys stay English.
  */
 import type {
+  DashboardAlertType,
   LocationType,
   MovementReason,
+  PosterSyncStatus,
   ProductType,
   ProductionOrderStatus,
   PurchaseOrderStatus,
@@ -195,4 +197,45 @@ export const ASSISTANT_WRITE_TOOL_LABELS: Record<string, string> = {
 /** Lookup helper — falls back to the raw tool name when unmapped. */
 export function assistantWriteToolLabel(toolName: string): string {
   return ASSISTANT_WRITE_TOOL_LABELS[toolName] ?? toolName;
+}
+
+// ---------------------------------------------------------------------------
+// Faza-4 F4.4 — Dashboard ecosystem labels (Poster sync, alerts feed).
+// ---------------------------------------------------------------------------
+
+/** Uzbek labels for Poster sync statuses. */
+export const POSTER_SYNC_STATUS_LABELS: Record<PosterSyncStatus, string> = {
+  ok: 'Muvaffaqiyatli',
+  partial: 'Qisman',
+  failed: 'Xatolik',
+};
+
+/** Badge variant per Poster sync status. */
+export const POSTER_SYNC_STATUS_VARIANT: Record<
+  PosterSyncStatus,
+  'success' | 'warning' | 'danger'
+> = {
+  ok: 'success',
+  partial: 'warning',
+  failed: 'danger',
+};
+
+/** Uzbek labels for dashboard alert (notification) types. */
+export const DASHBOARD_ALERT_TYPE_LABELS: Record<DashboardAlertType, string> = {
+  stock_below_min: 'Min’dan tushdi',
+  replenishment_created: 'Yangi to‘ldirish so‘rovi',
+  production_order_created: 'Yangi zayafka',
+  production_order_done: 'Zayafka yakunlandi',
+  shipment_created: 'Jo‘natma',
+  purchase_request_created: 'Sotib olish so‘rovi',
+  purchase_request_approved: 'Sotib olish tasdiqlandi',
+  poster_sync_failed: 'Poster sync xato',
+  negative_stock_detected: 'Manfiy qoldiq',
+};
+
+/** Lookup helper — falls back to the raw type string when unmapped. */
+export function dashboardAlertTypeLabel(type: string): string {
+  return (
+    DASHBOARD_ALERT_TYPE_LABELS[type as DashboardAlertType] ?? type
+  );
 }

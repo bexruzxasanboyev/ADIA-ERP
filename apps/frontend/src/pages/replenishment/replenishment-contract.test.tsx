@@ -238,8 +238,11 @@ function renderDetail() {
     token: 'x',
     isAuthenticated: true,
     isHydrating: false,
+    locations: [],
+    activeLocationId: null,
     login: () => {},
     logout: async () => {},
+    setActiveLocation: async () => {},
   };
   return render(
     <AuthContext.Provider value={auth}>

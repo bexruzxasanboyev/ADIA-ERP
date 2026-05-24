@@ -19,9 +19,25 @@
  */
 const ACCESS_KEY = 'adia.access_token';
 const REFRESH_KEY = 'adia.refresh_token';
+/**
+ * F4.1 / ADR-0012 — persisted active-location id. The backend is
+ * stateless: every request carries `X-Active-Location: <id>` (via
+ * `apiRequest`). Storing the choice in localStorage keeps it stable
+ * across page reloads; clearing it on logout is mandatory so the next
+ * user does not inherit the previous user's scope.
+ */
+const ACTIVE_LOCATION_KEY = 'adia.active_location';
 
 let memoryAccess: string | null = null;
 let memoryRefresh: string | null = null;
+let memoryActiveLocation: number | null = null;
+/**
+ * Tracks whether `memoryActiveLocation` has already been hydrated from
+ * storage. Distinguishes the "fresh load, never read" state (need to
+ * read storage) from the "explicitly cleared" state (`null`, do not
+ * re-read) so `setActiveLocation(null)` is durable.
+ */
+let activeLocationHydrated = false;
 
 function readStorage(key: string): string | null {
   try {
@@ -76,4 +92,40 @@ export function clearTokens(): void {
   memoryRefresh = null;
   removeStorage(ACCESS_KEY);
   removeStorage(REFRESH_KEY);
+  // F4.1 — clearing the session must also drop the active-location
+  // selection so the next sign-in starts on the user's primary.
+  // `activeLocationHydrated` is reset so the next sign-in re-reads
+  // storage if a value reappears there (e.g. via direct manipulation
+  // in tests, or a concurrent tab).
+  memoryActiveLocation = null;
+  activeLocationHydrated = false;
+  removeStorage(ACTIVE_LOCATION_KEY);
+}
+
+/**
+ * F4.1 / ADR-0012 — the active location currently scoping the user's
+ * RBAC view. Returns `null` when the user has not picked one yet (the
+ * backend then falls back to the user's primary location).
+ */
+export function getActiveLocation(): number | null {
+  if (activeLocationHydrated) return memoryActiveLocation;
+  const raw = readStorage(ACTIVE_LOCATION_KEY);
+  if (raw === null) {
+    memoryActiveLocation = null;
+  } else {
+    const parsed = Number.parseInt(raw, 10);
+    memoryActiveLocation = Number.isFinite(parsed) ? parsed : null;
+  }
+  activeLocationHydrated = true;
+  return memoryActiveLocation;
+}
+
+export function setActiveLocation(id: number | null): void {
+  memoryActiveLocation = id;
+  activeLocationHydrated = true;
+  if (id === null) {
+    removeStorage(ACTIVE_LOCATION_KEY);
+  } else {
+    writeStorage(ACTIVE_LOCATION_KEY, String(id));
+  }
 }

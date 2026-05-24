@@ -21,6 +21,7 @@ import {
   clearTokens,
   getAccessToken,
   getRefreshToken,
+  setActiveLocation,
 } from './auth-storage';
 
 const BASE = 'http://localhost:3001';
@@ -30,6 +31,8 @@ interface CallLog {
   method: string;
   authHeader: string | null;
   body: string | null;
+  /** F4.1 — `X-Active-Location` header attached by `apiRequest`. */
+  activeLocationHeader: string | null;
 }
 
 /**
@@ -57,11 +60,14 @@ function installFetch() {
       const headers = init?.headers ?? {};
       const auth =
         (headers as Record<string, string>).Authorization ?? null;
+      const activeLoc =
+        (headers as Record<string, string>)['X-Active-Location'] ?? null;
       calls.push({
         url,
         method: init?.method ?? 'GET',
         authHeader: auth,
         body: typeof init?.body === 'string' ? init.body : null,
+        activeLocationHeader: activeLoc,
       });
       const queue = queues.get(url);
       if (queue === undefined || queue.length === 0) {
@@ -167,6 +173,25 @@ describe('apiRequest — JWT refresh', () => {
 
     // Just one fetch — no retry loop.
     expect(calls.length).toBe(1);
+  });
+
+  // F4.1 / ADR-0012 — `apiRequest` advertises the active-location on
+  // every authed request so the backend can scope the RBAC view.
+  it('attaches X-Active-Location when one is persisted', async () => {
+    const { calls, enqueue } = installFetch();
+    setActiveLocation(42);
+    enqueue('/api/stock', () => jsonResponse(200, []));
+    await apiRequest('/api/stock');
+    expect(calls[0]?.activeLocationHeader).toBe('42');
+    setActiveLocation(null);
+  });
+
+  it('omits X-Active-Location when none is set', async () => {
+    const { calls, enqueue } = installFetch();
+    setActiveLocation(null);
+    enqueue('/api/stock', () => jsonResponse(200, []));
+    await apiRequest('/api/stock');
+    expect(calls[0]?.activeLocationHeader).toBeNull();
   });
 
   it('shares ONE refresh across concurrent 401 responses', async () => {

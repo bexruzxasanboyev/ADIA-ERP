@@ -7,6 +7,7 @@ import { NotFoundPage } from '@/pages/NotFoundPage';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
 import { LocationsPage } from '@/pages/locations/LocationsPage';
 import { UsersPage } from '@/pages/users/UsersPage';
+import { EmployeesPage } from '@/pages/employees/EmployeesPage';
 import { ProductsPage } from '@/pages/products/ProductsPage';
 import { StockPage } from '@/pages/stock/StockPage';
 import { ReplenishmentPage } from '@/pages/replenishment/ReplenishmentPage';
@@ -142,6 +143,16 @@ export function AppRouter() {
           element={
             <RoleRoute allow={['pm']}>
               <UsersPage />
+            </RoleRoute>
+          }
+        />
+
+        {/* F4.1 — Hodimlar (M:N locations admin). */}
+        <Route
+          path="/employees"
+          element={
+            <RoleRoute allow={['pm']}>
+              <EmployeesPage />
             </RoleRoute>
           }
         />

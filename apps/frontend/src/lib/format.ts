@@ -26,3 +26,39 @@ export function formatDateTime(iso: string): string {
   if (Number.isNaN(date.getTime())) return iso;
   return dateTimeFormatter.format(date);
 }
+
+/**
+ * Format an ISO timestamp as a relative Uzbek string ("hozir",
+ * "5 daqiqa oldin", "2 soat oldin", "3 kun oldin"). Falls back to
+ * `formatDateTime` when the input is invalid or the gap is older than
+ * a week. `now` parameter is overridable for deterministic tests.
+ */
+export function formatRelative(iso: string | null, now: Date = new Date()): string {
+  if (iso === null) return '—';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const diffMs = now.getTime() - date.getTime();
+  const futureLabel = diffMs < 0 ? 'keyin' : 'oldin';
+  const abs = Math.abs(diffMs);
+
+  const SEC = 1000;
+  const MIN = 60 * SEC;
+  const HOUR = 60 * MIN;
+  const DAY = 24 * HOUR;
+  const WEEK = 7 * DAY;
+
+  if (abs < 30 * SEC) return 'hozir';
+  if (abs < HOUR) {
+    const m = Math.max(1, Math.floor(abs / MIN));
+    return `${m} daqiqa ${futureLabel}`;
+  }
+  if (abs < DAY) {
+    const h = Math.floor(abs / HOUR);
+    return `${h} soat ${futureLabel}`;
+  }
+  if (abs < WEEK) {
+    const d = Math.floor(abs / DAY);
+    return `${d} kun ${futureLabel}`;
+  }
+  return formatDateTime(iso);
+}

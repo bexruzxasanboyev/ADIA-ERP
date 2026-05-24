@@ -30,8 +30,11 @@ function fakeAuth(user: User): AuthContextValue {
     token: 'test-token',
     isAuthenticated: true,
     isHydrating: false,
+    locations: [],
+    activeLocationId: null,
     login: () => {},
     logout: async () => {},
+    setActiveLocation: async () => {},
   };
 }
 

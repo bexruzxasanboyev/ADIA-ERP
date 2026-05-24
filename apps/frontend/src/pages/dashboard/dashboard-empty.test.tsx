@@ -34,6 +34,25 @@ describe('DashboardPage — empty payload', () => {
       if (url.includes('/api/dashboard/overview')) {
         return Promise.resolve(jsonResponse(200, EMPTY));
       }
+      if (url.includes('/api/forecasts')) {
+        return Promise.resolve(jsonResponse(200, { items: [] }));
+      }
+      if (url.includes('/api/dashboard/ecosystem')) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            poster_status: {
+              last_sync_at: null,
+              last_sync_status: null,
+              sync_errors_24h: 0,
+              sales_today_count: 0,
+              sales_today_sum: 0,
+            },
+            chain_flow: [],
+            alerts_feed: [],
+            sales_chart: { days: [] },
+          }),
+        );
+      }
       return Promise.reject(new Error(`unexpected fetch: ${url}`));
     });
 

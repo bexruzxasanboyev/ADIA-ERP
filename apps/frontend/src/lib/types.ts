@@ -57,7 +57,51 @@ export interface User {
   name: string;
   email: string;
   role: Role;
+  /**
+   * Primary location id (mirrored from `user_locations.is_primary=TRUE`).
+   * `null` for chain-wide roles (`pm`, `ai_assistant`).
+   */
   location_id: number | null;
+  /**
+   * Optional — used only when constructing `POST /api/users` payloads
+   * for the M:N flow (F4.1). The list endpoint does NOT echo this field.
+   */
+  location_ids?: number[];
+  /** Optional Telegram numeric id, when provisioned by the PM. */
+  telegram_id?: number | null;
+}
+
+/**
+ * F4.1 / ADR-0012 — one row of `GET /api/users/:id/locations`. Uses the
+ * junction-table key `location_id` and exposes `assigned_at`. Distinct
+ * from `MeLocation`, the lighter shape embedded in `/api/auth/me`.
+ */
+export interface UserLocation {
+  location_id: number;
+  name: string;
+  type: LocationType;
+  is_primary: boolean;
+  assigned_at: string;
+}
+
+/**
+ * F4.1 / ADR-0012 — one row inside `MeResponse.locations`. Uses `id`
+ * (matching the `locations` table) and omits `assigned_at`; `/api/auth/me`
+ * is hot and the LocationSwitcher does not need the timestamp.
+ */
+export interface MeLocation {
+  id: number;
+  name: string;
+  type: LocationType;
+  is_primary: boolean;
+}
+
+/** `GET /api/auth/me` envelope (F4.1). */
+export interface MeResponse {
+  user: User;
+  locations: MeLocation[];
+  /** `null` for PMs who have not selected one yet (chain-wide view). */
+  active_location_id: number | null;
 }
 
 export interface Location {
@@ -584,6 +628,91 @@ export interface ForecastItem {
 /** `GET /api/forecasts` envelope. */
 export interface ForecastsResponse {
   items: ForecastItem[];
+}
+
+// ---------------------------------------------------------------------------
+// Faza-4 — F4.4 Dashboard ecosystem extension (phase-4.md §2.4).
+// Mirrors `apps/backend/src/routes/dashboard.ts` GET /api/dashboard/ecosystem.
+// ---------------------------------------------------------------------------
+
+/** Poster POS sync run status — mirrors backend `poster_sync_runs.status`. */
+export type PosterSyncStatus = 'ok' | 'partial' | 'failed';
+
+/** Severity of a notification surfaced on the dashboard alerts feed. */
+export type AlertSeverity = 'info' | 'warning' | 'danger';
+
+/**
+ * Notification type emitted by the backend `notifications` table. Mirrors
+ * `apps/backend/src/services/notify.ts` `NotificationType`.
+ */
+export type DashboardAlertType =
+  | 'stock_below_min'
+  | 'replenishment_created'
+  | 'production_order_created'
+  | 'production_order_done'
+  | 'shipment_created'
+  | 'purchase_request_created'
+  | 'purchase_request_approved'
+  | 'poster_sync_failed'
+  | 'negative_stock_detected';
+
+/** Poster sync card — first block of the F4.4 envelope. */
+export interface DashboardPosterStatus {
+  /** ISO timestamp of the most recent `poster_sync_runs` finish, or null. */
+  last_sync_at: string | null;
+  /** null when no sync has run yet. */
+  last_sync_status: PosterSyncStatus | null;
+  /** Count of `import_warnings` rows with severity='error' in the last 24h. */
+  sync_errors_24h: number;
+  /** Number of sales rows ingested today (`poster_sales_log` rows). */
+  sales_today_count: number;
+  /** Total revenue of those sales, local-currency major units. */
+  sales_today_sum: number;
+}
+
+/** One node in the ecosystem chain. */
+export interface DashboardChainNode {
+  location_id: number;
+  location_name: string;
+  location_type: LocationType;
+  /** Number of (product, location) rows currently below `min_level`. */
+  below_min_count: number;
+  /** Number of non-terminal `replenishment_requests` targeting this location. */
+  open_requests_count: number;
+  /** Distinct products held at this location. */
+  total_products: number;
+}
+
+/** One row in the alerts feed (mirrors `notifications` row). */
+export interface DashboardAlert {
+  id: number;
+  type: DashboardAlertType;
+  severity: AlertSeverity;
+  message: string;
+  /** Optional — only when the notification is location-scoped. */
+  location_id: number | null;
+  location_name?: string | null;
+  created_at: string;
+}
+
+/** One point in the 30-day sales chart. */
+export interface DashboardSalesPoint {
+  /** ISO `YYYY-MM-DD`. */
+  date: string;
+  /** Aggregate sold quantity for the day (sum of `stock_movements.qty` where reason='sale'). */
+  qty: number;
+}
+
+/**
+ * `GET /api/dashboard/ecosystem` envelope. Mirrors phase-4.md §2.4 contract.
+ */
+export interface DashboardEcosystem {
+  poster_status: DashboardPosterStatus;
+  chain_flow: DashboardChainNode[];
+  alerts_feed: DashboardAlert[];
+  sales_chart: {
+    days: DashboardSalesPoint[];
+  };
 }
 
 export interface PurchaseOrder {
