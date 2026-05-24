@@ -263,25 +263,27 @@ const STORE_OVERVIEW: ChainLayerOverview = {
 const STORE_SALES: SaleRow[] = [
   {
     id: 1,
-    location_id: 11,
-    location_name: 'Do‘kon #1 Chilonzor',
+    store_id: 11,
+    store_name: 'Do‘kon #1 Chilonzor',
     product_id: 9,
     product_name: 'Pishloqli non',
     product_unit: 'pcs',
     qty: 5,
-    total: 50000,
-    created_at: '2026-05-22T11:00:00.000Z',
+    price: 10000,
+    sold_at: '2026-05-22T11:00:00.000Z',
+    poster_transaction_id: 1001,
   },
   {
     id: 2,
-    location_id: 11,
-    location_name: 'Do‘kon #1 Chilonzor',
+    store_id: 11,
+    store_name: 'Do‘kon #1 Chilonzor',
     product_id: 10,
     product_name: 'Tort',
     product_unit: 'pcs',
     qty: 2,
-    total: 200000,
-    created_at: '2026-05-22T11:30:00.000Z',
+    price: 100000,
+    sold_at: '2026-05-22T11:30:00.000Z',
+    poster_transaction_id: 1002,
   },
 ];
 
@@ -484,7 +486,12 @@ describe('StoresPage — contract', () => {
         return jsonResponse(200, STORE_OVERVIEW);
       }
       if (url.includes('/api/sales')) {
-        return jsonResponse(200, STORE_SALES);
+        return jsonResponse(200, {
+          items: STORE_SALES,
+          total: STORE_SALES.length,
+          limit: 200,
+          offset: 0,
+        });
       }
       if (url.includes('/api/replenishment')) {
         return jsonResponse(200, [STORE_REPLEN]);

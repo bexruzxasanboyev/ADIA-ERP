@@ -37,6 +37,7 @@ import type {
   ChainLayerOverview,
   ReplenishmentRequest,
   SaleRow,
+  SalesResponse,
   StockRow,
 } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -61,8 +62,10 @@ export function StoresPage() {
     '/api/stock?location_type=store',
   );
   const today = TODAY_ISO();
-  const sales = useApiQuery<SaleRow[]>(
-    `/api/sales?from=${today}&to=${today}`,
+  // `/api/sales` returns the paginated envelope `{items, total, limit, offset}`,
+  // so unwrap `.items` before treating it as a SaleRow[].
+  const sales = useApiQuery<SalesResponse>(
+    `/api/sales?from=${today}&to=${today}&limit=200`,
   );
   const replen = useApiQuery<ReplenishmentRequest[]>('/api/replenishment');
 
@@ -93,7 +96,7 @@ export function StoresPage() {
   if (overview.data === null) return null;
 
   const { totals, locations, recent_movements } = overview.data;
-  const allSales = sales.data ?? [];
+  const allSales: SaleRow[] = sales.data?.items ?? [];
   const allReplen = replen.data ?? [];
   const openStoreReplen = allReplen.filter(
     (r) =>
@@ -109,9 +112,9 @@ export function StoresPage() {
   // Sales scoped per-store for the card top-3.
   const salesByStore = new Map<number, SaleRow[]>();
   for (const sale of allSales) {
-    const bucket = salesByStore.get(sale.location_id) ?? [];
+    const bucket = salesByStore.get(sale.store_id) ?? [];
     bucket.push(sale);
-    salesByStore.set(sale.location_id, bucket);
+    salesByStore.set(sale.store_id, bucket);
   }
 
   const kpis: ChainKpi[] = [
@@ -295,11 +298,14 @@ interface AggregatedSale {
 function aggregateSalesByProduct(rows: SaleRow[]): AggregatedSale[] {
   const map = new Map<number, AggregatedSale>();
   for (const row of rows) {
+    // Backend `/api/sales` rows carry unit `price`, not a line total — the
+    // aggregate `total` (revenue) is `qty * price` summed per product.
+    const lineTotal = row.qty * row.price;
     const existing = map.get(row.product_id);
     if (existing) {
       existing.qty += row.qty;
       existing.count += 1;
-      existing.total += row.total;
+      existing.total += lineTotal;
     } else {
       map.set(row.product_id, {
         product_id: row.product_id,
@@ -307,7 +313,7 @@ function aggregateSalesByProduct(rows: SaleRow[]): AggregatedSale[] {
         product_unit: row.product_unit,
         qty: row.qty,
         count: 1,
-        total: row.total,
+        total: lineTotal,
       });
     }
   }

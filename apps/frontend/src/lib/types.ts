@@ -831,14 +831,25 @@ export interface ChainLayerOverview {
  */
 export interface SaleRow {
   id: number;
-  location_id: number;
-  location_name: string;
+  /** Backend column: `sales.store_id`. */
+  store_id: number;
+  store_name: string;
   product_id: number;
   product_name: string;
   product_unit: Unit;
   qty: number;
+  /** Unit price; multiply by qty for the line total. */
+  price: number;
+  sold_at: string;
+  poster_transaction_id: number;
+}
+
+/** GET /api/sales returns `{ items, total, limit, offset }`. */
+export interface SalesResponse {
+  items: SaleRow[];
   total: number;
-  created_at: string;
+  limit: number;
+  offset: number;
 }
 
 /**
