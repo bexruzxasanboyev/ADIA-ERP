@@ -369,10 +369,13 @@ export async function fallbackPollTransactions(
 }
 
 function formatPosterDateTime(d: Date): string {
-  // Poster accepts "YYYY-MM-DD HH:mm:ss" for dash.getTransactions ranges.
+  // Empirical (2026-05-24): dash.getTransactions accepts "YYYY-MM-DD" but
+  // returns ZERO rows when a time component is appended. The old
+  // "YYYY-MM-DD HH:mm:ss" form silently dropped every poll. Keep it
+  // date-only — the 30-min poll window therefore widens to whole days on
+  // each tick, but ingestTransaction is idempotent on
+  // (poster_transaction_id, product_id, poster_line_id) so re-runs are
+  // free.
   const pad = (n: number): string => String(n).padStart(2, '0');
-  return (
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
-    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-  );
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }

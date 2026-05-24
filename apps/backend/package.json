@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "ADIA ERP — backend API (Express + PostgreSQL, raw SQL)",
+  "description": "ADIA ERP \u2014 backend API (Express + PostgreSQL, raw SQL)",
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
@@ -18,7 +18,8 @@
     "poster:test": "tsx scripts/poster-test.ts",
     "vertex:test": "tsx scripts/vertex-test.ts",
     "yandex:bootstrap": "tsx scripts/yandex-bootstrap.ts",
-    "yandex:test": "tsx scripts/yandex-test.ts"
+    "yandex:test": "tsx scripts/yandex-test.ts",
+    "poster:backfill": "tsx scripts/poster-backfill.ts"
   },
   "dependencies": {
     "@google/genai": "^1.52.0",
