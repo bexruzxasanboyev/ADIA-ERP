@@ -102,9 +102,12 @@ export function ApprovalPanel({ order, onChanged }: ApprovalPanelProps) {
 
   return (
     <div className="space-y-4 p-4">
-      {/* lg+: side-by-side. Below lg (including the 3-up PO card grid):
-          stack vertically so the inner button text doesn't bleed out. */}
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 lg:gap-4">
+      {/* Always stack vertically. The previous lg:grid-cols-2 split looked
+          fine in the standalone detail view, but the PO listing renders
+          this panel inside a 3-up card grid where each column is only a
+          third of the viewport — the two step cards collide there. A
+          single column reads well in both placements. */}
+      <div className="grid grid-cols-1 gap-3">
         <StepCard
           title="Ta’minot boshlig‘i tasdig‘i"
           signed={managerSigned}
