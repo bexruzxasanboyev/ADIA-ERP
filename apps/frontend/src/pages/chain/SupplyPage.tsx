@@ -37,16 +37,23 @@ import type {
 } from '@/lib/types';
 
 /**
- * F4.6 — `/supply` chain-layer screen.
+ * F4.6 — `/supply` chain-layer screen ("Sex skladlari").
  *
- * RBAC: `pm`, `supply_manager`.
+ * Renamed from "Ta'minot" — the layer is now "Sex skladi" (Tort skladi,
+ * Perojniy skladi, Yarim Fabrika skladi). The `/supply` URL is kept so
+ * external bookmarks keep working; the route label and on-page copy now
+ * read "Sex skladlari". The backend ENUM is migrating from `supply` to
+ * `sex_storage` — this page calls `chain-layer/supply` until the API
+ * flips, then will switch via a single string change.
+ *
+ * RBAC: `pm`, `supply_manager` (role enum key unchanged).
  *
  * Layer-specific widgets:
- *   - "Jo'natmaga tayyor" — semi/finished products held by supply
- *     locations that have qty > 0 (ready to ship to central warehouse).
+ *   - "Jo'natmaga tayyor" — semi/finished products held by sex storages
+ *     that have qty > 0 (ready to ship to central warehouse).
  *   - "Replenishment so'rovlari" — open replenishment requests routed
  *     through this layer (status=CHECK_STORE_SUPPLIER and similar).
- *   - Stock table (filtered to supply locations).
+ *   - Stock table (filtered to sex-storage locations).
  */
 export function SupplyPage() {
   const overview = useApiQuery<ChainLayerOverview>(
@@ -63,8 +70,8 @@ export function SupplyPage() {
     return (
       <div className="space-y-6">
         <PageHeader
-          title="Ta’minot"
-          description="Ta’minot bo‘limlari — Tort, Perojniy, Yarim Fabrika va kelayotgan so‘rovlar."
+          title="Sex skladlari"
+          description="Sex skladlari — Tort skladi, Perojniy skladi, Yarim Fabrika skladi va kelayotgan so‘rovlar."
         />
         <LoadingState />
       </div>
@@ -75,8 +82,8 @@ export function SupplyPage() {
     return (
       <div className="space-y-6">
         <PageHeader
-          title="Ta’minot"
-          description="Ta’minot bo‘limlari — Tort, Perojniy, Yarim Fabrika va kelayotgan so‘rovlar."
+          title="Sex skladlari"
+          description="Sex skladlari — Tort skladi, Perojniy skladi, Yarim Fabrika skladi va kelayotgan so‘rovlar."
         />
         <ErrorState message={overview.error} onRetry={overview.refetch} />
       </div>
@@ -91,11 +98,11 @@ export function SupplyPage() {
 
   const kpis: ChainKpi[] = [
     {
-      label: 'Ta’minot bo‘limlari',
+      label: 'Sex skladlari',
       value: totals.total_locations,
       icon: Truck,
       tone: 'accent',
-      hint: 'Tort, Perojniy, Yarim Fabrika',
+      hint: 'Tort skladi, Perojniy skladi, Yarim Fabrika skladi',
     },
     {
       label: 'Jo‘natmaga tayyor',
@@ -109,7 +116,7 @@ export function SupplyPage() {
       value: checkRequests.data?.length ?? 0,
       icon: Inbox,
       tone: (checkRequests.data?.length ?? 0) > 0 ? 'amber' : 'neutral',
-      hint: 'Tekshiruv: ta’minot/markaziy',
+      hint: 'Tekshiruv: sex skladi/markaziy',
     },
     {
       label: 'Min’dan past',
@@ -123,8 +130,8 @@ export function SupplyPage() {
   return (
     <ChainLayerLayout
       layerType="supply"
-      title="Ta’minot"
-      description="Ta’minot bo‘limlari — Tort, Perojniy, Yarim Fabrika va kelayotgan so‘rovlar."
+      title="Sex skladlari"
+      description="Sex skladlari — Tort skladi, Perojniy skladi, Yarim Fabrika skladi va kelayotgan so‘rovlar."
       totals={totals}
       kpis={kpis}
       locations={locations}
@@ -165,7 +172,7 @@ function ReadyToShipPanel({ rows }: { rows: StockRow[] }) {
             Jo‘natmaga tayyor
           </h2>
           <p className="text-xs text-muted-foreground">
-            Ta’minot bo‘limlarida mavjud tayyor/yarim tayyor mahsulotlar.
+            Sex skladlarida mavjud tayyor/yarim tayyor mahsulotlar.
           </p>
         </div>
         <Badge variant="outline" className="tabular-nums">
@@ -232,7 +239,7 @@ function PendingReplenishmentPanel({
             Kutmoqda — to‘ldirish so‘rovlari
           </h2>
           <p className="text-xs text-muted-foreground">
-            Do‘konlardan kelgan va ta’minot bo‘limi tekshiruvini kutayotgan
+            Do‘konlardan kelgan va sex skladi tekshiruvini kutayotgan
             so‘rovlar.
           </p>
         </div>
@@ -315,7 +322,7 @@ function SupplyStockPanel({
             Qoldiq jadvali
           </h2>
           <p className="text-xs text-muted-foreground">
-            Ta’minot bo‘limlari bo‘yicha jami qoldiq.
+            Sex skladlari bo‘yicha jami qoldiq.
           </p>
         </div>
       </header>

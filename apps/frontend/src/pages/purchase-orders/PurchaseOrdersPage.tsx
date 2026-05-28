@@ -88,7 +88,7 @@ export function PurchaseOrdersPage() {
     <div className="mx-auto max-w-[120rem] space-y-6">
       <PageHeader
         title="Sotib olish so‘rovlari"
-        description="Ta’minot bo‘limining sotib olish hujjatlari va ikki bosqichli tasdiq."
+        description="Sex skladining sotib olish hujjatlari va ikki bosqichli tasdiq."
         action={
           <div className="flex flex-wrap items-center gap-2">
             {isReadOnly && (

@@ -12,7 +12,7 @@ import { cn } from '@/lib/utils';
  * F4.4 — Ecosystem chain visualisation (phase-4.md §2.4).
  *
  * Renders the full bakery supply chain as a horizontal flow:
- *   Xom-ashyo ombori → Ishlab chiqarish → Ta'minot →
+ *   Xom-ashyo ombori → Ishlab chiqarish → Sex skladi →
  *   Markaziy sklad → Do'konlar
  *
  * Backend may return more than one node per type (multiple stores, two

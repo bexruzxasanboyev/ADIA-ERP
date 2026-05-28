@@ -14,9 +14,22 @@ import {
   ShoppingCart,
   TrendingUp,
   PackageCheck,
+  BookOpen,
   type LucideIcon,
 } from 'lucide-react';
 import type { Role } from './types';
+
+/**
+ * Hybrid navigation model — F4.13.
+ *
+ * The sidebar is collapsed to four group icons (Boshqaruv paneli,
+ * Bashorat, Modullar, Ma'lumotnoma). Inside the Modullar and
+ * Ma'lumotnoma groups, sub-screens appear as Jira-style pill tabs at
+ * the top of the page. The group icon is itself a link — clicking it
+ * jumps to the group's default screen (or the first screen the user
+ * has access to inside that group).
+ */
+export type NavGroupKey = 'dashboard' | 'forecasts' | 'modules' | 'reference';
 
 /**
  * Role-scoped navigation. Each item is visible only to the listed roles —
@@ -34,8 +47,23 @@ export interface NavItem {
 
 /** A labelled group of navigation items rendered as one sidebar section. */
 export interface NavSection {
-  /** Uzbek section heading. */
+  /** Stable key for the group (used for sidebar icons + PageTabs scoping). */
+  key: NavGroupKey;
+  /** Uzbek section heading (also the group's accessible label). */
   label: string;
+  /** Icon shown on the collapsed rail for this group. */
+  icon: LucideIcon;
+  /**
+   * Preferred landing path when the user clicks the group's sidebar
+   * icon. If this path is not in `items` (or the user's role can't see
+   * it), the first visible item is used as fallback.
+   */
+  defaultPath: string;
+  /**
+   * Tabs render inside the page only for groups marked `hasTabs`. The
+   * single-screen groups (dashboard, forecasts) do not render PageTabs.
+   */
+  hasTabs: boolean;
   items: readonly NavItem[];
 }
 
@@ -65,7 +93,11 @@ const MANAGER_ROLES: readonly Role[] = [
 
 export const NAV_SECTIONS: readonly NavSection[] = [
   {
-    label: 'Umumiy',
+    key: 'dashboard',
+    label: 'Boshqaruv paneli',
+    icon: LayoutDashboard,
+    defaultPath: '/dashboard',
+    hasTabs: false,
     items: [
       {
         path: '/dashboard',
@@ -73,6 +105,15 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         icon: LayoutDashboard,
         roles: ALL_ROLES,
       },
+    ],
+  },
+  {
+    key: 'forecasts',
+    label: 'Bashorat',
+    icon: TrendingUp,
+    defaultPath: '/forecasts',
+    hasTabs: false,
+    items: [
       {
         path: '/forecasts',
         label: 'Bashorat',
@@ -82,7 +123,11 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     ],
   },
   {
+    key: 'modules',
     label: 'Modullar',
+    icon: Boxes,
+    defaultPath: '/raw-warehouse',
+    hasTabs: true,
     items: [
       {
         path: '/raw-warehouse',
@@ -97,8 +142,13 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         roles: ['pm', 'production_manager'],
       },
       {
+        // URL stays `/supply` for back-compat with existing bookmarks
+        // and the backend chain-layer endpoint; on-page copy + nav label
+        // now reads "Sex skladlari" (renamed from "Ta'minot"). Once the
+        // backend ENUM rolls forward to `sex_storage` we can flip the
+        // URL and the chain-layer fetch in a single follow-up commit.
         path: '/supply',
-        label: 'Ta’minot',
+        label: 'Sex skladlari',
         icon: Truck,
         roles: ['pm', 'supply_manager'],
       },
@@ -146,7 +196,11 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     ],
   },
   {
+    key: 'reference',
     label: 'Ma’lumotnoma',
+    icon: BookOpen,
+    defaultPath: '/products',
+    hasTabs: true,
     items: [
       {
         path: '/products',
@@ -183,7 +237,47 @@ export const NAV_SECTIONS: readonly NavSection[] = [
  */
 export function navSectionsForRole(role: Role): NavSection[] {
   return NAV_SECTIONS.map((section) => ({
-    label: section.label,
+    ...section,
     items: section.items.filter((item) => item.roles.includes(role)),
   })).filter((section) => section.items.length > 0);
+}
+
+/**
+ * Resolve the group a route path belongs to. Used by the AppLayout to
+ * decide which group's tabs to render at the top of the page (and to
+ * highlight the matching sidebar icon).
+ *
+ * Match is by exact path equality on any item, or by `startsWith` for
+ * nested routes (e.g. `/replenishment/:id` → `/replenishment` → modules).
+ * Returns `null` for paths outside the nav (e.g. `/admin/import-warnings`).
+ */
+export function findGroupForPath(pathname: string): NavSection | null {
+  for (const section of NAV_SECTIONS) {
+    for (const item of section.items) {
+      if (
+        pathname === item.path ||
+        pathname.startsWith(`${item.path}/`)
+      ) {
+        return section;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve the landing path for a group icon click — the group's
+ * `defaultPath` if the role can see it, otherwise the first visible
+ * item, otherwise `null` (meaning: the group has no items for this
+ * role and its sidebar icon should be hidden).
+ */
+export function resolveGroupLanding(
+  section: NavSection,
+  role: Role,
+): string | null {
+  const visible = section.items.filter((item) => item.roles.includes(role));
+  const first = visible[0];
+  if (!first) return null;
+  const def = visible.find((item) => item.path === section.defaultPath);
+  return def ? def.path : first.path;
 }

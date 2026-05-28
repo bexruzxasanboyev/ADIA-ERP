@@ -52,8 +52,8 @@ import type {
  *   - "Do'konlardan kelgan so'rovlar" — replenishment requests in
  *     `SHIP_TO_REQUESTER`; one-click "Jo'natmani bajarish" advances the
  *     state machine.
- *   - "Ta'minotdan kelmoqda" — replenishment requests in
- *     `DONE_TO_WAREHOUSE` (supply finished, central will receive).
+ *   - "Sex skladidan kelmoqda" — replenishment requests in
+ *     `DONE_TO_WAREHOUSE` (sex storage finished, central will receive).
  *   - Stock table (filtered to central warehouse locations).
  */
 export function CentralWarehousePage() {
@@ -125,7 +125,7 @@ export function CentralWarehousePage() {
       value: incoming.data?.length ?? 0,
       icon: Inbox,
       tone: (incoming.data?.length ?? 0) > 0 ? 'accent' : 'neutral',
-      hint: 'Ta’minotdan topshiriladi',
+      hint: 'Sex skladidan topshiriladi',
     },
   ];
 
@@ -309,10 +309,10 @@ function IncomingFromSupplyPanel({
         <div className="space-y-0.5">
           <h2 className="flex items-center gap-2 text-base font-semibold">
             <Inbox className="size-4 text-primary" aria-hidden="true" />
-            Ta’minotdan kelmoqda
+            Sex skladidan kelmoqda
           </h2>
           <p className="text-xs text-muted-foreground">
-            Ta’minot bo‘limi tugatgan va markaziy sklad qabul qilishi kerak
+            Sex skladi tugatgan va markaziy sklad qabul qilishi kerak
             bo‘lgan so‘rovlar.
           </p>
         </div>

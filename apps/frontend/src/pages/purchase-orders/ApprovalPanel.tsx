@@ -89,7 +89,7 @@ export function ApprovalPanel({ order, onChanged }: ApprovalPanelProps) {
           method: 'POST',
           body: { step },
         }),
-      step === 'manager' ? 'Ta’minot boshlig‘i tasdig‘i.' : 'Skladchi tasdig‘i.',
+      step === 'manager' ? 'Sex skladi boshlig‘i tasdig‘i.' : 'Skladchi tasdig‘i.',
     );
   }
 
@@ -124,7 +124,7 @@ export function ApprovalPanel({ order, onChanged }: ApprovalPanelProps) {
           single column reads well in both placements. */}
       <div className="grid grid-cols-1 gap-3">
         <StepCard
-          title="Ta’minot boshlig‘i tasdig‘i"
+          title="Sex skladi boshlig‘i tasdig‘i"
           signed={managerSigned}
           actorId={order.manager_approved_by}
           actorName={order.manager_approved_name}
