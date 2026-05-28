@@ -42,9 +42,7 @@ import type {
 import { cn } from '@/lib/utils';
 import { OpenRequestsChart } from './OpenRequestsChart';
 import { ForecastsPanel } from './ForecastsPanel';
-import { PosterStatusCard } from './PosterStatusCard';
 import { EcosystemFlow } from './EcosystemFlow';
-import { AlertsFeed } from './AlertsFeed';
 import { SalesChart } from './SalesChart';
 
 /**
@@ -160,17 +158,9 @@ export function DashboardPage() {
         </Card>
       ) : (
         <>
-          <div className="grid gap-6 xl:grid-cols-2">
-            <div className="space-y-6">
-              <BelowMinPanel overview={data} />
-              <OpenRequestsPanel overview={data} />
-            </div>
-            <div className="space-y-6">
-              <PosterStatusCard
-                status={ecosystem.data?.poster_status ?? null}
-              />
-              <AlertsFeed alerts={ecosystem.data?.alerts_feed ?? []} />
-            </div>
+          <div className="space-y-6">
+            <BelowMinPanel overview={data} />
+            <OpenRequestsPanel overview={data} />
           </div>
 
           {ecosystem.data !== null && (
