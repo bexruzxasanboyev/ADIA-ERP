@@ -31,10 +31,7 @@ import {
   REPLENISHMENT_STATUS_VARIANT,
 } from '@/lib/labels';
 import { describeStatus } from '@/pages/dashboard/executive/requestTracer';
-import type {
-  ReplenishmentRequest,
-  ReplenishmentStatus,
-} from '@/lib/types';
+import type { ReplenishmentRequest } from '@/lib/types';
 import { TERMINAL_REPLENISHMENT_STATUSES } from '@/lib/types';
 import {
   RequestActionDialog,
