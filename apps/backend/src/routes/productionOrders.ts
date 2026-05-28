@@ -16,10 +16,14 @@ import { Router } from 'express';
 import { query, withTransaction } from '../db/index.js';
 import { AppError } from '../errors/index.js';
 import { authenticate } from '../middleware/authenticate.js';
-import { authorize } from '../middleware/authorize.js';
+import { authorize, authorizeWrite } from '../middleware/authorize.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { writeAudit, poolRunner } from '../lib/audit.js';
-import { assertLocationAccess, getPrincipal, isSuperAdmin } from '../lib/principal.js';
+import {
+  getPrincipal,
+  isSuperAdmin,
+  requireLocationOperator,
+} from '../lib/principal.js';
 import {
   asObject,
   optionalId,
@@ -103,10 +107,15 @@ productionOrdersRouter.get(
 );
 
 // POST /api/production-orders
+//
+// Owner-approved 2026-05-28: PM is read-and-recommend, so a production
+// order may only be raised by the production_manager of the responsible
+// production location, or by a central_warehouse_manager scheduling
+// downstream output. PM hits 403 here.
 productionOrdersRouter.post(
   '/',
   authenticate,
-  authorize('pm', 'production_manager', 'central_warehouse_manager'),
+  authorizeWrite('production_manager', 'central_warehouse_manager'),
   asyncHandler(async (req, res) => {
     const principal = getPrincipal(req);
     const body = asObject(req.body);
@@ -120,12 +129,21 @@ productionOrdersRouter.post(
     }
     const note = optionalString(body, 'note') ?? null;
 
-    // IDOR guard — a scoped production_manager may only raise an order for its
-    // OWN production location. `pm` (super-admin) bypasses via
-    // `assertLocationAccess`. `central_warehouse_manager` is chain-wide so any
-    // location is OK; the role gate above already filtered everyone else out.
+    // Both allowed roles are location-scoped:
+    //   - production_manager: must own the production location_id;
+    //   - central_warehouse_manager: must own the target_location_id when
+    //     present (scheduling output INTO the central warehouse), else its
+    //     own central warehouse via M:N (no exemption — PM is gone, and
+    //     CWM staff are pinned to their warehouse).
     if (principal.role === 'production_manager') {
-      assertLocationAccess(principal, locationId);
+      await requireLocationOperator(principal, locationId);
+    } else {
+      // central_warehouse_manager — anchor on target_location_id if set,
+      // otherwise the production location must still be in their M:N set
+      // (defensive: a central manager raising an order for a foreign
+      // production location is treated as foreign).
+      const anchor = targetLocationId ?? locationId;
+      await requireLocationOperator(principal, anchor);
     }
 
     const inserted = await withTransaction(async (tx) => {
@@ -195,32 +213,31 @@ productionOrdersRouter.post(
 );
 
 // PATCH /api/production-orders/:id
+//
+// Owner-approved 2026-05-28: PM is read-and-recommend; only the
+// production_manager who owns the production location may step the order.
 productionOrdersRouter.patch(
   '/:id',
   authenticate,
-  authorize('pm', 'production_manager'),
+  authorizeWrite('production_manager'),
   asyncHandler(async (req, res) => {
     const principal = getPrincipal(req);
     const orderId = parseIdParam(req.params.id, 'id');
     const body = asObject(req.body);
     const nextStatus = requireEnum(body, 'status', ['in_progress', 'done', 'cancelled'] as const);
 
-    // IDOR guard — a scoped production_manager may only act on orders whose
-    // production location matches its own. We read once with a row lock to
-    // serialise against concurrent transitions; the same row's `status` is
-    // re-read inside each downstream branch under that lock so this check is
-    // free of TOCTOU windows.
-    if (principal.role === 'production_manager') {
-      const { rows } = await query<{ location_id: number }>(
-        'SELECT location_id FROM production_orders WHERE id = $1',
-        [orderId],
-      );
-      const existing = rows[0];
-      if (existing === undefined) {
-        throw AppError.notFound('Production order not found.');
-      }
-      assertLocationAccess(principal, Number(existing.location_id));
+    // Resolve the order's production location and enforce M:N ownership.
+    // 404 vs 403 split: an unknown id is 404; a real id outside the
+    // operator's scope is 403 (FOREIGN_LOCATION, audit-logged).
+    const { rows: scopeRows } = await query<{ location_id: number }>(
+      'SELECT location_id FROM production_orders WHERE id = $1',
+      [orderId],
+    );
+    const existing = scopeRows[0];
+    if (existing === undefined) {
+      throw AppError.notFound('Production order not found.');
     }
+    await requireLocationOperator(principal, Number(existing.location_id));
 
     if (nextStatus === 'done') {
       // AC5.3 — the whole "tayyor" flow + the replenishment advance commit

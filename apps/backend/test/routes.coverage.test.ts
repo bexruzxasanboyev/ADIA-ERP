@@ -136,7 +136,9 @@ describe('PATCH /api/production-orders/:id — status validation', () => {
     const productionLoc = await makeLocation(ctx.db, { type: 'production' });
     const centralWh = await makeLocation(ctx.db, { type: 'central_warehouse' });
     const finished = await makeProduct(ctx.db, { type: 'finished' });
-    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const prodMgr = await makeUser(ctx.db, {
+      role: 'production_manager', locationId: productionLoc,
+    });
 
     const { rows } = await ctx.db.query<{ id: number }>(
       `INSERT INTO production_orders (product_id, qty, location_id, target_location_id, status)
@@ -147,7 +149,7 @@ describe('PATCH /api/production-orders/:id — status validation', () => {
 
     const res = await request(ctx.app)
       .patch(`/api/production-orders/${orderId}`)
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${prodMgr.token}`)
       .send({ status: 'banana' });
     expect(res.status).toBe(422);
     expect(res.body.error?.code).toBe('VALIDATION_ERROR');
@@ -164,18 +166,20 @@ describe('PATCH /api/production-orders/:id — status validation', () => {
       [finished, raw],
     );
     await setStock(ctx.db, { locationId: productionLoc, productId: raw, qty: 5 });
-    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const prodMgr = await makeUser(ctx.db, {
+      role: 'production_manager', locationId: productionLoc,
+    });
     const { rows } = await ctx.db.query<{ id: number }>(
       `INSERT INTO production_orders (product_id, qty, location_id, target_location_id, status)
        VALUES ($1, 1, $2, $3, 'new') RETURNING id`,
       [finished, productionLoc, centralWh],
     );
     const orderId = Number(rows[0]?.id);
-    await finishProductionOrder(orderId, pm.id);
+    await finishProductionOrder(orderId, prodMgr.id);
 
     const res = await request(ctx.app)
       .patch(`/api/production-orders/${orderId}`)
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${prodMgr.token}`)
       .send({ status: 'cancelled' });
     expect(res.status).toBe(409);
     expect(res.body.error?.code).toBe('INVALID_TRANSITION');

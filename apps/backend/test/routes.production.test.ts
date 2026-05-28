@@ -103,24 +103,24 @@ describe('GET /api/production-orders — filter + scope branches', () => {
 // ---------------------------------------------------------------------------
 describe('POST /api/production-orders — validation + RBAC', () => {
   it('rejects a missing product_id with 422', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
     const prod = await makeLocation(ctx.db, { type: 'production' });
+    const prodMgr = await makeUser(ctx.db, { role: 'production_manager', locationId: prod });
     const res = await request(ctx.app)
       .post('/api/production-orders')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${prodMgr.token}`)
       .send({ qty: 1, location_id: prod });
     expect(res.status).toBe(422);
     expect(res.body.error?.code).toBe('VALIDATION_ERROR');
   });
 
   it('rejects an ill-formed deadline with 422', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
     const prod = await makeLocation(ctx.db, { type: 'production' });
+    const prodMgr = await makeUser(ctx.db, { role: 'production_manager', locationId: prod });
     const central = await makeLocation(ctx.db, { type: 'central_warehouse' });
     const finished = await makeProduct(ctx.db, { type: 'finished' });
     const res = await request(ctx.app)
       .post('/api/production-orders')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${prodMgr.token}`)
       .send({
         product_id: finished, qty: 1, location_id: prod,
         target_location_id: central, deadline: '2026/05/22',
@@ -141,7 +141,7 @@ describe('POST /api/production-orders — validation + RBAC', () => {
     expect(res.status).toBe(403);
   });
 
-  it('pm can create an order with all optional fields', async () => {
+  it('PM is read-only — POST is 403 (no super-admin bypass)', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const prod = await makeLocation(ctx.db, { type: 'production' });
     const central = await makeLocation(ctx.db, { type: 'central_warehouse' });
@@ -149,6 +149,22 @@ describe('POST /api/production-orders — validation + RBAC', () => {
     const res = await request(ctx.app)
       .post('/api/production-orders')
       .set('Authorization', `Bearer ${pm.token}`)
+      .send({
+        product_id: finished, qty: 1, location_id: prod,
+        target_location_id: central,
+      });
+    expect(res.status).toBe(403);
+    expect(res.body.error?.code).toBe('FORBIDDEN');
+  });
+
+  it('production_manager creates an order with all optional fields', async () => {
+    const prod = await makeLocation(ctx.db, { type: 'production' });
+    const prodMgr = await makeUser(ctx.db, { role: 'production_manager', locationId: prod });
+    const central = await makeLocation(ctx.db, { type: 'central_warehouse' });
+    const finished = await makeProduct(ctx.db, { type: 'finished' });
+    const res = await request(ctx.app)
+      .post('/api/production-orders')
+      .set('Authorization', `Bearer ${prodMgr.token}`)
       .send({
         product_id: finished,
         qty: 3,
@@ -170,15 +186,15 @@ describe('POST /api/production-orders — validation + RBAC', () => {
 // ---------------------------------------------------------------------------
 describe('PATCH /api/production-orders/:id — transitions', () => {
   it('flips new -> in_progress and audit-logs the change', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
     const prod = await makeLocation(ctx.db, { type: 'production' });
+    const prodMgr = await makeUser(ctx.db, { role: 'production_manager', locationId: prod });
     const central = await makeLocation(ctx.db, { type: 'central_warehouse' });
     const finished = await makeProduct(ctx.db, { type: 'finished' });
     const id = await newOrder({ productId: finished, locationId: prod, targetLocationId: central });
 
     const res = await request(ctx.app)
       .patch(`/api/production-orders/${id}`)
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${prodMgr.token}`)
       .send({ status: 'in_progress' });
     expect(res.status).toBe(200);
     expect(res.body.production_order?.status).toBe('in_progress');
@@ -192,8 +208,8 @@ describe('PATCH /api/production-orders/:id — transitions', () => {
   });
 
   it('PATCH done with INSUFFICIENT_STOCK rolls back EVERYTHING (status stays new)', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
     const prod = await makeLocation(ctx.db, { type: 'production' });
+    const prodMgr = await makeUser(ctx.db, { role: 'production_manager', locationId: prod });
     const central = await makeLocation(ctx.db, { type: 'central_warehouse' });
     const finished = await makeProduct(ctx.db, { type: 'finished' });
     const raw = await makeProduct(ctx.db, { type: 'raw' });
@@ -207,7 +223,7 @@ describe('PATCH /api/production-orders/:id — transitions', () => {
 
     const res = await request(ctx.app)
       .patch(`/api/production-orders/${id}`)
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${prodMgr.token}`)
       .send({ status: 'done' });
     expect(res.status).toBe(409);
     expect(res.body.error?.code).toBe('INSUFFICIENT_STOCK');
@@ -223,29 +239,46 @@ describe('PATCH /api/production-orders/:id — transitions', () => {
     expect(rows[0]?.status).toBe('new');
   });
 
-  it('returns 404 NOT_FOUND when the id does not exist (in_progress branch)', async () => {
+  it('PM is read-only — PATCH is 403 (no super-admin bypass)', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
+    const prod = await makeLocation(ctx.db, { type: 'production' });
+    const central = await makeLocation(ctx.db, { type: 'central_warehouse' });
+    const finished = await makeProduct(ctx.db, { type: 'finished' });
+    const id = await newOrder({ productId: finished, locationId: prod, targetLocationId: central });
+
+    const res = await request(ctx.app)
+      .patch(`/api/production-orders/${id}`)
+      .set('Authorization', `Bearer ${pm.token}`)
+      .send({ status: 'in_progress' });
+    expect(res.status).toBe(403);
+    expect(res.body.error?.code).toBe('FORBIDDEN');
+  });
+
+  it('returns 404 NOT_FOUND when the id does not exist (in_progress branch)', async () => {
+    const prod = await makeLocation(ctx.db, { type: 'production' });
+    const prodMgr = await makeUser(ctx.db, { role: 'production_manager', locationId: prod });
     const res = await request(ctx.app)
       .patch('/api/production-orders/9999999')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${prodMgr.token}`)
       .send({ status: 'in_progress' });
     expect(res.status).toBe(404);
     expect(res.body.error?.code).toBe('NOT_FOUND');
   });
 
   it('returns 404 NOT_FOUND when the id does not exist (cancelled branch)', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const prod = await makeLocation(ctx.db, { type: 'production' });
+    const prodMgr = await makeUser(ctx.db, { role: 'production_manager', locationId: prod });
     const res = await request(ctx.app)
       .patch('/api/production-orders/9999999')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${prodMgr.token}`)
       .send({ status: 'cancelled' });
     expect(res.status).toBe(404);
     expect(res.body.error?.code).toBe('NOT_FOUND');
   });
 
   it('rejects in_progress -> in_progress as VALIDATION_ERROR (invalid forward transition)', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
     const prod = await makeLocation(ctx.db, { type: 'production' });
+    const prodMgr = await makeUser(ctx.db, { role: 'production_manager', locationId: prod });
     const central = await makeLocation(ctx.db, { type: 'central_warehouse' });
     const finished = await makeProduct(ctx.db, { type: 'finished' });
     const id = await newOrder({ productId: finished, locationId: prod, targetLocationId: central });
@@ -253,14 +286,14 @@ describe('PATCH /api/production-orders/:id — transitions', () => {
     // First flip new -> in_progress.
     await request(ctx.app)
       .patch(`/api/production-orders/${id}`)
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${prodMgr.token}`)
       .send({ status: 'in_progress' });
 
     // Now flip from cancelled status — first cancel it.
     await ctx.db.query(`UPDATE production_orders SET status = 'cancelled' WHERE id = $1`, [id]);
     const res = await request(ctx.app)
       .patch(`/api/production-orders/${id}`)
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${prodMgr.token}`)
       .send({ status: 'in_progress' });
     expect(res.status).toBe(422);
     expect(res.body.error?.code).toBe('VALIDATION_ERROR');

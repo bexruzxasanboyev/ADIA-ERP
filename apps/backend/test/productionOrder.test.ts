@@ -141,10 +141,12 @@ describe('PATCH /api/production-orders/:id {status:"cancelled"} — ADR-0001 §1
     const orderId = await createOrder(2);
     await finishProductionOrder(orderId, null);
 
-    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const prodMgr = await makeUser(ctx.db, {
+      role: 'production_manager', locationId: productionLoc,
+    });
     const res = await request(ctx.app)
       .patch(`/api/production-orders/${orderId}`)
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${prodMgr.token}`)
       .send({ status: 'cancelled' });
     expect(res.status).toBe(409);
     expect(res.body.error?.code).toBe('INVALID_TRANSITION');
@@ -167,13 +169,15 @@ describe('PATCH /api/production-orders/:id {status:"cancelled"} — ADR-0001 §1
   });
 
   it('allows new -> cancelled and in_progress -> cancelled', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const prodMgr = await makeUser(ctx.db, {
+      role: 'production_manager', locationId: productionLoc,
+    });
     const orderId = await createOrder(1);
 
     // new -> cancelled
     const res1 = await request(ctx.app)
       .patch(`/api/production-orders/${orderId}`)
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${prodMgr.token}`)
       .send({ status: 'cancelled' });
     expect(res1.status).toBe(200);
     expect(res1.body.production_order?.status).toBe('cancelled');
@@ -186,7 +190,7 @@ describe('PATCH /api/production-orders/:id {status:"cancelled"} — ADR-0001 §1
     );
     const res2 = await request(ctx.app)
       .patch(`/api/production-orders/${orderId2}`)
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${prodMgr.token}`)
       .send({ status: 'cancelled' });
     expect(res2.status).toBe(200);
     expect(res2.body.production_order?.status).toBe('cancelled');
