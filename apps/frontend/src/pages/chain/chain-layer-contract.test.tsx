@@ -475,7 +475,16 @@ describe('CentralWarehousePage — contract', () => {
       return undefined;
     });
 
-    renderWithProviders(<CentralWarehousePage />, { role: 'pm' });
+    // Stage 4 RBAC — PM is read-only on the replenishment advance
+    // endpoint (commit c2ed012). Render as the central_warehouse_manager
+    // scoped to the target location (SHIP_REPLEN inherits
+    // target_location_id=3 from SUPPLY_REPLEN) so the "Jo'natmani
+    // bajarish" button still renders for this happy-path assertion.
+    renderWithProviders(<CentralWarehousePage />, {
+      role: 'central_warehouse_manager',
+      locationId: 3,
+      locationType: 'central_warehouse',
+    });
 
     expect(
       await screen.findByText('Do‘konlarga jo‘natish kerak'),

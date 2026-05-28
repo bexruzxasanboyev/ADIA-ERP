@@ -28,6 +28,7 @@ import {
   PageHeader,
 } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
+import { useCanAct } from '@/hooks/useCanAct';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import { formatDateTime, formatQty } from '@/lib/format';
 import {
@@ -186,6 +187,7 @@ function ShipToStoresPanel({
   onAdvanced: () => void;
 }) {
   const { notify } = useToast();
+  const { canActOn } = useCanAct();
   const [busyId, setBusyId] = useState<number | null>(null);
 
   async function advance(id: number) {
@@ -258,18 +260,23 @@ function ShipToStoresPanel({
                   </TableCell>
                   <TableCell>{row.requester_location_name}</TableCell>
                   <TableCell className="text-right">
-                    <Button
-                      size="sm"
-                      disabled={busyId === row.id}
-                      onClick={() => advance(row.id)}
-                    >
-                      {busyId === row.id ? (
-                        <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                      ) : (
-                        <Truck className="size-4" aria-hidden="true" />
-                      )}
-                      Jo‘natmani bajarish
-                    </Button>
+                    {(canActOn(row.requester_location_id) ||
+                      canActOn(row.target_location_id)) ? (
+                      <Button
+                        size="sm"
+                        disabled={busyId === row.id}
+                        onClick={() => advance(row.id)}
+                      >
+                        {busyId === row.id ? (
+                          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Truck className="size-4" aria-hidden="true" />
+                        )}
+                        Jo‘natmani bajarish
+                      </Button>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
