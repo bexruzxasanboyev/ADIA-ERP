@@ -35,36 +35,57 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 describe('POST /api/stock/movement — validation edge cases', () => {
   it('rejects a movement with neither from nor to (422)', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
+    // PM is read-only on movements (owner-approved 2026-05-28) — use an
+    // operator whose locationIds cover the endpoint locations involved.
+    const loc = await makeLocation(ctx.db, { type: 'central_warehouse' });
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: loc,
+    });
     const product = await makeProduct(ctx.db);
     const res = await request(ctx.app)
       .post('/api/stock/movement')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${cwm.token}`)
       .send({ product_id: product, qty: 1, reason: 'adjust' });
     expect(res.status).toBe(422);
     expect(res.body.error?.code).toBe('VALIDATION_ERROR');
   });
 
   it('rejects a missing qty (422)', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
     const product = await makeProduct(ctx.db);
     const loc = await makeLocation(ctx.db, { type: 'central_warehouse' });
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: loc,
+    });
     const res = await request(ctx.app)
       .post('/api/stock/movement')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${cwm.token}`)
       .send({ product_id: product, to_location_id: loc });
     expect(res.status).toBe(422);
   });
 
   it('rejects qty <= 0 (422)', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
     const product = await makeProduct(ctx.db);
     const loc = await makeLocation(ctx.db, { type: 'central_warehouse' });
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: loc,
+    });
+    const res = await request(ctx.app)
+      .post('/api/stock/movement')
+      .set('Authorization', `Bearer ${cwm.token}`)
+      .send({ product_id: product, to_location_id: loc, qty: 0 });
+    expect(res.status).toBe(422);
+  });
+
+  it('PM is read-only — movement is 403 (no super-admin bypass)', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const loc = await makeLocation(ctx.db, { type: 'central_warehouse' });
+    const product = await makeProduct(ctx.db);
     const res = await request(ctx.app)
       .post('/api/stock/movement')
       .set('Authorization', `Bearer ${pm.token}`)
-      .send({ product_id: product, to_location_id: loc, qty: 0 });
-    expect(res.status).toBe(422);
+      .send({ product_id: product, to_location_id: loc, qty: 5 });
+    expect(res.status).toBe(403);
+    expect(res.body.error?.code).toBe('FORBIDDEN');
   });
 });
 
@@ -173,9 +194,13 @@ describe('GET /api/stock/movements — pagination + filter branches', () => {
   });
 
   it('supports a product_id filter — only matching movements come back', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
     const from = await makeLocation(ctx.db, { type: 'central_warehouse' });
     const to = await makeLocation(ctx.db, { type: 'store' });
+    // The operator must own at least one endpoint of each movement — the
+    // central warehouse manager owns `from`.
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: from,
+    });
     const productA = await makeProduct(ctx.db);
     const productB = await makeProduct(ctx.db);
     await setStock(ctx.db, { locationId: from, productId: productA, qty: 10 });
@@ -184,19 +209,21 @@ describe('GET /api/stock/movements — pagination + filter branches', () => {
     // Produce one movement per product.
     await request(ctx.app)
       .post('/api/stock/movement')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${cwm.token}`)
       .send({
         product_id: productA, from_location_id: from, to_location_id: to,
         qty: 1, reason: 'transfer',
       });
     await request(ctx.app)
       .post('/api/stock/movement')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${cwm.token}`)
       .send({
         product_id: productB, from_location_id: from, to_location_id: to,
         qty: 1, reason: 'transfer',
       });
 
+    // PM may still read the movements list (read-and-recommend).
+    const pm = await makeUser(ctx.db, { role: 'pm' });
     const res = await request(ctx.app)
       .get(`/api/stock/movements?product_id=${productA}`)
       .set('Authorization', `Bearer ${pm.token}`);

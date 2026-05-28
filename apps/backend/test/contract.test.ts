@@ -79,11 +79,17 @@ describe('GET /api/stock/movements -> pagination envelope', () => {
     const store = await makeLocation(ctx.db, { type: 'store' });
     const product = await makeProduct(ctx.db);
     await setStock(ctx.db, { locationId: wh, productId: product, qty: 20 });
+    // PM is read-only on movement (owner-approved 2026-05-28). The
+    // operator that owns the `from` location creates them; PM still
+    // reads the list.
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: wh,
+    });
     const pm = await makeUser(ctx.db, { role: 'pm' });
 
     await request(ctx.app)
       .post('/api/stock/movement')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${cwm.token}`)
       .send({ product_id: product, from_location_id: wh, to_location_id: store, qty: 5 });
 
     const res = await request(ctx.app)
@@ -109,12 +115,15 @@ describe('GET /api/stock/movements -> pagination envelope', () => {
     const store = await makeLocation(ctx.db, { type: 'store' });
     const product = await makeProduct(ctx.db);
     await setStock(ctx.db, { locationId: wh, productId: product, qty: 100 });
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: wh,
+    });
     const pm = await makeUser(ctx.db, { role: 'pm' });
 
     for (let n = 0; n < 3; n += 1) {
       await request(ctx.app)
         .post('/api/stock/movement')
-        .set('Authorization', `Bearer ${pm.token}`)
+        .set('Authorization', `Bearer ${cwm.token}`)
         .send({ product_id: product, from_location_id: wh, to_location_id: store, qty: 1 });
     }
 

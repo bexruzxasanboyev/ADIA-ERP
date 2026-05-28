@@ -19,10 +19,14 @@ import { Router } from 'express';
 import { query } from '../db/index.js';
 import { AppError } from '../errors/index.js';
 import { authenticate } from '../middleware/authenticate.js';
-import { authorize } from '../middleware/authorize.js';
+import { authorize, authorizeWrite } from '../middleware/authorize.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { writeAudit, poolRunner } from '../lib/audit.js';
-import { getPrincipal, isSuperAdmin, assertLocationAccess } from '../lib/principal.js';
+import {
+  getPrincipal,
+  isSuperAdmin,
+  assertLocationAccess,
+} from '../lib/principal.js';
 import {
   asObject,
   optionalId,
@@ -287,11 +291,14 @@ stockRouter.patch(
 );
 
 // POST /api/stock/movement
+//
+// Owner-approved 2026-05-28: stock movement is a business write — PM is
+// read-and-recommend. Only an operator who owns at least one endpoint
+// of the movement may apply it.
 stockRouter.post(
   '/movement',
   authenticate,
-  authorize(
-    'pm',
+  authorizeWrite(
     'raw_warehouse_manager',
     'production_manager',
     'supply_manager',
@@ -315,13 +322,12 @@ stockRouter.post(
     // are set by M5/M6/M7 flows and must not arrive from a client.
     const reason = deriveManualReason(body, fromLocationId, toLocationId);
 
-    // RBAC: a scoped manager must own at least one endpoint of the movement.
-    if (!isSuperAdmin(principal)) {
-      const own = principal.locationId;
-      const touchesOwn = own !== null && (own === fromLocationId || own === toLocationId);
-      if (!touchesOwn) {
-        throw AppError.forbidden('A movement must involve your own location.');
-      }
+    // The operator must own at least one endpoint (M:N — ADR-0012).
+    const touchesOwn =
+      (fromLocationId !== null && principal.locationIds.includes(fromLocationId)) ||
+      (toLocationId !== null && principal.locationIds.includes(toLocationId));
+    if (!touchesOwn) {
+      throw AppError.forbidden('A movement must involve your own location.');
     }
 
     const result = await applyMovement({

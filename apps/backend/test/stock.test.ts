@@ -113,11 +113,15 @@ describe('POST /api/stock/movement', () => {
     const to = await makeLocation(ctx.db, { type: 'store' });
     const product = await makeProduct(ctx.db);
     await setStock(ctx.db, { locationId: from, productId: product, qty: 10 });
-    const pm = await makeUser(ctx.db, { role: 'pm' });
+    // PM is read-only (owner-approved 2026-05-28) — use the central
+    // warehouse manager who owns `from`.
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: from,
+    });
 
     const res = await request(ctx.app)
       .post('/api/stock/movement')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${cwm.token}`)
       .send({
         product_id: product,
         from_location_id: from,
@@ -136,11 +140,13 @@ describe('POST /api/stock/movement', () => {
     const to = await makeLocation(ctx.db, { type: 'store' });
     const product = await makeProduct(ctx.db);
     await setStock(ctx.db, { locationId: from, productId: product, qty: 2 });
-    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: from,
+    });
 
     const res = await request(ctx.app)
       .post('/api/stock/movement')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${cwm.token}`)
       .send({
         product_id: product,
         from_location_id: from,
@@ -159,11 +165,13 @@ describe('POST /api/stock/movement', () => {
     const to = await makeLocation(ctx.db, { type: 'store' });
     const product = await makeProduct(ctx.db);
     await setStock(ctx.db, { locationId: from, productId: product, qty: 10 });
-    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: from,
+    });
 
     const res = await request(ctx.app)
       .post('/api/stock/movement')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${cwm.token}`)
       .send({
         product_id: product,
         from_location_id: from,
@@ -180,11 +188,13 @@ describe('POST /api/stock/movement', () => {
     const to = await makeLocation(ctx.db, { type: 'store' });
     const product = await makeProduct(ctx.db);
     await setStock(ctx.db, { locationId: from, productId: product, qty: 10 });
-    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: from,
+    });
 
     const res = await request(ctx.app)
       .post('/api/stock/movement')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${cwm.token}`)
       .send({
         product_id: product,
         from_location_id: from,
@@ -198,11 +208,13 @@ describe('POST /api/stock/movement', () => {
   it('a one-sided movement with no reason is accepted as an adjust (201)', async () => {
     const loc = await makeLocation(ctx.db, { type: 'central_warehouse' });
     const product = await makeProduct(ctx.db);
-    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: loc,
+    });
 
     const res = await request(ctx.app)
       .post('/api/stock/movement')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${cwm.token}`)
       .send({ product_id: product, to_location_id: loc, qty: 8 });
     expect(res.status).toBe(201);
     expect(await getQty(ctx.db, loc, product)).toBe(8);
@@ -219,11 +231,13 @@ describe('POST /api/stock/movement', () => {
     const to = await makeLocation(ctx.db, { type: 'store' });
     const product = await makeProduct(ctx.db);
     await setStock(ctx.db, { locationId: from, productId: product, qty: 10 });
-    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: from,
+    });
 
     const res = await request(ctx.app)
       .post('/api/stock/movement')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${cwm.token}`)
       .send({ product_id: product, from_location_id: from, to_location_id: to, qty: 3 });
     expect(res.status).toBe(201);
     const movement = await ctx.db.query<{ reason: string }>(
@@ -274,11 +288,13 @@ describe('GET /api/stock/movements', () => {
     const store = await makeLocation(ctx.db, { type: 'store' });
     const product = await makeProduct(ctx.db);
     await setStock(ctx.db, { locationId: wh, productId: product, qty: 10 });
-    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: wh,
+    });
 
     await request(ctx.app)
       .post('/api/stock/movement')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${cwm.token}`)
       .send({
         product_id: product,
         from_location_id: wh,
