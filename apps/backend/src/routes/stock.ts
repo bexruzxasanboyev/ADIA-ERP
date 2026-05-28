@@ -46,11 +46,14 @@ const DEFAULT_PAGE_SIZE = 50;
 
 /**
  * Valid `location_type` values for the `/api/stock?location_type=` filter
- * — must match the `location_type` enum in the database.
+ * — must match the `location_type` enum in the database. D7 added
+ * `sex_storage`; `supply` is kept as a DEPRECATED synonym for backward
+ * compatibility with older clients.
  */
 const LOCATION_TYPES = [
   'raw_warehouse',
   'production',
+  'sex_storage',
   'supply',
   'central_warehouse',
   'store',

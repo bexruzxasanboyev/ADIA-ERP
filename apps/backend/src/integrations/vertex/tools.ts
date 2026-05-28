@@ -169,9 +169,13 @@ function parseNameContains(value: unknown): string | null {
   return capped.replace(/\\/g, '\\\\').replace(/[%_]/g, (m) => `\\${m}`);
 }
 
+// D7 (2026-05-28) — `sex_storage` added as the canonical sex skladi type.
+// `supply` is a deprecated synonym; both accepted as filter values so an
+// older model session keeps working.
 const LOCATION_TYPES = [
   'raw_warehouse',
   'production',
+  'sex_storage',
   'supply',
   'central_warehouse',
   'store',
@@ -198,7 +202,8 @@ const listLocations: ToolExecutor = {
         type: {
           type: Type.STRING,
           description:
-            'Optional location_type filter. One of: raw_warehouse, production, supply, ' +
+            'Optional location_type filter. One of: raw_warehouse, production, ' +
+            'sex_storage, supply (deprecated synonym for sex_storage), ' +
             'central_warehouse, store.',
         },
         name_contains: {

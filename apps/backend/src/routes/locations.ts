@@ -31,9 +31,15 @@ import {
 
 export const locationsRouter: Router = Router();
 
+// D7 (2026-05-28) — `sex_storage` is the new canonical type for sex skladi.
+// `supply` is kept as a DEPRECATED synonym so older clients (and the few
+// remaining `supply`-typed rows in legacy fixtures) still validate. Migration
+// 0022 already flipped every live row; the value will be dropped in a later
+// sprint once the assistant tool layer and the frontend types follow.
 const LOCATION_TYPES = [
   'raw_warehouse',
   'production',
+  'sex_storage',
   'supply',
   'central_warehouse',
   'store',

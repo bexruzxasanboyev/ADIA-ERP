@@ -25,9 +25,17 @@ import { query, closePool } from '../src/db/index.js';
 const SEED_PASSWORD = 'changeme123';
 const BCRYPT_ROUNDS = 10;
 
+type LocationType =
+  | 'raw_warehouse'
+  | 'production'
+  | 'sex_storage'
+  | 'supply' // deprecated synonym for sex_storage — kept for legacy fixtures
+  | 'central_warehouse'
+  | 'store';
+
 type LocationSeed = {
   name: string;
-  type: 'raw_warehouse' | 'production' | 'supply' | 'central_warehouse' | 'store';
+  type: LocationType;
   parentName: string | null;
   managerRole:
     | 'raw_warehouse_manager'
@@ -37,20 +45,22 @@ type LocationSeed = {
     | 'store_manager';
 };
 
-// Chain: raw warehouse -> production -> supply (x3) -> central warehouse -> store.
-// Owner (2026-05-26): the supply layer has THREE departments — Tort, Perojniy,
-// and Yarim Fabrika (the last is a fridge/warehouse, not a production shop).
-// The Tort supply branch carries the rest of the canonical chain so the M4
-// replenishment engine has an end-to-end path. Perojniy and Yarim Fabrika
-// supplies are seeded with their managers but have no central_warehouse/store
-// child of their own — those branches will be wired up in a later migration.
+// Chain (D7, 2026-05-28): raw warehouse -> production root -> 3 sex floors
+// (Tort, Perojniy, Yarim Fabrika) -> 3 sex skladi (one per sex, type
+// `sex_storage`) -> central warehouse -> store. Every sex has its own ready-
+// batch buffer (`sex_storage`); the central warehouse parents to the Tort
+// skladi so the M4 replenishment engine has an end-to-end path. The
+// `supply_manager` role is reused as the manager of the sex_storage layer.
 const LOCATIONS: LocationSeed[] = [
   { name: 'Mahsulotlar Ombori', type: 'raw_warehouse', parentName: null, managerRole: 'raw_warehouse_manager' },
   { name: 'Ishlab chiqarish sexi', type: 'production', parentName: 'Mahsulotlar Ombori', managerRole: 'production_manager' },
-  { name: 'Ta\'minot — Tort', type: 'supply', parentName: 'Ishlab chiqarish sexi', managerRole: 'supply_manager' },
-  { name: 'Ta\'minot — Perojniy', type: 'supply', parentName: 'Ishlab chiqarish sexi', managerRole: 'supply_manager' },
-  { name: 'Ta\'minot — Yarim Fabrika', type: 'supply', parentName: 'Ishlab chiqarish sexi', managerRole: 'supply_manager' },
-  { name: 'Markaziy Sklad', type: 'central_warehouse', parentName: 'Ta\'minot — Tort', managerRole: 'central_warehouse_manager' },
+  { name: 'Tort sexi', type: 'production', parentName: 'Ishlab chiqarish sexi', managerRole: 'production_manager' },
+  { name: 'Perojniy sexi', type: 'production', parentName: 'Ishlab chiqarish sexi', managerRole: 'production_manager' },
+  { name: 'Yarim Fabrika sexi', type: 'production', parentName: 'Ishlab chiqarish sexi', managerRole: 'production_manager' },
+  { name: 'Tort skladi', type: 'sex_storage', parentName: 'Tort sexi', managerRole: 'supply_manager' },
+  { name: 'Perojniy skladi', type: 'sex_storage', parentName: 'Perojniy sexi', managerRole: 'supply_manager' },
+  { name: 'Yarim Fabrika skladi', type: 'sex_storage', parentName: 'Yarim Fabrika sexi', managerRole: 'supply_manager' },
+  { name: 'Markaziy Sklad', type: 'central_warehouse', parentName: 'Tort skladi', managerRole: 'central_warehouse_manager' },
   { name: 'Do\'kon 1', type: 'store', parentName: 'Markaziy Sklad', managerRole: 'store_manager' },
 ];
 
@@ -237,30 +247,30 @@ async function main(): Promise<void> {
     }
   }
 
-  // 8. Supply-node starter stock (canvas Bug 1 — migration 0020).
-  //    "Ta'minot — Yarim Fabrika" and "Ta'minot — Perojniy" are logical
-  //    hand-off nodes (no Poster storage) so the leftover sync never seeds
-  //    them. Without at least one stock row the ecosystem canvas renders
-  //    them as "SKU yo'q" and downstream replenishment has no target.
-  //    Yarim Fabrika carries the semi (SEMI-SPONGE); Perojniy carries the
-  //    finished cake. qty=0 keeps the engine honest — it must produce.
-  const yarimSupplyId = locationIdByName.get("Ta'minot — Yarim Fabrika");
-  const perojniySupplyId = locationIdByName.get("Ta'minot — Perojniy");
+  // 8. Sex-storage starter stock (canvas Bug 1 — migration 0020; renamed by D7).
+  //    The three sex skladi are logical hand-off nodes (no Poster storage) so
+  //    the leftover sync never seeds them. Without at least one stock row the
+  //    ecosystem canvas renders them as "SKU yo'q" and downstream replenishment
+  //    has no target. Yarim Fabrika skladi carries the semi (SEMI-SPONGE);
+  //    Perojniy skladi carries the finished cake. qty=0 keeps the engine
+  //    honest — it must produce.
+  const yarimStorageId = locationIdByName.get('Yarim Fabrika skladi');
+  const perojniyStorageId = locationIdByName.get('Perojniy skladi');
   const spongeId = productIdBySku.get('SEMI-SPONGE');
-  if (yarimSupplyId !== undefined && spongeId !== undefined) {
+  if (yarimStorageId !== undefined && spongeId !== undefined) {
     await query(
       `INSERT INTO stock (location_id, product_id, qty, min_level, max_level)
        VALUES ($1, $2, 0, 0, 0)
        ON CONFLICT (location_id, product_id) DO NOTHING`,
-      [yarimSupplyId, spongeId],
+      [yarimStorageId, spongeId],
     );
   }
-  if (perojniySupplyId !== undefined && cakeId !== undefined) {
+  if (perojniyStorageId !== undefined && cakeId !== undefined) {
     await query(
       `INSERT INTO stock (location_id, product_id, qty, min_level, max_level)
        VALUES ($1, $2, 0, 0, 0)
        ON CONFLICT (location_id, product_id) DO NOTHING`,
-      [perojniySupplyId, cakeId],
+      [perojniyStorageId, cakeId],
     );
   }
 

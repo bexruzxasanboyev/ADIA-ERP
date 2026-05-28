@@ -19,8 +19,8 @@ const DOMAIN_BRIEF =
   // "replenishment request" and a "production order" are without us paying
   // for the entire docs/TZ.md in input tokens.
   'ADIA ERP — non/tort/qandolat ishlab chiqarish va ta\'minot zanjiri tizimi. ' +
-  'Zanjir: Xom-ashyo ombori → Ishlab chiqarish → Ta\'minot bo\'limlari → ' +
-  'Markaziy sklad → Do\'konlar. Har mahsulotga `min` va `max` darajalar ' +
+  'Zanjir: Xom-ashyo ombori → Sexlar (Tort, Perojniy, Yarim Fabrika) → ' +
+  'Sex skladlari → Markaziy sklad → Do\'konlar. Har mahsulotga `min` va `max` darajalar ' +
   'belgilangan; `qty` `min`\'dan tushganda tizim avtomatik to\'ldirish ' +
   '(replenishment) so\'rovini ochadi. Sotuv ma\'lumotlari Poster POS\'dan ' +
   'sinxronlanadi. Sizning vazifangiz — foydalanuvchining savollariga ' +

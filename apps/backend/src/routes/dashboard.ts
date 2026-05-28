@@ -976,6 +976,7 @@ async function fetchChainFlow(
        ORDER BY CASE l.type
                   WHEN 'raw_warehouse'      THEN 1
                   WHEN 'production'         THEN 2
+                  WHEN 'sex_storage'        THEN 3
                   WHEN 'supply'             THEN 3
                   WHEN 'central_warehouse'  THEN 4
                   WHEN 'store'              THEN 5
@@ -1037,8 +1038,15 @@ async function fetchChainSummary(
     locFilter += ` AND l.id = ANY($${baseParams.length}::bigint[])`;
   }
 
+  // D7 (2026-05-28) — fold the new `sex_storage` type into the historical
+  // `supply` bucket so the 5-card chain_summary layout stays stable. After
+  // migration 0022 every live "supply" row is actually `sex_storage`; the
+  // frontend still reads the `supply` key for the sex skladi stage.
   const baseSql = `
-    SELECT l.type::text AS type,
+    SELECT CASE WHEN l.type::text = 'sex_storage'
+                THEN 'supply'
+                ELSE l.type::text
+           END                                                                    AS type,
            count(DISTINCT l.id)                                                    AS location_count,
            count(DISTINCT s.product_id) FILTER (WHERE s.product_id IS NOT NULL)    AS total_products,
            coalesce(sum(CASE
@@ -1048,7 +1056,7 @@ async function fetchChainSummary(
       FROM locations l
       LEFT JOIN stock s ON s.location_id = l.id
      WHERE ${locFilter}
-     GROUP BY l.type
+     GROUP BY 1
   `;
 
   type BaseRow = {
@@ -1120,30 +1128,39 @@ function deriveChainStatus(belowMin: number): ChainStatus {
 
 /**
  * Builds a stock_movements `WHERE` fragment that scopes the pulse query to
- * locations of the given type, optionally intersected with the principal's
- * `locationIds`. Returned as a SQL snippet `(EXISTS ... AND l.type = ...)`
- * via an `IN (SELECT id FROM locations ...)` subquery — keeps the param
- * list flat and easy to reason about.
+ * locations of the given type(s), optionally intersected with the principal's
+ * `locationIds`. Returned as a SQL snippet `(SELECT id FROM locations ...)`
+ * — keeps the param list flat and easy to reason about.
+ *
+ * D7 (2026-05-28) — accepts a single type OR an array of types. The supply
+ * stage now spans both the legacy `supply` (deprecated, kept as enum) and
+ * the new `sex_storage` rows; callers pass `SUPPLY_PULSE_TYPES` so the
+ * "supply" card in the 5-stage chain_summary keeps reporting the sex skladi
+ * traffic after migration 0022 flips the live rows.
  */
 function locationIdsForTypeSql(
   scope: Exclude<EcosystemScope, { kind: 'empty' }>,
-  type: ChainType,
+  type: ChainType | readonly string[],
   params: SqlParam[],
 ): string {
-  params.push(type);
-  const typeIdx = params.length;
+  const types = Array.isArray(type) ? [...type] : [type as string];
+  params.push(types);
+  const typesIdx = params.length;
   if (scope.kind === 'locations') {
     params.push(scope.locationIds);
     const locIdx = params.length;
     return `(SELECT id FROM locations
-              WHERE type = $${typeIdx}::location_type
+              WHERE type::text = ANY($${typesIdx}::text[])
                 AND is_active = TRUE
                 AND id = ANY($${locIdx}::bigint[]))`;
   }
   return `(SELECT id FROM locations
-            WHERE type = $${typeIdx}::location_type
+            WHERE type::text = ANY($${typesIdx}::text[])
               AND is_active = TRUE)`;
 }
+
+/** D7 — the supply stage spans both legacy `supply` and new `sex_storage`. */
+const SUPPLY_PULSE_TYPES = ['supply', 'sex_storage'] as const;
 
 async function fetchRawPulse(
   scope: Exclude<EcosystemScope, { kind: 'empty' }>,
@@ -1307,7 +1324,7 @@ async function fetchSupplyPulse(
   scope: Exclude<EcosystemScope, { kind: 'empty' }>,
 ): Promise<ChainPulse> {
   const shipParams: SqlParam[] = [];
-  const shipLocSql = locationIdsForTypeSql(scope, 'supply', shipParams);
+  const shipLocSql = locationIdsForTypeSql(scope, SUPPLY_PULSE_TYPES, shipParams);
   const shipQ = query<{ total: string }>(
     `SELECT coalesce(sum(qty), 0) AS total
        FROM stock_movements
@@ -1318,7 +1335,7 @@ async function fetchSupplyPulse(
     shipParams,
   );
   const recvParams: SqlParam[] = [];
-  const recvLocSql = locationIdsForTypeSql(scope, 'supply', recvParams);
+  const recvLocSql = locationIdsForTypeSql(scope, SUPPLY_PULSE_TYPES, recvParams);
   const recvQ = query<{ total: string }>(
     `SELECT coalesce(sum(qty), 0) AS total
        FROM stock_movements
@@ -1335,7 +1352,7 @@ async function fetchSupplyPulse(
   // ship). We count rows where EITHER endpoint is a supply location in
   // scope and the request is not terminal.
   const openParams: SqlParam[] = [];
-  const openLocSql = locationIdsForTypeSql(scope, 'supply', openParams);
+  const openLocSql = locationIdsForTypeSql(scope, SUPPLY_PULSE_TYPES, openParams);
   const openQ = query<{ cnt: string }>(
     `SELECT count(*) AS cnt
        FROM replenishment_requests
@@ -1348,7 +1365,7 @@ async function fetchSupplyPulse(
   // Distinct destinations a supply location served today (today's transfer
   // fan-out count — useful for "today supply shipped to N stores").
   const destParams: SqlParam[] = [];
-  const destLocSql = locationIdsForTypeSql(scope, 'supply', destParams);
+  const destLocSql = locationIdsForTypeSql(scope, SUPPLY_PULSE_TYPES, destParams);
   const destQ = query<{ cnt: string }>(
     `SELECT count(DISTINCT to_location_id) AS cnt
        FROM stock_movements
@@ -1670,9 +1687,14 @@ function emptyEcosystem(): EcosystemResponse {
 
 const CHAIN_LAYER_RECENT_MOVEMENTS = 20;
 
+// D7 (2026-05-28) — `sex_storage` is accepted as a SYNONYM for the supply
+// layer. The data-fetching SQL maps either path-segment to the same set
+// `['supply','sex_storage']` so the existing `ChainDetailSheet` keeps working
+// and a new client may use the canonical name.
 const CHAIN_LAYER_TYPES = [
   'raw_warehouse',
   'production',
+  'sex_storage',
   'supply',
   'central_warehouse',
   'store',
@@ -1683,10 +1705,23 @@ type ChainLayerType = (typeof CHAIN_LAYER_TYPES)[number];
 const LAYER_MANAGER_ROLE: Record<ChainLayerType, Role> = {
   raw_warehouse: 'raw_warehouse_manager',
   production: 'production_manager',
+  sex_storage: 'supply_manager',
   supply: 'supply_manager',
   central_warehouse: 'central_warehouse_manager',
   store: 'store_manager',
 };
+
+/**
+ * SQL type filter for the requested layer. Supply / sex_storage both fan
+ * out to BOTH location_type values so the dashboard surface keeps reporting
+ * the sex skladi traffic after migration 0022 flipped the live rows.
+ */
+function chainLayerTypeFilter(layerType: ChainLayerType): readonly string[] {
+  if (layerType === 'supply' || layerType === 'sex_storage') {
+    return SUPPLY_PULSE_TYPES;
+  }
+  return [layerType];
+}
 
 type ChainLayerLocation = {
   id: number;
@@ -1776,7 +1811,11 @@ dashboardRouter.get(
     if (layerType === 'production') {
       totals.active_production_orders = layerExtras.activeProductionOrders;
     }
-    if (layerType === 'supply' || layerType === 'central_warehouse') {
+    if (
+      layerType === 'supply' ||
+      layerType === 'sex_storage' ||
+      layerType === 'central_warehouse'
+    ) {
       totals.pending_shipments = layerExtras.pendingShipments;
     }
     if (layerType === 'store') {
@@ -1814,8 +1853,10 @@ function resolveLayerScope(
 async function fetchChainLayerLocations(
   scope: Exclude<LayerScope, { kind: 'empty' }>,
 ): Promise<ChainLayerLocation[]> {
-  const params: SqlParam[] = [scope.type];
-  let where = 'WHERE l.type = $1 AND l.is_active = TRUE';
+  // D7 — `supply` and `sex_storage` both resolve to the same set.
+  const typeFilter = [...chainLayerTypeFilter(scope.type)];
+  const params: SqlParam[] = [typeFilter];
+  let where = 'WHERE l.type::text = ANY($1::text[]) AND l.is_active = TRUE';
   if (scope.kind === 'locations') {
     params.push(scope.locationIds);
     where += ` AND l.id = ANY($${params.length}::bigint[])`;
@@ -1906,13 +1947,16 @@ async function fetchChainLayerExtras(
   // Pending shipments — open replenishment_requests where the target is one
   // of the layer's locations. "Pending" = not yet terminal (per the
   // `replenishment_status` enum, the terminal states are CLOSED and
-  // CANCELLED).
+  // CANCELLED). D7 — supply/sex_storage are aliased.
+  const isSupplyOrSexStorage =
+    layerType === 'supply' || layerType === 'sex_storage';
   const pendingShipmentsPromise =
-    layerType === 'supply' || layerType === 'central_warehouse'
+    isSupplyOrSexStorage || layerType === 'central_warehouse'
       ? (async () => {
-          const params: SqlParam[] = [layerType];
+          const typeFilter = [...chainLayerTypeFilter(layerType)];
+          const params: SqlParam[] = [typeFilter];
           let where =
-            `WHERE rr.status NOT IN ('CLOSED','CANCELLED') AND tl.type = $1`;
+            `WHERE rr.status NOT IN ('CLOSED','CANCELLED') AND tl.type::text = ANY($1::text[])`;
           if (locFilter !== null) {
             params.push(locFilter);
             where += ` AND rr.target_location_id = ANY($${params.length}::bigint[])`;
@@ -1962,9 +2006,11 @@ async function fetchChainLayerRecentMovements(
   scope: Exclude<LayerScope, { kind: 'empty' }>,
   range: DateRange,
 ): Promise<RecentMovementItem[]> {
-  const params: SqlParam[] = [scope.type];
+  // D7 — `supply` / `sex_storage` both expand to the same type-set.
+  const typeFilter = [...chainLayerTypeFilter(scope.type)];
+  const params: SqlParam[] = [typeFilter];
   let where =
-    `WHERE (fl.type = $1 OR tl.type = $1)`;
+    `WHERE (fl.type::text = ANY($1::text[]) OR tl.type::text = ANY($1::text[]))`;
   if (scope.kind === 'locations') {
     params.push(scope.locationIds);
     where +=
@@ -2005,7 +2051,11 @@ function emptyChainLayer(layerType: ChainLayerType): ChainLayerResponse {
     open_requests_count: 0,
   };
   if (layerType === 'production') totals.active_production_orders = 0;
-  if (layerType === 'supply' || layerType === 'central_warehouse') {
+  if (
+    layerType === 'supply' ||
+    layerType === 'sex_storage' ||
+    layerType === 'central_warehouse'
+  ) {
     totals.pending_shipments = 0;
   }
   if (layerType === 'store') totals.sales_today_count = 0;
