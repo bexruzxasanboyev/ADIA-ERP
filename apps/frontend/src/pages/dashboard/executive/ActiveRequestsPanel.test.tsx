@@ -150,4 +150,25 @@ describe('ActiveRequestsPanel', () => {
 
     expect(screen.getByText(/sex ishlab chiqarmoqda/i)).toBeInTheDocument();
   });
+
+  it('prefixes the PRODUCING label with the sex name when embedded', () => {
+    render(
+      <ActiveRequestsPanel
+        requests={[
+          makeRequest({
+            id: 1,
+            status: 'PRODUCING',
+            production_location_name: 'Tort sexi',
+          }),
+        ]}
+        selectedId={null}
+        onSelect={() => {}}
+      />,
+    );
+
+    // The label is CSS-uppercased in the UI (`uppercase` class); the
+    // underlying text node still carries the sentence-case DB value, so
+    // the matcher is case-insensitive.
+    expect(screen.getByText(/tort sexi ishlab chiqarmoqda/i)).toBeInTheDocument();
+  });
 });

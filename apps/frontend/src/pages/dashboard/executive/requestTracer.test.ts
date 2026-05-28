@@ -216,4 +216,44 @@ describe('describeStatus', () => {
       expect(phrase.length).toBeGreaterThan(0);
     }
   });
+
+  it('prefixes PRODUCING with the sex name when provided', () => {
+    expect(describeStatus('PRODUCING', 'Tort sexi')).toBe(
+      'Tort sexi ishlab chiqarmoqda',
+    );
+  });
+
+  it('prefixes CHECK_PRODUCTION_INPUT with the sex name when provided', () => {
+    expect(describeStatus('CHECK_PRODUCTION_INPUT', 'Perojniy sexi')).toBe(
+      'Perojniy sexi: xom-ashyo tekshirilmoqda',
+    );
+  });
+
+  it('prefixes CREATE_PRODUCTION_ORDER with the sex name when provided', () => {
+    expect(describeStatus('CREATE_PRODUCTION_ORDER', 'Tort sexi')).toBe(
+      'Tort sexi buyurtmasi yaratildi',
+    );
+  });
+
+  it('falls back to the generic copy when sexName is null', () => {
+    expect(describeStatus('PRODUCING', null)).toBe('Sex ishlab chiqarmoqda');
+    expect(describeStatus('CHECK_PRODUCTION_INPUT', null)).toBe(
+      'Ishlab chiqarish: xom-ashyo tekshirilmoqda',
+    );
+    expect(describeStatus('CREATE_PRODUCTION_ORDER', null)).toBe(
+      'Ishlab chiqarish buyurtmasi yaratildi',
+    );
+  });
+
+  it('falls back to the generic copy when sexName is an empty/whitespace string', () => {
+    expect(describeStatus('PRODUCING', '')).toBe('Sex ishlab chiqarmoqda');
+    expect(describeStatus('PRODUCING', '   ')).toBe('Sex ishlab chiqarmoqda');
+  });
+
+  it('does not touch non-production statuses even when a sexName is supplied', () => {
+    expect(describeStatus('NEW', 'Tort sexi')).toBe("Yangi — so'rov yaratildi");
+    expect(describeStatus('SHIP_TO_REQUESTER', 'Tort sexi')).toBe(
+      "Yo'lda — yetkazib berilmoqda",
+    );
+  });
 });

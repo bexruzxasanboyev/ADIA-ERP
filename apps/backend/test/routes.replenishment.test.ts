@@ -347,3 +347,80 @@ describe('POST /api/replenishment/:id/advance — pm super-admin path', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// production_location_name embedding — list + detail
+// ---------------------------------------------------------------------------
+describe('GET /api/replenishment — production_location_name embedding', () => {
+  it('returns production_location_name=null on a NEW request (no linked PO yet)', async () => {
+    const { store } = await chain();
+    const product = await makeProduct(ctx.db, { type: 'finished' });
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const created = await createRequest({
+      productId: product, requesterLocationId: store, qtyNeeded: 4, actorUserId: pm.id,
+    });
+
+    const listRes = await request(ctx.app)
+      .get('/api/replenishment')
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(listRes.status).toBe(200);
+    const row = (listRes.body as Array<{ id: number; production_location_name: string | null }>)
+      .find((r) => r.id === created.id);
+    expect(row).toBeDefined();
+    expect(row?.production_location_name).toBeNull();
+
+    const detailRes = await request(ctx.app)
+      .get(`/api/replenishment/${created.id}`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(detailRes.status).toBe(200);
+    expect(detailRes.body.request.production_location_name).toBeNull();
+  });
+
+  it('returns the production location name on a request advanced into a PO', async () => {
+    // Drive the engine to CREATE_PRODUCTION_ORDER so a production_order
+    // is linked; its `location_id` is the `production` sex.
+    const { rawWh, production, store } = await chain();
+    const finished = await makeProduct(ctx.db, { type: 'finished' });
+    const raw = await makeProduct(ctx.db, { type: 'raw' });
+    await ctx.db.query(
+      `INSERT INTO recipes (product_id, component_product_id, qty_per_unit) VALUES ($1, $2, 1)`,
+      [finished, raw],
+    );
+    await setStock(ctx.db, {
+      locationId: store, productId: finished, qty: 0, minLevel: 1, maxLevel: 3,
+    });
+    await setStock(ctx.db, { locationId: rawWh, productId: raw, qty: 50 });
+
+    // Rename the production sex so the assertion has a stable, recognisable
+    // value (chain() uses an auto-generated location name otherwise).
+    await ctx.db.query(
+      `UPDATE locations SET name = 'Tort sexi' WHERE id = $1`,
+      [production],
+    );
+
+    await runEngineCycle();
+    const { rows } = await ctx.db.query<{ id: number }>(
+      `SELECT id FROM replenishment_requests
+       WHERE product_id = $1 AND requester_location_id = $2`,
+      [finished, store],
+    );
+    const reqId = Number(rows[0]?.id);
+    await advance(reqId, null); // -> CHECK_PRODUCTION_INPUT
+    await advance(reqId, null); // -> CREATE_PRODUCTION_ORDER (links PO at `production`)
+
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const listRes = await request(ctx.app)
+      .get('/api/replenishment')
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(listRes.status).toBe(200);
+    const row = (listRes.body as Array<{ id: number; production_location_name: string | null }>)
+      .find((r) => r.id === reqId);
+    expect(row?.production_location_name).toBe('Tort sexi');
+
+    const detailRes = await request(ctx.app)
+      .get(`/api/replenishment/${reqId}`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(detailRes.status).toBe(200);
+    expect(detailRes.body.request.production_location_name).toBe('Tort sexi');
+  });
+});
+
