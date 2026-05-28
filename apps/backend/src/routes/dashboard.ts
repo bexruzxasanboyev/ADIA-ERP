@@ -2212,3 +2212,164 @@ dashboardRouter.get(
     res.status(200).json({ items } satisfies AgingAlertsResponse);
   }),
 );
+
+// =============================================================================
+// Sub-task #7 — GET /api/dashboard/revenue-breakdown
+// =============================================================================
+//
+// Today's revenue split by payment method (naqd / karta / Payme / Click /
+// other). Backed by Poster `dash.getPaymentsReport` — already aggregated by
+// the POS, so we don't pull every check line ourselves.
+//
+// Query params:
+//   ?date=YYYY-MM-DD   default = today (the venue's local day).
+//   ?spotId=<int>      optional Poster spot_id; restricts the lookup to one
+//                       store. PM may pass any spot; a scoped principal may
+//                       only pass a spot that maps to one of their assigned
+//                       store locations.
+//
+// Response shape:
+//   { date, spotId?, total, byMethod: { cash, card, payme, click, other } }
+//
+// RBAC: pm / ai_assistant / store_manager / central_warehouse_manager /
+//       supply_manager — the same set that can read /api/sales.
+// =============================================================================
+
+type RevenueBreakdownResponse = {
+  date: string;
+  spot_id: number | null;
+  total: number;
+  by_method: {
+    cash: number;
+    card: number;
+    payme: number;
+    click: number;
+    other: number;
+  };
+};
+
+dashboardRouter.get(
+  '/revenue-breakdown',
+  authenticate,
+  authorize(
+    'pm',
+    'ai_assistant',
+    'store_manager',
+    'central_warehouse_manager',
+    'supply_manager',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const dateStr = parseDateParam(req.query.date);
+    const spotIdParam = parseOptionalSpotId(req.query.spotId ?? req.query.spot_id);
+
+    // RBAC scoping for spotId: a scoped principal may only target a spot
+    // mapped to one of their assigned store locations.
+    if (
+      !isSuperAdmin(principal) &&
+      principal.role !== 'ai_assistant' &&
+      principal.role !== 'central_warehouse_manager' &&
+      principal.role !== 'supply_manager' &&
+      spotIdParam !== null
+    ) {
+      const ok = await isSpotAssignedToPrincipal(principal.locationIds, spotIdParam);
+      if (!ok) {
+        throw AppError.forbidden(
+          'You may only query revenue for spots in your assigned stores.',
+        );
+      }
+    }
+
+    // Lazy import — avoid loading the Poster client at module init when
+    // POSTER_TOKEN is not set in dev (e.g. unit tests that stub the route).
+    const { createPosterClientFromConfig } = await import(
+      '../integrations/poster/client.js'
+    );
+    const { classifyPosterPayment, emptyPaymentBuckets } = await import(
+      '../integrations/poster/paymentMethods.js'
+    );
+
+    const client = createPosterClientFromConfig();
+    const compact = dateStr.replace(/-/g, ''); // Poster wants YYYYMMDD.
+    const rows = await client.getPaymentsReport({
+      dateFrom: compact,
+      dateTo: compact,
+      spotId: spotIdParam ?? undefined,
+    });
+
+    const buckets = emptyPaymentBuckets();
+    for (const row of rows) {
+      const id = Number(row.payment_id);
+      const key = classifyPosterPayment(
+        Number.isFinite(id) ? id : undefined,
+        row.payment_title,
+      );
+      const sum = Number(row.payment_sum);
+      if (!Number.isFinite(sum)) continue;
+      buckets[key] += sum;
+    }
+
+    const total =
+      buckets.cash + buckets.card + buckets.payme + buckets.click + buckets.other;
+
+    const response: RevenueBreakdownResponse = {
+      date: dateStr,
+      spot_id: spotIdParam,
+      total: Math.round(total * 100) / 100,
+      by_method: {
+        cash: Math.round(buckets.cash * 100) / 100,
+        card: Math.round(buckets.card * 100) / 100,
+        payme: Math.round(buckets.payme * 100) / 100,
+        click: Math.round(buckets.click * 100) / 100,
+        other: Math.round(buckets.other * 100) / 100,
+      },
+    };
+    res.status(200).json(response);
+  }),
+);
+
+/** Parse `?date=YYYY-MM-DD`; default to today's date (UTC) when missing. */
+function parseDateParam(raw: unknown): string {
+  if (raw === undefined || raw === null || raw === '') {
+    const d = new Date();
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+  if (typeof raw !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    throw AppError.validation('"date" must be a YYYY-MM-DD string.');
+  }
+  return raw;
+}
+
+/** Parse `?spotId=` to a positive integer, or `null` when missing. */
+function parseOptionalSpotId(raw: unknown): number | null {
+  if (raw === undefined || raw === null || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    throw AppError.validation('"spotId" must be a positive integer.');
+  }
+  return n;
+}
+
+/**
+ * Confirm that the Poster `spot_id` resolves to a `locations.id` inside the
+ * principal's assigned set. Returns false when no `store` location maps
+ * to the spot or the mapped location is not in scope.
+ */
+async function isSpotAssignedToPrincipal(
+  locationIds: readonly number[],
+  spotId: number,
+): Promise<boolean> {
+  if (locationIds.length === 0) return false;
+  const { rows } = await query<{ id: string }>(
+    `SELECT id FROM locations
+      WHERE poster_spot_id = $1 AND type = 'store' AND is_active = TRUE
+      LIMIT 1`,
+    [spotId],
+  );
+  const idRaw = rows[0]?.id;
+  if (idRaw === undefined) return false;
+  return locationIds.includes(Number(idRaw));
+}

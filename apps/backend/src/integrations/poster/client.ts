@@ -125,6 +125,28 @@ export type PosterTransactionFull = PosterTransactionSummary & {
   products?: PosterTransactionLine[];
 };
 
+/**
+ * Sub-task #7 — row shape returned by `dash.getPaymentsReport`. Aggregates
+ * sales by payment method for a date range. Poster groups by day-and-method;
+ * `payment_count`/`payment_sum` are strings (Poster numeric convention).
+ *
+ * Fields seen in real responses:
+ *   date          — YYYY-MM-DD
+ *   spot_id       — present when `spot_id` parameter was set
+ *   payment_id    — built-in 1=cash, 2=card; custom methods get next free int
+ *   payment_title — operator-chosen label ("Payme", "Click", "Naqd")
+ *   payment_count — integer string ("17")
+ *   payment_sum   — money string in the venue's currency ("1234500")
+ */
+export type PosterPaymentReportRow = {
+  date?: string;
+  spot_id?: string | number;
+  payment_id: string | number;
+  payment_title: string;
+  payment_count: string | number;
+  payment_sum: string | number;
+};
+
 // -----------------------------------------------------------------------------
 // Client options + errors
 // -----------------------------------------------------------------------------
@@ -270,6 +292,24 @@ export class PosterClient {
     if (params.spotId !== undefined) qs.spot_id = String(params.spotId);
     if (params.num !== undefined) qs.num = String(params.num);
     const r = await this.call<PosterTransactionSummary[]>('dash.getTransactions', qs);
+    return r ?? [];
+  }
+
+  /**
+   * Sub-task #7 — sales aggregated by payment method.
+   * Date strings follow Poster's `YYYYMMDD` convention.
+   */
+  async getPaymentsReport(params: {
+    dateFrom: string; // YYYYMMDD
+    dateTo: string;   // YYYYMMDD
+    spotId?: number;
+  }): Promise<PosterPaymentReportRow[]> {
+    const qs: Record<string, string> = {
+      dateFrom: params.dateFrom,
+      dateTo: params.dateTo,
+    };
+    if (params.spotId !== undefined) qs.spot_id = String(params.spotId);
+    const r = await this.call<PosterPaymentReportRow[]>('dash.getPaymentsReport', qs);
     return r ?? [];
   }
 
