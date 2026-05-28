@@ -2066,3 +2066,149 @@ function emptyChainLayer(layerType: ChainLayerType): ChainLayerResponse {
     recent_movements: [],
   };
 }
+
+// =============================================================================
+// Sub-task #5 — GET /api/dashboard/aging-alerts
+// =============================================================================
+//
+// Surfaces stock sitting in a `sex_storage` (or legacy `supply`) location for
+// longer than its `products.shelf_life_days` threshold.
+//
+// Aging is computed from the most recent inbound `stock_movement` (reasons:
+// `production_output` or `transfer`) that landed product P into location L.
+// We then compare `now() - last_inbound_at` against `shelf_life_days` and
+// classify:
+//   - days_in_storage >= shelf_life_days        -> 'critical' (already off)
+//   - days_in_storage >= shelf_life_days * 0.7  -> 'warning'  (safe-zone)
+//
+// Products with NULL `shelf_life_days` (raw materials) are ignored — they
+// have no expiry.
+//
+// RBAC mirrors `/api/dashboard/overview`:
+//   - pm / ai_assistant -> chain-wide.
+//   - scoped principal  -> only their assigned sex_storage / supply locations.
+// =============================================================================
+
+const AGING_WARNING_RATIO = 0.7;
+
+type AgingAlertRaw = {
+  location_id: string;
+  location_name: string;
+  location_type: string;
+  product_id: string;
+  product_name: string;
+  product_unit: string;
+  qty: string;
+  shelf_life_days: number;
+  last_inbound_at: Date;
+  days_in_storage: string;
+};
+
+type AgingAlertItem = {
+  location_id: number;
+  location_name: string;
+  location_type: string;
+  product_id: number;
+  product_name: string;
+  product_unit: string;
+  qty: number;
+  shelf_life_days: number;
+  last_inbound_at: string;
+  days_in_storage: number;
+  urgency: 'warning' | 'critical';
+};
+
+type AgingAlertsResponse = {
+  items: AgingAlertItem[];
+};
+
+dashboardRouter.get(
+  '/aging-alerts',
+  authenticate,
+  authorize(
+    'pm',
+    'raw_warehouse_manager',
+    'production_manager',
+    'supply_manager',
+    'central_warehouse_manager',
+    'store_manager',
+    'ai_assistant',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const scope = resolveEcosystemScope(principal);
+
+    if (scope.kind === 'empty') {
+      res.status(200).json({ items: [] } satisfies AgingAlertsResponse);
+      return;
+    }
+
+    const params: SqlParam[] = [];
+    // Sex skladi = `sex_storage` (post-D7) + legacy `supply` rows. Aging is
+    // most relevant for half-finished goods sitting in a sex buffer, but we
+    // include legacy `supply` rows so any unmigrated tenant still gets the
+    // signal.
+    let locFilter = `l.type IN ('sex_storage','supply') AND l.is_active = TRUE`;
+    if (scope.kind === 'locations') {
+      params.push(scope.locationIds);
+      locFilter += ` AND l.id = ANY($${params.length}::bigint[])`;
+    }
+
+    // The aging signal is the most recent inbound movement into (L, P). We
+    // consider `production_output` and `transfer` — both deposit qty into a
+    // sex_storage. `purchase` is for raw warehouses, not sex buffers, and is
+    // intentionally excluded.
+    const { rows } = await query<AgingAlertRaw>(
+      `SELECT s.location_id, l.name AS location_name, l.type::text AS location_type,
+              s.product_id, p.name AS product_name, p.unit::text AS product_unit,
+              s.qty,
+              p.shelf_life_days,
+              last_inbound.created_at AS last_inbound_at,
+              EXTRACT(EPOCH FROM (now() - last_inbound.created_at)) / 86400.0
+                AS days_in_storage
+         FROM stock s
+         JOIN products  p ON p.id = s.product_id
+         JOIN locations l ON l.id = s.location_id
+         JOIN LATERAL (
+           SELECT m.created_at
+             FROM stock_movements m
+            WHERE m.product_id = s.product_id
+              AND m.to_location_id = s.location_id
+              AND m.reason IN ('production_output','transfer')
+            ORDER BY m.created_at DESC
+            LIMIT 1
+         ) last_inbound ON TRUE
+        WHERE s.qty > 0
+          AND p.shelf_life_days IS NOT NULL
+          AND ${locFilter}
+          AND EXTRACT(EPOCH FROM (now() - last_inbound.created_at)) / 86400.0
+              >= p.shelf_life_days * $${params.length + 1}::numeric
+        ORDER BY (EXTRACT(EPOCH FROM (now() - last_inbound.created_at)) / 86400.0)
+                 / NULLIF(p.shelf_life_days, 0) DESC,
+                 s.location_id, s.product_id`,
+      [...params, AGING_WARNING_RATIO],
+    );
+
+    const items: AgingAlertItem[] = rows.map((r) => {
+      const days = Number(r.days_in_storage);
+      const shelf = r.shelf_life_days;
+      const urgency: 'warning' | 'critical' =
+        days >= shelf ? 'critical' : 'warning';
+      return {
+        location_id: Number(r.location_id),
+        location_name: r.location_name,
+        location_type: r.location_type,
+        product_id: Number(r.product_id),
+        product_name: r.product_name,
+        product_unit: r.product_unit,
+        qty: Number(r.qty),
+        shelf_life_days: shelf,
+        last_inbound_at: r.last_inbound_at.toISOString(),
+        days_in_storage: Math.round(days * 100) / 100,
+        urgency,
+      };
+    });
+
+    res.status(200).json({ items } satisfies AgingAlertsResponse);
+  }),
+);
