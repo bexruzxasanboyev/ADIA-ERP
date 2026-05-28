@@ -97,17 +97,21 @@ replenishmentRouter.get(
         product_unit: string;
         requester_location_name: string | null;
         target_location_name: string | null;
+        production_location_name: string | null;
       }
     >(
       `SELECT ${qualifiedCols},
               p.name AS product_name,
               p.unit AS product_unit,
               rl.name AS requester_location_name,
-              tl.name AS target_location_name
+              tl.name AS target_location_name,
+              pl.name AS production_location_name
        FROM replenishment_requests r
        JOIN products p ON p.id = r.product_id
        LEFT JOIN locations rl ON rl.id = r.requester_location_id
        LEFT JOIN locations tl ON tl.id = r.target_location_id
+       LEFT JOIN production_orders po ON po.id = r.production_order_id
+       LEFT JOIN locations pl ON pl.id = po.location_id
        ${where}
        ORDER BY r.id DESC`,
       params,
@@ -144,17 +148,21 @@ replenishmentRouter.get(
         product_unit: string;
         requester_location_name: string | null;
         target_location_name: string | null;
+        production_location_name: string | null;
       }
     >(
       `SELECT ${qualifiedCols},
               p.name AS product_name,
               p.unit AS product_unit,
               rl.name AS requester_location_name,
-              tl.name AS target_location_name
+              tl.name AS target_location_name,
+              pl.name AS production_location_name
        FROM replenishment_requests r
        JOIN products p ON p.id = r.product_id
        LEFT JOIN locations rl ON rl.id = r.requester_location_id
        LEFT JOIN locations tl ON tl.id = r.target_location_id
+       LEFT JOIN production_orders po ON po.id = r.production_order_id
+       LEFT JOIN locations pl ON pl.id = po.location_id
        WHERE r.id = $1`,
       [id],
     );
