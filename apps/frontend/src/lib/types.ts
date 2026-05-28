@@ -281,6 +281,14 @@ export interface ReplenishmentRequest {
   product_unit: Unit;
   requester_location_name: string;
   target_location_name: string | null;
+  /**
+   * Sex (production location) name embedded by the backend when this
+   * request has a linked `production_order_id`. `null` when no production
+   * order is linked yet (e.g. NEW / CHECK_STORE_SUPPLIER). Drives the
+   * sex-specific label on PRODUCING / CHECK_PRODUCTION_INPUT /
+   * CREATE_PRODUCTION_ORDER ("Tort sexi ishlab chiqarmoqda").
+   */
+  production_location_name: string | null;
 }
 
 /** A single replenishment_transitions audit row. */
@@ -428,6 +436,180 @@ export interface DashboardOverview {
     active_production_orders: number;
     pending_approvals: number;
   };
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard MEGA Redesign Sprint C — detail drawers (5 endpoints).
+// Mirrors `apps/backend/src/routes/dashboardDetail.ts`.
+// ---------------------------------------------------------------------------
+
+/** `GET /api/dashboard/raw` — Mahsulot Ombori drawer. */
+export interface DashboardRawDetail {
+  kpis: {
+    raw_product_types: number;
+    total_stock_by_unit: Array<{ unit: string; qty: number }>;
+    below_min_count: number;
+    open_purchase_orders: number;
+  };
+  below_min_items: Array<{
+    product_id: number;
+    product_name: string;
+    unit: string;
+    qty: number;
+    min_level: number;
+    max_level: number;
+    location_id: number;
+    location_name: string;
+  }>;
+  daily_movements: Array<{ date: string; received: number; issued: number }>;
+  pending_purchase_orders: Array<{
+    id: number;
+    product_id: number;
+    product_name: string;
+    qty: number;
+    supplier_id: number | null;
+    created_at: string;
+  }>;
+}
+
+/** `GET /api/dashboard/production` — Ishlab Chiqarish drawer. */
+export interface DashboardProductionDetail {
+  kpis: {
+    active_orders: number;
+    done_today: number;
+    overdue: number;
+    sex_count: number;
+  };
+  active_orders: Array<{
+    id: number;
+    product_id: number;
+    product_name: string;
+    qty: number;
+    location_id: number;
+    location_name: string;
+    deadline: string | null;
+    status: 'in_progress' | 'done';
+    is_overdue: boolean;
+  }>;
+  top_produced_today: Array<{
+    product_id: number;
+    product_name: string;
+    qty: number;
+  }>;
+  daily_io: Array<{ date: string; input: number; output: number }>;
+  sex_load: Array<{
+    location_id: number;
+    location_name: string;
+    open_orders: number;
+    planned_qty: number;
+  }>;
+}
+
+/** `GET /api/dashboard/supply` — Ta'minot bo'limi drawer. */
+export interface DashboardSupplyDetail {
+  kpis: {
+    current_stock_count: number;
+    open_requests: number;
+    shipped_today: number;
+    received_today: number;
+  };
+  daily_flow: Array<{ date: string; received: number; shipped: number }>;
+  top_destinations_today: Array<{
+    location_id: number;
+    location_name: string;
+    qty: number;
+  }>;
+  open_request_items: Array<{
+    id: number;
+    product_id: number;
+    product_name: string;
+    qty_needed: number;
+    target_location_id: number;
+    target_location_name: string;
+    status: string;
+    created_at: string;
+  }>;
+}
+
+/** `GET /api/dashboard/central` — Markaziy Sklad drawer. */
+export interface DashboardCentralDetail {
+  kpis: {
+    block_count: number;
+    total_sku: number;
+    below_min_count: number;
+    last_sync_at: string | null;
+    last_sync_status: 'ok' | 'partial' | 'failed' | null;
+    sync_errors_24h: number;
+  };
+  blocks: Array<{
+    location_id: number;
+    location_name: string;
+    product_count: number;
+    below_min_count: number;
+    total_qty: number;
+  }>;
+  recent_sync_log: Array<{
+    id: number;
+    entity: string;
+    status: string;
+    started_at: string;
+    finished_at: string | null;
+    records_in: number;
+    records_applied: number;
+    error_detail: string | null;
+  }>;
+  daily_sync_runs: Array<{
+    date: string;
+    ok: number;
+    partial: number;
+    failed: number;
+  }>;
+}
+
+/** `GET /api/dashboard/stores` — Do'konlar drawer. */
+export interface DashboardStoresDetail {
+  kpis: {
+    store_count: number;
+    sales_today_sum: number;
+    sales_today_count: number;
+    avg_receipt_today: number;
+  };
+  store_breakdown: Array<{
+    location_id: number;
+    location_name: string;
+    sales_sum: number;
+    sales_count: number;
+    below_min_count: number;
+    open_replenishments: number;
+  }>;
+  top_products_today: Array<{
+    product_id: number;
+    product_name: string;
+    unit: string;
+    qty: number;
+    revenue: number;
+  }>;
+  /** 7 days x 24 hours; day_offset 0 = today, up to 6 = 6 days ago. */
+  hourly_heatmap: Array<{ day_offset: number; hour: number; qty: number }>;
+  daily_sales: Array<{ date: string; qty: number; revenue: number }>;
+}
+
+/**
+ * `GET /api/dashboard/suppliers` — top-5 active suppliers for the
+ * `EcosystemCanvas` left-side cluster. PM / ai_assistant only (chain-wide).
+ * `supplier_id === null` is the "noma'lum yetkazib beruvchi" bucket. `status`
+ * is the traffic light: 0 pending → `ok`, 1-2 → `warn`, 3+ → `danger`.
+ */
+export interface DashboardSuppliersResponse {
+  suppliers: Array<{
+    supplier_id: number | null;
+    supplier_name: string;
+    pending_pos: number;
+    total_pos: number;
+    received_qty: number;
+    expected_qty: number;
+    status: 'ok' | 'warn' | 'danger';
+  }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -701,6 +883,118 @@ export interface DashboardChainNode {
   total_products: number;
 }
 
+// ---------------------------------------------------------------------------
+// Dashboard MEGA Redesign Sprint B — `chain_summary` (one row per chain stage)
+// ---------------------------------------------------------------------------
+// `DashboardChainNode` (above) is row-per-location and stays the source for
+// the existing `EcosystemHealthBar`. `ChainSummaryNode` is row-per-CHAIN-TYPE
+// — exactly five entries (raw / production / supply / central / store) for
+// the new `ChainFlowRow`. Mirrors `apps/backend/src/routes/dashboard.ts`
+// `fetchChainSummary` (Sprint B / task B3).
+// ---------------------------------------------------------------------------
+
+export type ChainStatus = 'ok' | 'warn' | 'danger';
+
+/**
+ * Per-stage "pulse" — today's activity highlight. Discriminated union by
+ * `kind` so each card can render type-specific micro-content. All numeric
+ * fields are raw values (no formatting applied) — the UI formats with
+ * Uzbek locale + the right unit suffix.
+ *
+ * Sprint C — extended KPIs are now produced by `fetchChainSummary` on every
+ * response. Fields are kept OPTIONAL on the wire so existing fixtures /
+ * adapters that still ship the Sprint-B shape stay valid; `chainFlowAdapter`
+ * treats missing values as `0` / `null`. Once frontend-engineer strict-types
+ * the adapter the `?` markers can be dropped. Mirrors
+ * `apps/backend/src/routes/dashboard.ts` `ChainPulse`.
+ */
+export type ChainPulse =
+  | {
+      kind: 'raw';
+      // Sprint B
+      received_today: number;
+      issued_today: number;
+      // Sprint C
+      /** Open `purchase_orders` whose target is a raw warehouse. */
+      pending_purchase_orders?: number;
+      /**
+       * Total qty held at raw warehouses, grouped by `products.unit` (kg / l /
+       * pcs are kept apart — never collapsed into a single scalar).
+       */
+      total_qty_by_unit?: Array<{ unit: string; qty: number }>;
+    }
+  | {
+      kind: 'production';
+      // Sprint B
+      active_orders: number;
+      done_today: number;
+      // Sprint C
+      /** Production orders past their `deadline` and still open. */
+      overdue_orders?: number;
+      /** Active production locations (sex_count). */
+      sex_count?: number;
+      /** Today's `production_input` qty (raw consumed by sexes). */
+      input_today?: number;
+      /** Today's `production_output` qty (sexes produced). */
+      output_today?: number;
+    }
+  | {
+      kind: 'supply';
+      // Sprint B
+      shipped_today: number;
+      received_today: number;
+      // Sprint C
+      /** Open replenishment requests routed through a supply location. */
+      open_requests?: number;
+      /** Distinct destinations a supply location served today. */
+      top_destination_count?: number;
+    }
+  | {
+      kind: 'central';
+      // Sprint B
+      last_sync_at: string | null;
+      last_sync_status: PosterSyncStatus | null;
+      // Sprint C
+      /** Failed `poster_sync_log` rows in the last 24h. */
+      sync_errors_24h?: number;
+    }
+  | {
+      kind: 'store';
+      // Sprint B
+      sales_today_sum: number;
+      receipts_today: number;
+      // Sprint C
+      /** `sales_today_sum / receipts_today` (0 when no receipts). */
+      avg_receipt_today?: number;
+      /** Open replenishment requests originating from a store. */
+      open_replenishments?: number;
+      /**
+       * Transfer movements with a replenishment link arriving at a store in
+       * the last 24h (recent transit deliveries).
+       */
+      transit_count?: number;
+      /** Best-selling product name today across stores in scope, or null. */
+      top_product_name?: string | null;
+      /** Total qty (units) sold today across stores in scope. */
+      qty_today?: number;
+    };
+
+/** One row in `chain_summary` — exactly five entries for a chain-wide scope. */
+export interface ChainSummaryNode {
+  /** Supply-chain stage. */
+  type: LocationType;
+  /** Number of active locations of this type visible to the principal. */
+  location_count: number;
+  /** Distinct `product_id`s held in stock at any of those locations. */
+  total_products: number;
+  /** Count of `stock` rows where `qty <= min_level AND min_level > 0`. */
+  below_min_count: number;
+  /** Derived: 0 -> ok, 1..3 -> warn, 4+ -> danger. */
+  status: ChainStatus;
+  /** Type-specific "today" pulse metric — see `ChainPulse`. */
+  pulse: ChainPulse;
+}
+
 /** One row in the alerts feed (mirrors `notifications` row). */
 export interface DashboardAlert {
   id: number;
@@ -727,6 +1021,14 @@ export interface DashboardSalesPoint {
 export interface DashboardEcosystem {
   poster_status: DashboardPosterStatus;
   chain_flow: DashboardChainNode[];
+  /**
+   * Sprint B — one row per supply-chain stage visible to the principal.
+   * PM / ai_assistant see all 5 stages; a scoped manager sees only the
+   * stages that intersect their assigned locations. New `ChainFlowRow`
+   * UI consumes this; the legacy `EcosystemHealthBar` continues to read
+   * `chain_flow`.
+   */
+  chain_summary: ChainSummaryNode[];
   alerts_feed: DashboardAlert[];
   sales_chart: {
     days: DashboardSalesPoint[];

@@ -197,6 +197,7 @@ const SUPPLY_REPLEN: ReplenishmentRequest = {
   product_unit: 'kg',
   requester_location_name: 'Do‘kon #2',
   target_location_name: 'Tort bo‘limi',
+  production_location_name: null,
 };
 
 const CENTRAL_OVERVIEW: ChainLayerOverview = {

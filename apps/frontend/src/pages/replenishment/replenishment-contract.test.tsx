@@ -60,6 +60,7 @@ const REQUEST: ReplenishmentRequest = {
   product_unit: 'kg',
   requester_location_name: 'Markaziy sklad',
   target_location_name: null,
+  production_location_name: null,
 };
 
 const DETAIL: ReplenishmentDetail = {

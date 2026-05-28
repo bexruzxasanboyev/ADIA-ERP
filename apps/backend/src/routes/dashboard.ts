@@ -607,6 +607,137 @@ type ChainFlowItem = {
   below_min_count: number;
   open_requests_count: number;
   total_products: number;
+  /**
+   * Production-only KPI: count of `production_orders` at this location in
+   * `new` or `in_progress` status. `null` for non-production locations so
+   * the frontend can branch on type without an extra lookup.
+   */
+  active_production_orders: number | null;
+  /**
+   * Production-only KPI: count of `production_orders` at this location
+   * completed (`status='done'`, `done_at` falls on the current date).
+   * `null` for non-production locations.
+   */
+  done_today_count: number | null;
+};
+
+// ---------------------------------------------------------------------------
+// F4.4 / Dashboard MEGA Redesign Sprint B — `chain_summary`
+// ---------------------------------------------------------------------------
+//
+// One row PER LOCATION TYPE (not per location). The `ChainFlowRow` UI renders
+// exactly 5 cards — one per supply-chain stage — and needs aggregate counts
+// across every location of that type plus a type-specific "pulse" metric for
+// today. `chain_flow` (row per location) stays untouched for the existing
+// `EcosystemHealthBar` consumer and the M8 overview screen.
+//
+// Status thresholds (plan §10, owner-approved):
+//   below_min == 0     -> ok
+//   below_min in 1..3  -> warn
+//   below_min >= 4     -> danger
+//
+// The pulse shape is a discriminated union keyed by `type` so the frontend
+// can render per-stage micro-content (today inflow/outflow for raw, active
+// orders for production, etc.). Each pulse field is a number for the UI to
+// format with units — never a pre-formatted string (i18n + dark theme tone).
+// ---------------------------------------------------------------------------
+
+const CHAIN_TYPES = [
+  'raw_warehouse',
+  'production',
+  'supply',
+  'central_warehouse',
+  'store',
+] as const;
+type ChainType = (typeof CHAIN_TYPES)[number];
+
+type ChainStatus = 'ok' | 'warn' | 'danger';
+
+/**
+ * Per-stage pulse — today's activity highlight.
+ *
+ * Sprint C+ — every variant carries the original Sprint-B fields PLUS the
+ * "expanded" KPIs the new `ChainCard` wants to render (4 → 6 stats per stage,
+ * 10 for the store). New fields are additive — existing consumers stay
+ * unchanged. Field naming is snake_case to match the rest of the API.
+ */
+type ChainPulse =
+  | {
+      kind: 'raw';
+      // Sprint B
+      received_today: number;
+      issued_today: number;
+      // Sprint C
+      /** Open `purchase_orders` whose target is a raw warehouse. */
+      pending_purchase_orders: number;
+      /**
+       * Total qty held at raw warehouses, grouped by `products.unit`. The
+       * eskiz wants "ombor sig'imi" broken down per unit so kg / l / pcs
+       * are never collapsed into a meaningless scalar.
+       */
+      total_qty_by_unit: Array<{ unit: string; qty: number }>;
+    }
+  | {
+      kind: 'production';
+      // Sprint B
+      active_orders: number;
+      done_today: number;
+      // Sprint C
+      /** Production orders whose `deadline < CURRENT_DATE` and still open. */
+      overdue_orders: number;
+      /** Active `production` locations (sex_count). */
+      sex_count: number;
+      /** Today's `production_input` (raw consumed by sexes). */
+      input_today: number;
+      /** Today's `production_output` (qty produced by sexes). */
+      output_today: number;
+    }
+  | {
+      kind: 'supply';
+      // Sprint B
+      shipped_today: number;
+      received_today: number;
+      // Sprint C
+      /** Open replenishment requests routed through a supply location. */
+      open_requests: number;
+      /** Distinct destinations a supply location served today. */
+      top_destination_count: number;
+    }
+  | {
+      kind: 'central';
+      // Sprint B
+      last_sync_at: string | null;
+      last_sync_status: 'ok' | 'partial' | 'failed' | null;
+      // Sprint C
+      /** Failed poster_sync_log rows in the last 24h. */
+      sync_errors_24h: number;
+    }
+  | {
+      kind: 'store';
+      // Sprint B
+      sales_today_sum: number;
+      receipts_today: number;
+      // Sprint C
+      /** sales_today_sum / receipts_today (0 if no receipts). */
+      avg_receipt_today: number;
+      /** Open replenishment requests originating from a store. */
+      open_replenishments: number;
+      /** Transfer movements arriving at a store in the last 24h with a */
+      /** replenishment link (i.e. recent transit deliveries).          */
+      transit_count: number;
+      /** Best-selling product name today (across the principal's stores). */
+      top_product_name: string | null;
+      /** Total qty (units) sold today across the principal's stores. */
+      qty_today: number;
+    };
+
+type ChainSummaryNode = {
+  type: ChainType;
+  location_count: number;
+  total_products: number;
+  below_min_count: number;
+  status: ChainStatus;
+  pulse: ChainPulse;
 };
 
 type AlertSeverity = 'info' | 'warning' | 'danger';
@@ -629,6 +760,12 @@ type SalesChartItem = {
 type EcosystemResponse = {
   poster_status: PosterStatusBlock;
   chain_flow: ChainFlowItem[];
+  /**
+   * Sprint B — one entry per supply-chain stage visible to the principal.
+   * PM / ai_assistant see all 5 stages; a scoped manager sees only the
+   * stages that intersect their assigned locations (typically one).
+   */
+  chain_summary: ChainSummaryNode[];
   alerts_feed: AlertsFeedItem[];
   sales_chart: { days: SalesChartItem[] };
 };
@@ -659,16 +796,19 @@ dashboardRouter.get(
       return;
     }
 
-    const [posterStatus, chainFlow, alertsFeed, salesChart] = await Promise.all([
-      fetchPosterStatus(scope, range),
-      fetchChainFlow(scope),
-      fetchAlertsFeed(principal),
-      fetchSalesChart(scope, range),
-    ]);
+    const [posterStatus, chainFlow, chainSummary, alertsFeed, salesChart] =
+      await Promise.all([
+        fetchPosterStatus(scope, range),
+        fetchChainFlow(scope),
+        fetchChainSummary(scope),
+        fetchAlertsFeed(principal),
+        fetchSalesChart(scope, range),
+      ]);
 
     const response: EcosystemResponse = {
       poster_status: posterStatus,
       chain_flow: chainFlow,
+      chain_summary: chainSummary,
       alerts_feed: alertsFeed,
       sales_chart: { days: salesChart },
     };
@@ -781,13 +921,25 @@ async function fetchChainFlow(
     below_min_count: string;
     open_requests_count: string;
     total_products: string;
+    active_production_orders: string | null;
+    done_today_count: string | null;
   }>(
+    // The production sub-aggregates run via correlated LATERAL joins gated by
+    // `l.type = 'production'` so they are short-circuited for every other
+    // chain stage — keeps the existing query plan (raw/supply/central/store)
+    // unchanged while adding sex-only KPIs.
     `SELECT l.id              AS location_id,
             l.name            AS location_name,
             l.type::text      AS location_type,
             coalesce(bm.below_min_count, 0)   AS below_min_count,
             coalesce(orq.open_requests_count, 0) AS open_requests_count,
-            coalesce(tp.total_products, 0)    AS total_products
+            coalesce(tp.total_products, 0)    AS total_products,
+            CASE WHEN l.type = 'production'
+                 THEN coalesce(po_active.cnt, 0)
+                 ELSE NULL END                AS active_production_orders,
+            CASE WHEN l.type = 'production'
+                 THEN coalesce(po_done.cnt, 0)
+                 ELSE NULL END                AS done_today_count
        FROM locations l
        LEFT JOIN LATERAL (
          SELECT count(*) AS below_min_count
@@ -804,6 +956,22 @@ async function fetchChainFlow(
          SELECT count(*) AS total_products
            FROM stock s2 WHERE s2.location_id = l.id
        ) tp ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT count(*) AS cnt
+           FROM production_orders po
+          WHERE l.type = 'production'
+            AND po.location_id = l.id
+            AND po.status IN ('new','in_progress')
+       ) po_active ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT count(*) AS cnt
+           FROM production_orders po2
+          WHERE l.type = 'production'
+            AND po2.location_id = l.id
+            AND po2.status = 'done'
+            AND po2.done_at >= date_trunc('day', now())
+            AND po2.done_at <  date_trunc('day', now()) + interval '1 day'
+       ) po_done ON TRUE
        ${where}
        ORDER BY CASE l.type
                   WHEN 'raw_warehouse'      THEN 1
@@ -824,7 +992,513 @@ async function fetchChainFlow(
     below_min_count: Number(r.below_min_count),
     open_requests_count: Number(r.open_requests_count),
     total_products: Number(r.total_products),
+    active_production_orders:
+      r.active_production_orders === null
+        ? null
+        : Number(r.active_production_orders),
+    done_today_count:
+      r.done_today_count === null ? null : Number(r.done_today_count),
   }));
+}
+
+/**
+ * Sprint B — one summary row per supply-chain stage (raw / production /
+ * supply / central / store).
+ *
+ * Strategy:
+ *   1. A single SQL query (`base`) aggregates locations, products and below-
+ *      min counts grouped by `locations.type`. Backed by `ix_stock_product`
+ *      and the partial `ix_stock_below_min` index — for the seeded DB (38
+ *      locations / 2,448 stock rows) this is sub-millisecond.
+ *   2. Five small per-type "pulse" queries run in parallel. Each one is
+ *      narrowly bounded (single-day `created_at::date = CURRENT_DATE`
+ *      filter; for `central` we hit `poster_sync_log` ordered by
+ *      `started_at` LIMIT 1).
+ *   3. A scoped principal (locations-kind) sees only the chain types that
+ *      intersect their assigned `locationIds` — same UX as `chain_flow`.
+ *
+ * Notes:
+ *   - For the `store` pulse we read `sales` directly (not `sales_stats_daily`)
+ *     because today's row isn't aggregated yet — the cron runs nightly at
+ *     03:00. The query is bounded by `sold_at >= CURRENT_DATE` and uses
+ *     `ix_sales_store_date`.
+ *   - For raw/production/supply pulses we use the existing
+ *     `ix_movements_created` + `ix_movements_reason` indexes; same-day
+ *     filter keeps the working set tiny.
+ */
+async function fetchChainSummary(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+): Promise<ChainSummaryNode[]> {
+  // -------- base aggregate (counts + below-min) per chain type --------
+  const baseParams: SqlParam[] = [];
+  let locFilter = 'l.is_active = TRUE';
+  if (scope.kind === 'locations') {
+    baseParams.push(scope.locationIds);
+    locFilter += ` AND l.id = ANY($${baseParams.length}::bigint[])`;
+  }
+
+  const baseSql = `
+    SELECT l.type::text AS type,
+           count(DISTINCT l.id)                                                    AS location_count,
+           count(DISTINCT s.product_id) FILTER (WHERE s.product_id IS NOT NULL)    AS total_products,
+           coalesce(sum(CASE
+                          WHEN s.qty <= s.min_level AND s.min_level > 0 THEN 1
+                          ELSE 0
+                        END), 0)                                                   AS below_min_count
+      FROM locations l
+      LEFT JOIN stock s ON s.location_id = l.id
+     WHERE ${locFilter}
+     GROUP BY l.type
+  `;
+
+  type BaseRow = {
+    type: string;
+    location_count: string;
+    total_products: string;
+    below_min_count: string;
+  };
+  const baseRes = await query<BaseRow>(baseSql, baseParams);
+
+  const baseByType = new Map<ChainType, BaseRow>();
+  for (const r of baseRes.rows) {
+    if ((CHAIN_TYPES as readonly string[]).includes(r.type)) {
+      baseByType.set(r.type as ChainType, r);
+    }
+  }
+
+  // No locations matched -> nothing to summarise. PM still gets 5 nodes
+  // (even empty stages stay in the response so the UI can render them).
+  if (baseByType.size === 0 && scope.kind === 'locations') {
+    return [];
+  }
+
+  // -------- pulses (5 small parallel queries) --------
+  const [raw, production, supply, central, store] = await Promise.all([
+    fetchRawPulse(scope),
+    fetchProductionPulse(scope),
+    fetchSupplyPulse(scope),
+    fetchCentralPulse(scope),
+    fetchStorePulse(scope),
+  ]);
+
+  const pulsesByType: Record<ChainType, ChainPulse> = {
+    raw_warehouse: raw,
+    production,
+    supply,
+    central_warehouse: central,
+    store,
+  };
+
+  // For PM/ai_assistant always emit all 5 types (so the UI keeps a stable
+  // 5-card row even when one stage has no locations yet — e.g. a fresh
+  // tenant with no production sex seeded). For scoped principals, only
+  // emit the types they actually have access to (matches chain_flow UX).
+  const types: ChainType[] =
+    scope.kind === 'chain'
+      ? [...CHAIN_TYPES]
+      : ([...CHAIN_TYPES] as ChainType[]).filter((t) => baseByType.has(t));
+
+  return types.map<ChainSummaryNode>((type) => {
+    const row = baseByType.get(type);
+    const belowMin = row ? Number(row.below_min_count) : 0;
+    return {
+      type,
+      location_count: row ? Number(row.location_count) : 0,
+      total_products: row ? Number(row.total_products) : 0,
+      below_min_count: belowMin,
+      status: deriveChainStatus(belowMin),
+      pulse: pulsesByType[type],
+    };
+  });
+}
+
+function deriveChainStatus(belowMin: number): ChainStatus {
+  if (belowMin === 0) return 'ok';
+  if (belowMin <= 3) return 'warn';
+  return 'danger';
+}
+
+/**
+ * Builds a stock_movements `WHERE` fragment that scopes the pulse query to
+ * locations of the given type, optionally intersected with the principal's
+ * `locationIds`. Returned as a SQL snippet `(EXISTS ... AND l.type = ...)`
+ * via an `IN (SELECT id FROM locations ...)` subquery — keeps the param
+ * list flat and easy to reason about.
+ */
+function locationIdsForTypeSql(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+  type: ChainType,
+  params: SqlParam[],
+): string {
+  params.push(type);
+  const typeIdx = params.length;
+  if (scope.kind === 'locations') {
+    params.push(scope.locationIds);
+    const locIdx = params.length;
+    return `(SELECT id FROM locations
+              WHERE type = $${typeIdx}::location_type
+                AND is_active = TRUE
+                AND id = ANY($${locIdx}::bigint[]))`;
+  }
+  return `(SELECT id FROM locations
+            WHERE type = $${typeIdx}::location_type
+              AND is_active = TRUE)`;
+}
+
+async function fetchRawPulse(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+): Promise<ChainPulse> {
+  // 1. Today's flow (received/issued) — same query as before.
+  const flowParams: SqlParam[] = [];
+  const locSql = locationIdsForTypeSql(scope, 'raw_warehouse', flowParams);
+  const flowQ = query<{ received_today: string; issued_today: string }>(
+    `SELECT
+       coalesce(sum(qty) FILTER (
+         WHERE reason = 'purchase' AND to_location_id IN ${locSql}
+       ), 0) AS received_today,
+       coalesce(sum(qty) FILTER (
+         WHERE reason = 'production_input' AND from_location_id IN ${locSql}
+       ), 0) AS issued_today
+     FROM stock_movements
+     WHERE created_at >= date_trunc('day', now())
+       AND created_at <  date_trunc('day', now()) + interval '1 day'`,
+    flowParams,
+  );
+
+  // 2. Open purchase orders targeting a raw warehouse.
+  const poParams: SqlParam[] = [];
+  const poLocSql = locationIdsForTypeSql(scope, 'raw_warehouse', poParams);
+  const poQ = query<{ cnt: string }>(
+    `SELECT count(*) AS cnt
+       FROM purchase_orders
+      WHERE status IN ('draft','approved')
+        AND target_location_id IN ${poLocSql}`,
+    poParams,
+  );
+
+  // 3. Total qty held at raw warehouses, grouped by `products.unit` so the UI
+  //    can render "ombor sig'imi" per unit instead of collapsing kg / l / pcs
+  //    into a meaningless scalar.
+  const qtyParams: SqlParam[] = [];
+  const qtyLocSql = locationIdsForTypeSql(scope, 'raw_warehouse', qtyParams);
+  const qtyQ = query<{ unit: string; qty: string }>(
+    `SELECT p.unit::text AS unit, coalesce(sum(s.qty), 0) AS qty
+       FROM stock s
+       JOIN products p ON p.id = s.product_id
+      WHERE s.location_id IN ${qtyLocSql}
+      GROUP BY p.unit
+      ORDER BY p.unit`,
+    qtyParams,
+  );
+
+  const [flow, po, qty] = await Promise.all([flowQ, poQ, qtyQ]);
+  const f = flow.rows[0];
+  return {
+    kind: 'raw',
+    received_today: Number(f?.received_today ?? 0),
+    issued_today: Number(f?.issued_today ?? 0),
+    pending_purchase_orders: Number(po.rows[0]?.cnt ?? 0),
+    total_qty_by_unit: qty.rows.map((r) => ({
+      unit: r.unit,
+      qty: Number(r.qty),
+    })),
+  };
+}
+
+async function fetchProductionPulse(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+): Promise<ChainPulse> {
+  const params: SqlParam[] = [];
+  const locSql = locationIdsForTypeSql(scope, 'production', params);
+  const activeQ = query<{ active: string }>(
+    `SELECT count(*) AS active
+       FROM production_orders
+      WHERE status IN ('new','in_progress')
+        AND location_id IN ${locSql}`,
+    params,
+  );
+  const doneParams: SqlParam[] = [];
+  const doneLocSql = locationIdsForTypeSql(scope, 'production', doneParams);
+  const doneQ = query<{ done: string }>(
+    `SELECT count(*) AS done
+       FROM production_orders
+      WHERE status = 'done'
+        AND done_at >= date_trunc('day', now())
+        AND done_at <  date_trunc('day', now()) + interval '1 day'
+        AND location_id IN ${doneLocSql}`,
+    doneParams,
+  );
+
+  // Overdue: open production orders whose deadline has passed.
+  const overdueParams: SqlParam[] = [];
+  const overdueLocSql = locationIdsForTypeSql(scope, 'production', overdueParams);
+  const overdueQ = query<{ overdue: string }>(
+    `SELECT count(*) AS overdue
+       FROM production_orders
+      WHERE status IN ('new','in_progress')
+        AND deadline IS NOT NULL
+        AND deadline < CURRENT_DATE
+        AND location_id IN ${overdueLocSql}`,
+    overdueParams,
+  );
+
+  // sex_count: active production locations visible to the principal. We
+  // bypass `locationIdsForTypeSql` (which returns an `IN (...)` subquery)
+  // and reuse the same scope rules inline so we can SELECT count.
+  const sexParams: SqlParam[] = [];
+  let sexWhere = `type = 'production' AND is_active = TRUE`;
+  if (scope.kind === 'locations') {
+    sexParams.push(scope.locationIds);
+    sexWhere += ` AND id = ANY($${sexParams.length}::bigint[])`;
+  }
+  const sexQ = query<{ cnt: string }>(
+    `SELECT count(*) AS cnt FROM locations WHERE ${sexWhere}`,
+    sexParams,
+  );
+
+  // input_today: qty consumed by sexes today (production_input leaving a
+  // location that is itself a production sex — sex consumes from its own
+  // raw bin per the BOM).
+  const inputParams: SqlParam[] = [];
+  const inputLocSql = locationIdsForTypeSql(scope, 'production', inputParams);
+  const inputQ = query<{ total: string }>(
+    `SELECT coalesce(sum(qty), 0) AS total
+       FROM stock_movements
+      WHERE reason = 'production_input'
+        AND from_location_id IN ${inputLocSql}
+        AND created_at >= date_trunc('day', now())
+        AND created_at <  date_trunc('day', now()) + interval '1 day'`,
+    inputParams,
+  );
+
+  // output_today: qty produced by sexes today.
+  const outputParams: SqlParam[] = [];
+  const outputLocSql = locationIdsForTypeSql(scope, 'production', outputParams);
+  const outputQ = query<{ total: string }>(
+    `SELECT coalesce(sum(qty), 0) AS total
+       FROM stock_movements
+      WHERE reason = 'production_output'
+        AND from_location_id IN ${outputLocSql}
+        AND created_at >= date_trunc('day', now())
+        AND created_at <  date_trunc('day', now()) + interval '1 day'`,
+    outputParams,
+  );
+
+  const [a, d, ov, sx, inp, out] = await Promise.all([
+    activeQ,
+    doneQ,
+    overdueQ,
+    sexQ,
+    inputQ,
+    outputQ,
+  ]);
+  return {
+    kind: 'production',
+    active_orders: Number(a.rows[0]?.active ?? 0),
+    done_today: Number(d.rows[0]?.done ?? 0),
+    overdue_orders: Number(ov.rows[0]?.overdue ?? 0),
+    sex_count: Number(sx.rows[0]?.cnt ?? 0),
+    input_today: Number(inp.rows[0]?.total ?? 0),
+    output_today: Number(out.rows[0]?.total ?? 0),
+  };
+}
+
+async function fetchSupplyPulse(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+): Promise<ChainPulse> {
+  const shipParams: SqlParam[] = [];
+  const shipLocSql = locationIdsForTypeSql(scope, 'supply', shipParams);
+  const shipQ = query<{ total: string }>(
+    `SELECT coalesce(sum(qty), 0) AS total
+       FROM stock_movements
+      WHERE reason = 'transfer'
+        AND from_location_id IN ${shipLocSql}
+        AND created_at >= date_trunc('day', now())
+        AND created_at <  date_trunc('day', now()) + interval '1 day'`,
+    shipParams,
+  );
+  const recvParams: SqlParam[] = [];
+  const recvLocSql = locationIdsForTypeSql(scope, 'supply', recvParams);
+  const recvQ = query<{ total: string }>(
+    `SELECT coalesce(sum(qty), 0) AS total
+       FROM stock_movements
+      WHERE reason = 'production_output'
+        AND to_location_id IN ${recvLocSql}
+        AND created_at >= date_trunc('day', now())
+        AND created_at <  date_trunc('day', now()) + interval '1 day'`,
+    recvParams,
+  );
+
+  // Open replenishment requests routed THROUGH a supply location. `supply`
+  // is an intermediate hop, so it can appear as either the requester (the
+  // supply chief asks for inputs) or the target (a store asks supply to
+  // ship). We count rows where EITHER endpoint is a supply location in
+  // scope and the request is not terminal.
+  const openParams: SqlParam[] = [];
+  const openLocSql = locationIdsForTypeSql(scope, 'supply', openParams);
+  const openQ = query<{ cnt: string }>(
+    `SELECT count(*) AS cnt
+       FROM replenishment_requests
+      WHERE status NOT IN ('CLOSED','CANCELLED')
+        AND (requester_location_id IN ${openLocSql}
+             OR target_location_id IN ${openLocSql})`,
+    openParams,
+  );
+
+  // Distinct destinations a supply location served today (today's transfer
+  // fan-out count — useful for "today supply shipped to N stores").
+  const destParams: SqlParam[] = [];
+  const destLocSql = locationIdsForTypeSql(scope, 'supply', destParams);
+  const destQ = query<{ cnt: string }>(
+    `SELECT count(DISTINCT to_location_id) AS cnt
+       FROM stock_movements
+      WHERE reason = 'transfer'
+        AND from_location_id IN ${destLocSql}
+        AND to_location_id IS NOT NULL
+        AND created_at >= date_trunc('day', now())
+        AND created_at <  date_trunc('day', now()) + interval '1 day'`,
+    destParams,
+  );
+
+  const [s, r, op, ds] = await Promise.all([shipQ, recvQ, openQ, destQ]);
+  return {
+    kind: 'supply',
+    shipped_today: Number(s.rows[0]?.total ?? 0),
+    received_today: Number(r.rows[0]?.total ?? 0),
+    open_requests: Number(op.rows[0]?.cnt ?? 0),
+    top_destination_count: Number(ds.rows[0]?.cnt ?? 0),
+  };
+}
+
+async function fetchCentralPulse(
+  _scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+): Promise<ChainPulse> {
+  // Poster sync is chain-wide (no per-location scoping makes sense — the
+  // pulse mirrors poster_status.last_sync_at). We keep this query trivially
+  // cheap by hitting the `ix_poster_sync_entity` index with LIMIT 1.
+  const latestQ = query<{
+    started_at: Date;
+    finished_at: Date | null;
+    status: 'ok' | 'partial' | 'failed';
+  }>(
+    `SELECT started_at, finished_at, status::text AS status
+       FROM poster_sync_log
+       ORDER BY started_at DESC, id DESC
+       LIMIT 1`,
+  );
+
+  // Failed sync runs in the last 24h — quick chain-wide health gauge that
+  // a store_manager wouldn't see, but a PM cares about.
+  const errorsQ = query<{ cnt: string }>(
+    `SELECT count(*) AS cnt
+       FROM poster_sync_log
+      WHERE status = 'failed'
+        AND started_at > now() - interval '24 hours'`,
+  );
+
+  const [latest, errors] = await Promise.all([latestQ, errorsQ]);
+  const row = latest.rows[0];
+  const when = row?.finished_at ?? row?.started_at ?? null;
+  return {
+    kind: 'central',
+    last_sync_at: when === null ? null : when.toISOString(),
+    last_sync_status: row?.status ?? null,
+    sync_errors_24h: Number(errors.rows[0]?.cnt ?? 0),
+  };
+}
+
+async function fetchStorePulse(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+): Promise<ChainPulse> {
+  // Today's sales — read from `sales` (not `sales_stats_daily`) because the
+  // daily aggregate cron only runs at 03:00, so today's row doesn't exist
+  // mid-day. The window is tight (1 day) and `ix_sales_store_date` keeps
+  // the scan bounded; even at 70k+ rows this stays sub-100ms.
+  const params: SqlParam[] = [];
+  let where = `sold_at >= date_trunc('day', now())
+               AND sold_at <  date_trunc('day', now()) + interval '1 day'`;
+  if (scope.kind === 'locations') {
+    params.push(scope.locationIds);
+    where += ` AND store_id = ANY($${params.length}::bigint[])`;
+  }
+  const salesQ = query<{
+    total_sum: string | null;
+    receipts: string;
+    qty_today: string | null;
+  }>(
+    `SELECT coalesce(sum(qty * price), 0)         AS total_sum,
+            count(DISTINCT poster_transaction_id) AS receipts,
+            coalesce(sum(qty), 0)                 AS qty_today
+       FROM sales
+      WHERE ${where}`,
+    params,
+  );
+
+  // Open replenishments originating from a store the principal can see.
+  const replParams: SqlParam[] = [];
+  const replLocSql = locationIdsForTypeSql(scope, 'store', replParams);
+  const replQ = query<{ cnt: string }>(
+    `SELECT count(*) AS cnt
+       FROM replenishment_requests
+      WHERE status NOT IN ('CLOSED','CANCELLED')
+        AND requester_location_id IN ${replLocSql}`,
+    replParams,
+  );
+
+  // Transit deliveries: transfer movements arriving at a store in scope
+  // within the last 24h that are linked to a replenishment request. The
+  // `replenishment_id` link distinguishes a real "transit" from a manual
+  // ad-hoc transfer.
+  const transitParams: SqlParam[] = [];
+  const transitLocSql = locationIdsForTypeSql(scope, 'store', transitParams);
+  const transitQ = query<{ cnt: string }>(
+    `SELECT count(*) AS cnt
+       FROM stock_movements
+      WHERE reason = 'transfer'
+        AND replenishment_id IS NOT NULL
+        AND to_location_id IN ${transitLocSql}
+        AND created_at > now() - interval '24 hours'`,
+    transitParams,
+  );
+
+  // Best-selling product today across stores in scope.
+  const topParams: SqlParam[] = [];
+  let topWhere = `s.sold_at >= date_trunc('day', now())
+                  AND s.sold_at <  date_trunc('day', now()) + interval '1 day'`;
+  if (scope.kind === 'locations') {
+    topParams.push(scope.locationIds);
+    topWhere += ` AND s.store_id = ANY($${topParams.length}::bigint[])`;
+  }
+  const topQ = query<{ name: string }>(
+    `SELECT p.name
+       FROM sales s
+       JOIN products p ON p.id = s.product_id
+      WHERE ${topWhere}
+      GROUP BY p.id, p.name
+      ORDER BY sum(s.qty) DESC, p.id ASC
+      LIMIT 1`,
+    topParams,
+  );
+
+  const [sales, repl, transit, top] = await Promise.all([
+    salesQ,
+    replQ,
+    transitQ,
+    topQ,
+  ]);
+  const r = sales.rows[0];
+  const salesSum = Number(r?.total_sum ?? 0);
+  const receipts = Number(r?.receipts ?? 0);
+  return {
+    kind: 'store',
+    sales_today_sum: salesSum,
+    receipts_today: receipts,
+    avg_receipt_today: receipts > 0 ? salesSum / receipts : 0,
+    open_replenishments: Number(repl.rows[0]?.cnt ?? 0),
+    transit_count: Number(transit.rows[0]?.cnt ?? 0),
+    top_product_name: top.rows[0]?.name ?? null,
+    qty_today: Number(r?.qty_today ?? 0),
+  };
 }
 
 /**
@@ -966,6 +1640,7 @@ function emptyEcosystem(): EcosystemResponse {
       sales_today_sum: 0,
     },
     chain_flow: [],
+    chain_summary: [],
     alerts_feed: [],
     sales_chart: { days: [] },
   };
