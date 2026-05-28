@@ -22,13 +22,21 @@
 -- Idempotent: the `pg_enum` lookup makes re-running this migration a no-op.
 -- =============================================================================
 
+-- Scope the check to the CURRENT schema. `pg_type` is global, so a parallel
+-- schema that has already added `sex_storage` would otherwise short-circuit
+-- this DO block — leaving the current schema's `location_type` without the
+-- new value (the failure surface is migration 0022 trying to cast the
+-- missing label, error 22P02 "invalid input value for enum location_type:
+-- sex_storage").
 DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1
       FROM pg_type t
-      JOIN pg_enum e ON e.enumtypid = t.oid
+      JOIN pg_namespace n ON n.oid = t.typnamespace
+      JOIN pg_enum e      ON e.enumtypid = t.oid
      WHERE t.typname = 'location_type'
+       AND n.nspname = current_schema()
        AND e.enumlabel = 'sex_storage'
   ) THEN
     ALTER TYPE location_type ADD VALUE 'sex_storage' BEFORE 'supply';

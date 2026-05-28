@@ -35,9 +35,22 @@ ALTER TABLE notifications
 -- Distinguish every possible outcome of a callback dispatch. Kept as an
 -- ENUM so the audit trail is queryable (`WHERE status='rejected_rbac'`)
 -- and so application code can't accidentally invent a new status string.
+-- The IF NOT EXISTS check must be scoped to the CURRENT schema, otherwise
+-- a parallel test schema's matching type makes this DO block skip the
+-- CREATE TYPE — which then breaks the CREATE TABLE below because the type
+-- does NOT exist in the current schema. `pg_type` is global; filtering by
+-- `typnamespace = pg_my_temp_schema()::oid OR ... = ANY(current_schemas())`
+-- is verbose. Simpler: join pg_namespace and match the connection's
+-- current_schema().
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'telegram_callback_status') THEN
+    IF NOT EXISTS (
+        SELECT 1
+          FROM pg_type t
+          JOIN pg_namespace n ON n.oid = t.typnamespace
+         WHERE t.typname = 'telegram_callback_status'
+           AND n.nspname = current_schema()
+    ) THEN
         CREATE TYPE telegram_callback_status AS ENUM (
             'processed',              -- domain action executed successfully
             'rejected_unauthorized',  -- ctx.from.id does not match any active user
