@@ -7,6 +7,8 @@ export function LoadingState({ label = 'Yuklanmoqda…' }: { label?: string }) {
     <div
       className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground"
       role="status"
+      aria-busy="true"
+      aria-live="polite"
     >
       <Loader2 className="size-4 animate-spin" aria-hidden="true" />
       <span>{label}</span>

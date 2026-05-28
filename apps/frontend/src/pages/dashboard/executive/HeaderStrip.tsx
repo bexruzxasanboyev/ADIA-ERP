@@ -1,5 +1,19 @@
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { formatDateLong, getGreeting } from '@/lib/format';
+
+function useClock(): string {
+  const [now, setNow] = useState<Date>(() => new Date());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  return now.toLocaleTimeString('uz-UZ', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+}
 
 /**
  * F4.7 / F4.10 — Executive HeaderStrip.
@@ -24,6 +38,7 @@ export function HeaderStrip({
 }) {
   const greeting = getGreeting();
   const longDate = formatDateLong(isoDate);
+  const clock = useClock();
 
   return (
     <header
@@ -36,8 +51,10 @@ export function HeaderStrip({
       </h1>
       <div className="flex flex-wrap items-center gap-3">
         {rangeFilter}
-        <p className="hidden text-sm text-muted-foreground tabular-nums sm:block">
-          {longDate}
+        <p className="hidden items-center gap-2 text-sm text-muted-foreground tabular-nums sm:flex">
+          <span>{longDate}</span>
+          <span aria-hidden="true" className="text-border">·</span>
+          <span className="font-medium text-foreground" data-testid="executive-header-clock">{clock}</span>
         </p>
       </div>
     </header>

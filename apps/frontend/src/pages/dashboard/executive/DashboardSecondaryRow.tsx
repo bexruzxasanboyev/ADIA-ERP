@@ -4,7 +4,6 @@ import { SalesChart } from '../SalesChart';
 import { ForecastsPanel } from '../ForecastsPanel';
 import { OpenRequestsChart } from '../OpenRequestsChart';
 import { PosterStatusCard } from '../PosterStatusCard';
-import { AlertsFeed } from '../AlertsFeed';
 import type {
   DashboardEcosystem,
   DashboardOverview,
@@ -57,8 +56,6 @@ export function DashboardSecondaryRow({
         <PosterStatusCard status={ecosystem?.poster_status ?? null} />
         <OpenRequestsPanel overview={overview} />
       </div>
-
-      <AlertsFeed alerts={ecosystem?.alerts_feed ?? []} />
     </div>
   );
 }
@@ -101,9 +98,10 @@ function ProductionPlanPanel({
                 <TableHead className="text-right">Miqdor</TableHead>
                 <TableHead>Holat</TableHead>
                 <TableHead>
+                  <span className="sr-only">Manzil</span>
                   <ClipboardList
                     className="size-4 text-muted-foreground"
-                    aria-label="Manzil"
+                    aria-hidden="true"
                   />
                 </TableHead>
               </TableRow>

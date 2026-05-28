@@ -85,7 +85,7 @@ export function ForecastsPage() {
   const isLoading = forecasts.isLoading && forecasts.data === null;
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <div className="mx-auto max-w-[120rem] space-y-6">
       <PageHeader
         title="Bashorat"
         description="Keyingi 14 kunlik sotuv bashorati (Prophet)."

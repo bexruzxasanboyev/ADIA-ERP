@@ -1,7 +1,7 @@
 /**
  * Typed, validated configuration loader.
  *
- * Reads environment variables (from the repo-root `.env`, loaded via dotenv)
+ * Reads environment variables (from `apps/backend/.env`, loaded via dotenv)
  * and exposes a single frozen, typed `config` object. A missing required key
  * fails fast at startup with an explicit, actionable error — secrets are never
  * hard-coded (CLAUDE.md section 9).
@@ -9,10 +9,6 @@
 import { resolve } from 'node:path';
 import { config as loadDotenv } from 'dotenv';
 
-// The repo root holds the single shared `.env` (two levels up from apps/backend).
-const REPO_ROOT = resolve(process.cwd(), '../..');
-loadDotenv({ path: resolve(REPO_ROOT, '.env') });
-// Also try a local apps/backend/.env (does not override repo-root values).
 loadDotenv({ path: resolve(process.cwd(), '.env') });
 
 export type AppConfig = {

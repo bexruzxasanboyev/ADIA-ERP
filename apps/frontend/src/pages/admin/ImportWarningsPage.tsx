@@ -105,7 +105,7 @@ export function ImportWarningsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <div className="mx-auto max-w-[120rem] space-y-6">
       <PageHeader
         title="Sync ogohlantirishlar"
         description="Poster sync, retsept mismatch va dynamic recalc anomaliyalari."

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { useState } from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {
   DateRangeFilter,
@@ -22,71 +22,60 @@ function Harness({ onChange }: { onChange?: (v: DateRangeValue) => void }) {
 }
 
 describe('DateRangeFilter', () => {
-  it('exposes preset tabs and highlights the active one', () => {
+  it('exposes the four preset tabs and highlights the active one', () => {
     render(<Harness />);
 
     const bugun = screen.getByRole('tab', { name: 'Bugun' });
-    const hafta = screen.getByRole('tab', { name: 'Hafta' });
+    const buHafta = screen.getByRole('tab', { name: 'Bu hafta' });
     const buOy = screen.getByRole('tab', { name: 'Bu oy' });
+    const olti = screen.getByRole('tab', { name: '6 oy' });
 
     expect(bugun).toHaveAttribute('aria-selected', 'true');
-    expect(hafta).toHaveAttribute('aria-selected', 'false');
+    expect(buHafta).toHaveAttribute('aria-selected', 'false');
     expect(buOy).toHaveAttribute('aria-selected', 'false');
+    expect(olti).toHaveAttribute('aria-selected', 'false');
   });
 
   it('switches between presets when tabs are clicked', () => {
     const onChange = vi.fn();
     render(<Harness onChange={onChange} />);
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Hafta' }));
-
+    fireEvent.click(screen.getByRole('tab', { name: 'Bu hafta' }));
     expect(onChange).toHaveBeenLastCalledWith({ range: 'week' });
-    expect(screen.getByRole('tab', { name: 'Hafta' })).toHaveAttribute(
+
+    fireEvent.click(screen.getByRole('tab', { name: '6 oy' }));
+    expect(onChange).toHaveBeenLastCalledWith({ range: '6m' });
+
+    expect(screen.getByRole('tab', { name: '6 oy' })).toHaveAttribute(
       'aria-selected',
       'true',
     );
   });
 
-  it('opens the custom calendar picker and applies a custom range', async () => {
-    const user = userEvent.setup();
-    const onChange = vi.fn();
-    render(<Harness onChange={onChange} />);
-
-    await user.click(screen.getByRole('button', { name: /Sana oralig/ }));
-
-    const from = await screen.findByLabelText('Boshlanish');
-    const to = screen.getByLabelText('Tugash');
-    await user.clear(from);
-    await user.type(from, '2026-05-01');
-    await user.clear(to);
-    await user.type(to, '2026-05-15');
-    await user.click(screen.getByRole('button', { name: "Qo'llash" }));
-
-    await waitFor(() => {
-      expect(onChange).toHaveBeenLastCalledWith({
-        range: 'custom',
-        from: '2026-05-01',
-        to: '2026-05-15',
-      });
-    });
-  });
-
-  it('rejects an inverted custom range', async () => {
+  it('opens the calendar popover with Uzbek weekday codes', async () => {
     const user = userEvent.setup();
     render(<Harness />);
 
-    await user.click(screen.getByRole('button', { name: /Sana oralig/ }));
-    const from = await screen.findByLabelText('Boshlanish');
-    const to = screen.getByLabelText('Tugash');
-    await user.clear(from);
-    await user.type(from, '2026-05-20');
-    await user.clear(to);
-    await user.type(to, '2026-05-01');
-    await user.click(screen.getByRole('button', { name: "Qo'llash" }));
-
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      /boshlanish/i,
+    await user.click(
+      screen.getByRole('button', { name: /Sana oralig.i — kalendar/ }),
     );
+
+    // Weekday header row in Uzbek shorthand. DU SE CHO PA JU SHA YA.
+    expect(await screen.findByText('DU')).toBeInTheDocument();
+    expect(screen.getByText('CHO')).toBeInTheDocument();
+    expect(screen.getByText('YA')).toBeInTheDocument();
+  });
+
+  it("disables Qo'llash until a full range is picked", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+
+    await user.click(
+      screen.getByRole('button', { name: /Sana oralig.i — kalendar/ }),
+    );
+
+    const apply = await screen.findByRole('button', { name: "Qo'llash" });
+    expect(apply).toBeDisabled();
   });
 });
 
@@ -95,6 +84,7 @@ describe('dateRangeToQuery', () => {
     expect(dateRangeToQuery({ range: 'today' })).toBe('range=today');
     expect(dateRangeToQuery({ range: 'week' })).toBe('range=week');
     expect(dateRangeToQuery({ range: 'month' })).toBe('range=month');
+    expect(dateRangeToQuery({ range: '6m' })).toBe('range=6m');
   });
 
   it('serialises custom ranges with from/to', () => {

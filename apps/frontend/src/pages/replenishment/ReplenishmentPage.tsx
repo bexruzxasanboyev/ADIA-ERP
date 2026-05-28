@@ -58,7 +58,7 @@ export function ReplenishmentPage() {
   const rows = data ?? [];
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <div className="mx-auto max-w-[120rem] space-y-6">
       <PageHeader
         title="To‘ldirish so‘rovlari"
         description="Avtomatik to‘ldirish tsikli va so‘rovlar holati."
@@ -86,7 +86,13 @@ export function ReplenishmentPage() {
         </div>
       </div>
 
-      <Card>
+      <Card
+        className={
+          view === 'card' && !showMobileCards
+            ? 'border-0 bg-transparent p-0 shadow-none'
+            : undefined
+        }
+      >
         {isLoading && <LoadingState />}
         {!isLoading && error && (
           <ErrorState message={error} onRetry={refetch} />
@@ -95,7 +101,7 @@ export function ReplenishmentPage() {
           <EmptyState message="So‘rovlar topilmadi." />
         )}
         {!isLoading && !error && rows.length > 0 && (showMobileCards || view === 'card') && (
-          <div className={showMobileCards ? '' : 'p-4'}>
+          <div>
             {showMobileCards ? (
               <MobileCardList
                 items={rows.map((row) => ({
@@ -122,7 +128,7 @@ export function ReplenishmentPage() {
                 }))}
               />
             ) : (
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
                 {rows.map((row) => (
                   <div
                     key={row.id}

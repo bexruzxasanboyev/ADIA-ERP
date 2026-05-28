@@ -41,7 +41,7 @@ export function UsersPage() {
   const rows = users.data ?? [];
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-[120rem] space-y-6">
       <PageHeader
         title="Foydalanuvchilar"
         description="Tizim foydalanuvchilari va ularning rollari."
@@ -56,7 +56,13 @@ export function UsersPage() {
         }
       />
 
-      <Card>
+      <Card
+        className={
+          view === 'card'
+            ? 'border-0 bg-transparent p-0 shadow-none'
+            : undefined
+        }
+      >
         {users.isLoading && <LoadingState />}
         {!users.isLoading && users.error && (
           <ErrorState message={users.error} onRetry={users.refetch} />
@@ -65,7 +71,7 @@ export function UsersPage() {
           <EmptyState message="Foydalanuvchilar topilmadi." />
         )}
         {!users.isLoading && !users.error && rows.length > 0 && view === 'card' && (
-          <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {rows.map((u) => {
               const initials = u.name
                 .split(' ')

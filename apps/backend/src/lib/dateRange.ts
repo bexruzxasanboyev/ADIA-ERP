@@ -18,7 +18,7 @@
 import { AppError } from '../errors/index.js';
 
 /** Allowed preset values. `custom` requires `from` and `to`. */
-export const RANGE_PRESETS = ['today', 'week', 'month', 'custom'] as const;
+export const RANGE_PRESETS = ['today', 'week', 'month', '6m', 'custom'] as const;
 export type RangePreset = (typeof RANGE_PRESETS)[number];
 
 export type DateRange = {
@@ -81,8 +81,17 @@ export function parseDateRange(query: {
     const from = new Date(startOfUtcDay(now).getTime() - 6 * 24 * 60 * 60 * 1000);
     return { from, to: now, preset };
   }
-  // month — last 30 days including today.
-  const from = new Date(startOfUtcDay(now).getTime() - 29 * 24 * 60 * 60 * 1000);
+  if (preset === 'month') {
+    // Last 30 days including today.
+    const from = new Date(startOfUtcDay(now).getTime() - 29 * 24 * 60 * 60 * 1000);
+    return { from, to: now, preset };
+  }
+  // 6m — last 6 calendar months including today. UTC arithmetic so DST
+  // never shifts the window by an hour.
+  const today = startOfUtcDay(now);
+  const from = new Date(
+    Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 6, today.getUTCDate()),
+  );
   return { from, to: now, preset };
 }
 

@@ -5,6 +5,7 @@ import { RoleRoute } from './RoleRoute';
 import { LoginPage } from '@/pages/LoginPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
 import { LocationsPage } from '@/pages/locations/LocationsPage';
+import { LocationDetailPage } from '@/pages/locations/LocationDetailPage';
 import { UsersPage } from '@/pages/users/UsersPage';
 import { EmployeesPage } from '@/pages/employees/EmployeesPage';
 import { ProductsPage } from '@/pages/products/ProductsPage';
@@ -52,6 +53,15 @@ export function AppRouter() {
             existing deep links stay live. */}
         <Route path="/dashboard" element={<ExecutiveDashboardPage />} />
         <Route path="/dashboard/operations" element={<DashboardPage />} />
+        {/* Ekosistema canvas → per-location detail (header + KPI + stock +
+            recent movements + open requests + manager info). Backend RBAC
+            scopes the underlying endpoints; a scoped manager hitting a
+            location outside their scope will receive 403 from /api/locations
+            and the page surfaces an ErrorState. */}
+        <Route
+          path="/dashboard/locations/:locationId"
+          element={<LocationDetailPage />}
+        />
 
         {/* F3.4 — Forecasts page (all authenticated roles, RBAC-scoped server-side). */}
         <Route path="/forecasts" element={<ForecastsPage />} />

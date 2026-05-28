@@ -75,7 +75,7 @@ export function ProductsPage() {
   const products = data ?? [];
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-[120rem] space-y-6">
       <PageHeader
         title="Mahsulotlar"
         description="Xom-ashyo, yarim tayyor va tayyor mahsulotlar."
@@ -110,7 +110,13 @@ export function ProductsPage() {
         </div>
       </div>
 
-      <Card>
+      <Card
+        className={
+          view === 'card' && !showMobileCards
+            ? 'border-0 bg-transparent p-0 shadow-none'
+            : undefined
+        }
+      >
         {isLoading && <LoadingState />}
         {!isLoading && error && (
           <ErrorState message={error} onRetry={refetch} />
@@ -149,7 +155,7 @@ export function ProductsPage() {
           />
         )}
         {!isLoading && !error && products.length > 0 && !showMobileCards && view === 'card' && (
-          <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {products.map((p) => (
               <div
                 key={p.id}

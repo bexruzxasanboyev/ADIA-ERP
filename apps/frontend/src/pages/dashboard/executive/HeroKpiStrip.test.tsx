@@ -64,4 +64,11 @@ describe('HeroKpiStrip', () => {
     const card = screen.getByTestId('hero-kpi-card-pending');
     expect(card.getAttribute('data-tone')).toBe('warning');
   });
+
+  it('mounts a sparkline container for cards that supply a series', () => {
+    renderWithProviders(<HeroKpiStrip cards={CARDS} />);
+    // Only the sales card carries a sparkline series.
+    const spark = screen.getByTestId('hero-kpi-sparkline');
+    expect(spark.getAttribute('data-tone')).toBe('neutral');
+  });
 });

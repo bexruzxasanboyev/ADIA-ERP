@@ -15,6 +15,7 @@
     "migrate": "tsx src/db/migrate.ts",
     "db:create": "tsx scripts/create-db.ts",
     "seed:dev": "tsx scripts/seed-dev.ts",
+    "seed:demo": "tsx scripts/seed-demo.ts",
     "poster:test": "tsx scripts/poster-test.ts",
     "vertex:test": "tsx scripts/vertex-test.ts",
     "yandex:bootstrap": "tsx scripts/yandex-bootstrap.ts",

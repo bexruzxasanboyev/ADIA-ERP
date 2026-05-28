@@ -171,6 +171,15 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         roles: ALL_ROLES,
       },
       {
+        // F4.14 — unified inbox/outbox/archive view of every replenishment
+        // the user touches. Visible to every role; backend RBAC-scopes
+        // the underlying list endpoint.
+        path: '/sorovnomalar',
+        label: 'So‘rovnomalar',
+        icon: ClipboardList,
+        roles: ALL_ROLES,
+      },
+      {
         path: '/delivery',
         label: 'Yetkazib berish',
         icon: PackageCheck,

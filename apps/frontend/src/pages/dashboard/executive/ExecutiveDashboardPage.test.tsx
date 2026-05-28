@@ -1,18 +1,24 @@
 /**
- * F4.7 — Contract test for the executive dashboard.
+ * Dashboard v3 — Contract test for the executive dashboard (Variant B
+ * "Calm Canvas").
  *
- * Pins the four mocked endpoints (overview, ecosystem, purchase orders,
- * replenishment) to the rendered UI: hero KPI numbers derive from the
- * overview + ecosystem payloads, the health bar surfaces all five
- * stages, the critical-alerts panel ranks zero-stock items first.
+ * Pins the mocked endpoints (overview, ecosystem, purchase orders,
+ * replenishment, production detail, stores detail) to the rendered UI:
+ *   • HeroStrip surfaces 4 compact KPI cards (revenue / receipts /
+ *     active requests / critical positions).
+ *   • CanvasFlow renders one chain-node per supply-chain stage.
+ *   • CriticalAlerts ranks zero-stock items first.
+ *   • MyActionsList surfaces draft purchase orders.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen } from '@testing-library/react';
 import { renderWithProviders, jsonResponse } from '@/test/render-helpers';
 import { ExecutiveDashboardPage } from './ExecutiveDashboardPage';
 import type {
   DashboardEcosystem,
   DashboardOverview,
+  DashboardProductionDetail,
+  DashboardStoresDetail,
   PurchaseOrder,
   ReplenishmentRequest,
 } from '@/lib/types';
@@ -110,6 +116,82 @@ const ECOSYSTEM: DashboardEcosystem = {
       total_products: 18,
     },
   ],
+  chain_summary: [
+    {
+      type: 'raw_warehouse',
+      location_count: 1,
+      total_products: 12,
+      below_min_count: 0,
+      status: 'ok',
+      pulse: {
+        kind: 'raw',
+        received_today: 0,
+        issued_today: 0,
+        pending_purchase_orders: 0,
+        total_qty_by_unit: [],
+      },
+    },
+    {
+      type: 'production',
+      location_count: 4,
+      total_products: 6,
+      below_min_count: 0,
+      status: 'ok',
+      pulse: {
+        kind: 'production',
+        active_orders: 0,
+        done_today: 0,
+        overdue_orders: 0,
+        sex_count: 4,
+        input_today: 0,
+        output_today: 0,
+      },
+    },
+    {
+      type: 'supply',
+      location_count: 1,
+      total_products: 5,
+      below_min_count: 0,
+      status: 'ok',
+      pulse: {
+        kind: 'supply',
+        shipped_today: 0,
+        received_today: 0,
+        open_requests: 0,
+        top_destination_count: 0,
+      },
+    },
+    {
+      type: 'central_warehouse',
+      location_count: 26,
+      total_products: 25,
+      below_min_count: 0,
+      status: 'ok',
+      pulse: {
+        kind: 'central',
+        last_sync_at: '2026-05-24T08:00:00.000Z',
+        last_sync_status: 'ok',
+        sync_errors_24h: 0,
+      },
+    },
+    {
+      type: 'store',
+      location_count: 6,
+      total_products: 18,
+      below_min_count: 1,
+      status: 'warn',
+      pulse: {
+        kind: 'store',
+        sales_today_sum: 2_400_000,
+        receipts_today: 87,
+        avg_receipt_today: 27_586,
+        open_replenishments: 0,
+        transit_count: 0,
+        top_product_name: 'Non',
+        qty_today: 0,
+      },
+    },
+  ],
   alerts_feed: [],
   sales_chart: {
     days: Array.from({ length: 14 }, (_, i) => ({
@@ -117,6 +199,27 @@ const ECOSYSTEM: DashboardEcosystem = {
       qty: 100 + i * 5,
     })),
   },
+};
+
+const PRODUCTION_DETAIL: DashboardProductionDetail = {
+  kpis: { active_orders: 0, done_today: 0, overdue: 0, sex_count: 4 },
+  active_orders: [],
+  top_produced_today: [],
+  daily_io: [],
+  sex_load: [],
+};
+
+const STORES_DETAIL: DashboardStoresDetail = {
+  kpis: {
+    store_count: 6,
+    sales_today_sum: 2_400_000,
+    sales_today_count: 87,
+    avg_receipt_today: 27_586,
+  },
+  store_breakdown: [],
+  top_products_today: [],
+  hourly_heatmap: [],
+  daily_sales: [],
 };
 
 const PURCHASE_ORDERS: PurchaseOrder[] = [
@@ -156,8 +259,25 @@ function mockAll() {
     if (url.includes('/api/dashboard/ecosystem')) {
       return Promise.resolve(jsonResponse(200, ECOSYSTEM));
     }
+    if (url.includes('/api/dashboard/production')) {
+      return Promise.resolve(jsonResponse(200, PRODUCTION_DETAIL));
+    }
+    if (url.includes('/api/dashboard/stores')) {
+      return Promise.resolve(jsonResponse(200, STORES_DETAIL));
+    }
     if (url.includes('/api/purchase-orders')) {
       return Promise.resolve(jsonResponse(200, PURCHASE_ORDERS));
+    }
+    if (/\/api\/replenishment\/\d+/.test(url)) {
+      // Detail fetch — only triggered when a request is selected on the
+      // Detalli canvas. None of the suite's tests select a request, so
+      // returning an empty envelope is sufficient.
+      return Promise.resolve(
+        jsonResponse(200, {
+          request: REPLENISHMENTS[0] ?? null,
+          transitions: [],
+        }),
+      );
     }
     if (url.includes('/api/replenishment')) {
       return Promise.resolve(jsonResponse(200, REPLENISHMENTS));
@@ -165,73 +285,49 @@ function mockAll() {
     if (url.includes('/api/forecasts')) {
       return Promise.resolve(jsonResponse(200, { items: [] }));
     }
+    if (url.includes('/api/dashboard/suppliers')) {
+      return Promise.resolve(jsonResponse(200, { suppliers: [] }));
+    }
     return Promise.reject(new Error(`unexpected fetch: ${url}`));
   });
 }
 
-describe('ExecutiveDashboardPage', () => {
+describe('ExecutiveDashboardPage — Variant B', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('renders the four hero KPI cards', async () => {
+  it('renders the hero strip with four KPI cards', async () => {
     mockAll();
     renderWithProviders(<ExecutiveDashboardPage />, { role: 'pm' });
 
-    expect(await screen.findByText('Bugungi savdo')).toBeInTheDocument();
-    expect(screen.getByText('Faol zayafka')).toBeInTheDocument();
-    expect(screen.getByText('Qizil pozitsiya')).toBeInTheDocument();
-    expect(screen.getByText('Tasdiq kutmoqda')).toBeInTheDocument();
+    expect(await screen.findByTestId('hero-strip')).toBeInTheDocument();
+    expect(screen.getByTestId('hero-strip-revenue')).toBeInTheDocument();
+    expect(screen.getByTestId('hero-strip-receipts')).toBeInTheDocument();
+    expect(screen.getByTestId('hero-strip-requests')).toBeInTheDocument();
+    expect(screen.getByTestId('hero-strip-critical')).toBeInTheDocument();
   });
 
-  it('renders the compact currency for today\'s sales', async () => {
+  it("renders today's revenue in the hero strip as a full number", async () => {
     mockAll();
     renderWithProviders(<ExecutiveDashboardPage />, { role: 'pm' });
 
-    expect(await screen.findByText('2,4M')).toBeInTheDocument();
+    const value = await screen.findByTestId('hero-strip-revenue-value');
+    expect(value.textContent?.replace(/\s+/g, '')).toBe('2400000');
   });
 
-  it('renders the production fraction 12 / 12', async () => {
+  it('renders the canvas with one chain-node per supply-chain stage', async () => {
     mockAll();
     renderWithProviders(<ExecutiveDashboardPage />, { role: 'pm' });
 
-    await waitFor(() => {
-      expect(screen.getByTestId('hero-kpi-card-production')).toBeInTheDocument();
-    });
-    const fractionCard = screen.getByTestId('hero-kpi-card-production');
-    expect(fractionCard.textContent).toMatch(/12/);
-  });
-
-  it('marks the critical KPI card with the danger tone when below_min > 0', async () => {
-    mockAll();
-    renderWithProviders(<ExecutiveDashboardPage />, { role: 'pm' });
-
-    const card = await screen.findByTestId('hero-kpi-card-critical');
-    expect(card.getAttribute('data-tone')).toBe('danger');
-  });
-
-  it('marks the pending KPI card with the warning tone when approvals > 0', async () => {
-    mockAll();
-    renderWithProviders(<ExecutiveDashboardPage />, { role: 'pm' });
-
-    const card = await screen.findByTestId('hero-kpi-card-pending');
-    expect(card.getAttribute('data-tone')).toBe('warning');
-  });
-
-  it('renders the ecosystem health bar with five stages', async () => {
-    mockAll();
-    renderWithProviders(<ExecutiveDashboardPage />, { role: 'pm' });
-
+    expect(await screen.findByTestId('canvas-flow')).toBeInTheDocument();
+    expect(screen.getByTestId('chain-node-raw_warehouse')).toBeInTheDocument();
+    expect(screen.getByTestId('chain-node-production')).toBeInTheDocument();
+    expect(screen.getByTestId('chain-node-supply')).toBeInTheDocument();
     expect(
-      await screen.findByTestId('ecosystem-health-bar'),
+      screen.getByTestId('chain-node-central_warehouse'),
     ).toBeInTheDocument();
-    expect(screen.getByTestId('health-pill-raw_warehouse')).toBeInTheDocument();
-    expect(screen.getByTestId('health-pill-production')).toBeInTheDocument();
-    expect(screen.getByTestId('health-pill-supply')).toBeInTheDocument();
-    expect(
-      screen.getByTestId('health-pill-central_warehouse'),
-    ).toBeInTheDocument();
-    expect(screen.getByTestId('health-pill-store')).toBeInTheDocument();
+    expect(screen.getByTestId('chain-node-store')).toBeInTheDocument();
   });
 
   it('lists the critical zero-stock item at the top of CriticalAlerts', async () => {
@@ -248,5 +344,20 @@ describe('ExecutiveDashboardPage', () => {
 
     expect(await screen.findByTestId('my-actions-list')).toBeInTheDocument();
     expect(screen.getByText('Sotib olish: Un')).toBeInTheDocument();
+  });
+
+  it('does not render the legacy hero-block / chain-pipeline widgets', async () => {
+    mockAll();
+    renderWithProviders(<ExecutiveDashboardPage />, { role: 'pm' });
+
+    await screen.findByTestId('hero-strip');
+    expect(screen.queryByTestId('hero-block')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('chain-pipeline')).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('production-output-chart'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId('live-activity-feed')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('top-products-list')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('store-ranking')).not.toBeInTheDocument();
   });
 });

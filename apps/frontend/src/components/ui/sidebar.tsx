@@ -13,7 +13,7 @@ const Sidebar = React.forwardRef<
   <aside
     ref={ref}
     className={cn(
-      'hidden h-full w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground lg:flex',
+      'fixed inset-y-0 left-0 z-30 hidden h-screen w-64 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground lg:flex',
       className,
     )}
     {...props}

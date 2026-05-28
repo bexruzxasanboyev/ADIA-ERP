@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { navSectionsForRole } from './navigation';
+import {
+  navSectionsForRole,
+  findGroupForPath,
+  resolveGroupLanding,
+  NAV_SECTIONS,
+} from './navigation';
 
 describe('navSectionsForRole', () => {
   it('gives pm every module plus the Users reference screen', () => {
@@ -67,5 +72,68 @@ describe('navSectionsForRole', () => {
     for (const section of sections) {
       expect(section.items.length).toBeGreaterThan(0);
     }
+  });
+
+  it('preserves the group metadata (key, icon, defaultPath, hasTabs)', () => {
+    const sections = navSectionsForRole('pm');
+    const modules = sections.find((s) => s.key === 'modules');
+    expect(modules).toBeDefined();
+    expect(modules?.hasTabs).toBe(true);
+    expect(modules?.defaultPath).toBe('/raw-warehouse');
+
+    const dashboard = sections.find((s) => s.key === 'dashboard');
+    expect(dashboard?.hasTabs).toBe(false);
+  });
+});
+
+describe('findGroupForPath', () => {
+  it('returns the modules group for /production', () => {
+    expect(findGroupForPath('/production')?.key).toBe('modules');
+  });
+
+  it('matches nested paths under an item (e.g. /replenishment/42)', () => {
+    expect(findGroupForPath('/replenishment/42')?.key).toBe('modules');
+  });
+
+  it('returns reference for /products and /users', () => {
+    expect(findGroupForPath('/products')?.key).toBe('reference');
+    expect(findGroupForPath('/users')?.key).toBe('reference');
+  });
+
+  it('returns dashboard / forecasts for their single screens', () => {
+    expect(findGroupForPath('/dashboard')?.key).toBe('dashboard');
+    expect(findGroupForPath('/forecasts')?.key).toBe('forecasts');
+  });
+
+  it('returns null for unknown paths (e.g. /admin/import-warnings)', () => {
+    expect(findGroupForPath('/admin/import-warnings')).toBeNull();
+  });
+});
+
+describe('resolveGroupLanding', () => {
+  it('uses the default path when the role can see it', () => {
+    const modules = NAV_SECTIONS.find((s) => s.key === 'modules')!;
+    expect(resolveGroupLanding(modules, 'pm')).toBe('/raw-warehouse');
+  });
+
+  it('falls back to the first visible item when default is hidden', () => {
+    const modules = NAV_SECTIONS.find((s) => s.key === 'modules')!;
+    // store_manager cannot see /raw-warehouse — landing should be the
+    // first item they can see (Do'konlar = /stores).
+    expect(resolveGroupLanding(modules, 'store_manager')).toBe('/stores');
+  });
+
+  it('returns null when the role has no visible items in the group', () => {
+    // Synthesize a section that nobody but pm can see, then test it.
+    const refSection = NAV_SECTIONS.find((s) => s.key === 'reference')!;
+    // /users + /employees are pm-only inside reference, but products
+    // and locations are visible to all manager roles — so reference is
+    // never empty for a manager role. Use a degenerate filter instead.
+    const pmOnly = {
+      ...refSection,
+      items: refSection.items.filter((item) => item.path === '/users'),
+    };
+    expect(resolveGroupLanding(pmOnly, 'store_manager')).toBeNull();
+    expect(resolveGroupLanding(pmOnly, 'pm')).toBe('/users');
   });
 });

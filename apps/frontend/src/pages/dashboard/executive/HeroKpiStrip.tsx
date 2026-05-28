@@ -1,6 +1,12 @@
+import { useId } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowDown, ArrowRight, ArrowUp } from 'lucide-react';
-import { Line, LineChart, ResponsiveContainer } from 'recharts';
+import {
+  Area,
+  ComposedChart,
+  Line,
+  ResponsiveContainer,
+} from 'recharts';
 import { Card } from '@/components/ui/card';
 import { formatCurrencyCompact, formatQty } from '@/lib/format';
 import { cn } from '@/lib/utils';
@@ -96,13 +102,15 @@ function KpiCard({ card }: { card: HeroKpiCard }) {
     }
   }
 
+  const accessibleLabel = `${card.label}: ${describeValue(card.value)}`;
+
   return (
     <Card
       className={cn(
-        'flex min-h-[200px] flex-col p-5 xl:p-6',
+        'flex min-h-[210px] flex-col p-6 xl:p-7',
         toneRing,
         interactive &&
-          'cursor-pointer transition-colors hover:bg-card/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+          'cursor-pointer transition-colors hover:bg-card/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
       )}
       data-testid={`hero-kpi-card-${card.id}`}
       data-tone={card.tone}
@@ -110,17 +118,17 @@ function KpiCard({ card }: { card: HeroKpiCard }) {
       tabIndex={interactive ? 0 : undefined}
       onClick={interactive ? onClick : undefined}
       onKeyDown={interactive ? onKey : undefined}
-      aria-label={card.label}
+      aria-label={accessibleLabel}
     >
-      <p className="text-xs uppercase tracking-wider text-muted-foreground">
+      <p className="truncate text-sm font-semibold uppercase tracking-wider text-muted-foreground">
         {card.label}
       </p>
 
-      <div className="mt-3 flex items-end gap-2">
+      <div className="mt-4 flex items-end gap-2">
         <ValueDisplay value={card.value} tone={numberTone} />
       </div>
 
-      <div className="mt-auto flex items-end justify-between gap-3 pt-4">
+      <div className="mt-auto flex items-end justify-between gap-3 pt-3">
         <DeltaBlock card={card} />
         {card.sparkline && card.sparkline.length >= 2 && (
           <Sparkline values={card.sparkline} tone={card.tone} />
@@ -128,6 +136,14 @@ function KpiCard({ card }: { card: HeroKpiCard }) {
       </div>
     </Card>
   );
+}
+
+/** Screen-reader friendly textual rendering of a KPI value. */
+function describeValue(value: HeroKpiValueKind): string {
+  if (value.kind === 'currency') return formatCurrencyCompact(value.amount);
+  if (value.kind === 'fraction')
+    return `${formatQty(value.numerator)} / ${formatQty(value.denominator)}`;
+  return formatQty(value.value);
 }
 
 function ValueDisplay({
@@ -141,7 +157,7 @@ function ValueDisplay({
     return (
       <span
         className={cn(
-          'text-4xl font-semibold tabular-nums leading-none xl:text-5xl',
+          'text-5xl font-bold tabular-nums leading-none xl:text-6xl',
           tone,
         )}
         data-testid="hero-kpi-value"
@@ -155,7 +171,7 @@ function ValueDisplay({
       <div className="flex items-baseline gap-1">
         <span
           className={cn(
-            'text-4xl font-semibold tabular-nums leading-none xl:text-5xl',
+            'text-5xl font-bold tabular-nums leading-none xl:text-6xl',
             tone,
           )}
           data-testid="hero-kpi-value"
@@ -171,7 +187,7 @@ function ValueDisplay({
   return (
     <span
       className={cn(
-        'text-4xl font-semibold tabular-nums leading-none xl:text-5xl',
+        'text-5xl font-bold tabular-nums leading-none xl:text-6xl',
         tone,
       )}
       data-testid="hero-kpi-value"
@@ -227,6 +243,7 @@ function Sparkline({
   values: number[];
   tone: HeroKpiTone;
 }) {
+  const gradientId = useId();
   const data = values.map((v, i) => ({ i, v }));
   const stroke =
     tone === 'danger'
@@ -242,9 +259,26 @@ function Sparkline({
       className="h-7 w-20 shrink-0"
       aria-hidden="true"
       data-testid="hero-kpi-sparkline"
+      data-tone={tone}
     >
       <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 4, right: 2, bottom: 0, left: 0 }}>
+        <ComposedChart
+          data={data}
+          margin={{ top: 4, right: 2, bottom: 0, left: 0 }}
+        >
+          <defs>
+            <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={stroke} stopOpacity={0.3} />
+              <stop offset="100%" stopColor={stroke} stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <Area
+            type="monotone"
+            dataKey="v"
+            stroke="none"
+            fill={`url(#${gradientId})`}
+            isAnimationActive={false}
+          />
           <Line
             type="monotone"
             dataKey="v"
@@ -260,17 +294,23 @@ function Sparkline({
                 return <g />;
               }
               return (
-                <circle
-                  cx={props.cx}
-                  cy={props.cy}
-                  r={2.5}
-                  fill={stroke}
-                />
+                <g className="hero-kpi-sparkline-last">
+                  {/* Pulse halo — animated via CSS keyframes, respects reduced-motion */}
+                  <circle
+                    cx={props.cx}
+                    cy={props.cy}
+                    r={3.5}
+                    fill={stroke}
+                    className="hero-kpi-sparkline-pulse"
+                    data-testid="hero-kpi-sparkline-pulse"
+                  />
+                  <circle cx={props.cx} cy={props.cy} r={2.2} fill={stroke} />
+                </g>
               );
             }}
             isAnimationActive={false}
           />
-        </LineChart>
+        </ComposedChart>
       </ResponsiveContainer>
     </div>
   );

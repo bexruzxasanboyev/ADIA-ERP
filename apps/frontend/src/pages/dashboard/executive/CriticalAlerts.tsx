@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import { Link } from 'react-router-dom';
 import { AlertOctagon, ArrowRight, CheckCircle2 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
@@ -102,15 +103,18 @@ export function CriticalAlerts({
   const rows = buildRows(belowMin, alerts);
   const top = rows.slice(0, TOP_LIMIT);
   const overflow = rows.length - top.length;
+  const headingId = useId();
 
   return (
     <Card
       className={cn('flex flex-col', className)}
       data-testid="critical-alerts"
+      role="region"
+      aria-labelledby={headingId}
     >
       <header className="flex items-center justify-between gap-3 border-b border-border/60 p-5">
         <div className="space-y-0.5">
-          <h2 className="flex items-center gap-2 text-base font-semibold">
+          <h2 id={headingId} className="flex items-center gap-2 text-base font-semibold">
             <AlertOctagon
               className="size-4 text-destructive"
               aria-hidden="true"
@@ -144,7 +148,7 @@ export function CriticalAlerts({
             <li key={row.key} className="px-5 py-3">
               <Link
                 to={row.href}
-                className="group flex items-start gap-3 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                className="group flex items-start gap-3 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
               >
                 <span
                   aria-hidden="true"

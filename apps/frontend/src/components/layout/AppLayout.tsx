@@ -4,70 +4,116 @@ import { CakeSlice, Menu } from 'lucide-react';
 import { AppSidebar } from './AppSidebar';
 import { AssistantButton } from './AssistantButton';
 import { LocationSwitcher } from './LocationSwitcher';
+import { PageTabs } from './PageTabs';
 import { Sheet, SheetContent } from '@/components/ui/sheet';
+import { cn } from '@/lib/utils';
+import { findGroupForPath } from '@/lib/navigation';
+import {
+  HeaderSlotProvider,
+  useHeaderSlotContent,
+} from './HeaderSlot';
 
 /**
- * Authenticated layout shell: persistent sidebar (lg+) + scrollable
- * content area. On viewports below `lg` (1024) the sidebar collapses
- * into a slide-in `Sheet` drawer; a hamburger button in the header
- * opens it, and any nav-link click auto-closes it.
+ * Authenticated layout shell — hybrid navigation (F4.13).
  *
- * F4.1 — the top header hosts the `LocationSwitcher` for multi-location
- * users. On mobile it also shows the brand mark next to the hamburger
- * so the screen still feels rooted when the sidebar is hidden.
+ * Desktop (`lg+`):
+ *   - 64px icon rail on the left, four group icons (Boshqaruv paneli,
+ *     Bashorat, Modullar, Ma'lumotnoma) — see `AppSidebar`.
+ *   - When the current route belongs to a tabbed group (Modullar or
+ *     Ma'lumotnoma), Jira-style pill tabs render at the top of the
+ *     page automatically via `findGroupForPath`.
  *
- * F4.8 — full mobile responsive shell. Touch targets are 44px+, the
- * drawer auto-closes on navigate, and the active route also closes any
- * stale drawer state.
+ * Below `lg`:
+ *   - Sidebar lives in a Sheet drawer. A hamburger button in the
+ *     header opens it; nav clicks and route changes auto-close it.
  */
 export function AppLayout() {
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const location = useLocation();
+  return (
+    <HeaderSlotProvider>
+      <AppLayoutShell />
+    </HeaderSlotProvider>
+  );
+}
 
-  // Auto-close the drawer whenever the route changes — covers programmatic
-  // navigation, browser back/forward, and any link not wired through the
-  // sidebar's onNavigate hook.
+const SIDEBAR_EXPANDED_KEY = 'adia.sidebar.expanded';
+
+function readStoredExpanded(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(SIDEBAR_EXPANDED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function AppLayoutShell() {
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [sidebarExpanded, setSidebarExpanded] = useState<boolean>(
+    readStoredExpanded,
+  );
+  const location = useLocation();
+  const headerSlot = useHeaderSlotContent();
+
   useEffect(() => {
     setDrawerOpen(false);
   }, [location.pathname]);
 
+  const toggleSidebar = () => {
+    setSidebarExpanded((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(SIDEBAR_EXPANDED_KEY, String(next));
+      } catch {
+        // best-effort — private mode / quota
+      }
+      return next;
+    });
+  };
+
+  const activeGroup = findGroupForPath(location.pathname);
+  const showTabs = activeGroup?.hasTabs === true;
+
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background">
-      <AppSidebar />
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border bg-background px-3 sm:px-6 lg:px-8">
-          <div className="flex min-w-0 items-center gap-2">
-            <button
-              type="button"
-              aria-label="Menyu"
-              aria-expanded={drawerOpen}
-              onClick={() => setDrawerOpen(true)}
-              className="inline-flex size-10 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:hidden"
-            >
-              <Menu className="size-5" aria-hidden="true" />
-            </button>
-            <div className="flex min-w-0 items-center gap-2 lg:hidden">
-              <CakeSlice
-                className="size-5 shrink-0 text-primary"
-                aria-hidden="true"
-              />
-              <span className="truncate text-sm font-semibold tracking-tight">
-                ADIA ERP
-              </span>
-            </div>
+      <AppSidebar expanded={sidebarExpanded} onToggle={toggleSidebar} />
+      <div
+        className={cn(
+          'flex flex-1 flex-col overflow-hidden transition-[padding] duration-200',
+          sidebarExpanded ? 'lg:pl-56' : 'lg:pl-16',
+        )}
+      >
+        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-3 sm:px-6 lg:px-8">
+          <button
+            type="button"
+            aria-label="Menyu"
+            aria-expanded={drawerOpen}
+            onClick={() => setDrawerOpen(true)}
+            className="inline-flex size-10 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:hidden"
+          >
+            <Menu className="size-5" aria-hidden="true" />
+          </button>
+          <div className="flex min-w-0 items-center gap-2 lg:hidden">
+            <CakeSlice
+              className="size-5 shrink-0 text-primary"
+              aria-hidden="true"
+            />
+            <span className="truncate text-sm font-semibold tracking-tight">
+              ADIA ERP
+            </span>
           </div>
-          <div className="flex min-w-0 items-center justify-end">
+          <div className="flex min-w-0 flex-1 items-center">{headerSlot}</div>
+          <div className="flex shrink-0 items-center justify-end">
             <LocationSwitcher />
           </div>
         </header>
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
+          {showTabs && activeGroup && <PageTabs group={activeGroup.key} />}
           <Outlet />
         </main>
       </div>
 
-      {/* Mobile / tablet drawer — `lg+` users never see this Sheet
-          because the inline AppSidebar above is visible instead and
-          the hamburger button is hidden. */}
+      {/* Mobile / tablet drawer — `lg+` users use the rail sidebar
+          instead, the hamburger button is hidden. */}
       <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
         <SheetContent side="left" className="w-72 p-0">
           <AppSidebar inDrawer onNavigate={() => setDrawerOpen(false)} />

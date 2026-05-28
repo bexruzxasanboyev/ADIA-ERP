@@ -22,6 +22,7 @@ import { productionOrdersRouter } from './productionOrders.js';
 import { purchaseOrdersRouter } from './purchaseOrders.js';
 import { posterIntegrationRouter } from './posterIntegration.js';
 import { dashboardRouter } from './dashboard.js';
+import { dashboardDetailRouter } from './dashboardDetail.js';
 import { adminRouter } from './admin.js';
 import { assistantRouter } from './assistant.js';
 import { telegramWebhookRouter } from './telegramWebhook.js';
@@ -40,6 +41,9 @@ apiRouter.use('/replenishment', replenishmentRouter);
 apiRouter.use('/production-orders', productionOrdersRouter);
 apiRouter.use('/purchase-orders', purchaseOrdersRouter);
 apiRouter.use('/dashboard', dashboardRouter);
+// Dashboard MEGA Redesign Sprint C — per-stage detail drawers
+// (GET /api/dashboard/{raw|production|supply|central|stores}).
+apiRouter.use('/dashboard', dashboardDetailRouter);
 apiRouter.use('/admin', adminRouter);
 apiRouter.use('/assistant', assistantRouter);
 // F3.4 / ADR-0010 — Prophet forecasts (read-only; PM scoped or per-location).

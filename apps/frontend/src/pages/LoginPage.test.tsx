@@ -42,17 +42,17 @@ describe('LoginPage', () => {
     // F4.12 — single combined field; type=text accepts either an email
     // or a short username handle.
     expect(
-      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
+      screen.getByLabelText('Foydalanuvchi nomi'),
     ).toHaveAttribute('id', 'login');
     expect(screen.getByLabelText('Parol')).toHaveAttribute('id', 'password');
     expect(
-      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
+      screen.getByLabelText('Foydalanuvchi nomi'),
     ).toHaveAttribute('name', 'login');
     expect(
-      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
+      screen.getByLabelText('Foydalanuvchi nomi'),
     ).toHaveAttribute('type', 'text');
     expect(
-      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
+      screen.getByLabelText('Foydalanuvchi nomi'),
     ).toHaveAttribute('autocomplete', 'username');
   });
 
@@ -76,7 +76,7 @@ describe('LoginPage', () => {
 
     // The username "pm" — not an email — must be sent in the `login` field.
     await user.type(
-      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
+      screen.getByLabelText('Foydalanuvchi nomi'),
       'pm',
     );
     await user.type(screen.getByLabelText('Parol'), 'secret123');
@@ -102,7 +102,7 @@ describe('LoginPage', () => {
     renderLogin();
 
     await user.type(
-      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
+      screen.getByLabelText('Foydalanuvchi nomi'),
       'x@adia.local',
     );
     await user.type(screen.getByLabelText('Parol'), 'wrongpass');
@@ -137,7 +137,7 @@ describe('LoginPage', () => {
     renderLogin();
 
     await user.type(
-      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
+      screen.getByLabelText('Foydalanuvchi nomi'),
       'pm@adia.local',
     );
     await user.type(screen.getByLabelText('Parol'), 'secret123');
@@ -174,7 +174,7 @@ describe('LoginPage', () => {
     renderLogin();
 
     await user.type(
-      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
+      screen.getByLabelText('Foydalanuvchi nomi'),
       'supply@adia.local',
     );
     await user.type(screen.getByLabelText('Parol'), 'secret123');
@@ -211,7 +211,7 @@ describe('LoginPage', () => {
     renderLogin();
 
     await user.type(
-      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
+      screen.getByLabelText('Foydalanuvchi nomi'),
       'pm@adia.local',
     );
     await user.type(screen.getByLabelText('Parol'), 'secret123');
@@ -229,7 +229,7 @@ describe('LoginPage', () => {
     renderLogin();
 
     await user.type(
-      screen.getByLabelText('Email yoki foydalanuvchi nomi'),
+      screen.getByLabelText('Foydalanuvchi nomi'),
       'x@adia.local',
     );
     await user.type(screen.getByLabelText('Parol'), 'secret123');
