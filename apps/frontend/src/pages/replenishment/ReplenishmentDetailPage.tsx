@@ -25,6 +25,11 @@ import type {
 import { TERMINAL_REPLENISHMENT_STATUSES } from '@/lib/types';
 import { CancelDialog } from './CancelDialog';
 import { TransitionTimeline } from './TransitionTimeline';
+import {
+  RequestActionDialog,
+  type RequestActionMode,
+  type RequestActionPayload,
+} from '@/pages/requests/RequestActionDialog';
 
 /**
  * Detail screen for one replenishment_request. The page wraps two
@@ -67,6 +72,9 @@ export function ReplenishmentDetailPage() {
   const [isCancelling, setIsCancelling] = useState(false);
   const [isCancelDialogOpen, setIsCancelDialogOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // F4.14 — receiver-side actions (accept full / partial / reject / return).
+  const [actionMode, setActionMode] = useState<RequestActionMode | null>(null);
+  const [isActionSubmitting, setIsActionSubmitting] = useState(false);
 
   async function handleAdvance(): Promise<void> {
     if (!id) return;
@@ -126,6 +134,57 @@ export function ReplenishmentDetailPage() {
     }
   }
 
+  async function handleReceiverAction(
+    payload: RequestActionPayload,
+  ): Promise<void> {
+    if (!id) return;
+    setActionError(null);
+    setIsActionSubmitting(true);
+    try {
+      switch (payload.mode) {
+        case 'accept_full':
+        case 'accept_partial':
+          await apiRequest(`/api/replenishment/${id}/accept`, {
+            method: 'POST',
+            body: { qty_accepted: payload.qty, note: payload.note },
+          });
+          notify(
+            'success',
+            payload.mode === 'accept_full'
+              ? "So‘rov to‘liq qabul qilindi."
+              : "Qisman qabul qayd etildi.",
+          );
+          break;
+        case 'reject':
+          await apiRequest(`/api/replenishment/${id}/reject`, {
+            method: 'POST',
+            body: { reason: payload.reason },
+          });
+          notify('success', "So‘rov rad etildi.");
+          break;
+        case 'return':
+          await apiRequest(`/api/replenishment/${id}/return`, {
+            method: 'POST',
+            body: { qty_returned: payload.qty, reason: payload.reason },
+          });
+          notify('success', "Tovar qaytarish qayd etildi.");
+          break;
+      }
+      setActionMode(null);
+      detail.refetch();
+    } catch (err: unknown) {
+      const message =
+        err instanceof ApiError
+          ? err.status === 404
+            ? "Endpoint tayyor emas, biroz keyin urinib ko‘ring."
+            : err.message
+          : "Amalni bajarib bo‘lmadi.";
+      notify('error', message);
+    } finally {
+      setIsActionSubmitting(false);
+    }
+  }
+
   if (detail.isLoading) return <LoadingState />;
   if (detail.error)
     return <ErrorState message={detail.error} onRetry={detail.refetch} />;
@@ -142,6 +201,16 @@ export function ReplenishmentDetailPage() {
   // Cancel: only the requesting bo'g'in may close its own request
   // (`requireLocationOperator(requester_location_id)` on the backend).
   const canCancel = !isTerminal && canActOn(request.requester_location_id);
+  // F4.14 — receiver-side actions (accept / reject / partial / return).
+  // The requester is the bo'g'in that ASKED for stock; on
+  // SHIP_TO_REQUESTER (or DONE_TO_WAREHOUSE) they are the receiver and
+  // confirm what arrived. Return is only sensible after CLOSED.
+  const canReceiverAct =
+    canActOn(request.requester_location_id) &&
+    (request.status === 'SHIP_TO_REQUESTER' ||
+      request.status === 'DONE_TO_WAREHOUSE');
+  const canReturn =
+    canActOn(request.requester_location_id) && request.status === 'CLOSED';
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -166,6 +235,39 @@ export function ReplenishmentDetailPage() {
                   <Loader2 className="size-4 animate-spin" aria-hidden="true" />
                 )}
                 Keyingi qadam
+              </Button>
+            )}
+            {canReceiverAct && (
+              <>
+                <Button
+                  onClick={() => setActionMode('accept_full')}
+                  disabled={isActionSubmitting}
+                >
+                  To‘liq qabul
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => setActionMode('accept_partial')}
+                  disabled={isActionSubmitting}
+                >
+                  Qisman qabul
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => setActionMode('reject')}
+                  disabled={isActionSubmitting}
+                >
+                  Kelmadi
+                </Button>
+              </>
+            )}
+            {canReturn && (
+              <Button
+                variant="outline"
+                onClick={() => setActionMode('return')}
+                disabled={isActionSubmitting}
+              >
+                Qaytarish
               </Button>
             )}
             {canCancel && (
@@ -263,6 +365,19 @@ export function ReplenishmentDetailPage() {
           }}
           onConfirm={handleCancelConfirm}
           isSubmitting={isCancelling}
+        />
+      )}
+
+      {actionMode !== null && (
+        <RequestActionDialog
+          open
+          mode={actionMode}
+          request={request}
+          onOpenChange={(next) => {
+            if (!isActionSubmitting && !next) setActionMode(null);
+          }}
+          onConfirm={handleReceiverAction}
+          isSubmitting={isActionSubmitting}
         />
       )}
     </div>
