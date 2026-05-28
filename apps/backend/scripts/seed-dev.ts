@@ -37,11 +37,19 @@ type LocationSeed = {
     | 'store_manager';
 };
 
-// Chain: raw warehouse -> production -> supply -> central warehouse -> store.
+// Chain: raw warehouse -> production -> supply (x3) -> central warehouse -> store.
+// Owner (2026-05-26): the supply layer has THREE departments — Tort, Perojniy,
+// and Yarim Fabrika (the last is a fridge/warehouse, not a production shop).
+// The Tort supply branch carries the rest of the canonical chain so the M4
+// replenishment engine has an end-to-end path. Perojniy and Yarim Fabrika
+// supplies are seeded with their managers but have no central_warehouse/store
+// child of their own — those branches will be wired up in a later migration.
 const LOCATIONS: LocationSeed[] = [
   { name: 'Mahsulotlar Ombori', type: 'raw_warehouse', parentName: null, managerRole: 'raw_warehouse_manager' },
   { name: 'Ishlab chiqarish sexi', type: 'production', parentName: 'Mahsulotlar Ombori', managerRole: 'production_manager' },
   { name: 'Ta\'minot — Tort', type: 'supply', parentName: 'Ishlab chiqarish sexi', managerRole: 'supply_manager' },
+  { name: 'Ta\'minot — Perojniy', type: 'supply', parentName: 'Ishlab chiqarish sexi', managerRole: 'supply_manager' },
+  { name: 'Ta\'minot — Yarim Fabrika', type: 'supply', parentName: 'Ishlab chiqarish sexi', managerRole: 'supply_manager' },
   { name: 'Markaziy Sklad', type: 'central_warehouse', parentName: 'Ta\'minot — Tort', managerRole: 'central_warehouse_manager' },
   { name: 'Do\'kon 1', type: 'store', parentName: 'Markaziy Sklad', managerRole: 'store_manager' },
 ];
@@ -149,13 +157,22 @@ async function main(): Promise<void> {
   }
 
   // 3. One manager user per location, then attach as the location's manager.
+  //    The email must be unique per location: roles like supply_manager are
+  //    now shared across 3 supply nodes (Tort / Perojniy / Yarim Fabrika), so
+  //    role-only slugs would collapse all three managers into the same user.
+  //    The role-slug counters below preserve the historical email of the
+  //    first location in a role (e.g. supply-manager@adia.local stays mapped
+  //    to "Ta'minot — Tort") and append `-2`, `-3`, ... for the rest.
+  const roleSlugCount = new Map<string, number>();
   for (const loc of LOCATIONS) {
     const locId = locationIdByName.get(loc.name);
     if (locId === undefined) {
       continue;
     }
     const slug = loc.managerRole.replace(/_/g, '-');
-    const email = `${slug}@adia.local`;
+    const seen = roleSlugCount.get(slug) ?? 0;
+    roleSlugCount.set(slug, seen + 1);
+    const email = seen === 0 ? `${slug}@adia.local` : `${slug}-${seen + 1}@adia.local`;
     const managerId = await upsertUser(`${loc.name} — boshliq`, email, loc.managerRole, locId);
     await query('UPDATE locations SET manager_user_id = $1 WHERE id = $2', [managerId, locId]);
   }
@@ -218,6 +235,33 @@ async function main(): Promise<void> {
         [rawWhId, productId, qty],
       );
     }
+  }
+
+  // 8. Supply-node starter stock (canvas Bug 1 — migration 0020).
+  //    "Ta'minot — Yarim Fabrika" and "Ta'minot — Perojniy" are logical
+  //    hand-off nodes (no Poster storage) so the leftover sync never seeds
+  //    them. Without at least one stock row the ecosystem canvas renders
+  //    them as "SKU yo'q" and downstream replenishment has no target.
+  //    Yarim Fabrika carries the semi (SEMI-SPONGE); Perojniy carries the
+  //    finished cake. qty=0 keeps the engine honest — it must produce.
+  const yarimSupplyId = locationIdByName.get("Ta'minot — Yarim Fabrika");
+  const perojniySupplyId = locationIdByName.get("Ta'minot — Perojniy");
+  const spongeId = productIdBySku.get('SEMI-SPONGE');
+  if (yarimSupplyId !== undefined && spongeId !== undefined) {
+    await query(
+      `INSERT INTO stock (location_id, product_id, qty, min_level, max_level)
+       VALUES ($1, $2, 0, 0, 0)
+       ON CONFLICT (location_id, product_id) DO NOTHING`,
+      [yarimSupplyId, spongeId],
+    );
+  }
+  if (perojniySupplyId !== undefined && cakeId !== undefined) {
+    await query(
+      `INSERT INTO stock (location_id, product_id, qty, min_level, max_level)
+       VALUES ($1, $2, 0, 0, 0)
+       ON CONFLICT (location_id, product_id) DO NOTHING`,
+      [perojniySupplyId, cakeId],
+    );
   }
 
   console.log('[seed-dev] done.');
