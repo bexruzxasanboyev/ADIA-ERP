@@ -57,6 +57,10 @@ interface RenderOptions {
   locations?: MeLocation[];
   /** Bo'g'in type used when synthesizing the default MeLocation row. */
   locationType?: LocationType;
+  /** Override the injected user id (defaults to 1). Useful for the
+   *  purchase-order manager step where the backend ties the approval
+   *  to `created_by === user.id`. */
+  userId?: number;
 }
 
 /** Render `ui` inside router + toast + an authenticated auth context. */
@@ -67,9 +71,14 @@ export function renderWithProviders(
     locationId = null,
     locations,
     locationType = 'production',
+    userId,
   }: RenderOptions = {},
 ) {
-  const user = fakeUser({ role, location_id: locationId });
+  const user = fakeUser({
+    role,
+    location_id: locationId,
+    ...(userId !== undefined ? { id: userId } : {}),
+  });
   // If the caller did not pass an explicit M:N set, synthesize one from
   // the primary `locationId` so write-button assertions work without
   // every test having to redeclare the same fixture.

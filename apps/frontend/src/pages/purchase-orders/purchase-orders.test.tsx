@@ -131,6 +131,8 @@ describe('PurchaseOrdersPage', () => {
     mockFetch();
     renderWithProviders(<PurchaseOrdersPage />, {
       role: 'raw_warehouse_manager',
+      locationId: 4, // ORDER.target_location_id — Stage 4 RBAC scoping
+      locationType: 'raw_warehouse',
     });
     await screen.findByText('Un');
     await user.click(screen.getByRole('button', { name: 'Ko‘rish' }));
@@ -142,11 +144,71 @@ describe('PurchaseOrdersPage', () => {
     ).toBeNull();
   });
 
+  it('hides every approval button for PM (Stage 1 read-only)', async () => {
+    const user = userEvent.setup();
+    mockFetch();
+    renderWithProviders(<PurchaseOrdersPage />, { role: 'pm' });
+    await screen.findByText('Un');
+    // The list-level "Yangi sotib olish" button must be gone …
+    expect(
+      screen.queryByRole('button', { name: /yangi sotib olish/i }),
+    ).toBeNull();
+    // … and the per-row approval panel must render no actionable buttons.
+    await user.click(screen.getByRole('button', { name: 'Ko‘rish' }));
+    expect(
+      screen.queryByRole('button', { name: 'Tasdiqlash (boshliq)' }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: 'Tasdiqlash (skladchi)' }),
+    ).toBeNull();
+    expect(screen.queryByRole('button', { name: /rad etish/i })).toBeNull();
+    expect(screen.getByText(/faqat o.qish/i)).toBeInTheDocument();
+  });
+
+  it('hides the keeper button for a raw_warehouse_manager on a foreign warehouse', async () => {
+    const user = userEvent.setup();
+    mockFetch();
+    renderWithProviders(<PurchaseOrdersPage />, {
+      role: 'raw_warehouse_manager',
+      locationId: 99, // foreign — ORDER.target_location_id is 4
+      locationType: 'raw_warehouse',
+    });
+    await screen.findByText('Un');
+    await user.click(screen.getByRole('button', { name: 'Ko‘rish' }));
+    expect(
+      screen.queryByRole('button', { name: 'Tasdiqlash (skladchi)' }),
+    ).toBeNull();
+  });
+
+  it('hides the manager button for a supply_manager who is not the creator', async () => {
+    // ORDER.created_by === 1; render as a DIFFERENT supply_manager
+    // (id=2). The backend enforces created_by === user.id on the
+    // manager step (purchaseOrders.ts L274), so the button must not
+    // render for anyone else — even another supply_manager.
+    const user = userEvent.setup();
+    mockFetch();
+    renderWithProviders(<PurchaseOrdersPage />, {
+      role: 'supply_manager',
+      userId: 2,
+    });
+    await screen.findByText('Un');
+    await user.click(screen.getByRole('button', { name: 'Ko‘rish' }));
+    expect(
+      screen.queryByRole('button', { name: 'Tasdiqlash (boshliq)' }),
+    ).toBeNull();
+    // Reject is still allowed for any supply_manager (no per-PO scope).
+    expect(
+      screen.getByRole('button', { name: /rad etish/i }),
+    ).toBeInTheDocument();
+  });
+
   it('posts the keeper approval with step:"keeper"', async () => {
     const user = userEvent.setup();
     mockFetch();
     renderWithProviders(<PurchaseOrdersPage />, {
       role: 'raw_warehouse_manager',
+      locationId: 4, // ORDER.target_location_id — Stage 4 RBAC scoping
+      locationType: 'raw_warehouse',
     });
     await screen.findByText('Un');
     await user.click(screen.getByRole('button', { name: 'Ko‘rish' }));

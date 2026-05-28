@@ -21,7 +21,7 @@ import {
 } from '@/components/PageState';
 import { ViewToggle, useViewMode } from '@/components/ViewToggle';
 import { useApiQuery } from '@/hooks/useApiQuery';
-import { useAuth } from '@/hooks/useAuth';
+import { useCanAct } from '@/hooks/useCanAct';
 import { formatDateTime, formatQty } from '@/lib/format';
 import {
   PURCHASE_ORDER_STATUS_LABELS,
@@ -46,8 +46,13 @@ import { ApprovalPanel } from './ApprovalPanel';
  * independently. Receive / reject also live in that panel.
  */
 export function PurchaseOrdersPage() {
-  const { user } = useAuth();
-  const canCreate = user?.role === 'pm' || user?.role === 'supply_manager';
+  const { isReadOnly, isOperator } = useCanAct();
+  // "Yangi sotib olish" — Stage 1 (commit da5aebe) restricts POST
+  // /api/purchase-orders to supply_manager (writers only; PM is now
+  // read-only). The form dialog enforces per-row scoping via the target
+  // location <select>; the backend's requireLocationOperator does the
+  // final check, and a 403 surfaces as a toast inside the dialog.
+  const canCreate = isOperator;
 
   const [status, setStatus] = useState<PurchaseOrderStatus | ''>('');
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -80,12 +85,17 @@ export function PurchaseOrdersPage() {
   const rows = data ?? [];
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <div className="mx-auto max-w-[120rem] space-y-6">
       <PageHeader
         title="Sotib olish so‘rovlari"
         description="Ta’minot bo‘limining sotib olish hujjatlari va ikki bosqichli tasdiq."
         action={
           <div className="flex flex-wrap items-center gap-2">
+            {isReadOnly && (
+              <Badge variant="secondary" aria-label="Faqat o‘qish rejimi">
+                Faqat o‘qish
+              </Badge>
+            )}
             <ViewToggle value={view} onChange={setView} />
             {canCreate && (
               <Button onClick={() => setDialogOpen(true)}>
@@ -118,7 +128,13 @@ export function PurchaseOrdersPage() {
         </div>
       </div>
 
-      <Card>
+      <Card
+        className={
+          view === 'card'
+            ? 'border-0 bg-transparent p-0 shadow-none'
+            : undefined
+        }
+      >
         {isLoading && <LoadingState />}
         {!isLoading && error && (
           <ErrorState message={error} onRetry={refetch} />
@@ -127,7 +143,7 @@ export function PurchaseOrdersPage() {
           <EmptyState message="So‘rovlar topilmadi." />
         )}
         {!isLoading && !error && rows.length > 0 && view === 'card' && (
-          <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {rows.map((row) => {
               const unit = productById.get(row.product_id)?.unit ?? '';
               const isOpen = expandedId === row.id;

@@ -4,13 +4,10 @@ import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/toast';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import { useAuth } from '@/hooks/useAuth';
+import { useCanAct } from '@/hooks/useCanAct';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/format';
-import type {
-  PurchaseApprovalStep,
-  PurchaseOrder,
-  Role,
-} from '@/lib/types';
+import type { PurchaseApprovalStep, PurchaseOrder } from '@/lib/types';
 
 interface ApprovalPanelProps {
   order: PurchaseOrder;
@@ -20,26 +17,44 @@ interface ApprovalPanelProps {
 /**
  * Two-step approval UI (D5, OS-5).
  *
- *   - Manager step:  `supply_manager` (or `pm`)            → POST /:id/approve {step:'manager'}
- *   - Keeper step:   `raw_warehouse_manager` (or `pm`)     → POST /:id/approve {step:'keeper'}
- *   - Receive:       `raw_warehouse_manager` (or `pm`)     → POST /:id/receive
- *   - Reject (draft only): `supply_manager` (or `pm`)      → POST /:id/reject
+ * Post Stage-1 RBAC (commit da5aebe) — PM is read-and-recommend. The
+ * backend rules:
  *
- * The panel renders both steps side-by-side as a small premium-dark
- * card, with the timestamp + actor for each completed step.
+ *   - Manager step (`POST /:id/approve {step:'manager'}`)
+ *       → role must be `supply_manager` AND the user must be the
+ *         original PO creator (`purchase_orders.created_by = user.id`).
+ *   - Keeper step  (`POST /:id/approve {step:'keeper'}`)
+ *       → role must be `raw_warehouse_manager` AND the user must be a
+ *         scoped operator on `target_location_id`.
+ *   - Receive      (`POST /:id/receive`)
+ *       → role must be `raw_warehouse_manager` AND scoped operator on
+ *         `target_location_id`.
+ *   - Reject       (`POST /:id/reject`, draft only)
+ *       → role must be `supply_manager` (no per-PO scoping; any supply
+ *         manager may reject any draft).
  */
 export function ApprovalPanel({ order, onChanged }: ApprovalPanelProps) {
   const { user } = useAuth();
+  const { canActOn } = useCanAct();
   const { notify } = useToast();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const role: Role | undefined = user?.role;
-  const isPm = role === 'pm';
-  const canManager = isPm || role === 'supply_manager';
-  const canKeeper = isPm || role === 'raw_warehouse_manager';
-  const canReceive = isPm || role === 'raw_warehouse_manager';
-  const canReject = isPm || role === 'supply_manager';
+  const role = user?.role;
+  // Manager step — the supply manager who DRAFTED the request is the
+  // one who can sign it off. Backend enforces created_by = user.id, so
+  // we mirror that here to keep the button off other supply managers'
+  // screens (avoids a confusing 403).
+  const canManager =
+    role === 'supply_manager' && user?.id === order.created_by;
+  // Keeper step + Receive — same scoping (raw_warehouse_manager owning
+  // the target raw warehouse).
+  const isKeeperRole = role === 'raw_warehouse_manager';
+  const isScopedKeeper = canActOn(order.target_location_id);
+  const canKeeper = isKeeperRole && isScopedKeeper;
+  const canReceive = isKeeperRole && isScopedKeeper;
+  // Reject — any supply manager (no per-PO scoping on the backend).
+  const canReject = role === 'supply_manager';
 
   const managerSigned = order.manager_approved_by !== null;
   const keeperSigned = order.keeper_approved_by !== null;
@@ -173,7 +188,7 @@ export function ApprovalPanel({ order, onChanged }: ApprovalPanelProps) {
 
       {error && (
         <p
-          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive-foreground"
+          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
           role="alert"
         >
           {error}
