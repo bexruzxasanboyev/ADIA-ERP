@@ -757,6 +757,25 @@ type SalesChartItem = {
   qty: number;
 };
 
+/**
+ * D-0026 (2026-05-28) — explicit M:N supply-chain edge, sourced from the
+ * `location_flows` junction table. Until 0026 the canvas inferred edges
+ * from `locations.parent_id` (a 1:N tree) which could not express the
+ * Tort sexi → {Tort skladi, Yarim Fabrika skladi} fan-out or the BOM
+ * re-entry loop from Yarim Fabrika skladi back into the sexes.
+ *
+ * `flow_type` is one of:
+ *   production_output — sex → its sklad (or shared Yarim Fabrika sklad).
+ *   bom_input         — Yarim Fabrika sklad → sex (semi-finished re-use).
+ *   forward           — sex_storage → markaziy sklad (and onward).
+ *   reverse           — markaziy → upstream (returns / claw-backs).
+ */
+type ChainEdge = {
+  from: number;
+  to: number;
+  type: 'production_output' | 'bom_input' | 'forward' | 'reverse';
+};
+
 type EcosystemResponse = {
   poster_status: PosterStatusBlock;
   chain_flow: ChainFlowItem[];
@@ -766,6 +785,12 @@ type EcosystemResponse = {
    * stages that intersect their assigned locations (typically one).
    */
   chain_summary: ChainSummaryNode[];
+  /**
+   * D-0026 — explicit M:N edges between supply-chain locations. Backed
+   * by the `location_flows` table (migration 0026). Scoped principals
+   * see only edges whose `from` OR `to` is in their assigned set.
+   */
+  chain_edges: ChainEdge[];
   alerts_feed: AlertsFeedItem[];
   sales_chart: { days: SalesChartItem[] };
 };
@@ -796,19 +821,27 @@ dashboardRouter.get(
       return;
     }
 
-    const [posterStatus, chainFlow, chainSummary, alertsFeed, salesChart] =
-      await Promise.all([
-        fetchPosterStatus(scope, range),
-        fetchChainFlow(scope),
-        fetchChainSummary(scope),
-        fetchAlertsFeed(principal),
-        fetchSalesChart(scope, range),
-      ]);
+    const [
+      posterStatus,
+      chainFlow,
+      chainSummary,
+      chainEdges,
+      alertsFeed,
+      salesChart,
+    ] = await Promise.all([
+      fetchPosterStatus(scope, range),
+      fetchChainFlow(scope),
+      fetchChainSummary(scope),
+      fetchChainEdges(scope),
+      fetchAlertsFeed(principal),
+      fetchSalesChart(scope, range),
+    ]);
 
     const response: EcosystemResponse = {
       poster_status: posterStatus,
       chain_flow: chainFlow,
       chain_summary: chainSummary,
+      chain_edges: chainEdges,
       alerts_feed: alertsFeed,
       sales_chart: { days: salesChart },
     };
@@ -1658,9 +1691,54 @@ function emptyEcosystem(): EcosystemResponse {
     },
     chain_flow: [],
     chain_summary: [],
+    chain_edges: [],
     alerts_feed: [],
     sales_chart: { days: [] },
   };
+}
+
+/**
+ * D-0026 — read explicit M:N edges from `location_flows`.
+ *
+ * Scoping rules:
+ *   - chain     — every active edge (the PM canvas sees the full graph).
+ *   - locations — edges where either endpoint is in the principal's
+ *                 assigned set. A store_manager rarely has flow edges
+ *                 (stores are leaf nodes today) but the rule is uniform.
+ *
+ * Only edges between two ACTIVE locations are returned — `is_active=false`
+ * rows would render dangling endpoints on the canvas.
+ */
+async function fetchChainEdges(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+): Promise<ChainEdge[]> {
+  const params: SqlParam[] = [];
+  let where = `WHERE lf_from.is_active = TRUE AND lf_to.is_active = TRUE`;
+  if (scope.kind === 'locations') {
+    params.push(scope.locationIds);
+    where += ` AND (lf.from_location_id = ANY($${params.length}::bigint[])
+                OR lf.to_location_id   = ANY($${params.length}::bigint[]))`;
+  }
+
+  const { rows } = await query<{
+    from_location_id: string;
+    to_location_id: string;
+    flow_type: ChainEdge['type'];
+  }>(
+    `SELECT lf.from_location_id, lf.to_location_id, lf.flow_type
+       FROM location_flows lf
+       JOIN locations lf_from ON lf_from.id = lf.from_location_id
+       JOIN locations lf_to   ON lf_to.id   = lf.to_location_id
+       ${where}
+       ORDER BY lf.from_location_id, lf.to_location_id, lf.flow_type`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    from: Number(r.from_location_id),
+    to: Number(r.to_location_id),
+    type: r.flow_type,
+  }));
 }
 
 // =============================================================================

@@ -812,6 +812,82 @@ describe('GET /api/dashboard/ecosystem', () => {
     expect(summary[0]?.location_count).toBe(1);
   });
 
+  // ---------------------------------------------------------------------
+  // D-0026 — chain_edges (explicit M:N supply-chain edges).
+  // ---------------------------------------------------------------------
+  it('returns the chain_edges array on the ecosystem payload', async () => {
+    const w = await seedWorld();
+    const res = await request(ctx.app)
+      .get('/api/dashboard/ecosystem')
+      .set('Authorization', `Bearer ${w.pm.token}`);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.chain_edges)).toBe(true);
+  });
+
+  it('surfaces a freshly-inserted location_flows row to pm', async () => {
+    const w = await seedWorld();
+
+    // Add a `production_output` edge between the seeded production sex
+    // and a sex_storage we create on the fly. The 0026 seed targets the
+    // canonical Poster names (Tort sexi, …) which the test world does not
+    // create — so the test owns its own edge.
+    const skladi = await makeLocation(ctx.db, {
+      type: 'supply',
+      name: 'Test sklad for edge',
+    });
+    await ctx.db.query(
+      `INSERT INTO location_flows (from_location_id, to_location_id, flow_type)
+       VALUES ($1, $2, 'production_output')
+       ON CONFLICT DO NOTHING`,
+      [w.production, skladi],
+    );
+
+    const res = await request(ctx.app)
+      .get('/api/dashboard/ecosystem')
+      .set('Authorization', `Bearer ${w.pm.token}`);
+
+    expect(res.status).toBe(200);
+    const edges = res.body.chain_edges as Array<{
+      from: number;
+      to: number;
+      type: string;
+    }>;
+    const ours = edges.find(
+      (e) => e.from === w.production && e.to === skladi,
+    );
+    expect(ours).toBeDefined();
+    expect(ours?.type).toBe('production_output');
+  });
+
+  it('scopes chain_edges to a store_manager (only edges touching their location)', async () => {
+    const w = await seedWorld();
+
+    // Edge 1: storeA (visible to storeAManager) ← central
+    // Edge 2: storeB ← central (must NOT appear)
+    await ctx.db.query(
+      `INSERT INTO location_flows (from_location_id, to_location_id, flow_type)
+       VALUES ($1, $2, 'forward') ON CONFLICT DO NOTHING`,
+      [w.central, w.storeA],
+    );
+    await ctx.db.query(
+      `INSERT INTO location_flows (from_location_id, to_location_id, flow_type)
+       VALUES ($1, $2, 'forward') ON CONFLICT DO NOTHING`,
+      [w.central, w.storeB],
+    );
+
+    const res = await request(ctx.app)
+      .get('/api/dashboard/ecosystem')
+      .set('Authorization', `Bearer ${w.storeAManager.token}`);
+    expect(res.status).toBe(200);
+    const edges = res.body.chain_edges as Array<{
+      from: number;
+      to: number;
+    }>;
+    // storeAManager must see the central→storeA edge but never central→storeB.
+    expect(edges.some((e) => e.to === w.storeA)).toBe(true);
+    expect(edges.some((e) => e.to === w.storeB)).toBe(false);
+  });
+
   it('returns nulls in poster_status when no sync runs exist', async () => {
     const w = await seedWorld();
     await ctx.db.query('DELETE FROM poster_sync_log');
