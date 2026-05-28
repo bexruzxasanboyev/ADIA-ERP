@@ -881,6 +881,23 @@ export interface DashboardChainNode {
   open_requests_count: number;
   /** Distinct products held at this location. */
   total_products: number;
+  /**
+   * Production-only KPI — count of `production_orders` at this sex in
+   * `new` or `in_progress` status. `null` for any non-`production` row so
+   * the adapter can branch on type without an extra lookup.
+   *
+   * Optional on the wire to keep older fixtures and the chain-layer
+   * surfaces that don't depend on this KPI strict-type-safe; the
+   * EcosystemCanvas adapter coalesces missing values to `0`.
+   */
+  active_production_orders?: number | null;
+  /**
+   * Production-only KPI — count of `production_orders` at this sex
+   * completed (`status='done'`, `done_at` today). `null` for any
+   * non-`production` row. See `active_production_orders` for the
+   * optional-on-the-wire rationale.
+   */
+  done_today_count?: number | null;
 }
 
 // ---------------------------------------------------------------------------
