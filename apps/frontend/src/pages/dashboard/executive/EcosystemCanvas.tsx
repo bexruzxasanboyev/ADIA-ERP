@@ -8,6 +8,7 @@ import ReactFlow, {
 } from 'reactflow';
 import { Maximize2, Minimize2 } from 'lucide-react';
 import type {
+  DashboardChainEdge,
   DashboardChainNode,
   DashboardSuppliersResponse,
   LocationType,
@@ -43,6 +44,11 @@ import { cn } from '@/lib/utils';
 export interface EcosystemCanvasProps {
   chainFlow: DashboardChainNode[];
   suppliers: DashboardSuppliersResponse['suppliers'];
+  /**
+   * D-0026 — explicit M:N supply-chain edges from `location_flows`.
+   * Optional; canvas falls back to derived legacy edges when missing.
+   */
+  chainEdges?: DashboardChainEdge[];
   /**
    * The currently-selected replenishment request (request row +
    * transitions). `null` means "no request selected" — the canvas
@@ -80,6 +86,7 @@ export function EcosystemCanvas(props: EcosystemCanvasProps) {
 function EcosystemCanvasInner({
   chainFlow,
   suppliers,
+  chainEdges,
   selectedRequest = null,
   onSelectChain,
   onSelectSupplier,
@@ -108,10 +115,11 @@ function EcosystemCanvasInner({
       buildEcosystemGraph({
         chainFlow,
         suppliers,
+        chainEdges,
         onSelectChain: handleChain,
         onSelectSupplier: handleSupplier,
       }),
-    [chainFlow, suppliers, handleChain, handleSupplier],
+    [chainFlow, suppliers, chainEdges, handleChain, handleSupplier],
   );
 
   // Apply the request trace overlay on top of the static graph. When

@@ -1062,6 +1062,29 @@ export interface DashboardSalesPoint {
 }
 
 /**
+ * D-0026 — explicit M:N supply-chain edge between two locations. Sourced
+ * from the backend `location_flows` table. The EcosystemCanvas now reads
+ * these directly instead of inferring topology from `parent_id`.
+ *
+ * Flow types:
+ *   - `production_output` — sex → its sex_storage (incl. shared Yarim Fabrika)
+ *   - `bom_input`         — Yarim Fabrika skladi → sex (semi-finished re-use, reverse loop)
+ *   - `forward`           — sex_storage → markaziy / markaziy → store
+ *   - `reverse`           — claw-back / returns (markaziy → upstream)
+ */
+export type DashboardChainEdgeType =
+  | 'production_output'
+  | 'bom_input'
+  | 'forward'
+  | 'reverse';
+
+export interface DashboardChainEdge {
+  from: number;
+  to: number;
+  type: DashboardChainEdgeType;
+}
+
+/**
  * `GET /api/dashboard/ecosystem` envelope. Mirrors phase-4.md §2.4 contract.
  */
 export interface DashboardEcosystem {
@@ -1075,6 +1098,12 @@ export interface DashboardEcosystem {
    * `chain_flow`.
    */
   chain_summary: ChainSummaryNode[];
+  /**
+   * D-0026 — explicit M:N edges between supply-chain locations. The
+   * EcosystemCanvas prefers these when present and falls back to the
+   * derived layer-by-layer edges when empty (greenfield deployments).
+   */
+  chain_edges?: DashboardChainEdge[];
   alerts_feed: DashboardAlert[];
   sales_chart: {
     days: DashboardSalesPoint[];

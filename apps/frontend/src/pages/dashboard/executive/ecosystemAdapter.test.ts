@@ -642,4 +642,102 @@ describe('buildEcosystemGraph', () => {
     expect(nodes.find((n) => n.id === 'loc-41')).toBeDefined();
     expect(nodes.find((n) => n.id === 'loc-42')).toBeDefined();
   });
+
+  // -------------------------------------------------------------------
+  // D-0026 — explicit M:N edges from `location_flows`.
+  // -------------------------------------------------------------------
+  describe('chainEdges (D-0026)', () => {
+    const sexChain: DashboardChainNode[] = [
+      {
+        location_id: 36,
+        location_name: 'Tort sexi',
+        location_type: 'production',
+        below_min_count: 0,
+        open_requests_count: 0,
+        total_products: 4,
+      },
+      {
+        location_id: 37,
+        location_name: 'Tort skladi',
+        location_type: 'sex_storage',
+        below_min_count: 0,
+        open_requests_count: 0,
+        total_products: 6,
+      },
+      {
+        location_id: 38,
+        location_name: 'Yarim Fabrika skladi',
+        location_type: 'sex_storage',
+        below_min_count: 0,
+        open_requests_count: 0,
+        total_products: 8,
+      },
+    ];
+
+    it('renders an edge for every explicit location_flows row', () => {
+      const { edges } = buildEcosystemGraph({
+        chainFlow: sexChain,
+        suppliers: [],
+        chainEdges: [
+          { from: 36, to: 37, type: 'production_output' },
+          { from: 36, to: 38, type: 'production_output' },
+          { from: 38, to: 36, type: 'bom_input' },
+        ],
+      });
+
+      expect(
+        edges.find((e) => e.id === 'edge-loc-36-loc-37'),
+      ).toBeDefined();
+      expect(
+        edges.find((e) => e.id === 'edge-loc-36-loc-38'),
+      ).toBeDefined();
+      // BOM re-entry — reverse direction, distinct id.
+      expect(
+        edges.find((e) => e.id === 'edge-loc-38-loc-36'),
+      ).toBeDefined();
+    });
+
+    it('does NOT emit duplicates when an explicit edge matches a derived one', () => {
+      const { edges } = buildEcosystemGraph({
+        chainFlow: sexChain,
+        suppliers: [],
+        chainEdges: [
+          // Same Tort sexi → Tort skladi edge the legacy adapter already
+          // emits via name-token matching. The merge must dedupe by id.
+          { from: 36, to: 37, type: 'production_output' },
+        ],
+      });
+
+      const matches = edges.filter((e) => e.id === 'edge-loc-36-loc-37');
+      expect(matches).toHaveLength(1);
+    });
+
+    it('styles bom_input edges as dotted (strokeDasharray) and disables animation', () => {
+      const { edges } = buildEcosystemGraph({
+        chainFlow: sexChain,
+        suppliers: [],
+        chainEdges: [{ from: 38, to: 36, type: 'bom_input' }],
+      });
+      const bom = edges.find((e) => e.id === 'edge-loc-38-loc-36');
+      expect(bom).toBeDefined();
+      expect((bom?.style as { strokeDasharray?: string })?.strokeDasharray).toBe(
+        '2 4',
+      );
+      expect(bom?.animated).toBe(false);
+    });
+
+    it('skips edges whose endpoints are not in chainFlow (dangling protection)', () => {
+      const { edges } = buildEcosystemGraph({
+        chainFlow: sexChain,
+        suppliers: [],
+        chainEdges: [
+          // loc 999 does not exist; the edge must NOT be emitted.
+          { from: 36, to: 999, type: 'production_output' },
+        ],
+      });
+      expect(
+        edges.find((e) => e.id === 'edge-loc-36-loc-999'),
+      ).toBeUndefined();
+    });
+  });
 });

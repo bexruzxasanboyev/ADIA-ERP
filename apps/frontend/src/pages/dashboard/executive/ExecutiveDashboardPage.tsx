@@ -10,6 +10,7 @@ import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
 import type {
   ChainSummaryNode,
+  DashboardChainEdge,
   DashboardChainNode,
   DashboardEcosystem,
   DashboardOverview,
@@ -53,6 +54,9 @@ function readStoredCanvasView(): CanvasView {
 // the EcosystemCanvas memo on every render.
 const EMPTY_SUPPLIERS: DashboardSuppliersResponse['suppliers'] = [];
 const EMPTY_CHAIN_FLOW: DashboardChainNode[] = [];
+// D-0026 — `chain_edges` is optional on the API envelope; an empty array
+// keeps the canvas memo stable while migration 0026 propagates.
+const EMPTY_CHAIN_EDGES: DashboardChainEdge[] = [];
 
 // Stable empty fallback so a missing `ecosystem.data` doesn't churn the
 // CanvasFlow memos by allocating a fresh `[]` on every render.
@@ -261,6 +265,23 @@ export function ExecutiveDashboardPage() {
     return chainFlow;
   }, [chainFlow]);
 
+  // D-0026 — explicit M:N edges from `location_flows`. Stabilised the same
+  // way as chain_flow so 30s auto-refresh ticks with identical content do
+  // not re-render the canvas.
+  const chainEdges = ecosystem.data?.chain_edges ?? EMPTY_CHAIN_EDGES;
+  const chainEdgesStableRef = useRef(chainEdges);
+  const chainEdgesStable = useMemo(() => {
+    const prev = chainEdgesStableRef.current;
+    if (
+      prev !== chainEdges &&
+      JSON.stringify(prev) === JSON.stringify(chainEdges)
+    ) {
+      return prev;
+    }
+    chainEdgesStableRef.current = chainEdges;
+    return chainEdges;
+  }, [chainEdges]);
+
   // Initial-load skeleton — overview is the keystone request.
   if (overview.isLoading && overview.data === null) {
     return <LoadingState />;
@@ -321,6 +342,7 @@ export function ExecutiveDashboardPage() {
           <EcosystemCanvas
             chainFlow={chainFlowStable}
             suppliers={suppliersStable}
+            chainEdges={chainEdgesStable}
             selectedRequest={selectedRequestDetail.data}
             onSelectChain={handleEcosystemChainSelect}
             className="flex-1 min-w-0 h-full"

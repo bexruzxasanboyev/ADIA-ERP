@@ -29,6 +29,7 @@
 import type { Edge, Node } from 'reactflow';
 import type {
   ChainStatus,
+  DashboardChainEdge,
   DashboardChainNode,
   DashboardSuppliersResponse,
   LocationType,
@@ -59,6 +60,14 @@ type EcoNode = Node<
 export interface EcosystemAdapterInput {
   chainFlow: DashboardChainNode[];
   suppliers: Supplier[];
+  /**
+   * D-0026 — explicit M:N supply-chain edges from `location_flows`.
+   * Optional; when omitted or empty the canvas falls back to the
+   * legacy derived layer-by-layer edges. When present, the adapter
+   * ADDS the explicit edges on top of the legacy ones — both sets
+   * are merged and de-duplicated by edge id.
+   */
+  chainEdges?: DashboardChainEdge[];
   onSelectChain?: (type: LocationType, locationId: number) => void;
   onSelectSupplier?: (supplierId: number | null) => void;
 }
@@ -90,7 +99,13 @@ export interface EcosystemAdapterResult {
 export function buildEcosystemGraph(
   input: EcosystemAdapterInput,
 ): EcosystemAdapterResult {
-  const { chainFlow, suppliers, onSelectChain, onSelectSupplier } = input;
+  const {
+    chainFlow,
+    suppliers,
+    chainEdges,
+    onSelectChain,
+    onSelectSupplier,
+  } = input;
 
   const byType = groupByType(chainFlow);
 
@@ -146,7 +161,16 @@ export function buildEcosystemGraph(
     ...storeNodes,
   ];
 
-  const edges: Edge[] = [
+  // ---------------------------------------------------------------------
+  // Edge composition (D-0026)
+  // ---------------------------------------------------------------------
+  // 1. Legacy derived edges (supplier → raw → sex → supply → central → store)
+  //    keep the canvas coherent on greenfield deployments where
+  //    `location_flows` is empty.
+  // 2. Explicit `location_flows` edges (`chainEdges`) overlay the legacy set.
+  //    Both sources are de-duplicated by edge id so an explicit row never
+  //    produces a double line.
+  const legacyEdges: Edge[] = [
     ...edgesSuppliersToRaw(suppliers, byType.raw_warehouse),
     // Raw → each production sex, labelled with the sex name so the owner
     // can see at a glance which sex consumes which raw materials.
@@ -156,6 +180,15 @@ export function buildEcosystemGraph(
     ...edgesOneToMany('sup-central', byType.supply, topCentral),
     ...edgesOneToMany('central-store', topCentral, byType.store),
   ];
+  const explicitEdges = edgesFromChainEdges(chainEdges, chainFlow);
+
+  const seen = new Set<string>();
+  const edges: Edge[] = [];
+  for (const e of [...legacyEdges, ...explicitEdges]) {
+    if (seen.has(e.id)) continue;
+    seen.add(e.id);
+    edges.push(e);
+  }
 
   const lookups: EcosystemAdapterLookups = {
     productionParentId: PRODUCTION_GROUP_ID,
@@ -505,6 +538,72 @@ function legTone(
   if (aMin >= 4 || bMin >= 4) return 'destructive';
   if (aMin > 0 || bMin > 0) return 'warning';
   return 'success';
+}
+
+/**
+ * D-0026 — turn explicit `location_flows` rows into React Flow edges.
+ *
+ * Styling rules:
+ *   - `production_output` / `forward` — solid line, default leg tone.
+ *   - `bom_input`                      — dotted line (semi-finished re-use loop).
+ *   - `reverse`                        — dashed line.
+ *
+ * Only edges whose endpoints are both present in `chainFlow` are rendered —
+ * a missing endpoint would produce a dangling React Flow edge with no
+ * source/target node and the canvas would throw.
+ */
+function edgesFromChainEdges(
+  chainEdges: DashboardChainEdge[] | undefined,
+  chainFlow: DashboardChainNode[],
+): Edge[] {
+  if (!chainEdges || chainEdges.length === 0) return [];
+
+  const byId = new Map<number, DashboardChainNode>();
+  for (const row of chainFlow) byId.set(row.location_id, row);
+
+  const out: Edge[] = [];
+  for (const e of chainEdges) {
+    const fromRow = byId.get(e.from);
+    const toRow = byId.get(e.to);
+    if (!fromRow || !toRow) continue;
+    // Skip the inactive-store filter: the legacy adapter trims certain
+    // stores out of the canvas; if either endpoint is filtered out we
+    // also skip the edge.
+    if (
+      fromRow.location_type === 'store' &&
+      !isActiveStore(fromRow.location_name)
+    ) {
+      continue;
+    }
+    if (
+      toRow.location_type === 'store' &&
+      !isActiveStore(toRow.location_name)
+    ) {
+      continue;
+    }
+
+    const tone = legTone(fromRow, toRow);
+    const baseStyle = edgeStyle(tone);
+    const style =
+      e.type === 'bom_input'
+        ? { ...baseStyle, strokeDasharray: '2 4' }
+        : e.type === 'reverse'
+          ? { ...baseStyle, strokeDasharray: '6 4' }
+          : baseStyle;
+
+    out.push({
+      id: `edge-loc-${e.from}-loc-${e.to}`,
+      source: `loc-${e.from}`,
+      target: `loc-${e.to}`,
+      sourceHandle: 'bottom',
+      targetHandle: 'top',
+      animated: e.type !== 'bom_input',
+      type: 'smoothstep',
+      style,
+      data: { flowType: e.type },
+    });
+  }
+  return out;
 }
 
 function edgesSuppliersToRaw(
