@@ -22,6 +22,7 @@ import type { Request } from 'express';
 import type { AuthPrincipal } from '../auth/jwt.js';
 import { SUPER_ADMIN_ROLE } from '../auth/roles.js';
 import { AppError } from '../errors/index.js';
+import { poolRunner, writeAudit } from './audit.js';
 
 /** Read the verified principal; throws if `authenticate` did not run. */
 export function getPrincipal(req: Request): AuthPrincipal {
@@ -77,4 +78,74 @@ export function getEffectiveLocationIds(
     return [principal.activeLocationId];
   }
   return principal.locationIds;
+}
+
+/**
+ * Hardened RBAC guard for **write** actions (owner-approved 2026-05-28).
+ *
+ * Two enforcement axes — both must pass for the operator to proceed:
+ *
+ *   1. PM (super-admin) is **never** allowed to perform a business write
+ *      action. The owner's rule: PM is read-and-recommend across the chain;
+ *      every "do" must be the responsible location's operator. Even though
+ *      PM has chain-wide visibility, it must NOT bypass `(product,location)`
+ *      ownership for stock movements, replenishment cancels, production
+ *      orders, purchase approvals, etc. Configuration endpoints (users,
+ *      locations, products, admin, stock minmax) are explicitly exempt and
+ *      gated by `authorize('pm', ...)` elsewhere.
+ *
+ *   2. A scoped operator must own the target location — i.e.
+ *      `targetLocationId` must be one of `principal.locationIds`. The M:N
+ *      assignment from F4.1 / ADR-0012 still applies: a manager assigned to
+ *      multiple stores may act on any of them.
+ *
+ * Both 403s are best-effort audit-logged so a downstream reviewer can spot
+ * misconfigured operators (or attempted privilege escalation) in the audit
+ * trail. Audit failures must not turn into 5xx, so the write is wrapped in
+ * a catch-all.
+ */
+export async function requireLocationOperator(
+  principal: AuthPrincipal,
+  targetLocationId: number,
+): Promise<void> {
+  if (isSuperAdmin(principal)) {
+    await safeAudit({
+      actorUserId: principal.userId,
+      action: 'auth.forbidden.pm_write_blocked',
+      entity: 'principal',
+      entityId: principal.userId,
+      payload: { reason: 'pm_write_blocked', target_location_id: targetLocationId },
+      activeLocationId: principal.activeLocationId,
+    });
+    throw AppError.forbidden(
+      'PM has read-only access; write actions require an operator role for the responsible location.',
+    );
+  }
+  if (!principal.locationIds.includes(targetLocationId)) {
+    await safeAudit({
+      actorUserId: principal.userId,
+      action: 'auth.forbidden.foreign_location',
+      entity: 'principal',
+      entityId: principal.userId,
+      payload: {
+        reason: 'foreign_location',
+        target_location_id: targetLocationId,
+        assigned_location_ids: principal.locationIds,
+      },
+      activeLocationId: principal.activeLocationId,
+    });
+    throw AppError.forbidden('You may only act on data for your own location.');
+  }
+}
+
+/** Best-effort audit write — swallows DB failures so a 403 path stays 403. */
+async function safeAudit(
+  entry: Parameters<typeof writeAudit>[1],
+): Promise<void> {
+  try {
+    await writeAudit(poolRunner, entry);
+  } catch {
+    // Audit table may be missing or DB may be unavailable in dev/tests; the
+    // 403 itself is the user-facing signal and must not regress to 500.
+  }
 }
