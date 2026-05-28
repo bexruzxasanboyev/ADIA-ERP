@@ -16,6 +16,23 @@ describe('navSectionsForRole', () => {
     expect(paths).toContain('/raw-warehouse');
   });
 
+  it('exposes the unified So‘rovnomalar inbox to every role', () => {
+    for (const role of [
+      'pm',
+      'store_manager',
+      'production_manager',
+      'supply_manager',
+      'central_warehouse_manager',
+      'raw_warehouse_manager',
+      'ai_assistant',
+    ] as const) {
+      const paths = navSectionsForRole(role).flatMap((s) =>
+        s.items.map((i) => i.path),
+      );
+      expect(paths).toContain('/sorovnomalar');
+    }
+  });
+
   it('hides Users from non-pm roles', () => {
     const sections = navSectionsForRole('store_manager');
     const paths = sections.flatMap((s) => s.items.map((i) => i.path));

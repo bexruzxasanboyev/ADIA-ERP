@@ -12,6 +12,7 @@ import { ProductsPage } from '@/pages/products/ProductsPage';
 import { StockPage } from '@/pages/stock/StockPage';
 import { ReplenishmentPage } from '@/pages/replenishment/ReplenishmentPage';
 import { ReplenishmentDetailPage } from '@/pages/replenishment/ReplenishmentDetailPage';
+import { RequestsPage } from '@/pages/requests/RequestsPage';
 import { ProductionOrdersPage } from '@/pages/production-orders/ProductionOrdersPage';
 import { PurchaseOrdersPage } from '@/pages/purchase-orders/PurchaseOrdersPage';
 import { DashboardPage } from '@/pages/dashboard/DashboardPage';
@@ -129,6 +130,9 @@ export function AppRouter() {
           path="/replenishment/:id"
           element={<ReplenishmentDetailPage />}
         />
+
+        {/* F4.14 — unified inbox/outbox/archive ("So'rovnomalar"). */}
+        <Route path="/sorovnomalar" element={<RequestsPage />} />
 
         {/* F4.10 — Yetkazib berish (delivery) module. */}
         <Route
