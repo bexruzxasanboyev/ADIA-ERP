@@ -600,4 +600,46 @@ describe('buildEcosystemGraph', () => {
     expect(tortEdge?.label).toBe('Tort');
     expect(perojniyEdge?.label).toBe('Perojniy');
   });
+
+  it('coalesces sex_storage rows onto the supply bucket (ENUM migration)', () => {
+    // Backend ENUM migration — rows arriving as `sex_storage` must be
+    // placed on the canvas exactly like legacy `supply` rows so the
+    // ecosystem layout does not regress during the rollout. The adapter
+    // emits `loc-<id>` nodes regardless of which ENUM value the wire
+    // carried.
+    const chain: DashboardChainNode[] = [
+      {
+        location_id: 1,
+        location_name: 'Xom-ashyo ombori',
+        location_type: 'raw_warehouse',
+        below_min_count: 0,
+        open_requests_count: 0,
+        total_products: 1,
+      },
+      {
+        location_id: 41,
+        location_name: 'Tort skladi',
+        location_type: 'sex_storage',
+        below_min_count: 0,
+        open_requests_count: 0,
+        total_products: 4,
+      },
+      {
+        location_id: 42,
+        location_name: 'Yarim Fabrika skladi',
+        location_type: 'sex_storage',
+        below_min_count: 2,
+        open_requests_count: 1,
+        total_products: 7,
+      },
+    ];
+
+    const { nodes } = buildEcosystemGraph({
+      chainFlow: chain,
+      suppliers: [],
+    });
+
+    expect(nodes.find((n) => n.id === 'loc-41')).toBeDefined();
+    expect(nodes.find((n) => n.id === 'loc-42')).toBeDefined();
+  });
 });

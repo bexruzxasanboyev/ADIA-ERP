@@ -101,4 +101,35 @@ describe('EcosystemFlow', () => {
     const stage = screen.getByTestId('ecosystem-stage-supply');
     expect(stage.textContent).toMatch(/—/);
   });
+
+  it('renders sex_storage rows inside the supply column', () => {
+    // Backward compat — the backend ENUM is migrating `supply` →
+    // `sex_storage`. A node with the new type must still surface inside
+    // the existing supply column (same logical stage) so the canvas
+    // does not lose nodes during the migration window.
+    const sexStorageNodes: DashboardChainNode[] = [
+      {
+        location_id: 31,
+        location_name: 'Tort skladi',
+        location_type: 'sex_storage',
+        below_min_count: 0,
+        open_requests_count: 0,
+        total_products: 4,
+      },
+      {
+        location_id: 32,
+        location_name: 'Perojniy skladi',
+        location_type: 'sex_storage',
+        below_min_count: 2,
+        open_requests_count: 1,
+        total_products: 6,
+      },
+    ];
+    renderWithProviders(<EcosystemFlow nodes={sexStorageNodes} />);
+    const supplyStage = screen.getByTestId('ecosystem-stage-supply');
+    expect(supplyStage.textContent).toMatch(/Tort skladi/);
+    expect(supplyStage.textContent).toMatch(/Perojniy skladi/);
+    // Column label coalesces both ENUM values onto "Sex skladi".
+    expect(supplyStage.textContent).toMatch(/Sex skladi/);
+  });
 });

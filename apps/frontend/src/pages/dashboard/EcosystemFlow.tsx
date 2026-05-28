@@ -140,14 +140,23 @@ function StageNode({ node }: { node: DashboardChainNode }) {
   );
 }
 
+/**
+ * Group chain rows by their stage column. The backend ENUM is migrating
+ * from `supply` to `sex_storage`; both values denote the same logical
+ * "Sex skladi" layer, so we coalesce them onto the `supply` bucket. The
+ * column itself is rendered under `supply` (its stable testid) but
+ * labelled "Sex skladi" via `LOCATION_TYPE_LABELS` — see commit 1.
+ */
 function groupByType(
   nodes: DashboardChainNode[],
 ): Partial<Record<LocationType, DashboardChainNode[]>> {
   const out: Partial<Record<LocationType, DashboardChainNode[]>> = {};
   for (const node of nodes) {
-    const bucket = out[node.location_type] ?? [];
+    const key: LocationType =
+      node.location_type === 'sex_storage' ? 'supply' : node.location_type;
+    const bucket = out[key] ?? [];
     bucket.push(node);
-    out[node.location_type] = bucket;
+    out[key] = bucket;
   }
   return out;
 }
