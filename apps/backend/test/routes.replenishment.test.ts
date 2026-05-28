@@ -1,19 +1,13 @@
 /**
  * Sprint 2 hardening — route-level coverage for replenishment endpoints.
  *
- *   GET   /api/replenishment           — invalid ?status (422),
- *                                          location-bound role with no
- *                                          locationId returns [].
- *   GET   /api/replenishment/:id       — 404, 403 from a foreign manager,
- *                                          purchase_order linkage path of
- *                                          `requestTouchesLocation`.
- *   POST  /api/replenishment           — non-pm/non-central 403, missing
- *                                          required fields (422), bad
- *                                          qty_needed (422).
- *   POST  /api/replenishment/:id/cancel — pm cancels OPEN; idempotent on a
- *                                          terminal CANCELLED; non-pm 403.
- *   POST  /api/replenishment/:id/advance — invalid id 422, pm advance on
- *                                          NEW transitions to next state.
+ * 2026-05-28 — owner-approved RBAC hardening:
+ *   - PM (super-admin) is read-only on all replenishment write actions.
+ *   - POST /api/replenishment             — only central_warehouse_manager.
+ *   - POST /api/replenishment/:id/cancel  — only the requester location's
+ *                                            operator (not PM).
+ *   - POST /api/replenishment/:id/advance — only a scoped operator who
+ *                                            touches the request (M:N).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
@@ -177,24 +171,40 @@ describe('GET /api/replenishment/:id — RBAC + linkage branches', () => {
 // ---------------------------------------------------------------------------
 describe('POST /api/replenishment — validation + RBAC', () => {
   it('rejects a missing product_id (422)', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
-    const { store } = await chain();
+    const { central, store } = await chain();
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: central,
+    });
     const res = await request(ctx.app)
       .post('/api/replenishment')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${cwm.token}`)
       .send({ requester_location_id: store, qty_needed: 5 });
     expect(res.status).toBe(422);
   });
 
   it('rejects qty_needed <= 0 (422)', async () => {
+    const { central, store } = await chain();
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: central,
+    });
+    const product = await makeProduct(ctx.db, { type: 'finished' });
+    const res = await request(ctx.app)
+      .post('/api/replenishment')
+      .set('Authorization', `Bearer ${cwm.token}`)
+      .send({ product_id: product, requester_location_id: store, qty_needed: 0 });
+    expect(res.status).toBe(422);
+  });
+
+  it('PM is read-only — POST is 403 (no super-admin bypass)', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const { store } = await chain();
     const product = await makeProduct(ctx.db, { type: 'finished' });
     const res = await request(ctx.app)
       .post('/api/replenishment')
       .set('Authorization', `Bearer ${pm.token}`)
-      .send({ product_id: product, requester_location_id: store, qty_needed: 0 });
-    expect(res.status).toBe(422);
+      .send({ product_id: product, requester_location_id: store, qty_needed: 5 });
+    expect(res.status).toBe(403);
+    expect(res.body.error?.code).toBe('FORBIDDEN');
   });
 
   it('a store_manager cannot create a request (403 — pm + central_warehouse_manager only)', async () => {
@@ -223,19 +233,21 @@ describe('POST /api/replenishment — validation + RBAC', () => {
   });
 
   it('returns 409 OPEN_REQUEST_EXISTS when a duplicate is attempted via HTTP', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
-    const { store } = await chain();
+    const { central, store } = await chain();
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: central,
+    });
     const product = await makeProduct(ctx.db, { type: 'finished' });
 
     const first = await request(ctx.app)
       .post('/api/replenishment')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${cwm.token}`)
       .send({ product_id: product, requester_location_id: store, qty_needed: 3 });
     expect(first.status).toBe(201);
 
     const second = await request(ctx.app)
       .post('/api/replenishment')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${cwm.token}`)
       .send({ product_id: product, requester_location_id: store, qty_needed: 3 });
     expect(second.status).toBe(409);
     expect(second.body.error?.code).toBe('OPEN_REQUEST_EXISTS');
@@ -246,42 +258,44 @@ describe('POST /api/replenishment — validation + RBAC', () => {
 // POST /api/replenishment/:id/cancel
 // ---------------------------------------------------------------------------
 describe('POST /api/replenishment/:id/cancel', () => {
-  it('pm cancels an OPEN request and the row turns CANCELLED', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
+  it('the requester location operator cancels an OPEN request -> CANCELLED', async () => {
     const { store } = await chain();
+    const storeMgr = await makeUser(ctx.db, { role: 'store_manager', locationId: store });
     const product = await makeProduct(ctx.db, { type: 'finished' });
     const created = await createRequest({
-      productId: product, requesterLocationId: store, qtyNeeded: 5, actorUserId: pm.id,
+      productId: product, requesterLocationId: store, qtyNeeded: 5,
+      actorUserId: storeMgr.id,
     });
 
     const res = await request(ctx.app)
       .post(`/api/replenishment/${created.id}/cancel`)
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${storeMgr.token}`)
       .send({ reason: 'product discontinued' });
     expect(res.status).toBe(200);
     expect(res.body.request?.status).toBe('CANCELLED');
   });
 
   it('cancel is idempotent on an already-cancelled request (200, no error)', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
     const { store } = await chain();
+    const storeMgr = await makeUser(ctx.db, { role: 'store_manager', locationId: store });
     const product = await makeProduct(ctx.db, { type: 'finished' });
     const created = await createRequest({
-      productId: product, requesterLocationId: store, qtyNeeded: 5, actorUserId: pm.id,
+      productId: product, requesterLocationId: store, qtyNeeded: 5,
+      actorUserId: storeMgr.id,
     });
-    await cancelRequest(created.id, pm.id, 'first cancel');
+    await cancelRequest(created.id, storeMgr.id, 'first cancel');
 
     const res = await request(ctx.app)
       .post(`/api/replenishment/${created.id}/cancel`)
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${storeMgr.token}`)
       .send({ reason: 'second cancel' });
     expect(res.status).toBe(200);
     expect(res.body.request?.status).toBe('CANCELLED');
   });
 
-  it('a non-pm cannot cancel (403)', async () => {
-    const store = await makeLocation(ctx.db, { type: 'store' });
-    const storeMgr = await makeUser(ctx.db, { role: 'store_manager', locationId: store });
+  it('PM is read-only — cancel is 403 (no super-admin bypass)', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const { store } = await chain();
     const product = await makeProduct(ctx.db, { type: 'finished' });
     const created = await createRequest({
       productId: product, requesterLocationId: store, qtyNeeded: 5, actorUserId: null,
@@ -289,20 +303,40 @@ describe('POST /api/replenishment/:id/cancel', () => {
 
     const res = await request(ctx.app)
       .post(`/api/replenishment/${created.id}/cancel`)
-      .set('Authorization', `Bearer ${storeMgr.token}`);
+      .set('Authorization', `Bearer ${pm.token}`);
     expect(res.status).toBe(403);
+    expect(res.body.error?.code).toBe('FORBIDDEN');
+  });
+
+  it('an operator from another location cannot cancel (403 FOREIGN_LOCATION)', async () => {
+    const { store } = await chain();
+    const otherStore = await makeLocation(ctx.db, { type: 'store' });
+    const intruder = await makeUser(ctx.db, {
+      role: 'store_manager', locationId: otherStore,
+    });
+    const product = await makeProduct(ctx.db, { type: 'finished' });
+    const created = await createRequest({
+      productId: product, requesterLocationId: store, qtyNeeded: 5, actorUserId: null,
+    });
+
+    const res = await request(ctx.app)
+      .post(`/api/replenishment/${created.id}/cancel`)
+      .set('Authorization', `Bearer ${intruder.token}`);
+    expect(res.status).toBe(403);
+    expect(res.body.error?.code).toBe('FORBIDDEN');
   });
 
   it('cancel falls back to a default reason when none is provided (no body)', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
     const { store } = await chain();
+    const storeMgr = await makeUser(ctx.db, { role: 'store_manager', locationId: store });
     const product = await makeProduct(ctx.db, { type: 'finished' });
     const created = await createRequest({
-      productId: product, requesterLocationId: store, qtyNeeded: 5, actorUserId: pm.id,
+      productId: product, requesterLocationId: store, qtyNeeded: 5,
+      actorUserId: storeMgr.id,
     });
     const res = await request(ctx.app)
       .post(`/api/replenishment/${created.id}/cancel`)
-      .set('Authorization', `Bearer ${pm.token}`);
+      .set('Authorization', `Bearer ${storeMgr.token}`);
     expect(res.status).toBe(200);
     expect(res.body.request?.status).toBe('CANCELLED');
 
@@ -317,33 +351,57 @@ describe('POST /api/replenishment/:id/cancel', () => {
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/replenishment/:id/advance — pm super-admin happy path
+// POST /api/replenishment/:id/advance — operator path
 // ---------------------------------------------------------------------------
-describe('POST /api/replenishment/:id/advance — pm super-admin path', () => {
+describe('POST /api/replenishment/:id/advance — operator path', () => {
   it('rejects a non-numeric :id with 422', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const { central } = await chain();
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: central,
+    });
     const res = await request(ctx.app)
       .post('/api/replenishment/abc/advance')
-      .set('Authorization', `Bearer ${pm.token}`);
+      .set('Authorization', `Bearer ${cwm.token}`);
     expect(res.status).toBe(422);
   });
 
-  it('pm advances NEW -> CHECK_STORE_SUPPLIER and the response envelope is populated', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
-    const { central, store } = await chain();
+  it('a touching operator advances NEW -> CHECK_STORE_SUPPLIER', async () => {
+    // Use a central-warehouse-requester topology: the central warehouse asks
+    // for raw and is itself the requester, so its operator (cwm) touches the
+    // request at NEW. The advance only needs raw stock somewhere upstream.
+    const { rawWh, central } = await chain();
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: central,
+    });
     const product = await makeProduct(ctx.db, { type: 'finished' });
-    // Need stock at the target so the engine has a route forward.
-    await setStock(ctx.db, { locationId: central, productId: product, qty: 20 });
+    await setStock(ctx.db, { locationId: rawWh, productId: product, qty: 20 });
     const created = await createRequest({
-      productId: product, requesterLocationId: store, qtyNeeded: 5, actorUserId: pm.id,
+      productId: product, requesterLocationId: central, qtyNeeded: 5,
+      actorUserId: cwm.id,
     });
     const res = await request(ctx.app)
       .post(`/api/replenishment/${created.id}/advance`)
-      .set('Authorization', `Bearer ${pm.token}`);
+      .set('Authorization', `Bearer ${cwm.token}`)
+      .send({});
     expect(res.status).toBe(200);
     expect(res.body.advanced).toBe(true);
     expect(res.body.status).toBe('CHECK_STORE_SUPPLIER');
     expect(res.body.request).toBeDefined();
+  });
+
+  it('PM is read-only — advance is 403 (no super-admin bypass)', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const { central, store } = await chain();
+    const product = await makeProduct(ctx.db, { type: 'finished' });
+    await setStock(ctx.db, { locationId: central, productId: product, qty: 20 });
+    const created = await createRequest({
+      productId: product, requesterLocationId: store, qtyNeeded: 5, actorUserId: null,
+    });
+    const res = await request(ctx.app)
+      .post(`/api/replenishment/${created.id}/advance`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(403);
+    expect(res.body.error?.code).toBe('FORBIDDEN');
   });
 });
 

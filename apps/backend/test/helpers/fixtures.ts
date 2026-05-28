@@ -40,11 +40,14 @@ export async function makeUser(
   // deterministic for that user, and we strip everything outside the CHECK
   // regex `[a-z0-9._-]{3,32}`.
   const fallback = `u_${Math.random().toString(36).slice(2, 10)}`;
-  const sanitised = email
-    .split('@')[0]!
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]/g, '')
-    .slice(0, 24);
+  const rawHandle = email.split('@')[0]!.toLowerCase().replace(/[^a-z0-9._-]/g, '');
+  // If the handle is too long for the 32-char username cap, keep the head +
+  // a random tail so the username stays unique across users that share a
+  // long role prefix (e.g. multiple `central_warehouse_manager-*`).
+  const sanitised =
+    rawHandle.length > 24
+      ? `${rawHandle.slice(0, 16)}-${Math.random().toString(36).slice(2, 8)}`
+      : rawHandle.slice(0, 24);
   const derivedUsername = opts.username ?? (sanitised || fallback);
   const username =
     derivedUsername.length >= 3 ? derivedUsername : fallback;

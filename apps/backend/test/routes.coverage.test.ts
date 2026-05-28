@@ -303,12 +303,16 @@ describe('POST /api/replenishment/:id/advance — RBAC location scoping', () => 
   });
 
   it('returns 404 when the request id does not exist', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
-    // PM is super-admin so RBAC short-circuits — the not-found path inside
-    // advance() raises NOT_FOUND.
+    // Owner-approved 2026-05-28: PM is read-only on advance, so we use a
+    // scoped operator. The handler reads the row before applying the
+    // touch-check, so an unknown id raises NOT_FOUND (not FORBIDDEN).
+    const central = await makeLocation(ctx.db, { type: 'central_warehouse' });
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: central,
+    });
     const res = await request(ctx.app)
       .post('/api/replenishment/999999999/advance')
-      .set('Authorization', `Bearer ${pm.token}`);
+      .set('Authorization', `Bearer ${cwm.token}`);
     expect(res.status).toBe(404);
     expect(res.body.error?.code).toBe('NOT_FOUND');
   });

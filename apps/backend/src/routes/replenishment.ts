@@ -14,9 +14,9 @@ import { Router } from 'express';
 import { query } from '../db/index.js';
 import { AppError } from '../errors/index.js';
 import { authenticate } from '../middleware/authenticate.js';
-import { authorize } from '../middleware/authorize.js';
+import { authorize, authorizeWrite } from '../middleware/authorize.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
-import { getPrincipal, isSuperAdmin } from '../lib/principal.js';
+import { getPrincipal, isSuperAdmin, requireLocationOperator } from '../lib/principal.js';
 import {
   asObject,
   optionalString,
@@ -207,10 +207,14 @@ replenishmentRouter.get(
 );
 
 // POST /api/replenishment
+//
+// Owner-approved 2026-05-28: PM is read-and-recommend; only the central
+// warehouse manager raises manual requests (the auto-scan worker raises
+// the rest with actor=null). PM hits 403 here — no super-admin bypass.
 replenishmentRouter.post(
   '/',
   authenticate,
-  authorize('pm', 'central_warehouse_manager'),
+  authorizeWrite('central_warehouse_manager'),
   asyncHandler(async (req, res) => {
     const principal = getPrincipal(req);
     const body = asObject(req.body);
@@ -231,11 +235,15 @@ replenishmentRouter.post(
 );
 
 // POST /api/replenishment/:id/advance
+//
+// Owner-approved 2026-05-28: only an operator may step the state machine.
+// PM is 403 (no bypass) — the action happens at the operator's hop, not
+// the chain. The "request touches my location" check still applies and
+// is enforced for every non-PM principal below.
 replenishmentRouter.post(
   '/:id/advance',
   authenticate,
-  authorize(
-    'pm',
+  authorizeWrite(
     'raw_warehouse_manager',
     'production_manager',
     'supply_manager',
@@ -245,29 +253,30 @@ replenishmentRouter.post(
     const principal = getPrincipal(req);
     const id = parseIdParam(req.params.id, 'id');
 
-    // RBAC: a scoped manager must be linked to the request — directly via
-    // requester/target, or indirectly via a linked production_order /
-    // purchase_order (spec §6 "W(bog'liq)").
-    if (!isSuperAdmin(principal)) {
-      const { rows } = await query<{
-        requester_location_id: number;
-        target_location_id: number | null;
-        production_order_id: number | null;
-        purchase_order_id: number | null;
-      }>(
-        `SELECT requester_location_id, target_location_id,
-                production_order_id, purchase_order_id
-         FROM replenishment_requests WHERE id = $1`,
-        [id],
-      );
-      const r = rows[0];
-      if (r === undefined) {
-        throw AppError.notFound('Replenishment request not found.');
-      }
-      const own = principal.locationId;
-      if (own === null || !(await requestTouchesLocation(r, own))) {
-        throw AppError.forbidden('You may only advance requests that touch your location.');
-      }
+    // Spec §6 W(bog'liq) — a scoped manager must be linked to the request
+    // (requester/target, or indirectly via a linked production / purchase
+    // order). authorizeWrite already filtered out PM and unallowed roles;
+    // the remaining principals are all scoped operators.
+    const { rows } = await query<{
+      requester_location_id: number;
+      target_location_id: number | null;
+      production_order_id: number | null;
+      purchase_order_id: number | null;
+    }>(
+      `SELECT requester_location_id, target_location_id,
+              production_order_id, purchase_order_id
+       FROM replenishment_requests WHERE id = $1`,
+      [id],
+    );
+    const r = rows[0];
+    if (r === undefined) {
+      throw AppError.notFound('Replenishment request not found.');
+    }
+    // Any of the operator's assigned locations may justify the action —
+    // M:N (ADR-0012).
+    const allowed = await principalTouchesRequest(r, principal.locationIds);
+    if (!allowed) {
+      throw AppError.forbidden('You may only advance requests that touch your location.');
     }
 
     const result = await advance(id, principal.userId);
@@ -281,13 +290,39 @@ replenishmentRouter.post(
 );
 
 // POST /api/replenishment/:id/cancel
+//
+// Owner-approved 2026-05-28: cancellation belongs to the requesting link
+// in the chain — the manager of `requester_location_id`. PM may NOT
+// cancel (read-and-recommend). The set of allowed roles is the set of
+// roles that can manage a `location` that may itself raise a request:
+// raw warehouse, production, supply, central warehouse, store.
 replenishmentRouter.post(
   '/:id/cancel',
   authenticate,
-  authorize('pm'),
+  authorizeWrite(
+    'raw_warehouse_manager',
+    'production_manager',
+    'supply_manager',
+    'central_warehouse_manager',
+    'store_manager',
+  ),
   asyncHandler(async (req, res) => {
     const principal = getPrincipal(req);
     const id = parseIdParam(req.params.id, 'id');
+
+    // Load the requester to enforce "only the originating bo'g'in
+    // manager may cancel". 404 vs 403 split: an unknown id is 404; a
+    // real id outside the operator's scope is 403.
+    const { rows } = await query<{ requester_location_id: number }>(
+      'SELECT requester_location_id FROM replenishment_requests WHERE id = $1',
+      [id],
+    );
+    const existing = rows[0];
+    if (existing === undefined) {
+      throw AppError.notFound('Replenishment request not found.');
+    }
+    await requireLocationOperator(principal, Number(existing.requester_location_id));
+
     const body = (req.body as Record<string, unknown> | null) ?? {};
     const reason =
       typeof body.reason === 'string' && body.reason.trim() !== ''
@@ -335,6 +370,24 @@ async function requestTouchesLocation(
       [request.purchase_order_id],
     );
     if (rows[0]?.target_location_id === ownLocationId) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** M:N variant — any of `ownLocationIds` touching is enough (ADR-0012). */
+async function principalTouchesRequest(
+  request: {
+    requester_location_id: number;
+    target_location_id: number | null;
+    production_order_id?: number | null;
+    purchase_order_id?: number | null;
+  },
+  ownLocationIds: readonly number[],
+): Promise<boolean> {
+  for (const id of ownLocationIds) {
+    if (await requestTouchesLocation(request, id)) {
       return true;
     }
   }
