@@ -10,7 +10,7 @@ import { render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '@/components/ui/toast';
 import { AuthContext, type AuthContextValue } from '@/hooks/auth-context';
-import type { Role, User } from '@/lib/types';
+import type { LocationType, MeLocation, Role, User } from '@/lib/types';
 
 /** A test `User`; override `role`/`location_id` per scenario. */
 export function fakeUser(overrides: Partial<User> = {}): User {
@@ -25,14 +25,18 @@ export function fakeUser(overrides: Partial<User> = {}): User {
   };
 }
 
-function fakeAuth(user: User): AuthContextValue {
+function fakeAuth(
+  user: User,
+  locations: MeLocation[] = [],
+  activeLocationId: number | null = null,
+): AuthContextValue {
   return {
     user,
     token: 'test-token',
     isAuthenticated: true,
     isHydrating: false,
-    locations: [],
-    activeLocationId: null,
+    locations,
+    activeLocationId,
     login: () => {},
     logout: async () => {},
     setActiveLocation: async () => {},
@@ -44,17 +48,46 @@ interface RenderOptions {
   role?: Role;
   /** Location id for the injected user (defaults to `null`). */
   locationId?: number | null;
+  /**
+   * M:N assignment set hydrated by `/api/auth/me` (ADR-0012). When
+   * omitted, a single primary row is synthesized from `locationId` so
+   * `useCanAct` returns true for that one location. Pass an explicit
+   * empty array to simulate a chain-wide role (`pm`, `ai_assistant`).
+   */
+  locations?: MeLocation[];
+  /** Bo'g'in type used when synthesizing the default MeLocation row. */
+  locationType?: LocationType;
 }
 
 /** Render `ui` inside router + toast + an authenticated auth context. */
 export function renderWithProviders(
   ui: ReactElement,
-  { role = 'pm', locationId = null }: RenderOptions = {},
+  {
+    role = 'pm',
+    locationId = null,
+    locations,
+    locationType = 'production',
+  }: RenderOptions = {},
 ) {
   const user = fakeUser({ role, location_id: locationId });
+  // If the caller did not pass an explicit M:N set, synthesize one from
+  // the primary `locationId` so write-button assertions work without
+  // every test having to redeclare the same fixture.
+  const meLocations: MeLocation[] =
+    locations ??
+    (locationId === null
+      ? []
+      : [
+          {
+            id: locationId,
+            name: `Test location ${locationId}`,
+            type: locationType,
+            is_primary: true,
+          },
+        ]);
   function Wrapper({ children }: { children: ReactNode }) {
     return (
-      <AuthContext.Provider value={fakeAuth(user)}>
+      <AuthContext.Provider value={fakeAuth(user, meLocations, locationId)}>
         <ToastProvider>
           <MemoryRouter>{children}</MemoryRouter>
         </ToastProvider>

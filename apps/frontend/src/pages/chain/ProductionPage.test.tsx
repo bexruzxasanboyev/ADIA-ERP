@@ -67,8 +67,46 @@ const PRODUCTION_LOCATIONS: Location[] = [
   },
 ];
 
-const ACTIVE_ORDERS: ProductionOrder[] = [];
-const PENDING_ORDERS: ProductionOrder[] = [];
+const ACTIVE_ORDER_TORT: ProductionOrder = {
+  id: 7001,
+  product_id: 5,
+  qty: 30,
+  status: 'in_progress',
+  deadline: null,
+  location_id: 11, // Tort sexi
+  target_location_id: null,
+  replenishment_id: null,
+  note: null,
+  product_name: 'Napoleon',
+  location_name: 'Tort sexi',
+  target_location_name: null,
+  created_by: 22,
+  created_at: '2026-05-22T08:00:00.000Z',
+  updated_at: '2026-05-22T08:00:00.000Z',
+  done_at: null,
+};
+
+const PENDING_ORDER_PEROJNIY: ProductionOrder = {
+  id: 7002,
+  product_id: 6,
+  qty: 20,
+  status: 'new',
+  deadline: null,
+  location_id: 12, // Perojniy sexi
+  target_location_id: null,
+  replenishment_id: null,
+  note: null,
+  product_name: 'Pirojnoe',
+  location_name: 'Perojniy sexi',
+  target_location_name: null,
+  created_by: 23,
+  created_at: '2026-05-22T09:00:00.000Z',
+  updated_at: '2026-05-22T09:00:00.000Z',
+  done_at: null,
+};
+
+const ACTIVE_ORDERS: ProductionOrder[] = [ACTIVE_ORDER_TORT];
+const PENDING_ORDERS: ProductionOrder[] = [PENDING_ORDER_PEROJNIY];
 
 const PRODUCTION_USERS: User[] = [
   {
@@ -125,5 +163,46 @@ describe('ProductionPage — sub-departments', () => {
     expect(tortCard).toHaveTextContent('Hodim A');
     const perojniyCard = screen.getByTestId('sub-department-12');
     expect(perojniyCard).toHaveTextContent('Hodim biriktirilmagan');
+  });
+});
+
+describe('ProductionPage — RBAC gating (Stage 4)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('hides every "Yakunlash" and "Boshlash" button for PM (read-only)', async () => {
+    mockFetch();
+    renderWithProviders(<ProductionPage />, { role: 'pm' });
+    // Wait for the active orders row to render.
+    expect(await screen.findByText('Napoleon')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /yakunlash/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /boshlash/i })).toBeNull();
+  });
+
+  it('shows "Yakunlash" for the Tort-sexi operator on their own order', async () => {
+    mockFetch();
+    renderWithProviders(<ProductionPage />, {
+      role: 'production_manager',
+      locationId: 11, // Tort sexi — matches ACTIVE_ORDER_TORT.location_id
+    });
+    // Active order row → button renders.
+    expect(
+      await screen.findByRole('button', { name: /yakunlash/i }),
+    ).toBeInTheDocument();
+    // Pending order belongs to Perojniy (loc 12) — the Tort-sexi operator
+    // cannot start it (foreign location).
+    expect(screen.queryByRole('button', { name: /boshlash/i })).toBeNull();
+  });
+
+  it('hides actions for an operator on a foreign location', async () => {
+    mockFetch();
+    renderWithProviders(<ProductionPage />, {
+      role: 'production_manager',
+      locationId: 99, // not any of 11 / 12
+    });
+    expect(await screen.findByText('Napoleon')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /yakunlash/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /boshlash/i })).toBeNull();
   });
 });

@@ -29,6 +29,7 @@ import {
   PageHeader,
 } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
+import { useCanAct } from '@/hooks/useCanAct';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import { formatDateTime, formatQty } from '@/lib/format';
 import {
@@ -212,6 +213,7 @@ function ActiveOrdersPanel({
   onTransitioned: () => void;
 }) {
   const { notify } = useToast();
+  const { canActOn } = useCanAct();
   const [busyId, setBusyId] = useState<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -298,18 +300,22 @@ function ActiveOrdersPanel({
                     {row.deadline ?? '—'}
                   </TableCell>
                   <TableCell className="text-right">
-                    <Button
-                      size="sm"
-                      disabled={busyId === row.id}
-                      onClick={() => complete(row.id)}
-                    >
-                      {busyId === row.id ? (
-                        <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                      ) : (
-                        <CheckCircle2 className="size-4" aria-hidden="true" />
-                      )}
-                      Yakunlash
-                    </Button>
+                    {canActOn(row.location_id) ? (
+                      <Button
+                        size="sm"
+                        disabled={busyId === row.id}
+                        onClick={() => complete(row.id)}
+                      >
+                        {busyId === row.id ? (
+                          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <CheckCircle2 className="size-4" aria-hidden="true" />
+                        )}
+                        Yakunlash
+                      </Button>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
@@ -339,6 +345,7 @@ function PendingOrdersPanel({
   onTransitioned: () => void;
 }) {
   const { notify } = useToast();
+  const { canActOn } = useCanAct();
   const [busyId, setBusyId] = useState<number | null>(null);
 
   async function start(id: number) {
@@ -413,19 +420,23 @@ function PendingOrdersPanel({
                     </Badge>
                   </TableCell>
                   <TableCell className="text-right">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={busyId === row.id}
-                      onClick={() => start(row.id)}
-                    >
-                      {busyId === row.id ? (
-                        <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                      ) : (
-                        <PlayCircle className="size-4" aria-hidden="true" />
-                      )}
-                      Boshlash
-                    </Button>
+                    {canActOn(row.location_id) ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={busyId === row.id}
+                        onClick={() => start(row.id)}
+                      >
+                        {busyId === row.id ? (
+                          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <PlayCircle className="size-4" aria-hidden="true" />
+                        )}
+                        Boshlash
+                      </Button>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
@@ -543,7 +554,7 @@ function SubDepartmentsPanel({
                     Sub-bo‘lim yo‘q. <Link to="/locations" className="underline">Qo‘shish</Link>
                   </p>
                 ) : (
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
                     {subs.map((sub) => {
                       const subUsers = usersByLocation.get(sub.id) ?? [];
                       const activeCount = activeByLocation.get(sub.id) ?? 0;

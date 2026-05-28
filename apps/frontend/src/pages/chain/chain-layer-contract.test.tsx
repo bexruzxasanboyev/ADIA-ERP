@@ -335,7 +335,15 @@ describe('RawWarehousePage — contract', () => {
       return undefined;
     });
 
-    renderWithProviders(<RawWarehousePage />, { role: 'pm' });
+    // Render as the raw_warehouse_manager assigned to location 1
+    // (matches APPROVED_PURCHASE.target_location_id). PM is now
+    // read-only on receive (Stage 1 / commit da5aebe) so the
+    // "Qabul qilish" button only renders for the scoped operator.
+    renderWithProviders(<RawWarehousePage />, {
+      role: 'raw_warehouse_manager',
+      locationId: 1,
+      locationType: 'raw_warehouse',
+    });
 
     // Locations grid renders the only raw warehouse location once
     // the chain-layer endpoint resolves. We anchor on the location
@@ -386,7 +394,15 @@ describe('ProductionPage — contract', () => {
       return undefined;
     });
 
-    renderWithProviders(<ProductionPage />, { role: 'pm' });
+    // Render as the production_manager assigned to location 2 (matches
+    // ACTIVE_ORDER.location_id = Sex 1). PM is now read-only on
+    // production-order writes (Stage 1 / commit 68c5efd) so the
+    // "Yakunlash" CTA only renders for the scoped operator.
+    renderWithProviders(<ProductionPage />, {
+      role: 'production_manager',
+      locationId: 2,
+      locationType: 'production',
+    });
 
     // Active orders widget renders the in-progress production order.
     const activeMatches = await screen.findAllByText('Faol zayafkalar');

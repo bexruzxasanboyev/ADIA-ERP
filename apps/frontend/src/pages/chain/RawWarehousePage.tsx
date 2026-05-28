@@ -28,6 +28,7 @@ import {
   PageHeader,
 } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
+import { useCanAct } from '@/hooks/useCanAct';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import { formatDateTime, formatQty } from '@/lib/format';
 import { UNIT_LABELS } from '@/lib/labels';
@@ -187,6 +188,7 @@ function IncomingPurchasesPanel({
   onReceived: () => void;
 }) {
   const { notify } = useToast();
+  const { canActOn } = useCanAct();
   const [busyId, setBusyId] = useState<number | null>(null);
 
   async function receive(id: number) {
@@ -256,18 +258,22 @@ function IncomingPurchasesPanel({
                     {row.supplier_name ?? '—'}
                   </TableCell>
                   <TableCell className="text-right">
-                    <Button
-                      size="sm"
-                      disabled={busyId === row.id}
-                      onClick={() => receive(row.id)}
-                    >
-                      {busyId === row.id ? (
-                        <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                      ) : (
-                        <CheckCircle2 className="size-4" aria-hidden="true" />
-                      )}
-                      Qabul qilish
-                    </Button>
+                    {canActOn(row.target_location_id) ? (
+                      <Button
+                        size="sm"
+                        disabled={busyId === row.id}
+                        onClick={() => receive(row.id)}
+                      >
+                        {busyId === row.id ? (
+                          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <CheckCircle2 className="size-4" aria-hidden="true" />
+                        )}
+                        Qabul qilish
+                      </Button>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
