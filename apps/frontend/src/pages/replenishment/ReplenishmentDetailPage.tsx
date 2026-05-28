@@ -11,7 +11,7 @@ import {
   PageHeader,
 } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
-import { useAuth } from '@/hooks/useAuth';
+import { useCanAct } from '@/hooks/useCanAct';
 import { ApiError, apiRequest } from '@/lib/api-client';
 import { formatDateTime, formatQty } from '@/lib/format';
 import {
@@ -32,14 +32,25 @@ import { TransitionTimeline } from './TransitionTimeline';
  *
  *   - `POST /api/replenishment/:id/advance` — step the state machine once;
  *     a 409 `INVALID_TRANSITION` is shown as a friendly Uzbek message.
- *   - `POST /api/replenishment/:id/cancel` — pm-only terminal cancel.
+ *   - `POST /api/replenishment/:id/cancel` — only the requesting bo'g'in's
+ *     manager may cancel (RBAC Stage 1, commit c2ed012). PM is no longer
+ *     allowed — the backend returns 403 with `auth.forbidden.pm_write_blocked`.
+ *
+ * Action visibility uses `useCanAct()` so we mirror the server guards
+ * exactly — a user never sees a button the backend will 403.
+ *
+ *   - "Keyingi qadam" → visible iff the user is a scoped operator on
+ *     either the requester OR the target bo'g'in (matches
+ *     `principalTouchesRequest` on the backend).
+ *   - "Bekor qilish"  → visible iff the user is a scoped operator on
+ *     the requester bo'g'in (matches `requireLocationOperator`).
  *
  * Terminal requests (`CLOSED` / `CANCELLED`) hide both actions.
  */
 export function ReplenishmentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { isReadOnly, canActOn } = useCanAct();
   const { notify } = useToast();
 
   const path = id ? `/api/replenishment/${id}` : null;
@@ -122,7 +133,15 @@ export function ReplenishmentDetailPage() {
 
   const { request, transitions } = detail.data;
   const isTerminal = TERMINAL_REPLENISHMENT_STATUSES.includes(request.status);
-  const canCancel = user?.role === 'pm' && !isTerminal;
+  // Advance: either side of the chain (requester or target) may step
+  // the state machine. Mirrors `principalTouchesRequest` on the backend.
+  const canAdvance =
+    !isTerminal &&
+    (canActOn(request.requester_location_id) ||
+      canActOn(request.target_location_id));
+  // Cancel: only the requesting bo'g'in may close its own request
+  // (`requireLocationOperator(requester_location_id)` on the backend).
+  const canCancel = !isTerminal && canActOn(request.requester_location_id);
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -136,7 +155,12 @@ export function ReplenishmentDetailPage() {
         description={request.product_name}
         action={
           <div className="flex items-center gap-2">
-            {!isTerminal && (
+            {isReadOnly && (
+              <Badge variant="secondary" aria-label="Faqat o‘qish rejimi">
+                Faqat o‘qish
+              </Badge>
+            )}
+            {canAdvance && (
               <Button onClick={handleAdvance} disabled={isAdvancing}>
                 {isAdvancing && (
                   <Loader2 className="size-4 animate-spin" aria-hidden="true" />
@@ -165,7 +189,7 @@ export function ReplenishmentDetailPage() {
 
       {actionError && (
         <p
-          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive-foreground"
+          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
           role="alert"
         >
           {actionError}

@@ -184,6 +184,39 @@ describe('Replenishment screens', () => {
     });
   });
 
+  it('hides every write button when the viewer is a PM (read-and-recommend)', async () => {
+    // RBAC Stage 1 (commit c2ed012) — PM is read-only on replenishment.
+    // The frontend must not render Advance/Cancel buttons, otherwise the
+    // backend 403 (`auth.forbidden.pm_write_blocked`) would surface as a
+    // toast on every click. A "Faqat o'qish" badge replaces them.
+    mockFetch();
+    renderDetail({ role: 'pm' });
+    await screen.findByText('So‘rov #1001');
+    expect(
+      screen.queryByRole('button', { name: /keyingi qadam/i }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: /bekor qilish/i }),
+    ).toBeNull();
+    expect(screen.getByText(/faqat o.qish/i)).toBeInTheDocument();
+  });
+
+  it('hides write buttons for an operator on a foreign location', async () => {
+    // The operator is assigned to location 99, but REQUEST.requester is 21
+    // and target is null — canActOn returns false for both, so neither
+    // Advance nor Cancel renders. Backend `requireLocationOperator` would
+    // 403 the same calls (`auth.forbidden.foreign_location`).
+    mockFetch();
+    renderDetail({ role: 'store_manager', locationId: 99 });
+    await screen.findByText('So‘rov #1001');
+    expect(
+      screen.queryByRole('button', { name: /keyingi qadam/i }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: /bekor qilish/i }),
+    ).toBeNull();
+  });
+
   it('opens the CancelDialog and POSTs the typed reason (no window.prompt)', async () => {
     // window.prompt would have a jsdom default of null and the page
     // historically called it inline — now the dialog must drive the flow.
@@ -226,22 +259,47 @@ describe('Replenishment screens', () => {
   });
 });
 
-/** Render the detail page under a memory router that injects `:id=1001`. */
-function renderDetail() {
+/**
+ * Render the detail page under a memory router that injects `:id=1001`.
+ *
+ * Defaults to a `central_warehouse_manager` assigned to location 21 —
+ * the requester bo'g'in of REQUEST — so the Advance and Cancel buttons
+ * both render under the post-Stage-1 RBAC policy (commit c2ed012).
+ * Pass `role: 'pm'` to verify the read-and-recommend view explicitly.
+ */
+function renderDetail(
+  authOverride?: Partial<{
+    role: 'pm' | 'central_warehouse_manager' | 'store_manager';
+    locationId: number | null;
+  }>,
+) {
+  const role = authOverride?.role ?? 'central_warehouse_manager';
+  const locationId =
+    authOverride?.locationId ?? (role === 'pm' ? null : 21);
   const auth = {
     user: {
       id: 1,
-      name: 'PM',
-      email: 'pm@adia.test',
-      username: 'pm',
-      role: 'pm' as const,
-      location_id: null,
+      name: role === 'pm' ? 'PM' : 'Operator',
+      email: `${role}@adia.test`,
+      username: role,
+      role,
+      location_id: locationId,
     },
     token: 'x',
     isAuthenticated: true,
     isHydrating: false,
-    locations: [],
-    activeLocationId: null,
+    locations:
+      locationId === null
+        ? []
+        : [
+            {
+              id: locationId,
+              name: 'Markaziy sklad',
+              type: 'central_warehouse' as const,
+              is_primary: true,
+            },
+          ],
+    activeLocationId: locationId,
     login: () => {},
     logout: async () => {},
     setActiveLocation: async () => {},
