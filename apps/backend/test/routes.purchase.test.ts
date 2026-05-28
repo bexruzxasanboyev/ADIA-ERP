@@ -103,24 +103,38 @@ describe('GET /api/purchase-orders — branches', () => {
 // ---------------------------------------------------------------------------
 describe('POST /api/purchase-orders — validation + RBAC', () => {
   it('rejects a missing qty (422)', async () => {
+    const supplyLoc = await makeLocation(ctx.db, { type: 'supply' });
+    const supplyMgr = await makeUser(ctx.db, { role: 'supply_manager', locationId: supplyLoc });
+    const rawWh = await makeLocation(ctx.db, { type: 'raw_warehouse' });
+    const product = await makeProduct(ctx.db, { type: 'raw' });
+    const res = await request(ctx.app)
+      .post('/api/purchase-orders')
+      .set('Authorization', `Bearer ${supplyMgr.token}`)
+      .send({ product_id: product, target_location_id: rawWh });
+    expect(res.status).toBe(422);
+  });
+
+  it('rejects a missing target_location_id (422)', async () => {
+    const supplyLoc = await makeLocation(ctx.db, { type: 'supply' });
+    const supplyMgr = await makeUser(ctx.db, { role: 'supply_manager', locationId: supplyLoc });
+    const product = await makeProduct(ctx.db, { type: 'raw' });
+    const res = await request(ctx.app)
+      .post('/api/purchase-orders')
+      .set('Authorization', `Bearer ${supplyMgr.token}`)
+      .send({ product_id: product, qty: 5 });
+    expect(res.status).toBe(422);
+  });
+
+  it('PM is read-only — POST is 403 (no super-admin bypass)', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const rawWh = await makeLocation(ctx.db, { type: 'raw_warehouse' });
     const product = await makeProduct(ctx.db, { type: 'raw' });
     const res = await request(ctx.app)
       .post('/api/purchase-orders')
       .set('Authorization', `Bearer ${pm.token}`)
-      .send({ product_id: product, target_location_id: rawWh });
-    expect(res.status).toBe(422);
-  });
-
-  it('rejects a missing target_location_id (422)', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
-    const product = await makeProduct(ctx.db, { type: 'raw' });
-    const res = await request(ctx.app)
-      .post('/api/purchase-orders')
-      .set('Authorization', `Bearer ${pm.token}`)
-      .send({ product_id: product, qty: 5 });
-    expect(res.status).toBe(422);
+      .send({ product_id: product, qty: 5, target_location_id: rawWh });
+    expect(res.status).toBe(403);
+    expect(res.body.error?.code).toBe('FORBIDDEN');
   });
 
   it('a raw_warehouse_manager cannot create a PO (403)', async () => {
@@ -165,11 +179,13 @@ describe('POST /api/purchase-orders — validation + RBAC', () => {
 // POST /api/purchase-orders/:id/approve — extra branches
 // ---------------------------------------------------------------------------
 describe('POST /api/purchase-orders/:id/approve — extra branches', () => {
-  it('returns NOT_FOUND when the id does not exist (pm bypass + service guard)', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
+  it('returns NOT_FOUND when the id does not exist (operator path)', async () => {
+    // PM is read-only now — an operator probes the unknown id and gets 404.
+    const supplyLoc = await makeLocation(ctx.db, { type: 'supply' });
+    const supplyMgr = await makeUser(ctx.db, { role: 'supply_manager', locationId: supplyLoc });
     const res = await request(ctx.app)
       .post('/api/purchase-orders/9999999/approve')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${supplyMgr.token}`)
       .send({ step: 'manager' });
     expect(res.status).toBe(404);
     expect(res.body.error?.code).toBe('NOT_FOUND');
@@ -180,7 +196,25 @@ describe('POST /api/purchase-orders/:id/approve — extra branches', () => {
 // POST /api/purchase-orders/:id/receive
 // ---------------------------------------------------------------------------
 describe('POST /api/purchase-orders/:id/receive', () => {
-  it('happy path — pm drives both approvals via the service then receives via HTTP', async () => {
+  it('happy path — raw_warehouse_manager receives an approved PO', async () => {
+    const supplyLoc = await makeLocation(ctx.db, { type: 'supply' });
+    const rawWh = await makeLocation(ctx.db, { type: 'raw_warehouse' });
+    const supplyMgr = await makeUser(ctx.db, { role: 'supply_manager', locationId: supplyLoc });
+    const rawMgr = await makeUser(ctx.db, { role: 'raw_warehouse_manager', locationId: rawWh });
+    const product = await makeProduct(ctx.db, { type: 'raw' });
+    const id = await draftPO(product, rawWh);
+    await approvePurchaseOrder(id, 'manager', supplyMgr.id);
+    await approvePurchaseOrder(id, 'keeper', rawMgr.id);
+
+    const res = await request(ctx.app)
+      .post(`/api/purchase-orders/${id}/receive`)
+      .set('Authorization', `Bearer ${rawMgr.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.purchase_order?.status).toBe('received');
+    expect(res.body.purchase_order?.received_movement_id).not.toBe(null);
+  });
+
+  it('PM is read-only — receive is 403 (no super-admin bypass)', async () => {
     const supplyLoc = await makeLocation(ctx.db, { type: 'supply' });
     const rawWh = await makeLocation(ctx.db, { type: 'raw_warehouse' });
     const supplyMgr = await makeUser(ctx.db, { role: 'supply_manager', locationId: supplyLoc });
@@ -194,20 +228,19 @@ describe('POST /api/purchase-orders/:id/receive', () => {
     const res = await request(ctx.app)
       .post(`/api/purchase-orders/${id}/receive`)
       .set('Authorization', `Bearer ${pm.token}`);
-    expect(res.status).toBe(200);
-    expect(res.body.purchase_order?.status).toBe('received');
-    expect(res.body.purchase_order?.received_movement_id).not.toBe(null);
+    expect(res.status).toBe(403);
+    expect(res.body.error?.code).toBe('FORBIDDEN');
   });
 
   it('rejects a draft PO with 422 from the service (cannot be received without approvals)', async () => {
     const rawWh = await makeLocation(ctx.db, { type: 'raw_warehouse' });
+    const rawMgr = await makeUser(ctx.db, { role: 'raw_warehouse_manager', locationId: rawWh });
     const product = await makeProduct(ctx.db, { type: 'raw' });
     const id = await draftPO(product, rawWh);
-    const pm = await makeUser(ctx.db, { role: 'pm' });
 
     const res = await request(ctx.app)
       .post(`/api/purchase-orders/${id}/receive`)
-      .set('Authorization', `Bearer ${pm.token}`);
+      .set('Authorization', `Bearer ${rawMgr.token}`);
     expect(res.status).toBe(422);
     expect(res.body.error?.code).toBe('VALIDATION_ERROR');
   });
@@ -248,15 +281,16 @@ describe('POST /api/purchase-orders/:id/receive', () => {
 // POST /api/purchase-orders/:id/reject
 // ---------------------------------------------------------------------------
 describe('POST /api/purchase-orders/:id/reject', () => {
-  it('flips a draft PO to rejected (audit-logged)', async () => {
+  it('flips a draft PO to rejected (audit-logged) — supply_manager actor', async () => {
+    const supplyLoc = await makeLocation(ctx.db, { type: 'supply' });
+    const supplyMgr = await makeUser(ctx.db, { role: 'supply_manager', locationId: supplyLoc });
     const rawWh = await makeLocation(ctx.db, { type: 'raw_warehouse' });
     const product = await makeProduct(ctx.db, { type: 'raw' });
     const id = await draftPO(product, rawWh);
-    const pm = await makeUser(ctx.db, { role: 'pm' });
 
     const res = await request(ctx.app)
       .post(`/api/purchase-orders/${id}/reject`)
-      .set('Authorization', `Bearer ${pm.token}`);
+      .set('Authorization', `Bearer ${supplyMgr.token}`);
     expect(res.status).toBe(200);
     expect(res.body.purchase_order?.status).toBe('rejected');
 
@@ -266,6 +300,19 @@ describe('POST /api/purchase-orders/:id/reject', () => {
       [id],
     );
     expect(Number(audit.rows[0]?.n)).toBe(1);
+  });
+
+  it('PM is read-only — reject is 403 (no super-admin bypass)', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const rawWh = await makeLocation(ctx.db, { type: 'raw_warehouse' });
+    const product = await makeProduct(ctx.db, { type: 'raw' });
+    const id = await draftPO(product, rawWh);
+
+    const res = await request(ctx.app)
+      .post(`/api/purchase-orders/${id}/reject`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(403);
+    expect(res.body.error?.code).toBe('FORBIDDEN');
   });
 
   it('rejects a non-draft PO with 422 (status guard)', async () => {
@@ -279,19 +326,19 @@ describe('POST /api/purchase-orders/:id/reject', () => {
     await approvePurchaseOrder(id, 'manager', supplyMgr.id);
     await approvePurchaseOrder(id, 'keeper', rawMgr.id);
 
-    const pm = await makeUser(ctx.db, { role: 'pm' });
     const res = await request(ctx.app)
       .post(`/api/purchase-orders/${id}/reject`)
-      .set('Authorization', `Bearer ${pm.token}`);
+      .set('Authorization', `Bearer ${supplyMgr.token}`);
     expect(res.status).toBe(422);
     expect(res.body.error?.code).toBe('VALIDATION_ERROR');
   });
 
   it('returns 404 when the PO id does not exist', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const supplyLoc = await makeLocation(ctx.db, { type: 'supply' });
+    const supplyMgr = await makeUser(ctx.db, { role: 'supply_manager', locationId: supplyLoc });
     const res = await request(ctx.app)
       .post('/api/purchase-orders/9999999/reject')
-      .set('Authorization', `Bearer ${pm.token}`);
+      .set('Authorization', `Bearer ${supplyMgr.token}`);
     expect(res.status).toBe(404);
     expect(res.body.error?.code).toBe('NOT_FOUND');
   });

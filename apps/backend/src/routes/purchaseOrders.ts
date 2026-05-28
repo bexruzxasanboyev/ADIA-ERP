@@ -22,10 +22,14 @@ import { Router } from 'express';
 import { query, withTransaction } from '../db/index.js';
 import { AppError } from '../errors/index.js';
 import { authenticate } from '../middleware/authenticate.js';
-import { authorize } from '../middleware/authorize.js';
+import { authorize, authorizeWrite } from '../middleware/authorize.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { writeAudit, poolRunner } from '../lib/audit.js';
-import { assertLocationAccess, getPrincipal, isSuperAdmin } from '../lib/principal.js';
+import {
+  getPrincipal,
+  isSuperAdmin,
+  requireLocationOperator,
+} from '../lib/principal.js';
 import {
   asObject,
   optionalId,
@@ -133,10 +137,13 @@ purchaseOrdersRouter.get(
 );
 
 // POST /api/purchase-orders
+//
+// Owner-approved 2026-05-28: PM is read-and-recommend; only a supply
+// manager raises a purchase request.
 purchaseOrdersRouter.post(
   '/',
   authenticate,
-  authorize('pm', 'supply_manager'),
+  authorizeWrite('supply_manager'),
   asyncHandler(async (req, res) => {
     const principal = getPrincipal(req);
     const body = asObject(req.body);
@@ -224,54 +231,54 @@ purchaseOrdersRouter.post(
 );
 
 // POST /api/purchase-orders/:id/approve
+//
+// Owner-approved 2026-05-28: two-step approval (D5) stays — supply step
+// + keeper step — but PM is read-and-recommend on both steps. The
+// keeper step requires the raw_warehouse_manager assigned to the PO's
+// target raw warehouse.
 purchaseOrdersRouter.post(
   '/:id/approve',
   authenticate,
-  authorize('pm', 'supply_manager', 'raw_warehouse_manager'),
+  authorizeWrite('supply_manager', 'raw_warehouse_manager'),
   asyncHandler(async (req, res) => {
     const principal = getPrincipal(req);
     const orderId = parseIdParam(req.params.id, 'id');
     const body = asObject(req.body);
     const step = requireEnum<ApprovalStep>(body, 'step', ['manager', 'keeper'] as const);
 
-    // Role gating per step (D5).
-    if (!isSuperAdmin(principal)) {
-      if (step === 'manager' && principal.role !== 'supply_manager') {
-        throw AppError.forbidden('Only supply_manager (or pm) may take the manager approval step.');
-      }
-      if (step === 'keeper' && principal.role !== 'raw_warehouse_manager') {
+    // Role gating per step (D5) — strict, no PM bypass.
+    if (step === 'manager' && principal.role !== 'supply_manager') {
+      throw AppError.forbidden('Only supply_manager may take the manager approval step.');
+    }
+    if (step === 'keeper' && principal.role !== 'raw_warehouse_manager') {
+      throw AppError.forbidden('Only raw_warehouse_manager may take the keeper approval step.');
+    }
+
+    // IDOR guard — a scoped approver may only approve a PO that targets
+    // their own scope. 404 vs 403 split: an unknown id is 404; a real id
+    // outside the operator's scope is 403 (FOREIGN_LOCATION, audit-logged).
+    const { rows: scopeRows } = await query<{
+      created_by: number | null;
+      target_location_id: number;
+    }>(
+      'SELECT created_by, target_location_id FROM purchase_orders WHERE id = $1',
+      [orderId],
+    );
+    const scope = scopeRows[0];
+    if (scope === undefined) {
+      throw AppError.notFound('Purchase order not found.');
+    }
+    if (step === 'manager') {
+      // The supply manager step is keyed to created_by (each supply
+      // manager owns their own draft requests).
+      if (scope.created_by === null || Number(scope.created_by) !== principal.userId) {
         throw AppError.forbidden(
-          'Only raw_warehouse_manager (or pm) may take the keeper approval step.',
+          'A supply_manager may only approve purchase orders they created themselves.',
         );
       }
-
-      // IDOR guard — a scoped approver may only approve a PO that targets
-      // their own scope:
-      //   - supply_manager: only POs they themselves raised (created_by);
-      //   - raw_warehouse_manager: only POs targeting their raw warehouse.
-      // `pm` bypasses (super-admin). 404 vs 403 split: an unknown id is 404
-      // (matches the service guard); a real id outside the scope is 403.
-      const { rows: scopeRows } = await query<{
-        created_by: number | null;
-        target_location_id: number;
-      }>(
-        'SELECT created_by, target_location_id FROM purchase_orders WHERE id = $1',
-        [orderId],
-      );
-      const scope = scopeRows[0];
-      if (scope === undefined) {
-        throw AppError.notFound('Purchase order not found.');
-      }
-      if (step === 'manager' && principal.role === 'supply_manager') {
-        if (scope.created_by === null || Number(scope.created_by) !== principal.userId) {
-          throw AppError.forbidden(
-            'A supply_manager may only approve purchase orders they created themselves.',
-          );
-        }
-      }
-      if (step === 'keeper' && principal.role === 'raw_warehouse_manager') {
-        assertLocationAccess(principal, Number(scope.target_location_id));
-      }
+    } else {
+      // keeper — the target raw warehouse must be in the operator's M:N set.
+      await requireLocationOperator(principal, Number(scope.target_location_id));
     }
 
     const updated = await approvePurchaseOrder(orderId, step, principal.userId);
@@ -280,27 +287,27 @@ purchaseOrdersRouter.post(
 );
 
 // POST /api/purchase-orders/:id/receive
+//
+// Owner-approved 2026-05-28: PM is read-and-recommend; only the raw
+// warehouse manager who owns the target raw warehouse may receive.
 purchaseOrdersRouter.post(
   '/:id/receive',
   authenticate,
-  authorize('pm', 'raw_warehouse_manager'),
+  authorizeWrite('raw_warehouse_manager'),
   asyncHandler(async (req, res) => {
     const principal = getPrincipal(req);
     const orderId = parseIdParam(req.params.id, 'id');
 
-    // IDOR guard — a scoped raw_warehouse_manager may only receive a PO
-    // targeting its own raw warehouse. `pm` bypasses (super-admin).
-    if (!isSuperAdmin(principal) && principal.role === 'raw_warehouse_manager') {
-      const { rows: scopeRows } = await query<{ target_location_id: number }>(
-        'SELECT target_location_id FROM purchase_orders WHERE id = $1',
-        [orderId],
-      );
-      const scope = scopeRows[0];
-      if (scope === undefined) {
-        throw AppError.notFound('Purchase order not found.');
-      }
-      assertLocationAccess(principal, Number(scope.target_location_id));
+    // The target raw warehouse must be in the operator's M:N set.
+    const { rows: scopeRows } = await query<{ target_location_id: number }>(
+      'SELECT target_location_id FROM purchase_orders WHERE id = $1',
+      [orderId],
+    );
+    const scope = scopeRows[0];
+    if (scope === undefined) {
+      throw AppError.notFound('Purchase order not found.');
     }
+    await requireLocationOperator(principal, Number(scope.target_location_id));
 
     // AC6.3 — the receive flow and the linked replenishment advance commit
     // together inside ONE transaction. `receivePurchaseOrder(tx)` and
@@ -318,10 +325,13 @@ purchaseOrdersRouter.post(
 );
 
 // POST /api/purchase-orders/:id/reject
+//
+// Owner-approved 2026-05-28: PM is read-and-recommend; only a supply
+// manager may reject a draft purchase request.
 purchaseOrdersRouter.post(
   '/:id/reject',
   authenticate,
-  authorize('pm', 'supply_manager'),
+  authorizeWrite('supply_manager'),
   asyncHandler(async (req, res) => {
     const principal = getPrincipal(req);
     const orderId = parseIdParam(req.params.id, 'id');

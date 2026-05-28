@@ -81,13 +81,21 @@ describe('POST /api/purchase-orders/:id/approve — role gating + validation', (
 
   it('rejects an invalid step value (422)', async () => {
     const rawWh = await makeLocation(ctx.db, { type: 'raw_warehouse' });
-    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const supplyLoc = await makeLocation(ctx.db, { type: 'supply' });
+    const supplyMgr = await makeUser(ctx.db, { role: 'supply_manager', locationId: supplyLoc });
     const product = await makeProduct(ctx.db, { type: 'raw' });
-    const orderId = await makeDraftPO(product, rawWh);
+    // The PO must be created by the operator so the manager step guard
+    // does not short-circuit before validation.
+    const { rows: poRow } = await ctx.db.query<{ id: number }>(
+      `INSERT INTO purchase_orders (product_id, qty, target_location_id, status, created_by)
+       VALUES ($1, 10, $2, 'draft', $3) RETURNING id`,
+      [product, rawWh, supplyMgr.id],
+    );
+    const orderId = Number(poRow[0]?.id);
 
     const res = await request(ctx.app)
       .post(`/api/purchase-orders/${orderId}/approve`)
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${supplyMgr.token}`)
       .send({ step: 'invalid' });
     expect(res.status).toBe(422);
     expect(res.body.error?.code).toBe('VALIDATION_ERROR');
