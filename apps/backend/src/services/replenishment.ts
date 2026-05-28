@@ -70,6 +70,19 @@ const CHAINABLE_AFTER: Readonly<Record<ReplenishmentStatus, boolean>> = {
   CANCELLED: false,
 };
 
+/**
+ * The set of closure reasons a CLOSED / CANCELLED request may carry.
+ * Migration 0024 adds the `closure_reason` column; the values mirror the
+ * CHECK constraint there. NULL is allowed (legacy rows + in-flight rows).
+ */
+export type ReplenishmentClosureReason =
+  | 'accepted_full'
+  | 'accepted_partial'
+  | 'rejected'
+  | 'returned'
+  | 'cancelled_by_requester'
+  | 'cancelled_by_fulfiller';
+
 export type ReplenishmentRow = {
   id: number;
   product_id: number;
@@ -86,12 +99,23 @@ export type ReplenishmentRow = {
   updated_at: Date;
   closed_at: Date | null;
   assigned_to_user_id: number | null;
+  /** 0024 — qty actually accepted by the recipient (NULL until accept/reject). */
+  qty_accepted: number | null;
+  /** 0024 — qty counter-shipped back after accept/return (NULL when none). */
+  qty_returned: number | null;
+  /** 0024 — recipient free-form note attached at accept time. */
+  accept_note: string | null;
+  /** 0024 — recipient free-form reason attached at reject/return time. */
+  reject_reason: string | null;
+  /** 0024 — HOW the request reached terminal. NULL while open. */
+  closure_reason: ReplenishmentClosureReason | null;
 };
 
 export const REPLENISHMENT_COLUMNS = `id, product_id, requester_location_id,
   target_location_id, qty_needed, status, production_order_id, purchase_order_id,
   shipment_movement_id, note, created_by, created_at, updated_at, closed_at,
-  assigned_to_user_id`;
+  assigned_to_user_id, qty_accepted, qty_returned, accept_note, reject_reason,
+  closure_reason`;
 
 /**
  * Possible outcomes of one `advance()` call. `advanced=false` means a wait
@@ -211,11 +235,20 @@ function isUniqueViolation(err: unknown): boolean {
   );
 }
 
-/** Flip any non-terminal request to CANCELLED. Idempotent on already-cancelled. */
+/**
+ * Flip any non-terminal request to CANCELLED. Idempotent on already-cancelled.
+ *
+ * 0024 — `closureReason` defaults to `'cancelled_by_requester'`. The
+ * fulfiller-side cancel (sklad/sex bekor qiladi) uses
+ * `cancelRequestByFulfiller`, which sets `'cancelled_by_fulfiller'`.
+ * The argument is open (typed as the union) so an internal/system actor
+ * can substitute another reason without a second helper.
+ */
 export async function cancelRequest(
   requestId: number,
   actorUserId: number | null,
   reason: string,
+  closureReason: ReplenishmentClosureReason = 'cancelled_by_requester',
 ): Promise<ReplenishmentRow> {
   return withTransaction(async (tx) => {
     const order = await lockRequest(tx, requestId);
@@ -223,10 +256,13 @@ export async function cancelRequest(
       return order;
     }
     const { rows } = await tx.query<ReplenishmentRow>(
-      `UPDATE replenishment_requests SET status = 'CANCELLED', closed_at = now()
+      `UPDATE replenishment_requests
+         SET status = 'CANCELLED',
+             closed_at = now(),
+             closure_reason = $2
        WHERE id = $1
        RETURNING ${REPLENISHMENT_COLUMNS}`,
-      [requestId],
+      [requestId, closureReason],
     );
     const updated = rows[0];
     if (updated === undefined) {
@@ -238,7 +274,377 @@ export async function cancelRequest(
       action: 'replenishment.cancel',
       entity: 'replenishment_requests',
       entityId: requestId,
+      payload: { from: order.status, reason, closure_reason: closureReason },
+    });
+    return updated;
+  });
+}
+
+/**
+ * 0024 — `cancel-by-fulfiller`: the sklad/sex tom oqimi (target side)
+ * bekor qiladi to'gri so'rovni — only while the shipment has NOT yet
+ * happened (status is still pre-ship). The wait-states + the pre-ship
+ * states are accepted; SHIP_TO_REQUESTER is REFUSED (use accept/reject
+ * after the shipment instead). This is an INVARIANT_VIOLATION (409).
+ */
+export async function cancelRequestByFulfiller(
+  requestId: number,
+  actorUserId: number | null,
+  reason: string,
+): Promise<ReplenishmentRow> {
+  const allowedPreShipStates: readonly ReplenishmentStatus[] = [
+    'NEW',
+    'CHECK_STORE_SUPPLIER',
+    'CHECK_PRODUCTION_INPUT',
+    'CREATE_PURCHASE_ORDER',
+    'CREATE_PRODUCTION_ORDER',
+    'PRODUCING',
+    'DONE_TO_WAREHOUSE',
+  ];
+  return withTransaction(async (tx) => {
+    const order = await lockRequest(tx, requestId);
+    if (order.status === 'CANCELLED' || order.status === 'CLOSED') {
+      return order;
+    }
+    if (!allowedPreShipStates.includes(order.status)) {
+      throw new AppError(
+        'INVALID_TRANSITION',
+        `Cannot cancel-by-fulfiller in status ${order.status} — use reject or return after the shipment.`,
+      );
+    }
+    const { rows } = await tx.query<ReplenishmentRow>(
+      `UPDATE replenishment_requests
+         SET status = 'CANCELLED',
+             closed_at = now(),
+             closure_reason = 'cancelled_by_fulfiller'
+       WHERE id = $1
+       RETURNING ${REPLENISHMENT_COLUMNS}`,
+      [requestId],
+    );
+    const updated = rows[0];
+    if (updated === undefined) {
+      throw AppError.internal('Replenishment cancel returned no row.');
+    }
+    await recordTransition(tx, requestId, order.status, 'CANCELLED', reason, actorUserId);
+    await writeAudit(tx, {
+      actorUserId,
+      action: 'replenishment.cancel_by_fulfiller',
+      entity: 'replenishment_requests',
+      entityId: requestId,
       payload: { from: order.status, reason },
+    });
+    return updated;
+  });
+}
+
+// -----------------------------------------------------------------------------
+// 0024 — accept / reject / return (recipient-side closure recording)
+// -----------------------------------------------------------------------------
+
+/**
+ * Stock invariant — Variant 2 (chosen 2026-05-28):
+ *   * `SHIP_TO_REQUESTER -> CLOSED` already moved the full `shipQty` from
+ *     `target_location_id` to `requester_location_id` (see
+ *     `advanceShipToRequester`).
+ *   * accept_full      => no counter-movement (recipient kept everything).
+ *   * accept_partial   => counter-move `(qty_needed - qty_accepted)` from
+ *                         requester back to target, reason='transfer'.
+ *   * reject           => counter-move the full `shipment` qty back.
+ *   * return (post-accept) => counter-move `qty_returned` back.
+ *
+ * Each helper is atomic — the closure_reason flip + the counter-movement
+ * + the audit + the transition entry run inside ONE withTransaction.
+ *
+ * Idempotency: a second call on a request that already has `closure_reason`
+ * set returns the row unchanged, so a double-tap from the UI cannot create
+ * two counter-movements.
+ */
+
+/**
+ * Accept the shipment (fully or partially).
+ *
+ * `qtyAccepted` is bounded by the request's `qty_needed` (or its
+ * `shipment` qty when the request was partially shipped — Phase 2). When
+ * `qtyAccepted === qty_needed` the closure_reason is `accepted_full`;
+ * any value strictly less is `accepted_partial`, and the difference is
+ * counter-shipped back to the target_location_id (so the ledger stays
+ * net-zero against the original ship).
+ */
+export async function acceptShipment(opts: {
+  requestId: number;
+  qtyAccepted: number;
+  note?: string | null;
+  actorUserId: number | null;
+}): Promise<ReplenishmentRow> {
+  if (!Number.isFinite(opts.qtyAccepted) || opts.qtyAccepted < 0) {
+    throw AppError.validation('qty_accepted must be a number >= 0.');
+  }
+  return withTransaction(async (tx) => {
+    const order = await lockRequest(tx, opts.requestId);
+    if (order.closure_reason !== null) {
+      // Already finalised — second tap is a no-op (idempotent).
+      return order;
+    }
+    if (order.status !== 'CLOSED') {
+      throw new AppError(
+        'INVALID_TRANSITION',
+        `Cannot accept a shipment for a request in status ${order.status} — wait for SHIP_TO_REQUESTER to land.`,
+      );
+    }
+    const qtyNeeded = Number(order.qty_needed);
+    if (opts.qtyAccepted > qtyNeeded) {
+      throw AppError.validation(
+        `qty_accepted (${opts.qtyAccepted}) cannot exceed qty_needed (${qtyNeeded}).`,
+      );
+    }
+    if (order.target_location_id === null) {
+      throw AppError.internal('Cannot accept — request has no target_location_id.');
+    }
+    const remainder = qtyNeeded - opts.qtyAccepted;
+    const closureReason: ReplenishmentClosureReason =
+      remainder === 0 ? 'accepted_full' : 'accepted_partial';
+
+    let qtyReturned: number | null = null;
+    if (remainder > 0) {
+      // Counter-ship the unaccepted remainder back to the target. The
+      // requester's stock was credited by the SHIP step, so this UPDATE
+      // succeeds as long as the recipient still holds at least the
+      // remainder — which they do unless they have sold it before
+      // confirming acceptance (an edge case the operator can resolve via
+      // a manual stock adjustment).
+      await applyMovement(
+        {
+          productId: order.product_id,
+          fromLocationId: order.requester_location_id,
+          toLocationId: order.target_location_id,
+          qty: remainder,
+          reason: 'transfer',
+          actorUserId: opts.actorUserId,
+          replenishmentId: order.id,
+          note: 'partial accept — remainder returned',
+        },
+        tx,
+      );
+      qtyReturned = remainder;
+    }
+
+    const { rows } = await tx.query<ReplenishmentRow>(
+      `UPDATE replenishment_requests
+         SET qty_accepted   = $2,
+             qty_returned   = $3,
+             accept_note    = $4,
+             closure_reason = $5
+       WHERE id = $1
+       RETURNING ${REPLENISHMENT_COLUMNS}`,
+      [opts.requestId, opts.qtyAccepted, qtyReturned, opts.note ?? null, closureReason],
+    );
+    const updated = rows[0];
+    if (updated === undefined) {
+      throw AppError.internal('Replenishment accept returned no row.');
+    }
+    await recordTransition(
+      tx,
+      opts.requestId,
+      'CLOSED',
+      'CLOSED',
+      `accept:${closureReason} qty=${opts.qtyAccepted}`,
+      opts.actorUserId,
+    );
+    await writeAudit(tx, {
+      actorUserId: opts.actorUserId,
+      action: 'replenishment.accept',
+      entity: 'replenishment_requests',
+      entityId: opts.requestId,
+      payload: {
+        closure_reason: closureReason,
+        qty_accepted: opts.qtyAccepted,
+        qty_returned: qtyReturned,
+      },
+    });
+    return updated;
+  });
+}
+
+/**
+ * Reject the entire shipment — the recipient refuses it. Counter-ships
+ * the full shipped qty back to the target_location_id and stamps
+ * `closure_reason='rejected'` + `reject_reason`. Requires the request
+ * to be in CLOSED state (i.e. the SHIP step has already run) and not
+ * already finalised.
+ */
+export async function rejectShipment(opts: {
+  requestId: number;
+  reason: string;
+  actorUserId: number | null;
+}): Promise<ReplenishmentRow> {
+  const reasonClean = opts.reason.trim();
+  if (reasonClean === '') {
+    throw AppError.validation('reject reason must be a non-empty string.');
+  }
+  return withTransaction(async (tx) => {
+    const order = await lockRequest(tx, opts.requestId);
+    if (order.closure_reason !== null) {
+      return order;
+    }
+    if (order.status !== 'CLOSED') {
+      throw new AppError(
+        'INVALID_TRANSITION',
+        `Cannot reject a shipment for a request in status ${order.status} — wait for SHIP_TO_REQUESTER to land.`,
+      );
+    }
+    if (order.target_location_id === null) {
+      throw AppError.internal('Cannot reject — request has no target_location_id.');
+    }
+    const qtyNeeded = Number(order.qty_needed);
+    await applyMovement(
+      {
+        productId: order.product_id,
+        fromLocationId: order.requester_location_id,
+        toLocationId: order.target_location_id,
+        qty: qtyNeeded,
+        reason: 'transfer',
+        actorUserId: opts.actorUserId,
+        replenishmentId: order.id,
+        note: `reject: ${reasonClean}`,
+      },
+      tx,
+    );
+    const { rows } = await tx.query<ReplenishmentRow>(
+      `UPDATE replenishment_requests
+         SET qty_accepted   = 0,
+             qty_returned   = $2,
+             reject_reason  = $3,
+             closure_reason = 'rejected'
+       WHERE id = $1
+       RETURNING ${REPLENISHMENT_COLUMNS}`,
+      [opts.requestId, qtyNeeded, reasonClean],
+    );
+    const updated = rows[0];
+    if (updated === undefined) {
+      throw AppError.internal('Replenishment reject returned no row.');
+    }
+    await recordTransition(
+      tx,
+      opts.requestId,
+      'CLOSED',
+      'CLOSED',
+      `reject:${reasonClean}`,
+      opts.actorUserId,
+    );
+    await writeAudit(tx, {
+      actorUserId: opts.actorUserId,
+      action: 'replenishment.reject',
+      entity: 'replenishment_requests',
+      entityId: opts.requestId,
+      payload: { closure_reason: 'rejected', reason: reasonClean, qty_returned: qtyNeeded },
+    });
+    return updated;
+  });
+}
+
+/**
+ * Return-after-accept: the recipient accepted the shipment earlier and
+ * now wants to send `qtyReturned` back (e.g. a spoiled box). The request
+ * must have been accepted (closure_reason in {accepted_full,
+ * accepted_partial}) — a fresh request goes via accept/reject instead.
+ *
+ * The post-accept return is additive: `qty_accepted` shrinks by
+ * `qtyReturned`, `qty_returned` grows. The closure_reason flips to
+ * `'returned'` only when the cumulative qty_accepted reaches zero;
+ * otherwise it stays at `accepted_partial` (a partial return on top of
+ * a partial accept).
+ */
+export async function returnShipment(opts: {
+  requestId: number;
+  qtyReturned: number;
+  reason: string;
+  actorUserId: number | null;
+}): Promise<ReplenishmentRow> {
+  if (!Number.isFinite(opts.qtyReturned) || opts.qtyReturned <= 0) {
+    throw AppError.validation('qty_returned must be a number greater than zero.');
+  }
+  const reasonClean = opts.reason.trim();
+  if (reasonClean === '') {
+    throw AppError.validation('return reason must be a non-empty string.');
+  }
+  return withTransaction(async (tx) => {
+    const order = await lockRequest(tx, opts.requestId);
+    if (order.status !== 'CLOSED') {
+      throw new AppError(
+        'INVALID_TRANSITION',
+        `Cannot return a shipment for a request in status ${order.status}.`,
+      );
+    }
+    if (
+      order.closure_reason !== 'accepted_full' &&
+      order.closure_reason !== 'accepted_partial'
+    ) {
+      throw new AppError(
+        'INVALID_TRANSITION',
+        `Cannot return — request was not accepted (closure_reason=${order.closure_reason}).`,
+      );
+    }
+    if (order.target_location_id === null) {
+      throw AppError.internal('Cannot return — request has no target_location_id.');
+    }
+    const currentAccepted = Number(order.qty_accepted ?? 0);
+    if (opts.qtyReturned > currentAccepted) {
+      throw AppError.validation(
+        `qty_returned (${opts.qtyReturned}) cannot exceed currently-accepted qty (${currentAccepted}).`,
+      );
+    }
+    await applyMovement(
+      {
+        productId: order.product_id,
+        fromLocationId: order.requester_location_id,
+        toLocationId: order.target_location_id,
+        qty: opts.qtyReturned,
+        reason: 'transfer',
+        actorUserId: opts.actorUserId,
+        replenishmentId: order.id,
+        note: `return: ${reasonClean}`,
+      },
+      tx,
+    );
+    const newAccepted = currentAccepted - opts.qtyReturned;
+    const previousReturned = Number(order.qty_returned ?? 0);
+    const totalReturned = previousReturned + opts.qtyReturned;
+    const newClosure: ReplenishmentClosureReason =
+      newAccepted === 0 ? 'returned' : 'accepted_partial';
+
+    const { rows } = await tx.query<ReplenishmentRow>(
+      `UPDATE replenishment_requests
+         SET qty_accepted   = $2,
+             qty_returned   = $3,
+             reject_reason  = COALESCE(reject_reason, $4),
+             closure_reason = $5
+       WHERE id = $1
+       RETURNING ${REPLENISHMENT_COLUMNS}`,
+      [opts.requestId, newAccepted, totalReturned, reasonClean, newClosure],
+    );
+    const updated = rows[0];
+    if (updated === undefined) {
+      throw AppError.internal('Replenishment return returned no row.');
+    }
+    await recordTransition(
+      tx,
+      opts.requestId,
+      'CLOSED',
+      'CLOSED',
+      `return:${reasonClean} qty=${opts.qtyReturned}`,
+      opts.actorUserId,
+    );
+    await writeAudit(tx, {
+      actorUserId: opts.actorUserId,
+      action: 'replenishment.return',
+      entity: 'replenishment_requests',
+      entityId: opts.requestId,
+      payload: {
+        closure_reason: newClosure,
+        qty_returned: opts.qtyReturned,
+        cumulative_qty_returned: totalReturned,
+        remaining_qty_accepted: newAccepted,
+      },
     });
     return updated;
   });

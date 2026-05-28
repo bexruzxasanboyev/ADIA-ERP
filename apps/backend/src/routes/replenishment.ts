@@ -25,10 +25,14 @@ import {
   requirePositiveNumber,
 } from '../lib/validate.js';
 import {
+  acceptShipment,
   advance,
   cancelRequest,
+  cancelRequestByFulfiller,
   createRequest,
+  rejectShipment,
   REPLENISHMENT_COLUMNS,
+  returnShipment,
   type ReplenishmentRow,
   type ReplenishmentStatus,
 } from '../services/replenishment.js';
@@ -330,6 +334,210 @@ replenishmentRouter.post(
         : 'manual cancel';
 
     const updated = await cancelRequest(id, principal.userId, reason);
+    res.status(200).json({ request: updated });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// 0024 — Recipient-side closure: accept / reject / return
+// ---------------------------------------------------------------------------
+// Authorisation model:
+//   * accept / reject / return — the requester location's operator confirms
+//     what they received.   guard: `requireLocationOperator(principal,
+//                                   request.requester_location_id)`.
+//   * cancel-by-fulfiller    — the target location's operator (sklad/sex)
+//     bekor qiladi.   guard: `requireLocationOperator(principal,
+//                            request.target_location_id)`.
+//
+// 404 vs 403 split: unknown id -> 404; real id outside scope -> 403.
+
+// POST /api/replenishment/:id/accept
+//   body: { qty_accepted: number, note?: string }
+replenishmentRouter.post(
+  '/:id/accept',
+  authenticate,
+  authorizeWrite(
+    'raw_warehouse_manager',
+    'production_manager',
+    'supply_manager',
+    'central_warehouse_manager',
+    'store_manager',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+    const qtyAcceptedRaw = body.qty_accepted;
+    if (
+      typeof qtyAcceptedRaw !== 'number' ||
+      !Number.isFinite(qtyAcceptedRaw) ||
+      qtyAcceptedRaw < 0
+    ) {
+      throw AppError.validation('Field "qty_accepted" must be a number >= 0.');
+    }
+    const note = optionalString(body, 'note') ?? null;
+
+    const { rows } = await query<{ requester_location_id: number }>(
+      'SELECT requester_location_id FROM replenishment_requests WHERE id = $1',
+      [id],
+    );
+    const existing = rows[0];
+    if (existing === undefined) {
+      throw AppError.notFound('Replenishment request not found.');
+    }
+    await requireLocationOperator(principal, Number(existing.requester_location_id));
+
+    const updated = await acceptShipment({
+      requestId: id,
+      qtyAccepted: qtyAcceptedRaw,
+      note,
+      actorUserId: principal.userId,
+    });
+    res.status(200).json({ request: updated });
+  }),
+);
+
+// POST /api/replenishment/:id/reject
+//   body: { reason: string }
+replenishmentRouter.post(
+  '/:id/reject',
+  authenticate,
+  authorizeWrite(
+    'raw_warehouse_manager',
+    'production_manager',
+    'supply_manager',
+    'central_warehouse_manager',
+    'store_manager',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+    const reason = optionalString(body, 'reason');
+    if (reason === undefined) {
+      throw AppError.validation('Field "reason" is required for reject.');
+    }
+
+    const { rows } = await query<{ requester_location_id: number }>(
+      'SELECT requester_location_id FROM replenishment_requests WHERE id = $1',
+      [id],
+    );
+    const existing = rows[0];
+    if (existing === undefined) {
+      throw AppError.notFound('Replenishment request not found.');
+    }
+    await requireLocationOperator(principal, Number(existing.requester_location_id));
+
+    const updated = await rejectShipment({
+      requestId: id,
+      reason,
+      actorUserId: principal.userId,
+    });
+    res.status(200).json({ request: updated });
+  }),
+);
+
+// POST /api/replenishment/:id/return
+//   body: { qty_returned: number, reason: string }
+replenishmentRouter.post(
+  '/:id/return',
+  authenticate,
+  authorizeWrite(
+    'raw_warehouse_manager',
+    'production_manager',
+    'supply_manager',
+    'central_warehouse_manager',
+    'store_manager',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+    const qtyReturned = requirePositiveNumber(body, 'qty_returned');
+    const reason = optionalString(body, 'reason');
+    if (reason === undefined) {
+      throw AppError.validation('Field "reason" is required for return.');
+    }
+
+    const { rows } = await query<{ requester_location_id: number }>(
+      'SELECT requester_location_id FROM replenishment_requests WHERE id = $1',
+      [id],
+    );
+    const existing = rows[0];
+    if (existing === undefined) {
+      throw AppError.notFound('Replenishment request not found.');
+    }
+    await requireLocationOperator(principal, Number(existing.requester_location_id));
+
+    const updated = await returnShipment({
+      requestId: id,
+      qtyReturned,
+      reason,
+      actorUserId: principal.userId,
+    });
+    res.status(200).json({ request: updated });
+  }),
+);
+
+// POST /api/replenishment/:id/cancel-by-fulfiller
+//   body: { reason?: string }
+replenishmentRouter.post(
+  '/:id/cancel-by-fulfiller',
+  authenticate,
+  authorizeWrite(
+    'raw_warehouse_manager',
+    'production_manager',
+    'supply_manager',
+    'central_warehouse_manager',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+    const body = (req.body as Record<string, unknown> | null) ?? {};
+    const reason =
+      typeof body.reason === 'string' && body.reason.trim() !== ''
+        ? body.reason.trim()
+        : 'cancelled by fulfiller';
+
+    const { rows } = await query<{
+      target_location_id: number | null;
+      requester_location_id: number;
+    }>(
+      `SELECT target_location_id, requester_location_id
+         FROM replenishment_requests WHERE id = $1`,
+      [id],
+    );
+    const existing = rows[0];
+    if (existing === undefined) {
+      throw AppError.notFound('Replenishment request not found.');
+    }
+    // The fulfiller is the target side. If target is not yet resolved
+    // (status=NEW), fall back to any production_order / purchase_order
+    // location via principalTouchesRequest — the warehouse keeper who
+    // owns the chain is the natural cancel actor.
+    if (existing.target_location_id !== null) {
+      await requireLocationOperator(principal, Number(existing.target_location_id));
+    } else {
+      // NEW state — no target yet. Permit raw_warehouse / central_warehouse /
+      // supply managers whose assigned location is the eventual fulfiller
+      // (resolved by the topology walk). Cheap heuristic: the chain manager
+      // for the requester. We DENY if the operator does not touch the chain
+      // at all.
+      const allowed = await principalTouchesRequest(
+        {
+          requester_location_id: existing.requester_location_id,
+          target_location_id: existing.target_location_id,
+        },
+        principal.locationIds,
+      );
+      if (!allowed) {
+        throw AppError.forbidden(
+          'You may only cancel-by-fulfiller requests that touch your location.',
+        );
+      }
+    }
+
+    const updated = await cancelRequestByFulfiller(id, principal.userId, reason);
     res.status(200).json({ request: updated });
   }),
 );
