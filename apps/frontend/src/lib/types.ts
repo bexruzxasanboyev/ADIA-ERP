@@ -21,11 +21,21 @@ export type Role =
   | 'store_manager'
   | 'ai_assistant';
 
-/** Location classification — db-schema location_type enum. */
+/**
+ * Location classification — db-schema location_type enum.
+ *
+ * `sex_storage` is the post-rename name for what used to be the
+ * "ta'minot" layer (Tort skladi / Perojniy skladi / Yarim Fabrika skladi).
+ * The legacy `supply` value is kept in the union so the frontend stays
+ * backward-compatible while the backend ENUM migration is in flight —
+ * any UI surface that needs to label or branch on the layer treats the
+ * two values as synonyms (sex storage is the canonical name).
+ */
 export type LocationType =
   | 'raw_warehouse'
   | 'production'
   | 'supply'
+  | 'sex_storage'
   | 'central_warehouse'
   | 'store';
 

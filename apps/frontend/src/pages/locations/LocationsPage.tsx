@@ -37,6 +37,7 @@ const LOCATION_TYPE_ICON: Record<LocationType, typeof MapPin> = {
   raw_warehouse: Boxes,
   production: Factory,
   supply: Truck,
+  sex_storage: Truck,
   central_warehouse: Warehouse,
   store: Store,
 };
@@ -69,7 +70,7 @@ export function LocationsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-[120rem] space-y-6">
       <PageHeader
         title="Bo‘g‘inlar"
         description="Ta’minot zanjirining barcha bo‘g‘inlari."
@@ -86,7 +87,13 @@ export function LocationsPage() {
         }
       />
 
-      <Card>
+      <Card
+        className={
+          view === 'card'
+            ? 'border-0 bg-transparent p-0 shadow-none'
+            : undefined
+        }
+      >
         {isLoading && <LoadingState />}
         {!isLoading && error && (
           <ErrorState message={error} onRetry={refetch} />
@@ -95,7 +102,7 @@ export function LocationsPage() {
           <EmptyState message="Bo‘g‘inlar topilmadi." />
         )}
         {!isLoading && !error && locations.length > 0 && view === 'card' && (
-          <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {locations.map((location) => {
               const Icon = LOCATION_TYPE_ICON[location.type] ?? MapPin;
               return (

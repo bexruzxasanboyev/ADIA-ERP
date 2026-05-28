@@ -19,7 +19,10 @@ export const ROLE_LABELS: Record<Role, string> = {
   pm: 'Loyiha rahbari',
   raw_warehouse_manager: 'Xom-ashyo ombori boshlig‘i',
   production_manager: 'Ishlab chiqarish boshlig‘i',
-  supply_manager: 'Ta’minot boshlig‘i',
+  // Renamed from "Ta'minot boshlig'i" — the layer is now "Sex skladi"
+  // (Tort / Perojniy / Yarim Fabrika sex storages). The Role enum key
+  // stays `supply_manager` for back-compat with the backend.
+  supply_manager: 'Sex skladi boshlig‘i',
   central_warehouse_manager: 'Markaziy sklad boshlig‘i',
   store_manager: 'Do‘kon boshlig‘i',
   // `ai_assistant` mirrors the backend enum but is not user-facing in
@@ -31,7 +34,11 @@ export const ROLE_LABELS: Record<Role, string> = {
 export const LOCATION_TYPE_LABELS: Record<LocationType, string> = {
   raw_warehouse: 'Xom-ashyo ombori',
   production: 'Ishlab chiqarish',
-  supply: 'Ta’minot bo‘limi',
+  // Legacy "Ta'minot bo'limi" — kept as a back-compat label until the
+  // backend ENUM migration finishes; once the API only emits
+  // `sex_storage` this entry can be dropped.
+  supply: 'Sex skladi',
+  sex_storage: 'Sex skladi',
   central_warehouse: 'Markaziy sklad',
   store: 'Do‘kon',
 };
@@ -68,9 +75,15 @@ export const ROLE_OPTIONS: { value: Role; label: string }[] = (
   .filter((role) => role !== 'ai_assistant')
   .map((value) => ({ value, label: ROLE_LABELS[value] }));
 
+// `supply` is the legacy synonym of `sex_storage` and would otherwise
+// produce a duplicate "Sex skladi" entry in pickers — exclude it from
+// the visible option list. The label entry stays so any row arriving
+// from the backend with the legacy enum still renders correctly.
 export const LOCATION_TYPE_OPTIONS: { value: LocationType; label: string }[] = (
   Object.keys(LOCATION_TYPE_LABELS) as LocationType[]
-).map((value) => ({ value, label: LOCATION_TYPE_LABELS[value] }));
+)
+  .filter((value) => value !== 'supply')
+  .map((value) => ({ value, label: LOCATION_TYPE_LABELS[value] }));
 
 export const PRODUCT_TYPE_OPTIONS: { value: ProductType; label: string }[] = (
   Object.keys(PRODUCT_TYPE_LABELS) as ProductType[]
@@ -87,7 +100,7 @@ export const UNIT_OPTIONS: { value: Unit; label: string }[] = (
 /** Uzbek labels for the 10-status replenishment state machine. */
 export const REPLENISHMENT_STATUS_LABELS: Record<ReplenishmentStatus, string> = {
   NEW: 'Yangi',
-  CHECK_STORE_SUPPLIER: 'Tekshiruv: ta’minot/markaziy sklad',
+  CHECK_STORE_SUPPLIER: 'Tekshiruv: sex skladi/markaziy sklad',
   SHIP_TO_REQUESTER: 'So‘rovchiga jo‘natish',
   CHECK_PRODUCTION_INPUT: 'Tekshiruv: ishlab chiqarish xom-ashyosi',
   CREATE_PURCHASE_ORDER: 'Sotib olish so‘rovi',

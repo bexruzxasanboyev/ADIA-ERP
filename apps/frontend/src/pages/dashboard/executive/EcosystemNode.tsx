@@ -47,6 +47,7 @@ const TYPE_ICON: Record<LocationType, ComponentType<{ className?: string }>> = {
   raw_warehouse: Box,
   production: Factory,
   supply: Truck,
+  sex_storage: Truck,
   central_warehouse: Warehouse,
   store: Store,
 };

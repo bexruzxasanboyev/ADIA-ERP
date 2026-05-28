@@ -44,6 +44,7 @@ const STAGE_ICON: Record<LocationType, ComponentType<{ className?: string }>> = 
   raw_warehouse: Warehouse,
   production: Factory,
   supply: Truck,
+  sex_storage: Truck,
   central_warehouse: Package,
   store: Store,
 };
@@ -88,11 +89,17 @@ function aggregate(nodes: DashboardChainNode[]): Record<LocationType, StageAggre
     raw_warehouse: { ...empty, type: 'raw_warehouse' },
     production: { ...empty, type: 'production' },
     supply: { ...empty, type: 'supply' },
+    sex_storage: { ...empty, type: 'sex_storage' },
     central_warehouse: { ...empty, type: 'central_warehouse' },
     store: { ...empty, type: 'store' },
   };
   for (const node of nodes) {
-    const bucket = out[node.location_type];
+    // Backend may still emit the legacy `supply` enum during the
+    // sex_storage migration — coalesce both onto the canonical bucket
+    // (`sex_storage`) so the health bar treats them as one stage.
+    const bucketKey: LocationType =
+      node.location_type === 'supply' ? 'sex_storage' : node.location_type;
+    const bucket = out[bucketKey];
     bucket.count += 1;
     bucket.below_min_count += node.below_min_count;
     bucket.open_requests_count += node.open_requests_count;

@@ -173,7 +173,7 @@ describe('DashboardPage — overview contract', () => {
     const legend = await screen.findByTestId('open-requests-legend');
     // All three statuses appear as legend rows.
     expect(legend.textContent).toMatch(/Yangi/);
-    expect(legend.textContent).toMatch(/Tekshiruv: ta’minot\/markaziy sklad/);
+    expect(legend.textContent).toMatch(/Tekshiruv: sex skladi\/markaziy sklad/);
     expect(legend.textContent).toMatch(/Ishlab chiqarilmoqda/);
   });
 

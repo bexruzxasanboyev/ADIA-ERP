@@ -241,7 +241,13 @@ function groupByType(rows: DashboardChainNode[]): ByType {
     ) {
       continue;
     }
-    out[row.location_type].push(row);
+    // Backward compat — the backend ENUM is migrating from `supply` to
+    // `sex_storage`. Both are the same logical layer (sex storages); the
+    // canvas adapter coalesces them onto a single `supply` bucket so the
+    // existing layout code (edges, positions, lookups) keeps working.
+    const bucket: keyof ByType =
+      row.location_type === 'sex_storage' ? 'supply' : row.location_type;
+    out[bucket].push(row);
   }
   // Sort each bucket by `location_id` so the layout is deterministic
   // across refetches.

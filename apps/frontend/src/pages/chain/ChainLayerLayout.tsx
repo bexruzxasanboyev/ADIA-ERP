@@ -78,6 +78,14 @@ const LAYER_ACCENT: Record<
     valueText: 'text-sky-200',
     icon: Truck,
   },
+  // `sex_storage` reuses the supply accent — the layer is the same
+  // visual stage, only the name has changed.
+  sex_storage: {
+    ring: 'ring-1 ring-sky-500/30',
+    iconWrap: 'bg-sky-500/15 text-sky-300',
+    valueText: 'text-sky-200',
+    icon: Truck,
+  },
   central_warehouse: {
     ring: 'ring-1 ring-emerald-500/30',
     iconWrap: 'bg-emerald-500/15 text-emerald-300',
@@ -250,6 +258,7 @@ const LOCATION_ICON: Record<LocationType, ComponentType<{ className?: string }>>
   raw_warehouse: Warehouse,
   production: Factory,
   supply: Truck,
+  sex_storage: Truck,
   central_warehouse: Package,
   store: Store,
 };
