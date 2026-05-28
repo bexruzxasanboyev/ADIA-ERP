@@ -6,7 +6,7 @@ Bu fayl ADIA ERP loyihasida ishlaydigan har bir Claude Code sessiyasi va agent u
 
 **ADIA ERP** — non/tort/qandolat ishlab chiqarish va ta'minot zanjiri uchun **o'zini-o'zi to'g'rilaydigan ERP tizimi**.
 
-- Zanjir: Xom-ashyo ombori → Ishlab chiqarish → Ta'minot bo'limlari → Markaziy sklad → Do'konlar.
+- Zanjir: Xom-ashyo ombori → Sexlar (Tort, Perojniy, Yarim Fabrika) → Sex skladlari (`sex_storage`) → Markaziy sklad → Do'konlar.
 - Asosiy g'oya: har mahsulotga min/max belgilanadi; ostatka min'dan tushganda tizim avtomatik to'ldirish (replenishment) tsiklini ishga tushiradi. Eng tepada — AI assistant.
 - **Bitta kompaniya** ishlatadi — multi-tenant EMAS. Tenant/organization abstraksiyasi qo'shilmaydi.
 - Savdo va ombor ma'lumotlari **Poster POS** platformasidan sinxronlanadi (akkaunt: `adia`) — qo'lda kiritilmaydi. API: `docs/adia-poster-api.md`, maxfiy kalitlar: `.env`.

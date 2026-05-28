@@ -4,6 +4,20 @@ Loyiha bo'yicha qabul qilingan asosiy qarorlar shu yerda yoziladi. Yangi qaror �
 
 ---
 
+## 2026-05-28 — D7. Ta'minot → Sex skladi re-modeling
+
+Har sex (Tort, Perojniy, Yarim Fabrika) o'z `sex_storage` typedagi buferiga ega. Sex va sex skladi alohida `location_id`. Migration 0021 `location_type` enum'iga `sex_storage` qiymatini qo'shdi (`supply` dan oldin). Migration 0022 mavjud uchta supply qatorni `sex_storage` ga ko'chirdi va Yarim Fabrika sexi (production) qaytadan yaratildi:
+
+  | id  | eski nom                  | eski type | yangi nom              | yangi type   | parent      |
+  |-----|---------------------------|-----------|------------------------|--------------|-------------|
+  | 3   | Ta'minot — Tort           | supply    | Tort skladi            | sex_storage  | Tort sexi   |
+  | 38  | Ta'minot — Yarim Fabrika  | supply    | Yarim Fabrika skladi   | sex_storage  | Yarim F. s. |
+  | 39  | Ta'minot — Perojniy       | supply    | Perojniy skladi        | sex_storage  | Perojniy s. |
+
+D2 (Yarim Fabrika dual flow) **saqlanadi** — Yarim Fabrika sexi `production` typli alohida lokatsiya, uning skladi (sex_storage) — ham Markaziy Skladga jo'natadi, ham boshqa sexlar uchun BOM komponenti sifatida ishlaydi. D6 (har location o'z menejeri) **saqlanadi** — sex skladi o'zining `manager_user_id` ga ega bo'ladi. `supply_manager` rol **sinonim sifatida saqlanadi** (sex skladlarining menejeriga biriktiriladi). `supply` ENUM qiymati backward-compat uchun qoldi — barcha kodbazada o'tkazilgandan keyin (1-2 sprint), alohida migratsiya bilan DEPRECATE qilinadi. Tafsilot: `docs/architecture/adr-0015-sex-storage-remodeling.md`.
+
+---
+
 ## 2026-05-22 — TZ §16 ochiq savollari hal qilindi
 
 Loyiha egasi tomonidan tasdiqlangan qarorlar:
