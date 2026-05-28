@@ -21,6 +21,7 @@ import {
 } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
+import { useCanAct } from '@/hooks/useCanAct';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import { formatDateTime, formatQty } from '@/lib/format';
 import {
@@ -53,6 +54,7 @@ const DELIVERY_STATUS_OPTIONS: { value: DeliveryStatus | ''; label: string }[] =
  */
 export function DeliveryPage() {
   const { notify } = useToast();
+  const { isReadOnly, canActOn } = useCanAct();
   const [status, setStatus] = useState<DeliveryStatus | ''>('');
   const [assignFor, setAssignFor] = useState<DeliveryTask | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -103,10 +105,17 @@ export function DeliveryPage() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <div className="mx-auto max-w-[120rem] space-y-6">
       <PageHeader
         title="Yetkazib berish"
         description="Kelgan so‘rovlar va yetkazib beruvchi hodimlar bilan koordinatsiya."
+        action={
+          isReadOnly ? (
+            <Badge variant="secondary" aria-label="Faqat o‘qish rejimi">
+              Faqat o‘qish
+            </Badge>
+          ) : undefined
+        }
       />
 
       <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4">
@@ -145,6 +154,14 @@ export function DeliveryPage() {
               // Map delivery status onto the shared replenishment label
               // set so colour/text stay consistent across screens.
               const replStatus = task.status as ReplenishmentStatus;
+              // Stage 2 RBAC (commit 25a2527):
+              //   - assign / advance → either side of the chain (mirrors
+              //     principalTouchesRequest on /api/replenishment/:id/advance).
+              //   - cancel           → only the requester bo'g'in's manager.
+              const isScoped =
+                canActOn(task.requester_location_id) ||
+                canActOn(task.target_location_id);
+              const canCancel = canActOn(task.requester_location_id);
               return (
                 <article
                   key={task.id}
@@ -217,39 +234,50 @@ export function DeliveryPage() {
                     )}
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setAssignFor(task)}
-                    >
-                      <UserPlus className="size-4" aria-hidden="true" />
-                      {task.assigned_user_id ? 'O‘zgartirish' : 'Biriktirish'}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      disabled={isBusy}
-                      onClick={() => advance(task)}
-                    >
-                      {isBusy && (
-                        <Loader2
-                          className="size-4 animate-spin"
-                          aria-hidden="true"
-                        />
-                      )}
-                      Bajarish
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      disabled={isBusy}
-                      onClick={() => cancel(task)}
-                    >
-                      <X className="size-4" aria-hidden="true" />
-                      Bekor
-                    </Button>
+                    {isScoped && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setAssignFor(task)}
+                      >
+                        <UserPlus className="size-4" aria-hidden="true" />
+                        {task.assigned_user_id ? 'O‘zgartirish' : 'Biriktirish'}
+                      </Button>
+                    )}
+                    {isScoped && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={isBusy}
+                        onClick={() => advance(task)}
+                      >
+                        {isBusy && (
+                          <Loader2
+                            className="size-4 animate-spin"
+                            aria-hidden="true"
+                          />
+                        )}
+                        Bajarish
+                      </Button>
+                    )}
+                    {canCancel && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={isBusy}
+                        onClick={() => cancel(task)}
+                      >
+                        <X className="size-4" aria-hidden="true" />
+                        Bekor
+                      </Button>
+                    )}
+                    {!isScoped && !canCancel && (
+                      <span className="text-xs text-muted-foreground">
+                        Faqat ko‘rish
+                      </span>
+                    )}
                   </div>
                 </article>
               );

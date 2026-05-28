@@ -88,9 +88,63 @@ describe('DeliveryPage', () => {
     vi.restoreAllMocks();
   });
 
+  it('hides every action button for PM (Stage 2 read-only)', async () => {
+    mockFetch();
+    renderWithProviders(<DeliveryPage />, { role: 'pm' });
+    await screen.findByText('Un');
+    // The list is still visible — PM keeps read access to the queue —
+    // but no per-task buttons render.
+    expect(screen.queryByRole('button', { name: /biriktirish/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /o.zgartirish/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Bajarish' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Bekor' })).toBeNull();
+    expect(screen.getByText(/faqat o.qish/i)).toBeInTheDocument();
+  });
+
+  it('shows the cancel button only for the requester bo‘g‘in operator', async () => {
+    mockFetch();
+    // Render as store_manager scoped to requester location 5. The
+    // requester-side operator must see the cancel button (only side
+    // allowed by the backend's requireLocationOperator on
+    // /api/replenishment/:id/cancel).
+    renderWithProviders(<DeliveryPage />, {
+      role: 'store_manager',
+      locationId: 5,
+      locationType: 'store',
+    });
+    await screen.findByText('Un');
+    expect(
+      screen.getAllByRole('button', { name: 'Bekor' }).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('hides the cancel button for the target-side operator', async () => {
+    mockFetch();
+    // Render as central_warehouse_manager scoped to target location 2.
+    // The target side may advance/assign but not cancel (backend rule
+    // — only the requesting bo'g'in can close its own request).
+    renderWithProviders(<DeliveryPage />, {
+      role: 'central_warehouse_manager',
+      locationId: 2,
+      locationType: 'central_warehouse',
+    });
+    await screen.findByText('Un');
+    expect(screen.queryByRole('button', { name: 'Bekor' })).toBeNull();
+    expect(
+      screen.getAllByRole('button', { name: 'Bajarish' }).length,
+    ).toBeGreaterThan(0);
+  });
+
   it('renders the task list with product, qty, and assignment state', async () => {
     mockFetch();
-    renderWithProviders(<DeliveryPage />);
+    // Stage 4 RBAC — render as central_warehouse_manager scoped to the
+    // task's target location (2). That puts isScoped=true so the assign
+    // and advance buttons render.
+    renderWithProviders(<DeliveryPage />, {
+      role: 'central_warehouse_manager',
+      locationId: 2,
+      locationType: 'central_warehouse',
+    });
 
     expect(await screen.findByText('Un')).toBeInTheDocument();
     expect(screen.getByText('Shakar')).toBeInTheDocument();
@@ -101,7 +155,14 @@ describe('DeliveryPage', () => {
   it('opens the assign dialog and posts the selected user', async () => {
     mockFetch();
     const user = userEvent.setup();
-    renderWithProviders(<DeliveryPage />);
+    // Stage 4 RBAC — render as central_warehouse_manager scoped to the
+    // task's target location (2). That puts isScoped=true so the assign
+    // and advance buttons render.
+    renderWithProviders(<DeliveryPage />, {
+      role: 'central_warehouse_manager',
+      locationId: 2,
+      locationType: 'central_warehouse',
+    });
 
     await screen.findByText('Un');
     const unassignedCard = screen.getByTestId('delivery-task-1');
