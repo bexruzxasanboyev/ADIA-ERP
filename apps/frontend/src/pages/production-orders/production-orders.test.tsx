@@ -103,7 +103,10 @@ describe('ProductionOrdersPage', () => {
   it('finishes a production order via PATCH /:id { status: "done" }', async () => {
     const user = userEvent.setup();
     mockFetch();
-    renderWithProviders(<ProductionOrdersPage />, { role: 'production_manager' });
+    renderWithProviders(<ProductionOrdersPage />, {
+      role: 'production_manager',
+      locationId: 9, // matches ORDER.location_id — Stage 4 RBAC
+    });
     await screen.findByText('Tort tayyor');
     await user.click(screen.getByRole('button', { name: 'Yakunlash' }));
     await waitFor(() => {
@@ -114,10 +117,35 @@ describe('ProductionOrdersPage', () => {
     });
   });
 
+  it('hides every transition button for PM (Stage 1 read-only)', async () => {
+    mockFetch();
+    renderWithProviders(<ProductionOrdersPage />, { role: 'pm' });
+    expect(await screen.findByText('Tort tayyor')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Yakunlash' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Boshlash' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Bekor' })).toBeNull();
+    // PM also loses the "Yangi zayafka" button — canCreate=isOperator.
+    expect(screen.queryByRole('button', { name: /yangi zayafka/i })).toBeNull();
+    expect(screen.getByText(/faqat o.qish/i)).toBeInTheDocument();
+  });
+
+  it('hides transition buttons for an operator on a foreign location', async () => {
+    mockFetch();
+    renderWithProviders(<ProductionOrdersPage />, {
+      role: 'production_manager',
+      locationId: 99, // ORDER.location_id === 9, not 99
+    });
+    expect(await screen.findByText('Tort tayyor')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Yakunlash' })).toBeNull();
+  });
+
   it('shows a BOM-shortage alert on 409 INSUFFICIENT_STOCK', async () => {
     const user = userEvent.setup();
     mockFetch({ doneFails: true });
-    renderWithProviders(<ProductionOrdersPage />, { role: 'production_manager' });
+    renderWithProviders(<ProductionOrdersPage />, {
+      role: 'production_manager',
+      locationId: 9, // matches ORDER.location_id — Stage 4 RBAC
+    });
     await screen.findByText('Tort tayyor');
     await user.click(screen.getByRole('button', { name: 'Yakunlash' }));
     await waitFor(() => {

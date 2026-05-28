@@ -23,7 +23,7 @@ import {
 import { ViewToggle, useViewMode } from '@/components/ViewToggle';
 import { MobileCardList } from '@/components/ui/table-mobile';
 import { useApiQuery } from '@/hooks/useApiQuery';
-import { useAuth } from '@/hooks/useAuth';
+import { useCanAct } from '@/hooks/useCanAct';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import { formatDateTime, formatQty } from '@/lib/format';
@@ -51,13 +51,16 @@ import { ProductionOrderFormDialog } from './ProductionOrderFormDialog';
  *   - new|in_progress → cancelled (Bekor qilish)
  */
 export function ProductionOrdersPage() {
-  const { user } = useAuth();
-  const canCreate =
-    user?.role === 'pm' ||
-    user?.role === 'production_manager' ||
-    user?.role === 'central_warehouse_manager';
-  const canTransition =
-    user?.role === 'pm' || user?.role === 'production_manager';
+  const { isReadOnly, isOperator, canActOn } = useCanAct();
+  // "Yangi zayafka" — Stage 1 (commit 68c5efd) restricts POST
+  // /api/production-orders to production_manager + central_warehouse_manager
+  // on a location they own (PM is read-only). We surface the button to
+  // every operator role and rely on canActOn(target_location_id) inside
+  // the dialog to enforce per-row scoping; the dialog itself can also
+  // pre-filter the location <select>. Showing the button for an operator
+  // who happens to be unassigned is still safe — the backend will 403
+  // and we toast the error in `transition()` (and the dialog).
+  const canCreate = isOperator;
 
   const { notify } = useToast();
   const bp = useBreakpoint();
@@ -125,12 +128,17 @@ export function ProductionOrdersPage() {
   const rows = data ?? [];
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <div className="mx-auto max-w-[120rem] space-y-6">
       <PageHeader
         title="Ishlab chiqarish zayafkalari"
         description="Ishlab chiqarish bo‘limidagi zayafkalar va ularning holati."
         action={
           <div className="flex flex-wrap items-center gap-2">
+            {isReadOnly && (
+              <Badge variant="secondary" aria-label="Faqat o‘qish rejimi">
+                Faqat o‘qish
+              </Badge>
+            )}
             <ViewToggle value={view} onChange={setView} />
             {canCreate && (
               <Button onClick={() => setDialogOpen(true)}>
@@ -165,14 +173,20 @@ export function ProductionOrdersPage() {
 
       {actionError && (
         <p
-          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive-foreground"
+          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
           role="alert"
         >
           {actionError}
         </p>
       )}
 
-      <Card>
+      <Card
+        className={
+          view === 'card' && !showMobileCards
+            ? 'border-0 bg-transparent p-0 shadow-none'
+            : undefined
+        }
+      >
         {isLoading && <LoadingState />}
         {!isLoading && error && (
           <ErrorState message={error} onRetry={refetch} />
@@ -209,7 +223,7 @@ export function ProductionOrdersPage() {
                   },
                 ],
                 footer:
-                  canTransition &&
+                  canActOn(row.location_id) &&
                   (row.status === 'new' || row.status === 'in_progress') ? (
                     <div className="flex flex-wrap gap-2">
                       {row.status === 'new' && (
@@ -252,7 +266,7 @@ export function ProductionOrdersPage() {
           />
         )}
         {!isLoading && !error && rows.length > 0 && !showMobileCards && view === 'card' && (
-          <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 xl:grid-cols-4 2xl:grid-cols-5">
             {rows.map((row) => {
               const isBusy = busyId === row.id;
               const unit = productById.get(row.product_id)?.unit ?? '';
@@ -291,7 +305,7 @@ export function ProductionOrdersPage() {
                       </dd>
                     </div>
                   </dl>
-                  {canTransition &&
+                  {canActOn(row.location_id) &&
                     (row.status === 'new' || row.status === 'in_progress') && (
                       <div className="flex flex-wrap gap-2">
                         {row.status === 'new' && (
@@ -377,7 +391,7 @@ export function ProductionOrdersPage() {
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="inline-flex gap-2">
-                        {canTransition && row.status === 'new' && (
+                        {canActOn(row.location_id) && row.status === 'new' && (
                           <Button
                             variant="outline"
                             size="sm"
@@ -390,7 +404,7 @@ export function ProductionOrdersPage() {
                             Boshlash
                           </Button>
                         )}
-                        {canTransition && row.status === 'in_progress' && (
+                        {canActOn(row.location_id) && row.status === 'in_progress' && (
                           <Button
                             size="sm"
                             disabled={isBusy}
@@ -402,7 +416,7 @@ export function ProductionOrdersPage() {
                             Yakunlash
                           </Button>
                         )}
-                        {canTransition &&
+                        {canActOn(row.location_id) &&
                           (row.status === 'new' || row.status === 'in_progress') && (
                             <Button
                               variant="outline"
