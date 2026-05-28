@@ -33,6 +33,7 @@ import {
 } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
+import { useCanAct } from '@/hooks/useCanAct';
 import { useToast } from '@/components/ui/toast';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import { UNIT_LABELS } from '@/lib/labels';
@@ -77,11 +78,19 @@ export function StockPage({
 }) {
   const { user } = useAuth();
   const { notify } = useToast();
-  // store_manager may not record movements (§6: stock/movement W = no store).
-  const canMove = user?.role !== 'store_manager';
-  // Everyone with stock access (except ai) may edit min/max (§6).
+  const { isReadOnly, isOperator } = useCanAct();
+  // "Harakat qo'shish" — Stage 1 (commit d76e06a) restricts POST
+  // /api/stock/movements to scoped operators. PM is read-only;
+  // store_manager has never been allowed to record movements
+  // (§6 RBAC matrix). The MovementDialog itself enforces per-pair
+  // location scoping when validating the form.
+  const canMove = isOperator && user?.role !== 'store_manager';
+  // Everyone with stock access (except ai) may edit min/max (§6) — and
+  // the backend exempts /api/stock/minmax from authorizeWrite, so PM
+  // keeps the configuration write.
   const canEditMinMax = true;
-  // Manual recalc trigger is PM-only (phase-2.md §6 RBAC matrix).
+  // Manual recalc trigger is PM-only (phase-2.md §6 RBAC matrix and the
+  // backend's configuration exemption per the Stage 6 rbac-matrix test).
   const canRecalc = user?.role === 'pm';
 
   const bp = useBreakpoint();
@@ -146,6 +155,11 @@ export function StockPage({
         description={description ?? 'Bo‘g‘inlar bo‘yicha ostatka va harakatlar.'}
         action={
           <div className="flex flex-wrap items-center gap-2">
+            {isReadOnly && (
+              <Badge variant="secondary" aria-label="Faqat o‘qish rejimi">
+                Faqat o‘qish
+              </Badge>
+            )}
             {canRecalc && (
               <Button
                 variant="outline"
@@ -192,7 +206,7 @@ export function StockPage({
 
       {tab === 'stock' && belowMin > 0 && (
         <div
-          className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive-foreground"
+          className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
           role="alert"
         >
           <Badge variant="danger">{belowMin}</Badge>

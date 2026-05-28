@@ -101,6 +101,49 @@ describe('StockPage — F2.1 dynamic min/max', () => {
     expect(screen.getByText('Dynamic')).toBeInTheDocument();
   });
 
+  it('hides "Harakat qo‘shish" for PM (Stage 1 read-only) but keeps recalc', async () => {
+    // Stock movements are writes (commit d76e06a) — PM is 403 there.
+    // The min/max recalc is the configuration exemption and must
+    // remain available for PM.
+    mockListsAndCaptureRecalc();
+    renderWithProviders(<StockPage />, { role: 'pm' });
+    await screen.findByText('Un');
+    expect(
+      screen.queryByRole('button', { name: /harakat qo.shish/i }),
+    ).toBeNull();
+    expect(
+      screen.getByRole('button', { name: /Min\/max qayta hisob/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/faqat o.qish/i)).toBeInTheDocument();
+  });
+
+  it('shows "Harakat qo‘shish" for a scoped central_warehouse_manager', async () => {
+    mockListsAndCaptureRecalc();
+    renderWithProviders(<StockPage />, {
+      role: 'central_warehouse_manager',
+      locationId: 7,
+      locationType: 'central_warehouse',
+    });
+    await screen.findByText('Un');
+    expect(
+      screen.getByRole('button', { name: /harakat qo.shish/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('hides "Harakat qo‘shish" for store_manager (unchanged)', async () => {
+    // store_manager has never been allowed to record movements (§6).
+    mockListsAndCaptureRecalc();
+    renderWithProviders(<StockPage />, {
+      role: 'store_manager',
+      locationId: 7,
+      locationType: 'store',
+    });
+    await screen.findByText('Un');
+    expect(
+      screen.queryByRole('button', { name: /harakat qo.shish/i }),
+    ).toBeNull();
+  });
+
   it('hides the manual recalc button for non-PM roles', async () => {
     mockListsAndCaptureRecalc();
     renderWithProviders(<StockPage />, {
