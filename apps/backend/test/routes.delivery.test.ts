@@ -195,9 +195,11 @@ describe('GET /api/delivery/tasks', () => {
 describe('PATCH /api/delivery/tasks/:id/assign', () => {
   it('assigns a user, persists the change and audit-logs it', async () => {
     const w = await seedWorld();
+    // PM is read-only (owner-approved 2026-05-28). The storeA manager is
+    // the touching operator for reqNew (storeA is the requester).
     const res = await request(ctx.app)
       .patch(`/api/delivery/tasks/${w.reqNew}/assign`)
-      .set('Authorization', `Bearer ${w.pm.token}`)
+      .set('Authorization', `Bearer ${w.managerA.token}`)
       .send({ user_id: w.courier.id });
     expect(res.status).toBe(200);
     expect(Number(res.body.task.assigned_to_user_id)).toBe(w.courier.id);
@@ -216,6 +218,16 @@ describe('PATCH /api/delivery/tasks/:id/assign', () => {
     expect(Number(audit.rows[0]?.n)).toBe(1);
   });
 
+  it('PM is read-only — assign is 403 (no super-admin bypass)', async () => {
+    const w = await seedWorld();
+    const res = await request(ctx.app)
+      .patch(`/api/delivery/tasks/${w.reqNew}/assign`)
+      .set('Authorization', `Bearer ${w.pm.token}`)
+      .send({ user_id: w.courier.id });
+    expect(res.status).toBe(403);
+    expect(res.body.error?.code).toBe('FORBIDDEN');
+  });
+
   it('user_id=null clears the assignment', async () => {
     const w = await seedWorld();
     // Pre-assign.
@@ -225,7 +237,7 @@ describe('PATCH /api/delivery/tasks/:id/assign', () => {
     );
     const res = await request(ctx.app)
       .patch(`/api/delivery/tasks/${w.reqNew}/assign`)
-      .set('Authorization', `Bearer ${w.pm.token}`)
+      .set('Authorization', `Bearer ${w.managerA.token}`)
       .send({ user_id: null });
     expect(res.status).toBe(200);
     expect(res.body.task.assigned_to_user_id).toBeNull();
@@ -235,7 +247,7 @@ describe('PATCH /api/delivery/tasks/:id/assign', () => {
     const w = await seedWorld();
     const res = await request(ctx.app)
       .patch(`/api/delivery/tasks/${w.reqClosed}/assign`)
-      .set('Authorization', `Bearer ${w.pm.token}`)
+      .set('Authorization', `Bearer ${w.managerA.token}`)
       .send({ user_id: w.courier.id });
     expect(res.status).toBe(422);
   });
@@ -253,7 +265,7 @@ describe('PATCH /api/delivery/tasks/:id/assign', () => {
     const w = await seedWorld();
     const res = await request(ctx.app)
       .patch(`/api/delivery/tasks/${w.reqNew}/assign`)
-      .set('Authorization', `Bearer ${w.pm.token}`)
+      .set('Authorization', `Bearer ${w.managerA.token}`)
       .send({ user_id: 9_999_999 });
     expect(res.status).toBe(422);
   });

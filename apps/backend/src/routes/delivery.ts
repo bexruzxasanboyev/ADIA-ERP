@@ -25,7 +25,7 @@ import { Router } from 'express';
 import { query, type SqlParam } from '../db/index.js';
 import { AppError } from '../errors/index.js';
 import { authenticate } from '../middleware/authenticate.js';
-import { authorize } from '../middleware/authorize.js';
+import { authorize, authorizeWrite } from '../middleware/authorize.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { writeAudit, poolRunner } from '../lib/audit.js';
 import { getPrincipal, isSuperAdmin } from '../lib/principal.js';
@@ -175,8 +175,7 @@ deliveryRouter.get(
 deliveryRouter.patch(
   '/tasks/:id/assign',
   authenticate,
-  authorize(
-    'pm',
+  authorizeWrite(
     'central_warehouse_manager',
     'supply_manager',
     'raw_warehouse_manager',
@@ -224,20 +223,16 @@ deliveryRouter.patch(
       );
     }
 
-    // RBAC: scoped roles must touch the request (requester or target).
-    const chainRoles: ReadonlyArray<string> = [
-      'pm',
-      'central_warehouse_manager',
-      'supply_manager',
-    ];
-    if (!isSuperAdmin(principal) && !chainRoles.includes(principal.role)) {
-      const own = principal.locationId;
-      if (
-        own === null ||
-        (own !== current.requester_location_id && own !== current.target_location_id)
-      ) {
-        throw AppError.forbidden('You may only assign tasks that touch your location.');
-      }
+    // Owner-approved 2026-05-28: every operator (including central
+    // warehouse + supply) must touch the request via its M:N locationIds —
+    // PM is already blocked by authorizeWrite above.
+    const owned = principal.locationIds;
+    const touches =
+      owned.includes(current.requester_location_id) ||
+      (current.target_location_id !== null &&
+        owned.includes(current.target_location_id));
+    if (!touches) {
+      throw AppError.forbidden('You may only assign tasks that touch your location.');
     }
 
     // Validate the target user exists + is active (cheap second round-trip is
