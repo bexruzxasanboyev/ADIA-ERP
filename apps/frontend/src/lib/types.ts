@@ -426,6 +426,25 @@ export interface DashboardRecentMovementItem {
 }
 
 /**
+ * F4.14 — `GET /api/dashboard/revenue-breakdown?date=YYYY-MM-DD` envelope.
+ *
+ * Aggregates the day's cheques by payment method. `byMethod.other` is
+ * a catch-all for cheque payment-types that don't map to one of the
+ * four canonical methods (cash, card, payme, click). Numbers are local
+ * currency major units (so'm), matching the rest of the dashboard.
+ */
+export interface DashboardRevenueBreakdown {
+  total: number;
+  byMethod: {
+    cash: number;
+    card: number;
+    payme: number;
+    click: number;
+    other?: number;
+  };
+}
+
+/**
  * `GET /api/dashboard/overview` envelope. Wired to the backend
  * `OverviewResponse` shape (phase-1-mvp.md §4.8, §2.8).
  */

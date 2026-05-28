@@ -31,6 +31,7 @@ import { CriticalAlerts } from './CriticalAlerts';
 import { MyActionsList } from './MyActionsList';
 import { DashboardSecondaryRow } from './DashboardSecondaryRow';
 import { ChainDetailSheet } from './ChainDetailSheet';
+import { RevenueBreakdown } from './RevenueBreakdown';
 
 const CANVAS_VIEW_STORAGE_KEY = 'adia.dashboard.canvas';
 
@@ -279,6 +280,11 @@ export function ExecutiveDashboardPage() {
         overview={overview.data}
         ecosystem={ecosystem.data}
         range={range}
+      />
+
+      <RevenueBreakdown
+        isoDate={today}
+        fallbackTotal={ecosystem.data?.poster_status.sales_today_sum ?? 0}
       />
 
       <div className="flex items-center justify-between gap-3">
