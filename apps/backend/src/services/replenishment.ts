@@ -855,41 +855,95 @@ async function advanceCheckProductionInput(
   }
   const qtyNeeded = Number(request.qty_needed);
 
-  // For every component, compare the raw-warehouse on-hand against the need.
-  const shortages: { componentId: number; need: number; have: number }[] = [];
+  // ADR-0015 / sub-task #4 — "sex storage check-first":
+  // For every BOM component, BEFORE we hit the raw warehouse we first
+  // look in the production sex's own sex_storage (the buffer of half-
+  // finished goods that lives next to the sex floor). Whatever sits
+  // there is consumed first; only the SHORTFALL is sourced from the
+  // raw warehouse. This matches how bakers actually work — krem / hamr
+  // produced earlier and parked in the sex skladi is used before fresh
+  // raw is touched.
+  //
+  // Per-line accounting (sex_storage take + raw_warehouse need):
+  //   sexTake = min(sexHave, need)          -- always >= 0
+  //   rawNeed = need - sexTake              -- 0 if sex covered it all
+  // The shortage list is now built from `rawNeed > rawHave`.
+  type PerLine = {
+    componentId: number;
+    need: number;
+    sexTake: number;
+    rawNeed: number;
+    rawHave: number;
+  };
+  const perLine: PerLine[] = [];
   for (const line of bom) {
     const need = Number(line.qty_per_unit) * qtyNeeded;
-    const have = await readStockQty(tx, topology.rawWarehouseLocationId, line.component_product_id);
-    if (have < need) {
-      shortages.push({ componentId: line.component_product_id, need, have });
-    }
+    const sexHave =
+      topology.sexStorageLocationId !== null
+        ? await readStockQty(tx, topology.sexStorageLocationId, line.component_product_id)
+        : 0;
+    const sexTake = Math.min(sexHave, need);
+    const rawNeed = need - sexTake;
+    const rawHave =
+      rawNeed > 0
+        ? await readStockQty(tx, topology.rawWarehouseLocationId, line.component_product_id)
+        : 0;
+    perLine.push({
+      componentId: line.component_product_id,
+      need,
+      sexTake,
+      rawNeed,
+      rawHave,
+    });
   }
+  const shortages = perLine
+    .filter((l) => l.rawNeed > l.rawHave)
+    .map((l) => ({ componentId: l.componentId, need: l.rawNeed, have: l.rawHave }));
 
   if (shortages.length === 0) {
-    // ADR-0001 §7 — every BOM component is transferred from the raw warehouse
-    // INTO the production location BEFORE the production order is created.
-    // Without this step the later `finishProductionOrder` flow would find an
-    // empty production location and fail with INSUFFICIENT_STOCK. All
-    // transfers + PO insert run inside the SAME transaction; one transfer
-    // failure rolls every earlier transfer back.
+    // ADR-0001 §7 — every BOM component is transferred INTO the production
+    // location BEFORE the production order is created. Without this step
+    // the later `finishProductionOrder` flow would find an empty production
+    // location and fail with INSUFFICIENT_STOCK. All transfers + PO insert
+    // run inside the SAME transaction; one transfer failure rolls every
+    // earlier transfer back.
+    // ADR-0015 — when the sex_storage covered some / all of the need, we
+    // first move FROM sex_storage TO production (reason='transfer'),
+    // then move the remainder FROM raw_warehouse TO production.
     // ADR-0001 §9 — production output always lands in the central warehouse,
     // which is the request's `target_location_id` (filled at NEW).
     const targetLocationId =
       request.target_location_id ?? topology.centralWarehouseLocationId;
-    for (const line of bom) {
-      const moveQty = Number(line.qty_per_unit) * qtyNeeded;
-      await applyMovement(
-        {
-          productId: line.component_product_id,
-          fromLocationId: topology.rawWarehouseLocationId,
-          toLocationId: topology.productionLocationId,
-          qty: moveQty,
-          reason: 'transfer',
-          actorUserId,
-          replenishmentId: request.id,
-        },
-        tx,
-      );
+    for (const line of perLine) {
+      if (line.sexTake > 0 && topology.sexStorageLocationId !== null) {
+        await applyMovement(
+          {
+            productId: line.componentId,
+            fromLocationId: topology.sexStorageLocationId,
+            toLocationId: topology.productionLocationId,
+            qty: line.sexTake,
+            reason: 'transfer',
+            actorUserId,
+            replenishmentId: request.id,
+            note: 'sex_storage first',
+          },
+          tx,
+        );
+      }
+      if (line.rawNeed > 0) {
+        await applyMovement(
+          {
+            productId: line.componentId,
+            fromLocationId: topology.rawWarehouseLocationId,
+            toLocationId: topology.productionLocationId,
+            qty: line.rawNeed,
+            reason: 'transfer',
+            actorUserId,
+            replenishmentId: request.id,
+          },
+          tx,
+        );
+      }
     }
     const productionOrderId = await createProductionOrderRow(tx, {
       productId: request.product_id,
@@ -1241,6 +1295,15 @@ async function resolveTopology(
   productionLocationId: number | null;
   rawWarehouseLocationId: number | null;
   centralWarehouseLocationId: number | null;
+  /**
+   * ADR-0015 — the sex_storage row that buffers half-finished goods and
+   * ready-batch output between the production sex and the central
+   * warehouse. Per migration 0022, every sex_storage's `parent_id`
+   * points to the production sex floor that owns it; this field is
+   * therefore the CHILD of `productionLocationId`. NULL when the chain
+   * has no sex_storage (legacy chains still use raw_warehouse directly).
+   */
+  sexStorageLocationId: number | null;
 }> {
   const { rows } = await tx.query<{ id: number; type: string; depth: number }>(
     `WITH RECURSIVE chain AS (
@@ -1267,7 +1330,33 @@ async function resolveTopology(
       rawWarehouseLocationId = row.id;
     }
   }
-  return { productionLocationId, rawWarehouseLocationId, centralWarehouseLocationId };
+
+  // ADR-0015 — find the sex_storage CHILD of the production location. The
+  // chain walk above goes UPWARD (requester -> raw_warehouse) and never
+  // reaches the sex_storage (which is a sibling/child, not an ancestor).
+  // We do a single targeted lookup. If the production sex has more than
+  // one sex_storage child (rare but allowed by schema), we pick the
+  // lowest id deterministically — the operator can rotate to a specific
+  // buffer via the manual create endpoint.
+  let sexStorageLocationId: number | null = null;
+  if (productionLocationId !== null) {
+    const { rows: sexRows } = await tx.query<{ id: number }>(
+      `SELECT id FROM locations
+        WHERE parent_id = $1 AND type = 'sex_storage'::location_type
+        ORDER BY id LIMIT 1`,
+      [productionLocationId],
+    );
+    if (sexRows[0] !== undefined) {
+      sexStorageLocationId = Number(sexRows[0].id);
+    }
+  }
+
+  return {
+    productionLocationId,
+    rawWarehouseLocationId,
+    centralWarehouseLocationId,
+    sexStorageLocationId,
+  };
 }
 
 /** Create a `production_orders` row linked back to the request. */
