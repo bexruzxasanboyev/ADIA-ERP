@@ -133,6 +133,38 @@ export interface Location {
   safety_factor: number | null;
 }
 
+/**
+ * EPIC 2.1 — explicit M:N supply-chain flow type. Mirrors the
+ * `location_flows.flow_type` CHECK constraint (migration 0026):
+ *
+ *   - `production_output` — sex → its sex storage (or shared Yarim Fabrika)
+ *   - `bom_input`         — Yarim Fabrika skladi → sex (semi-finished re-use)
+ *   - `forward`           — sex_storage → markaziy / markaziy → store
+ *   - `reverse`           — claw-back / returns (markaziy → upstream)
+ *
+ * Identical value set to {@link DashboardChainEdgeType}; kept as a separate
+ * alias so the admin CRUD surface and the read-only dashboard edge can evolve
+ * independently if the constraint ever diverges.
+ */
+export type FlowType = 'production_output' | 'bom_input' | 'forward' | 'reverse';
+
+/**
+ * EPIC 2.1 — one row of the `location_flows` junction table, as returned by
+ * the admin connection-management endpoint.
+ *
+ * TODO(backend, Wave-5): the `GET/POST/DELETE /api/locations/flows` CRUD
+ * endpoints do not exist yet — only the dashboard ecosystem aggregate reads
+ * `location_flows` (D-0026). The admin UI targets the contract below; once
+ * backend-engineer ships it, no frontend change is required.
+ */
+export interface LocationFlow {
+  id: number;
+  from_location_id: number;
+  to_location_id: number;
+  flow_type: FlowType;
+  note: string | null;
+}
+
 export interface Product {
   id: number;
   name: string;

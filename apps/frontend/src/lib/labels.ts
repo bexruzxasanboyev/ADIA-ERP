@@ -5,6 +5,7 @@
 import type { DateRangePreset } from '@/components/DateRangeFilter';
 import type {
   DashboardAlertType,
+  FlowType,
   LocationType,
   MovementReason,
   PosterSyncStatus,
@@ -44,6 +45,19 @@ export const LOCATION_TYPE_LABELS: Record<LocationType, string> = {
   central_warehouse: 'Markaziy sklad',
   store: 'Do‘kon',
 };
+
+// EPIC 2.1 — oqim (connection) turlari. Admin bo'g'inlar orasidagi oqimni
+// shu turlardan biri bilan belgilaydi (location_flows.flow_type).
+export const FLOW_TYPE_LABELS: Record<FlowType, string> = {
+  production_output: 'Ishlab chiqarish chiqishi',
+  bom_input: 'Yarim tayyor qaytishi',
+  forward: 'Oldinga oqim',
+  reverse: 'Qaytar oqim',
+};
+
+export const FLOW_TYPE_OPTIONS: { value: FlowType; label: string }[] = (
+  Object.keys(FLOW_TYPE_LABELS) as FlowType[]
+).map((value) => ({ value, label: FLOW_TYPE_LABELS[value] }));
 
 export const PRODUCT_TYPE_LABELS: Record<ProductType, string> = {
   raw: 'Xom-ashyo',
