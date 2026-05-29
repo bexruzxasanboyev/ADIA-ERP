@@ -36,6 +36,7 @@ import { AppError } from '../errors/index.js';
 import {
   createNakladnoy,
   getNakladnoy,
+  toNakladnoyDto,
   type NakladnoySource,
 } from '../services/nakladnoy.js';
 
@@ -101,45 +102,96 @@ nakladnoyRouter.get(
       // A scoped principal only sees its own locations' documents. An empty
       // assigned set yields NO rows (rather than leaking everything).
       if (scope.length === 0) {
-        res.status(200).json({ nakladnoy: [] });
+        res.status(200).json({ items: [] });
         return;
       }
       params.push(scope);
-      where = `WHERE location_id = ANY($1::bigint[])`;
+      where = `WHERE n.location_id = ANY($1::bigint[])`;
     }
     params.push(limit);
-    const { rows } = await query<{
+    // Headers + resolved product/store names in one pass (LEFT JOIN — a
+    // multi-product or location-less nakladnoy keeps NULLs).
+    const { rows: headerRows } = await query<{
       id: string;
-      source: string;
-      source_ref: string | null;
       product_id: string | null;
+      product_name: string | null;
       qty: string;
       location_id: string | null;
-      total_amount: string;
-      created_by: string | null;
-      created_at: string;
+      store_name: string | null;
+      created_at: Date | string;
     }>(
-      `SELECT id, source::text AS source, source_ref, product_id, qty,
-              location_id, total_amount, created_by, created_at
-         FROM nakladnoy
+      `SELECT n.id, n.product_id, p.name AS product_name, n.qty,
+              n.location_id, l.name AS store_name, n.created_at
+         FROM nakladnoy n
+         LEFT JOIN products  p ON p.id = n.product_id
+         LEFT JOIN locations l ON l.id = n.location_id
          ${where}
-        ORDER BY created_at DESC, id DESC
+        ORDER BY n.created_at DESC, n.id DESC
         LIMIT $${params.length}`,
       params,
     );
-    res.status(200).json({
-      nakladnoy: rows.map((r) => ({
-        id: Number(r.id),
-        source: r.source,
-        source_ref: r.source_ref,
-        product_id: r.product_id === null ? null : Number(r.product_id),
-        qty: Number(r.qty),
-        location_id: r.location_id === null ? null : Number(r.location_id),
-        total_amount: Number(r.total_amount),
-        created_by: r.created_by === null ? null : Number(r.created_by),
-        created_at: r.created_at,
-      })),
+
+    if (headerRows.length === 0) {
+      res.status(200).json({ items: [] });
+      return;
+    }
+
+    // Lines for the whole page in one query, grouped in memory.
+    const ids = headerRows.map((r) => Number(r.id));
+    const { rows: lineRows } = await query<{
+      nakladnoy_id: string;
+      section: 'hamir' | 'krem' | 'bezak' | 'itogo';
+      component_product_id: string | null;
+      label: string;
+      qty: string;
+      unit: string;
+    }>(
+      `SELECT nakladnoy_id, section::text AS section, component_product_id,
+              label, qty, unit
+         FROM nakladnoy_lines
+        WHERE nakladnoy_id = ANY($1::bigint[])
+        ORDER BY id`,
+      [ids],
+    );
+    const linesByDoc = new Map<number, typeof lineRows>();
+    for (const lr of lineRows) {
+      const key = Number(lr.nakladnoy_id);
+      const arr = linesByDoc.get(key) ?? [];
+      arr.push(lr);
+      linesByDoc.set(key, arr);
+    }
+
+    const items = headerRows.map((h) => {
+      const id = Number(h.id);
+      const lines = (linesByDoc.get(id) ?? []).map((l) => ({
+        section: l.section,
+        component_product_id:
+          l.component_product_id === null ? null : Number(l.component_product_id),
+        label: l.label,
+        qty: Number(l.qty),
+        unit: l.unit,
+      }));
+      return toNakladnoyDto({
+        header: {
+          id,
+          source: 'manual',
+          source_ref: null,
+          product_id: h.product_id === null ? null : Number(h.product_id),
+          qty: Number(h.qty),
+          location_id: h.location_id === null ? null : Number(h.location_id),
+          total_amount: 0,
+          created_by: null,
+          created_at:
+            h.created_at instanceof Date
+              ? h.created_at.toISOString()
+              : String(h.created_at),
+        },
+        lines,
+        productName: h.product_name ?? '',
+        storeName: h.store_name,
+      });
     });
+    res.status(200).json({ items });
   }),
 );
 
@@ -161,6 +213,24 @@ nakladnoyRouter.get(
         throw AppError.forbidden('You may only read nakladnoy for your own location.');
       }
     }
-    res.status(200).json(result);
+    // Resolve product/store names for the frontend `Nakladnoy` contract.
+    const { rows: nameRows } = await query<{
+      product_name: string | null;
+      store_name: string | null;
+    }>(
+      `SELECT p.name AS product_name, l.name AS store_name
+         FROM nakladnoy n
+         LEFT JOIN products  p ON p.id = n.product_id
+         LEFT JOIN locations l ON l.id = n.location_id
+        WHERE n.id = $1`,
+      [id],
+    );
+    const dto = toNakladnoyDto({
+      header: result.header,
+      lines: result.lines,
+      productName: nameRows[0]?.product_name ?? '',
+      storeName: nameRows[0]?.store_name ?? null,
+    });
+    res.status(200).json(dto);
   }),
 );

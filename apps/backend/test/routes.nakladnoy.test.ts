@@ -92,4 +92,50 @@ describe('GET /api/nakladnoy/:id', () => {
       .set('Authorization', `Bearer ${opB.token}`);
     expect(foreign.status).toBe(403);
   });
+
+  it('serializes into the frontend Nakladnoy contract (sections + totals)', async () => {
+    const loc = await makeLocation(ctx.db, { type: 'production', name: 'Sex C' });
+    const op = await makeUser(ctx.db, { role: 'production_manager', locationId: loc });
+    const flour = await makeProduct(ctx.db, { type: 'raw', unit: 'kg', name: 'Un-c' });
+    const sugar = await makeProduct(ctx.db, { type: 'raw', unit: 'kg', name: 'Shakar-c' });
+    const cake = await makeProduct(ctx.db, { type: 'finished', unit: 'pcs', name: 'Tort-c' });
+    // base (hamir) uses flour; decoration (krem) uses sugar.
+    await recipe(cake, flour, 0.5, 'base');
+    await recipe(cake, sugar, 0.2, 'decoration');
+
+    const created = await request(ctx.app)
+      .post('/api/nakladnoy')
+      .set('Authorization', `Bearer ${op.token}`)
+      .send({ product_id: cake, qty: 10, location_id: loc, source: 'sale' });
+    expect(created.status).toBe(201);
+    const id = created.body.header.id;
+
+    // GET /:id — DTO shape.
+    const detail = await request(ctx.app)
+      .get(`/api/nakladnoy/${id}`)
+      .set('Authorization', `Bearer ${op.token}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.id).toBe(id);
+    expect(detail.body.product_name).toBe('Tort-c');
+    expect(detail.body.order_qty).toBe(10);
+    expect(detail.body.store_name).toBe('Sex C');
+    const stages = detail.body.sections.map((s: { stage: string }) => s.stage);
+    expect(stages).toContain('dough');
+    expect(stages).toContain('cream');
+    const dough = detail.body.sections.find((s: { stage: string }) => s.stage === 'dough');
+    expect(dough.lines[0].qty).toBe(5); // 0.5 * 10
+    expect(Array.isArray(detail.body.totals)).toBe(true);
+    expect(detail.body.totals.length).toBeGreaterThan(0);
+
+    // GET / list — envelope { items: [...] } with the same per-item shape.
+    const list = await request(ctx.app)
+      .get('/api/nakladnoy?limit=200')
+      .set('Authorization', `Bearer ${op.token}`);
+    expect(list.status).toBe(200);
+    expect(Array.isArray(list.body.items)).toBe(true);
+    const mine = list.body.items.find((n: { id: number }) => n.id === id);
+    expect(mine).toBeDefined();
+    expect(mine.sections.length).toBeGreaterThan(0);
+    expect(mine.totals.length).toBeGreaterThan(0);
+  });
 });

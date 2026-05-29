@@ -448,6 +448,96 @@ export async function getNakladnoy(
   return { header: normalizeHeader(headerRow), lines };
 }
 
+// -----------------------------------------------------------------------------
+// Frontend contract serialization (EPIC 8 — types.ts `Nakladnoy`)
+// -----------------------------------------------------------------------------
+//
+// The persisted model uses the document vocabulary (hamir/krem/bezak/itogo).
+// The frontend `Nakladnoy` contract groups lines by the BOM `RecipeStage`
+// (dough/cream/decoration/other) with a separate `totals` roll-up. This maps
+// the two without leaking the storage enum across the boundary.
+
+/** Frontend `RecipeStage` (apps/frontend/src/lib/types.ts). */
+type RecipeStage = 'dough' | 'cream' | 'decoration' | 'other';
+
+const SECTION_TO_STAGE: Record<Exclude<NakladnoySection, 'itogo'>, RecipeStage> = {
+  hamir: 'dough',
+  krem: 'cream',
+  bezak: 'decoration',
+};
+
+export type NakladnoyMaterialLineDto = {
+  readonly product_id: number;
+  readonly product_name: string;
+  readonly unit: string;
+  readonly qty: number;
+};
+
+export type NakladnoySectionDto = {
+  readonly stage: RecipeStage;
+  readonly lines: NakladnoyMaterialLineDto[];
+};
+
+export type NakladnoyDto = {
+  readonly id: number;
+  readonly product_id: number;
+  readonly product_name: string;
+  readonly order_qty: number;
+  readonly store_id: number | null;
+  readonly store_name: string | null;
+  readonly created_at: string;
+  readonly sections: NakladnoySectionDto[];
+  readonly totals: NakladnoyMaterialLineDto[];
+};
+
+/**
+ * Map one persisted nakladnoy (header + lines + resolved names) into the
+ * frontend `Nakladnoy` contract: hamir/krem/bezak lines become per-stage
+ * `sections`, the `itogo` lines become the `totals` roll-up.
+ */
+export function toNakladnoyDto(args: {
+  readonly header: NakladnoyHeader;
+  readonly lines: NakladnoyLine[];
+  readonly productName: string;
+  readonly storeName: string | null;
+}): NakladnoyDto {
+  const sectionMap = new Map<RecipeStage, NakladnoyMaterialLineDto[]>();
+  const totals: NakladnoyMaterialLineDto[] = [];
+  for (const l of args.lines) {
+    const dto: NakladnoyMaterialLineDto = {
+      product_id: l.component_product_id ?? 0,
+      product_name: l.label,
+      unit: l.unit,
+      qty: l.qty,
+    };
+    if (l.section === 'itogo') {
+      totals.push(dto);
+      continue;
+    }
+    const stage = SECTION_TO_STAGE[l.section];
+    const arr = sectionMap.get(stage) ?? [];
+    arr.push(dto);
+    sectionMap.set(stage, arr);
+  }
+  // Stable section order: dough, cream, decoration, other.
+  const stageOrder: RecipeStage[] = ['dough', 'cream', 'decoration', 'other'];
+  const sections: NakladnoySectionDto[] = stageOrder
+    .filter((s) => sectionMap.has(s))
+    .map((stage) => ({ stage, lines: sectionMap.get(stage)! }));
+
+  return {
+    id: args.header.id,
+    product_id: args.header.product_id ?? 0,
+    product_name: args.productName,
+    order_qty: args.header.qty,
+    store_id: args.header.location_id,
+    store_name: args.storeName,
+    created_at: args.header.created_at,
+    sections,
+    totals,
+  };
+}
+
 type NakladnoyHeaderRow = {
   id: number | string;
   source: NakladnoySource;
