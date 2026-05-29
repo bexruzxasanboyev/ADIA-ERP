@@ -144,10 +144,24 @@ export interface Product {
   is_active: boolean;
 }
 
-/** A single BOM line — phase-1-mvp.md §4.3. */
+/**
+ * BOM stage — EPIC 1.5. Splits a finished-product recipe into the dough /
+ * cream / decoration phases the bakers think in. The backend adds
+ * `recipes.stage` in Wave-3; until it ships, the column may be absent on
+ * the wire — every UI surface treats a missing/`null`/unknown stage as
+ * `other` and degrades gracefully (a single "Boshqa" section).
+ */
+export type RecipeStage = 'dough' | 'cream' | 'decoration' | 'other';
+
+/** A single BOM line — phase-1-mvp.md §4.3, extended in EPIC 1.5. */
 export interface RecipeLine {
   component_product_id: number;
   qty_per_unit: number;
+  /**
+   * Optional production stage. Absent until the backend `recipes.stage`
+   * migration lands; defaults to `other` for display/edit.
+   */
+  stage?: RecipeStage | null;
 }
 
 /** Stock row for a (location, product) pair — phase-1-mvp.md §4.4. */

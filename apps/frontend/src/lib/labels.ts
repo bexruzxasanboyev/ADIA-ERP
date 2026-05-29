@@ -11,6 +11,7 @@ import type {
   ProductType,
   ProductionOrderStatus,
   PurchaseOrderStatus,
+  RecipeStage,
   ReplenishmentStatus,
   Role,
   Unit,
@@ -55,6 +56,25 @@ export const UNIT_LABELS: Record<Unit, string> = {
   l: 'l',
   pcs: 'dona',
 };
+
+/**
+ * EPIC 1.5 — BOM stage section labels for the recipe modal. `other` is the
+ * catch-all used when the backend has not (yet) tagged a line with a stage.
+ */
+export const RECIPE_STAGE_LABELS: Record<RecipeStage, string> = {
+  dough: 'Hamir',
+  cream: 'Krem',
+  decoration: 'Bezak',
+  other: 'Boshqa',
+};
+
+/** Stable display order of BOM stages in the recipe modal. */
+export const RECIPE_STAGE_ORDER: RecipeStage[] = [
+  'dough',
+  'cream',
+  'decoration',
+  'other',
+];
 
 // ---------------------------------------------------------------------------
 // Dashboard date-range copy (EPIC 0.4).
