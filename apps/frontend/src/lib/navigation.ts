@@ -13,7 +13,6 @@ import {
   ClipboardList,
   ShoppingCart,
   TrendingUp,
-  PackageCheck,
   BookOpen,
   type LucideIcon,
 } from 'lucide-react';
@@ -178,17 +177,6 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: 'So‘rovnomalar',
         icon: ClipboardList,
         roles: ALL_ROLES,
-      },
-      {
-        path: '/delivery',
-        label: 'Yetkazib berish',
-        icon: PackageCheck,
-        roles: [
-          'pm',
-          'central_warehouse_manager',
-          'supply_manager',
-          'store_manager',
-        ],
       },
       {
         path: '/production-orders',

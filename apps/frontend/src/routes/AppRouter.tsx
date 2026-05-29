@@ -19,7 +19,6 @@ import { DashboardPage } from '@/pages/dashboard/DashboardPage';
 import { ExecutiveDashboardPage } from '@/pages/dashboard/executive/ExecutiveDashboardPage';
 import { ForecastsPage } from '@/pages/forecasts/ForecastsPage';
 import { ImportWarningsPage } from '@/pages/admin/ImportWarningsPage';
-import { DeliveryPage } from '@/pages/delivery/DeliveryPage';
 import { RawWarehousePage } from '@/pages/chain/RawWarehousePage';
 import { ProductionPage } from '@/pages/chain/ProductionPage';
 import { SupplyPage } from '@/pages/chain/SupplyPage';
@@ -134,21 +133,12 @@ export function AppRouter() {
         {/* F4.14 — unified inbox/outbox/archive ("So'rovnomalar"). */}
         <Route path="/sorovnomalar" element={<RequestsPage />} />
 
-        {/* F4.10 — Yetkazib berish (delivery) module. */}
+        {/* EPIC 4.3 — "Yetkazib berish" (delivery) module removed; sections
+            send directly and receive on arrival. Old bookmarks redirect to
+            the unified requests inbox. */}
         <Route
           path="/delivery"
-          element={
-            <RoleRoute
-              allow={[
-                'pm',
-                'central_warehouse_manager',
-                'supply_manager',
-                'store_manager',
-              ]}
-            >
-              <DeliveryPage />
-            </RoleRoute>
-          }
+          element={<Navigate to="/sorovnomalar" replace />}
         />
 
         <Route

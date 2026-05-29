@@ -63,7 +63,6 @@ describe('PageTabs', () => {
       'central-warehouse',
       'stores',
       'replenishment',
-      'delivery',
       'production-orders',
       'purchase-orders',
     ]) {
