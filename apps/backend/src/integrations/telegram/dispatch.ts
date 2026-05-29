@@ -45,6 +45,12 @@ import {
   cancelDialog,
   getDialog,
 } from '../../services/productionDialog.js';
+import { generateNakladnoyFromVoice } from '../../services/voiceNakladnoy.js';
+import {
+  createNotification,
+  getPmRecipients,
+  getLocationManager,
+} from '../../services/notify.js';
 import type { AuthPrincipal } from '../../auth/jwt.js';
 
 /** A Telegram presser, post-spoofing-check. */
@@ -73,6 +79,8 @@ export const CALLBACK_VERBS = [
   'apprv_all',
   'rej_all',
   'clarify',
+  // EPIC 8.6 — voice → nakladnoy (do'kon FINISHED mahsulot oldi).
+  'nakl',
   // EPIC 5 / ADR-0016 — production dialog answer/cancel.
   'dlg',
   'dlgx',
@@ -194,6 +202,9 @@ export async function dispatchCallback(
   }
   if (verb === 'clarify' && entity === 'vmsg' && parsed.extraId !== null) {
     return clarifyVoiceCallback(id, parsed.extraId, principal);
+  }
+  if (verb === 'nakl' && entity === 'act') {
+    return naklActCallback(id, principal);
   }
 
   // ---- EPIC 5 / ADR-0016 — production dialog answer / cancel ------------
@@ -872,6 +883,131 @@ async function clarifyVoiceCallback(
     result: { voice_message_id: voiceId, product_id: productId },
     removeButtons: false,
   };
+}
+
+/**
+ * EPIC 8.6 — nakl:act:<actionId> — do'kon ovozli xabaridan kelgan FINISHED
+ * mahsulot kirimi uchun `voice` material nakladnoy yaratish.
+ *
+ * Staged action (`assistant_actions`) ning `args` JSONB'idan product_id + qty +
+ * maqsad lokatsiyani o'qiymiz (adjust_stock yoki transfer_stock). Mahsulot
+ * `finished` va lokatsiya `store` bo'lishini qayta tekshiramiz (button stale
+ * bo'lishi mumkin), so'ng `generateNakladnoyFromVoice` (8.4 BOM expansion'ni
+ * reuse qiladi). Stock O'ZGARMAYDI — bu faqat hujjat (egasi qarori). PM +
+ * do'kon manageriga bildirishnoma.
+ *
+ * RBAC: action egasi (`user_id`) yoki pm. Idempotent emas — har bosishda yangi
+ * hujjat; lekin tugma `removeButtons` bilan olib tashlanadi.
+ */
+async function naklActCallback(
+  actionId: number,
+  principal: CallbackPrincipal,
+): Promise<DispatchOutcome> {
+  const { rows } = await query<{
+    user_id: string;
+    tool_name: string;
+    args: Record<string, unknown>;
+    voice_message_id: string | null;
+  }>(
+    `SELECT user_id, tool_name, args, voice_message_id
+       FROM assistant_actions WHERE id = $1`,
+    [actionId],
+  );
+  const act = rows[0];
+  if (act === undefined) return { kind: 'invalid', message: 'Amal topilmadi' };
+  if (Number(act.user_id) !== principal.userId && principal.role !== 'pm') {
+    return { kind: 'rbac', message: 'Bu amal sizga tegishli emas' };
+  }
+
+  const args = act.args ?? {};
+  const productId = toPositiveInt(args.product_id);
+  // adjust_stock → location_id + delta(>0); transfer_stock → to_location_id + qty.
+  const locationId =
+    toPositiveInt(args.location_id) ?? toPositiveInt(args.to_location_id);
+  const qty =
+    act.tool_name === 'transfer_stock'
+      ? toPositiveNumber(args.qty)
+      : toPositiveNumber(args.delta);
+
+  if (productId === null || locationId === null || qty === null) {
+    return {
+      kind: 'invalid',
+      message: 'Nakladnoy uchun mahsulot/miqdor/lokatsiya aniq emas',
+    };
+  }
+
+  // Stale-button guard — mahsulot finished va lokatsiya store ekanini qayta
+  // tasdiqlaymiz.
+  const { rows: chk } = await query<{ ptype: string; ltype: string }>(
+    `SELECT p.type::text AS ptype, l.type::text AS ltype
+       FROM products p, locations l
+      WHERE p.id = $1 AND l.id = $2`,
+    [productId, locationId],
+  );
+  const meta = chk[0];
+  if (meta === undefined || meta.ptype !== 'finished' || meta.ltype !== 'store') {
+    return {
+      kind: 'invalid',
+      message: 'Nakladnoy faqat do\'kon oladigan tayyor mahsulot uchun',
+    };
+  }
+
+  try {
+    const result = await withTransaction(async (tx) => {
+      const nak = await generateNakladnoyFromVoice(
+        {
+          voiceMessageId:
+            act.voice_message_id === null ? actionId : Number(act.voice_message_id),
+          productId,
+          qty,
+          locationId,
+          actorUserId: principal.userId,
+          note: `voice→nakladnoy (action ${actionId})`,
+        },
+        tx,
+      );
+      // PM + do'kon manageriga bildirishnoma.
+      const recipients = new Set<number>([principal.userId]);
+      for (const pm of await getPmRecipients(tx)) recipients.add(pm);
+      const manager = await getLocationManager(tx, locationId);
+      if (manager !== null) recipients.add(manager);
+      const body =
+        `Mahsulot #${productId} — ${qty} ${nak.lines[0]?.unit ?? ''}\n` +
+        `Nakladnoy #${nak.header.id} (ovozli xabardan).`;
+      for (const userId of recipients) {
+        await createNotification(tx, {
+          recipientUserId: userId,
+          type: 'nakladnoy_created',
+          title: 'Yangi nakladnoy (ovozli)',
+          body,
+          payload: { nakladnoy_id: nak.header.id, location_id: locationId },
+        });
+      }
+      return nak;
+    });
+    return {
+      kind: 'ok',
+      message: `📄 Nakladnoy #${result.header.id} yaratildi`,
+      result: { nakladnoy_id: result.header.id, line_count: result.lines.length },
+      removeButtons: true,
+    };
+  } catch (err) {
+    return {
+      kind: 'failed',
+      message: 'Nakladnoy yaratib bo\'lmadi',
+      error: (err as Error).message,
+    };
+  }
+}
+
+function toPositiveInt(v: unknown): number | null {
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function toPositiveNumber(v: unknown): number | null {
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 async function markVoiceExecutedIfDone(voiceId: number): Promise<void> {

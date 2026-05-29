@@ -28,6 +28,7 @@ import { loadConfig } from '../../config/index.js';
 import { handleCallbackQuery, type CallbackContext } from './callbackHandler.js';
 import { handleStartCommand, type StartContext } from './startCommand.js';
 import { wireVoiceHandler } from './voiceHandler.js';
+import { handleCashShiftMessage, type CashShiftCtxLike } from './cashShiftHandler.js';
 
 /**
  * Minimal surface the outbox worker needs from a Grammy bot. Kept narrow
@@ -146,6 +147,17 @@ export function ensureCallbackHandlerWired(): void {
   // (Grammy bot.on additive, lekin `inboundWired` flag dublikatlarni
   // bo'g'adi).
   wireVoiceHandler(bot);
+  // EPIC 8.5 — kassir smena topshirig'i (message:text). FAQAT smena
+  // topshirig'iga o'xshagan matnga javob beradi (`looksLikeCashShift`); boshqa
+  // matnni e'tiborsiz qoldiradi. `/start` command'i alohida handler'da —
+  // Grammy command'ni message:text dan oldin ushlaydi, to'qnashuv yo'q.
+  bot.on('message:text', async (ctx) => {
+    try {
+      await handleCashShiftMessage(ctx as unknown as CashShiftCtxLike);
+    } catch (err) {
+      console.error('[telegram-cashshift] uncaught:', (err as Error).message);
+    }
+  });
   inboundWired = true;
 }
 

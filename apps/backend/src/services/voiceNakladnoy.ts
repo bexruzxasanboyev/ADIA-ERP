@@ -14,12 +14,11 @@
  * INVARIANTS: reuses createNakladnoy (no stock mutation, no Poster write-back).
  * One audit row per nakladnoy (written by createNakladnoy).
  *
- * TODO(backend, 8.6 full wiring): hook `generateNakladnoyFromVoice` into the
- * Telegram voice handler so that an `adjust_in`/`transfer`-into-store intent
- * with a resolved product (status='parsed') auto-creates the nakladnoy and a
- * `view`-able notification to PM + store manager. The intent→product
- * resolution + clarification loop is the existing voiceHandler; only the call
- * site is pending. The unit below is fully exercised and ready to call.
+ * WIRING (done): the Telegram voice handler stages an `adjust_in`/`transfer`-
+ * into-store intent for a `finished` product (`voiceHandler.stageIntentAsAction`)
+ * and offers a "📄 Nakladnoy" inline button (`nakl:act:<id>`). When pressed,
+ * `dispatch.naklActCallback` re-validates (finished product + store location),
+ * calls `generateNakladnoyFromVoice`, and notifies PM + store manager.
  */
 import type { TxClient } from '../db/index.js';
 import { createNakladnoy, type NakladnoyResult } from './nakladnoy.js';

@@ -65,6 +65,13 @@ type StagedAction = {
   readonly actionId: number;
   readonly summary: string;
   readonly toolName: string;
+  /**
+   * EPIC 8.6 — true when this staged action puts a FINISHED product INTO a
+   * store (adjust_in / transfer-in). The bot then also offers a
+   * "📄 Nakladnoy" button (`nakl:act:<id>`) so the store can spin a `voice`
+   * material nakladnoy from the same demand.
+   */
+  readonly offerNakladnoy: boolean;
 };
 
 /**
@@ -256,7 +263,7 @@ async function updateVoiceStatus(
 // ---------------------------------------------------------------------------
 
 type ProductMatch =
-  | { kind: 'unique'; id: number; name: string; unit: string }
+  | { kind: 'unique'; id: number; name: string; unit: string; type: string }
   | { kind: 'ambiguous'; candidates: Array<{ id: number; name: string; unit: string }> }
   | { kind: 'not_found' };
 
@@ -276,19 +283,19 @@ export async function resolveProduct(name: string): Promise<ProductMatch> {
   const escaped = trimmed.replace(/\\/g, '\\\\').replace(/[%_]/g, (m) => `\\${m}`);
 
   // 1. exact (case-insensitive).
-  const { rows: exact } = await query<{ id: string; name: string; unit: string }>(
-    `SELECT id, name, unit::text AS unit FROM products
+  const { rows: exact } = await query<{ id: string; name: string; unit: string; type: string }>(
+    `SELECT id, name, unit::text AS unit, type::text AS type FROM products
       WHERE is_active = TRUE AND LOWER(name) = LOWER($1)
       LIMIT 1`,
     [trimmed],
   );
   if (exact[0] !== undefined) {
     const r = exact[0];
-    return { kind: 'unique', id: Number(r.id), name: r.name, unit: r.unit };
+    return { kind: 'unique', id: Number(r.id), name: r.name, unit: r.unit, type: r.type };
   }
   // 2. prefix.
-  const { rows: prefix } = await query<{ id: string; name: string; unit: string }>(
-    `SELECT id, name, unit::text AS unit FROM products
+  const { rows: prefix } = await query<{ id: string; name: string; unit: string; type: string }>(
+    `SELECT id, name, unit::text AS unit, type::text AS type FROM products
       WHERE is_active = TRUE AND name ILIKE $1
       ORDER BY name
       LIMIT 4`,
@@ -296,7 +303,7 @@ export async function resolveProduct(name: string): Promise<ProductMatch> {
   );
   if (prefix.length === 1) {
     const r = prefix[0]!;
-    return { kind: 'unique', id: Number(r.id), name: r.name, unit: r.unit };
+    return { kind: 'unique', id: Number(r.id), name: r.name, unit: r.unit, type: r.type };
   }
   if (prefix.length > 1) {
     return {
@@ -309,8 +316,8 @@ export async function resolveProduct(name: string): Promise<ProductMatch> {
     };
   }
   // 3. substring.
-  const { rows: sub } = await query<{ id: string; name: string; unit: string }>(
-    `SELECT id, name, unit::text AS unit FROM products
+  const { rows: sub } = await query<{ id: string; name: string; unit: string; type: string }>(
+    `SELECT id, name, unit::text AS unit, type::text AS type FROM products
       WHERE is_active = TRUE AND name ILIKE $1
       ORDER BY name
       LIMIT 4`,
@@ -318,7 +325,7 @@ export async function resolveProduct(name: string): Promise<ProductMatch> {
   );
   if (sub.length === 1) {
     const r = sub[0]!;
-    return { kind: 'unique', id: Number(r.id), name: r.name, unit: r.unit };
+    return { kind: 'unique', id: Number(r.id), name: r.name, unit: r.unit, type: r.type };
   }
   if (sub.length > 1) {
     return {
@@ -365,6 +372,15 @@ export async function resolveLocationHint(
     return { id: Number(like[0].id), name: like[0].name };
   }
   return null;
+}
+
+/** EPIC 8.6 — lokatsiya `store` turidami? (nakladnoy taklifi uchun). */
+export async function isStoreLocation(locationId: number): Promise<boolean> {
+  const { rows } = await query<{ type: string }>(
+    `SELECT type::text AS type FROM locations WHERE id = $1`,
+    [locationId],
+  );
+  return rows[0]?.type === 'store';
 }
 
 // ---------------------------------------------------------------------------
@@ -419,6 +435,9 @@ async function stageIntentAsAction(
   // 4) tool + args ni qur.
   let toolName: string;
   let toolArgs: Record<string, unknown>;
+  // EPIC 8.6 — qaysi lokatsiyaga stock kiradi (adjust_in / transfer-in).
+  // adjust_out uchun null — chiqim nakladnoy yaratmaydi.
+  let destLocId: number | null = null;
 
   if (intent.action === 'transfer') {
     // transfer_stock — from va to ikkalasi shart.
@@ -439,6 +458,7 @@ async function stageIntentAsAction(
       qty: intent.qty,
       note: `voice:${voiceId}`,
     };
+    destLocId = toLocId;
   } else {
     // adjust_in (+) / adjust_out (−) → adjust_stock(delta)
     const locId =
@@ -458,7 +478,15 @@ async function stageIntentAsAction(
       delta: intent.action === 'adjust_in' ? intent.qty : -intent.qty,
       note: `voice:${voiceId}`,
     };
+    destLocId = intent.action === 'adjust_in' ? locId : null;
   }
+
+  // EPIC 8.6 — do'kon FINISHED mahsulot oldida nakladnoy tugmasini taklif
+  // qilamiz: product `finished` + stock do'konga kiradi.
+  const offerNakladnoy =
+    match.type === 'finished' &&
+    destLocId !== null &&
+    (await isStoreLocation(destLocId));
 
   // 5) RBAC pre-check + INSERT pending — atomik.
   const tool = getWriteTool(toolName);
@@ -527,6 +555,7 @@ async function stageIntentAsAction(
       actionId: staged.actionId,
       summary: staged.summary,
       toolName,
+      offerNakladnoy,
     },
     line: `• ${staged.summary}`,
   };
@@ -568,6 +597,12 @@ function buildActionKeyboard(
       { text: '✅ Tasdiq', callback_data: `apprv:act:${s.actionId}` },
       { text: '❌ Rad', callback_data: `rej:act:${s.actionId}` },
     ]);
+    // EPIC 8.6 — do'kon FINISHED mahsulot oldi: nakladnoy yaratish tugmasi.
+    if (s.offerNakladnoy) {
+      rows.push([
+        { text: '📄 Nakladnoy', callback_data: `nakl:act:${s.actionId}` },
+      ]);
+    }
   }
   if (staged.length > 1) {
     rows.push([
