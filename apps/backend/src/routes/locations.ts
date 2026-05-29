@@ -26,6 +26,7 @@ import {
   optionalString,
   parseIdParam,
   requireEnum,
+  requireId,
   requireString,
 } from '../lib/validate.js';
 
@@ -64,6 +65,127 @@ type LocationRow = {
 const SELECT_COLUMNS = `id, name, type, parent_id, poster_spot_id, poster_storage_id,
   lead_time_days, review_days, safety_factor, manager_user_id, is_active,
   created_at, updated_at`;
+
+// EPIC 2.1 — explicit M:N supply-chain flows (migration 0026). Must match the
+// `flow_type` CHECK constraint in 0026_location_flows.sql.
+const FLOW_TYPES = ['production_output', 'bom_input', 'forward', 'reverse'] as const;
+
+type LocationFlowRow = {
+  id: number;
+  from_location_id: number;
+  to_location_id: number;
+  flow_type: string;
+  note: string | null;
+};
+
+const FLOW_COLUMNS = 'id, from_location_id, to_location_id, flow_type, note';
+
+// =============================================================================
+// EPIC 2.1 — location flow CRUD (admin connection management, pm only).
+//
+// These routes are declared BEFORE `GET /api/locations/:id` so the literal
+// `/flows` path is not swallowed by the `:id` param matcher (which would
+// reject "flows" as a non-integer id).
+// =============================================================================
+
+// GET /api/locations/flows  — list every flow (pm only).
+locationsRouter.get(
+  '/flows',
+  authenticate,
+  authorize('pm'),
+  asyncHandler(async (_req, res) => {
+    const { rows } = await query<LocationFlowRow>(
+      `SELECT ${FLOW_COLUMNS} FROM location_flows ORDER BY id`,
+    );
+    // List endpoint returns a bare array (spec section 4) — no envelope.
+    res.status(200).json(rows);
+  }),
+);
+
+// POST /api/locations/flows  — create one flow (pm only).
+locationsRouter.post(
+  '/flows',
+  authenticate,
+  authorize('pm'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const body = asObject(req.body);
+    const fromId = requireId(body, 'from_location_id');
+    const toId = requireId(body, 'to_location_id');
+    const flowType = requireEnum(body, 'flow_type', FLOW_TYPES);
+    const note = optionalString(body, 'note');
+
+    if (fromId === toId) {
+      throw AppError.validation('Manba va qabul bo‘g‘ini bir xil bo‘la olmaydi.');
+    }
+
+    // Both endpoints must exist (the FK would also catch this, but a clean
+    // 422 beats a 500 from a constraint violation).
+    const { rows: found } = await query<{ id: number }>(
+      'SELECT id FROM locations WHERE id = ANY($1::int[])',
+      [[fromId, toId]],
+    );
+    const foundIds = new Set(found.map((r) => Number(r.id)));
+    if (!foundIds.has(fromId) || !foundIds.has(toId)) {
+      throw AppError.validation('One or both locations do not exist.');
+    }
+
+    // UNIQUE(from, to, flow_type) — surface a duplicate as 422, not 500.
+    const dup = await query<{ id: number }>(
+      `SELECT id FROM location_flows
+        WHERE from_location_id = $1 AND to_location_id = $2 AND flow_type = $3`,
+      [fromId, toId, flowType],
+    );
+    if (dup.rows.length > 0) {
+      throw AppError.validation('This flow already exists.');
+    }
+
+    const { rows } = await query<LocationFlowRow>(
+      `INSERT INTO location_flows (from_location_id, to_location_id, flow_type, note)
+       VALUES ($1, $2, $3, $4)
+       RETURNING ${FLOW_COLUMNS}`,
+      [fromId, toId, flowType, note ?? null],
+    );
+    const created = rows[0];
+    if (created === undefined) {
+      throw AppError.internal('Location flow insert returned no row.');
+    }
+    await writeAudit(poolRunner, {
+      actorUserId: principal.userId,
+      action: 'location_flow.create',
+      entity: 'location_flows',
+      entityId: created.id,
+      payload: { from_location_id: fromId, to_location_id: toId, flow_type: flowType },
+    });
+    res.status(201).json({ flow: created });
+  }),
+);
+
+// DELETE /api/locations/flows/:id  — remove one flow (pm only).
+locationsRouter.delete(
+  '/flows/:id',
+  authenticate,
+  authorize('pm'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+    const { rows } = await query<{ id: number }>(
+      'DELETE FROM location_flows WHERE id = $1 RETURNING id',
+      [id],
+    );
+    if (rows[0] === undefined) {
+      throw AppError.notFound('Location flow not found.');
+    }
+    await writeAudit(poolRunner, {
+      actorUserId: principal.userId,
+      action: 'location_flow.delete',
+      entity: 'location_flows',
+      entityId: id,
+      payload: null,
+    });
+    res.status(204).end();
+  }),
+);
 
 // GET /api/locations  — pm: all; scoped manager: only own location.
 locationsRouter.get(
