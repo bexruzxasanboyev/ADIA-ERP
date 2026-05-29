@@ -26,6 +26,7 @@
 import { Bot, type BotConfig } from 'grammy';
 import { loadConfig } from '../../config/index.js';
 import { handleCallbackQuery, type CallbackContext } from './callbackHandler.js';
+import { handleStartCommand, type StartContext } from './startCommand.js';
 import { wireVoiceHandler } from './voiceHandler.js';
 
 /**
@@ -125,6 +126,21 @@ export function ensureCallbackHandlerWired(): void {
       },
     };
     await handleCallbackQuery(ctxAdapter);
+  });
+  // EPIC 3.2 — `/start <token>` Telegram self-link command. The only
+  // link verb added to the Telegram layer; production/cash flows untouched.
+  bot.command('start', async (ctx) => {
+    const fromId = ctx.from?.id;
+    if (fromId === undefined) return;
+    // Grammy strips the `/start` prefix into `ctx.match` (the deep-link
+    // payload). An empty payload is a plain greeting, not a link attempt.
+    const token = typeof ctx.match === 'string' ? ctx.match.trim() : '';
+    const startCtx: StartContext = {
+      fromTelegramId: fromId,
+      token,
+      reply: (text) => ctx.reply(text).then(() => undefined),
+    };
+    await handleStartCommand(startCtx);
   });
   // F4.3 / ADR-0014 — message:voice handler. `wireVoiceHandler` ham idempotent
   // (Grammy bot.on additive, lekin `inboundWired` flag dublikatlarni

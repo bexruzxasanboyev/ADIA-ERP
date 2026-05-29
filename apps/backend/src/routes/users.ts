@@ -23,6 +23,10 @@ import { asyncHandler } from '../lib/asyncHandler.js';
 import { writeAudit } from '../lib/audit.js';
 import { getPrincipal } from '../lib/principal.js';
 import {
+  getLinkStatus,
+  issueLinkToken,
+} from '../services/userTelegramLink.js';
+import {
   asObject,
   optionalId,
   optionalString,
@@ -43,7 +47,6 @@ const MIN_PASSWORD_LENGTH = 8;
 type PublicUserRow = {
   id: number;
   name: string;
-  email: string;
   username: string;
   role: string;
   location_id: number | null;
@@ -52,13 +55,13 @@ type PublicUserRow = {
   created_at: Date;
 };
 
-const PUBLIC_COLUMNS = `id, name, email, username, role, location_id, telegram_id, is_active, created_at`;
+const PUBLIC_COLUMNS = `id, name, username, role, location_id, telegram_id, is_active, created_at`;
 
 // Roles that are chain-wide and may have a NULL location (DB check chk_users_location_required).
 const CHAIN_WIDE_ROLES = new Set<string>(['pm', 'ai_assistant']);
 
-/** F4.12 — must mirror chk_users_username_format on the table. */
-const USERNAME_RE = /^[a-z0-9._-]{3,32}$/;
+/** Must mirror chk_users_username_format on the table (migration 0027). */
+const USERNAME_RE = /^[a-z0-9._-]{2,32}$/;
 
 /**
  * Validate a username candidate at the boundary, mirroring the DB CHECK.
@@ -69,28 +72,16 @@ function validateUsername(value: string): string {
   const lowered = value.toLowerCase();
   if (!USERNAME_RE.test(lowered)) {
     throw AppError.validation(
-      'Field "username" must be 3-32 chars and contain only lowercase letters, digits, ".", "_" or "-".',
+      'Field "username" must be 2-32 chars and contain only lowercase letters, digits, ".", "_" or "-".',
     );
   }
   return lowered;
 }
 
 /**
- * Derive a username from an email's local-part exactly like migration 0018:
- * lowercase, strip everything outside [a-z0-9._-], cap at 24 chars. Returns
- * `undefined` when the result is shorter than 3 chars — the caller should
- * fall back to a `user_<id>` style handle.
- */
-function deriveUsernameFromEmail(email: string): string | undefined {
-  const localPart = email.split('@')[0] ?? '';
-  const cleaned = localPart.toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 24);
-  return cleaned.length >= 3 ? cleaned : undefined;
-}
-
-/**
- * Rethrow Postgres 23505 (unique violation) on `uq_users_username` /
- * `users_email_key` as a 409 instead of a raw 500. Anything else is
- * re-thrown unchanged so the central error-handler still sees it.
+ * Rethrow Postgres 23505 (unique violation) on `uq_users_username` as a 409
+ * instead of a raw 500. Anything else is re-thrown unchanged so the central
+ * error-handler still sees it.
  */
 function rethrowUserUniqueViolation(err: unknown): never {
   if (
@@ -102,9 +93,6 @@ function rethrowUserUniqueViolation(err: unknown): never {
     const constraint = (err as { constraint?: unknown }).constraint;
     if (constraint === 'uq_users_username') {
       throw AppError.conflict('Username is already taken.');
-    }
-    if (typeof constraint === 'string' && constraint.includes('email')) {
-      throw AppError.conflict('Email is already in use.');
     }
   }
   throw err as Error;
@@ -164,7 +152,6 @@ usersRouter.post(
     const body = asObject(req.body);
 
     const name = requireString(body, 'name');
-    const email = requireString(body, 'email').toLowerCase();
     const password = requireString(body, 'password');
     if (password.length < MIN_PASSWORD_LENGTH) {
       throw AppError.validation(
@@ -172,15 +159,16 @@ usersRouter.post(
       );
     }
     const role = requireEnum(body, 'role', ROLES);
-    // F4.12 — optional `username`; falls back to a derivation from the email
-    // local-part so the column is never NULL. The DB still has the final say
-    // via the UNIQUE constraint and CHECK regex, which we map to 409 / 422
-    // via rethrowUserUniqueViolation below.
-    const usernameRaw = optionalString(body, 'username');
-    const username =
-      usernameRaw !== undefined
-        ? validateUsername(usernameRaw)
-        : deriveUsernameFromEmail(email) ?? null;
+    // Username is the sole login handle (email was removed entirely). It is
+    // REQUIRED — accept it under either body key `login` or `username`. The
+    // value is validated against the same regex as the DB CHECK; a duplicate
+    // surfaces as a 409 via rethrowUserUniqueViolation below.
+    const usernameRaw =
+      optionalString(body, 'login') ?? optionalString(body, 'username');
+    if (usernameRaw === undefined) {
+      throw AppError.validation('Field "login" (username) is required.');
+    }
+    const username = validateUsername(usernameRaw);
     const singleLocationId = optionalId(body, 'location_id');
     const locationIds = parseLocationIds(body);
     const primaryLocationId = optionalId(body, 'primary_location_id');
@@ -210,13 +198,13 @@ usersRouter.post(
       throw AppError.validation(`Role "${role}" requires at least one location.`);
     }
 
-    // Reject a duplicate email with a clean 422 rather than a raw DB error.
+    // Reject a duplicate username with a clean 409 rather than a raw DB error.
     const existing = await query<{ id: number }>(
-      'SELECT id FROM users WHERE email = $1',
-      [email],
+      'SELECT id FROM users WHERE username = $1',
+      [username],
     );
     if (existing.rows.length > 0) {
-      throw AppError.validation('A user with this email already exists.');
+      throw AppError.conflict('Username is already taken.');
     }
 
     // If location_ids were supplied, confirm all exist before insertion —
@@ -233,25 +221,13 @@ usersRouter.post(
 
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
     const created = await withTransaction(async (tx) => {
-      // Two-step username resolution: when the caller did not provide one
-      // AND we could not derive a valid 3-char handle from the email
-      // (e.g. a Cyrillic local-part), seed a transient placeholder, then
-      // re-write to `user_<id>` once Postgres has assigned an id. The
-      // placeholder uses crypto-random suffix so two simultaneous inserts
-      // never collide on it.
-      let initialUsername = username;
-      const needsRewrite = initialUsername === null;
-      if (initialUsername === null) {
-        initialUsername =
-          'tmp_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
-      }
       let row: PublicUserRow;
       try {
         const result = await tx.query<PublicUserRow>(
-          `INSERT INTO users (name, email, username, password_hash, role, location_id, telegram_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
+          `INSERT INTO users (name, username, password_hash, role, location_id, telegram_id)
+           VALUES ($1, $2, $3, $4, $5, $6)
            RETURNING ${PUBLIC_COLUMNS}`,
-          [name, email, initialUsername, passwordHash, role, primaryId, telegramId ?? null],
+          [name, username, passwordHash, role, primaryId, telegramId ?? null],
         );
         const candidate = result.rows[0];
         if (candidate === undefined) {
@@ -260,17 +236,6 @@ usersRouter.post(
         row = candidate;
       } catch (err) {
         rethrowUserUniqueViolation(err);
-      }
-      // Rewrite placeholder -> `user_<id>` in the same transaction.
-      if (needsRewrite) {
-        const rewrite = await tx.query<PublicUserRow>(
-          `UPDATE users SET username = $2 WHERE id = $1 RETURNING ${PUBLIC_COLUMNS}`,
-          [row.id, `user_${row.id}`],
-        );
-        const updated = rewrite.rows[0];
-        if (updated !== undefined) {
-          row = updated;
-        }
       }
       // Mirror the assigned locations into the M:N junction. `is_primary`
       // tracks the same row as `users.location_id`.
@@ -288,7 +253,6 @@ usersRouter.post(
         entity: 'users',
         entityId: row.id,
         payload: {
-          email,
           username: row.username,
           role,
           location_ids: attached,
@@ -305,8 +269,8 @@ usersRouter.post(
 // PATCH /api/users/:id — pm only (F4.12)
 // ---------------------------------------------------------------------------
 // Partial update — currently supports `username` and `name`. Other fields
-// (role/location/email/password) remain owned by their dedicated endpoints
-// or are intentionally not exposed for ad-hoc updates.
+// (role/location/password) remain owned by their dedicated endpoints or are
+// intentionally not exposed for ad-hoc updates.
 usersRouter.patch(
   '/:id',
   authenticate,
@@ -379,6 +343,94 @@ usersRouter.patch(
       return row;
     });
     res.status(200).json({ user: updated });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// EPIC 3.2 — Telegram self-link
+// ---------------------------------------------------------------------------
+// A user binds their own Telegram account through the bot. The flow is
+// token-based: an admin (or the user themselves) mints a single-use,
+// expiring token here; the user then sends `/start <token>` to the bot,
+// which redeems it and stores `users.telegram_id`.
+//
+// `POST /api/users/:id/telegram-link-token` — mint a token (pm or self).
+// `GET  /api/users/:id/telegram-link-token` — link status (pm or self).
+
+usersRouter.post(
+  '/:id/telegram-link-token',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const userId = parseIdParam(req.params['id'], 'id');
+    // PM may mint a token for anyone; a non-PM may mint only their own.
+    if (principal.role !== 'pm' && principal.userId !== userId) {
+      throw AppError.forbidden('You may only request a link token for yourself.');
+    }
+    const issued = await issueLinkToken(userId, principal.userId);
+    res.status(201).json({
+      token: issued.token,
+      expires_at: issued.expiresAt,
+      // The deep link the UI can render as a button / QR — opens the bot with
+      // the token pre-filled. The bot username is configured client-side; we
+      // return the raw `/start` payload so the frontend can build the URL.
+      start_command: `/start ${issued.token}`,
+    });
+  }),
+);
+
+usersRouter.get(
+  '/:id/telegram-link-token',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const userId = parseIdParam(req.params['id'], 'id');
+    if (principal.role !== 'pm' && principal.userId !== userId) {
+      throw AppError.forbidden('You may only inspect your own Telegram link status.');
+    }
+    const status = await getLinkStatus(userId);
+    res.status(200).json({
+      telegram_linked: status.telegramLinked,
+      telegram_id: status.telegramId,
+      has_pending_token: status.hasPendingToken,
+    });
+  }),
+);
+
+// DELETE /api/users/:id/telegram — pm or self; clear the linked Telegram id.
+usersRouter.delete(
+  '/:id/telegram',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const userId = parseIdParam(req.params['id'], 'id');
+    if (principal.role !== 'pm' && principal.userId !== userId) {
+      throw AppError.forbidden('You may only unlink your own Telegram account.');
+    }
+    await withTransaction(async (tx) => {
+      const { rows } = await tx.query<{ id: string }>(
+        `UPDATE users SET telegram_id = NULL, updated_at = now()
+          WHERE id = $1 RETURNING id`,
+        [userId],
+      );
+      if (rows[0] === undefined) {
+        throw AppError.notFound('User not found.');
+      }
+      // Kill any live link token too — a stale token must not re-bind.
+      await tx.query(
+        `UPDATE user_telegram_link_tokens SET consumed_at = now()
+          WHERE user_id = $1 AND consumed_at IS NULL`,
+        [userId],
+      );
+      await writeAudit(tx, {
+        actorUserId: principal.userId,
+        action: 'user.telegram_link.unlinked',
+        entity: 'users',
+        entityId: userId,
+        payload: null,
+      });
+    });
+    res.status(204).end();
   }),
 );
 
