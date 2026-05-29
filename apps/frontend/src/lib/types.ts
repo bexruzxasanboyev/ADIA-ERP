@@ -1303,3 +1303,184 @@ export interface DeliveryTask {
   created_at: string;
   updated_at: string;
 }
+
+// ---------------------------------------------------------------------------
+// EPIC 8 — Kassa / chek & nakladnoy (owner feedback, changes-2026-05).
+//
+// The backend contracts below (cash shifts, safe expenses, nakladnoy) are
+// NOT implemented yet — they are gaps P8/P10/P11 in
+// docs/specs/changes-2026-05-owner-feedback.md (Poster finance API + write
+// layer). These types describe the EXPECTED shape so the UI can be built
+// and unit-tested against fixtures now; swap the `// TODO(backend)` fetches
+// to the real endpoints once they land. Keep the field names stable so the
+// backend can target them.
+// ---------------------------------------------------------------------------
+
+/**
+ * EPIC 8.2/8.3 — per-receipt (chek) stock reconciliation line.
+ *
+ * For one sold product inside a check: opening stock (`ost`), how many were
+ * sold (`sold`), and the resulting remainder (`remaining = ost - sold`).
+ * When the cash register rang up MORE than was on hand, `remaining` is
+ * negative — a "fors-major" / "noto'g'ri urilgan" situation the owner wants
+ * flagged visually (8.3). Stock itself never goes negative (invariant 3);
+ * this is a reporting signal, not a stored qty.
+ */
+export interface ReceiptStockLine {
+  product_id: number;
+  product_name: string;
+  product_unit: Unit;
+  /** Opening on-hand before this check (ost). */
+  opening_qty: number;
+  /** Quantity sold on this check (sotildi). */
+  sold_qty: number;
+  /** opening_qty - sold_qty; negative means over-sold (fors-major). */
+  remaining_qty: number;
+}
+
+/**
+ * EPIC 8.1/8.2 — a single cash-register check with per-line stock
+ * reconciliation. Extends the F4.9 receipt shape with `lines`.
+ */
+export interface ReceiptWithStock {
+  poster_transaction_id: number;
+  store_id: number;
+  store_name: string;
+  sold_at: string;
+  total_qty: number;
+  total_revenue: number;
+  line_count: number;
+  lines: ReceiptStockLine[];
+  /** True when any line oversold (remaining_qty < 0). */
+  has_force_majeure: boolean;
+}
+
+/** `GET /api/sales/receipts/stock` envelope (EPIC 8.2). */
+export interface ReceiptsStockResponse {
+  items: ReceiptWithStock[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/**
+ * EPIC 8.5 — do'kon kassa smenasi (cash shift) close-out.
+ *
+ * When a store closes a shift the cashier reports the day's money flows;
+ * the owner wants a kniжный/факт style balance (image2 referens):
+ * itogo savdo, naqd, karta, rasxod (expenses), inkassatsiya (cash handed
+ * up), and the closing qoldiq. Mirrors Poster `finance.getCashshifts`
+ * (gap P8) once the backend wraps it.
+ */
+export type CashShiftStatus = 'open' | 'closed';
+
+export interface CashShift {
+  id: number;
+  store_id: number;
+  store_name: string;
+  status: CashShiftStatus;
+  opened_at: string;
+  closed_at: string | null;
+  /** Cashier (hodim) who ran the shift. */
+  cashier_name: string | null;
+  /** Total sales turnover (itogo savdo). */
+  total_sales: number;
+  /** Card / non-cash portion of sales. */
+  card_amount: number;
+  /** Cash portion of sales. */
+  cash_amount: number;
+  /** Expenses paid out of the till (rasxod). */
+  expense_amount: number;
+  /** Cash handed up the chain (inkassatsiya). */
+  collected_amount: number;
+  /** Closing till remainder (qoldiq) = cash_amount - expense - collected. */
+  closing_balance: number;
+  /**
+   * Book vs fact discrepancy (kniжный − факт). 0 when balanced; non-zero
+   * surfaces as a warning so the manager can investigate (image2).
+   */
+  balance_discrepancy: number;
+}
+
+/** `GET /api/cash-shifts` envelope (EPIC 8.5). */
+export interface CashShiftsResponse {
+  items: CashShift[];
+}
+
+/**
+ * EPIC 8.7 — seyf rasxodi (safe expense). A withdrawal recorded against
+ * the company safe; mirrors Poster `finance.createTransaction` (gap P11)
+ * but lives ADIA-side only (owner decision: Poster stays read-only).
+ */
+export interface SafeExpense {
+  id: number;
+  /** ISO timestamp the expense was recorded. */
+  spent_at: string;
+  amount: number;
+  /** Free-text category (e.g. "Ijara", "Maosh", "Transport"). */
+  category: string;
+  note: string | null;
+  /** Who recorded it. */
+  recorded_by_name: string | null;
+}
+
+/** `GET /api/safe-expenses` envelope (EPIC 8.7). */
+export interface SafeExpensesResponse {
+  items: SafeExpense[];
+}
+
+/**
+ * EPIC 8.4 — zayavka → nakladnoy.
+ *
+ * "10 Napoleon sotildi" expands, via the recipes (BOM), into a single
+ * nakladnoy split into sections (krem uchun, hamir uchun, ...) plus one
+ * ITOGO roll-up of total raw material per unit (un, shakar... jami kg).
+ * `stage` reuses the BOM `RecipeStage` so a section maps 1:1 to a recipe
+ * stage. Mirrors a future `GET /api/nakladnoy/:id` (write layer gap P11).
+ */
+export interface NakladnoyMaterialLine {
+  product_id: number;
+  product_name: string;
+  unit: Unit;
+  /** Required quantity for this section, scaled to the order qty. */
+  qty: number;
+}
+
+export interface NakladnoySection {
+  /** BOM stage this section corresponds to (krem / hamir / bezak / boshqa). */
+  stage: RecipeStage;
+  lines: NakladnoyMaterialLine[];
+}
+
+/**
+ * The ITOGO roll-up — total required quantity per raw material across all
+ * sections (un, shakar... jami). One line per (product, unit).
+ */
+export interface NakladnoyTotalLine {
+  product_id: number;
+  product_name: string;
+  unit: Unit;
+  qty: number;
+}
+
+export interface Nakladnoy {
+  id: number;
+  /** Source order ("10 Napoleon"). */
+  product_id: number;
+  product_name: string;
+  /** Units sold/ordered that this nakladnoy was computed for. */
+  order_qty: number;
+  /** Destination store/location the order came from. */
+  store_id: number | null;
+  store_name: string | null;
+  created_at: string;
+  /** Per-stage material breakdown (tepa-past bo'limlar). */
+  sections: NakladnoySection[];
+  /** Aggregated total per material (ITOGO umumiy un/shakar...). */
+  totals: NakladnoyTotalLine[];
+}
+
+/** `GET /api/nakladnoy` envelope (EPIC 8.4). */
+export interface NakladnoyListResponse {
+  items: Nakladnoy[];
+}

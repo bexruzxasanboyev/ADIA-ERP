@@ -90,6 +90,27 @@ export const RECIPE_STAGE_ORDER: RecipeStage[] = [
   'other',
 ];
 
+/**
+ * EPIC 8.4 — nakladnoy section headings ("krem uchun", "hamir uchun"…).
+ * The owner wants each BOM stage to read as "<stage> uchun" so the
+ * nakladnoy is self-describing (image19).
+ */
+export const NAKLADNOY_SECTION_LABELS: Record<RecipeStage, string> = {
+  dough: 'Hamir uchun',
+  cream: 'Krem uchun',
+  decoration: 'Bezak uchun',
+  other: 'Boshqa',
+};
+
+/** EPIC 8.5 — kassa smenasi holati. */
+export const CASH_SHIFT_STATUS_LABELS: Record<
+  import('./types').CashShiftStatus,
+  string
+> = {
+  open: 'Ochiq',
+  closed: 'Yopilgan',
+};
+
 // ---------------------------------------------------------------------------
 // Dashboard date-range copy (EPIC 0.4).
 //

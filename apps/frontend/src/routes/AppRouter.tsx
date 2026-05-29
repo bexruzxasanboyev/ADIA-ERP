@@ -23,6 +23,10 @@ import { ProductionPage } from '@/pages/chain/ProductionPage';
 import { SupplyPage } from '@/pages/chain/SupplyPage';
 import { CentralWarehousePage } from '@/pages/chain/CentralWarehousePage';
 import { StoresPage } from '@/pages/chain/StoresPage';
+import { ReceiptsPage } from '@/pages/cashier/ReceiptsPage';
+import { CashShiftsPage } from '@/pages/cashier/CashShiftsPage';
+import { SafeExpensesPage } from '@/pages/cashier/SafeExpensesPage';
+import { NakladnoyPage } from '@/pages/cashier/NakladnoyPage';
 
 /**
  * Application routes (phase-1-mvp.md §2, §6).
@@ -165,6 +169,46 @@ export function AppRouter() {
               ]}
             >
               <PurchaseOrdersPage />
+            </RoleRoute>
+          }
+        />
+
+        {/* EPIC 8 — Kassa / chek & nakladnoy. PM (chain-wide read) +
+            store_manager (own store, RBAC-scoped server-side). The cash
+            shift / safe / nakladnoy backend contracts are not wired yet
+            (gaps P8/P10/P11); the pages degrade to an informative empty
+            state on a 404. */}
+        <Route
+          path="/cashier/receipts"
+          element={
+            <RoleRoute allow={['pm', 'store_manager']}>
+              <ReceiptsPage />
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/cashier/shifts"
+          element={
+            <RoleRoute allow={['pm', 'store_manager']}>
+              <CashShiftsPage />
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/cashier/nakladnoy"
+          element={
+            <RoleRoute
+              allow={['pm', 'store_manager', 'production_manager']}
+            >
+              <NakladnoyPage />
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/cashier/safe"
+          element={
+            <RoleRoute allow={['pm']}>
+              <SafeExpensesPage />
             </RoleRoute>
           }
         />
