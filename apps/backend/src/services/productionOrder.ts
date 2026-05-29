@@ -19,6 +19,7 @@ import { withTransaction, type TxClient } from '../db/index.js';
 import { AppError } from '../errors/index.js';
 import { writeAudit } from '../lib/audit.js';
 import { applyMovement } from './stockMovement.js';
+import { readBaseBom, readFinalBom } from './bom.js';
 import {
   createNotificationsForRecipients,
   getLocationManager,
@@ -39,11 +40,15 @@ export type ProductionOrderRow = {
   created_at: Date;
   updated_at: Date;
   done_at: Date | null;
+  /** ADR-0016 — 'final' (finished cake) | 'zagatovka' (base/70%% sub-order). */
+  stage_role: string;
+  /** ADR-0016 — final order a zagatovka sub-order was raised for (else null). */
+  parent_production_order_id: number | null;
 };
 
 export const PRODUCTION_ORDER_COLUMNS = `id, product_id, qty, location_id,
   target_location_id, deadline, status, replenishment_id, note, created_by,
-  created_at, updated_at, done_at`;
+  created_at, updated_at, done_at, stage_role, parent_production_order_id`;
 
 /**
  * Run the atomic "done" flow for a production order WITHIN an existing
@@ -68,16 +73,23 @@ export async function consumeBomAndProduce(
   }
 
   // BOM lines for the produced product.
-  const { rows: bom } = await tx.query<{
-    component_product_id: number;
-    qty_per_unit: number;
-  }>(
-    'SELECT component_product_id, qty_per_unit FROM recipes WHERE product_id = $1',
-    [order.product_id],
-  );
+  //
+  // ADR-0016 / R3 — which lines we consume depends on the order's stage_role:
+  //   * 'zagatovka' — a base/70%% sub-order: consume the BASE (hamir) lines and
+  //                   output the semi zagatovka into sex_storage.
+  //   * 'final'     — the finished cake: consume the DECORATION lines (krem +
+  //                   bezak + the semi zagatovka component) and output the
+  //                   finished cake into the central warehouse.
+  // A legacy flat recipe (all-base, no decoration) makes `readFinalBom` return
+  // every line, so the pre-ADR-0016 single-pass flow is unchanged.
+  const bom =
+    order.stage_role === 'zagatovka'
+      ? await readBaseBom(tx, order.product_id)
+      : await readFinalBom(tx, order.product_id);
   if (bom.length === 0) {
     throw AppError.validation(
-      `Product ${order.product_id} has no recipe (BOM); cannot run the production flow.`,
+      `Product ${order.product_id} has no recipe (BOM) for stage_role=` +
+        `${order.stage_role}; cannot run the production flow.`,
     );
   }
 

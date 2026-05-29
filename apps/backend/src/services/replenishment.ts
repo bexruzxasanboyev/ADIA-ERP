@@ -26,6 +26,7 @@ import { query, withTransaction, type TxClient } from '../db/index.js';
 import { AppError } from '../errors/index.js';
 import { writeAudit } from '../lib/audit.js';
 import { applyMovement } from './stockMovement.js';
+import { readFinalBom } from './bom.js';
 import {
   createNotification,
   createNotificationsForRecipients,
@@ -840,13 +841,15 @@ async function advanceCheckProductionInput(
   }
 
   // What does the BOM call for, given this request's qty?
-  const { rows: bom } = await tx.query<{
-    component_product_id: number;
-    qty_per_unit: number;
-  }>(
-    'SELECT component_product_id, qty_per_unit FROM recipes WHERE product_id = $1',
-    [request.product_id],
-  );
+  //
+  // ADR-0016 / R3 — read ONLY the FINAL (decoration) lines for a finished
+  // product whose recipe has been split into base/decoration. The base
+  // (hamir) is produced separately as a zagatovka sub-order and arrives in
+  // sex_storage as the `semi` component (consumed via the check-first loop
+  // below). Reading base here too would transfer the hamir components twice.
+  // A legacy flat recipe (all-base, no decoration) returns every line, so the
+  // old single-pass behaviour is unchanged.
+  const bom = await readFinalBom(tx, request.product_id);
   if (bom.length === 0) {
     // No recipe -> we cannot produce, so the only path is purchase the
     // finished product itself. Spec section 3 assumes recipes exist; we
