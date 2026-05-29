@@ -23,6 +23,11 @@ import { writeAudit } from '../../lib/audit.js';
 import { recordImportWarning } from '../../services/importWarnings.js';
 import { PosterClient } from './client.js';
 import {
+  STORAGE_TYPE_BY_ID,
+  STORE_BACKING_STORAGE,
+  DEFAULT_STORAGE_TYPE,
+} from './storageClassification.js';
+import {
   finishSyncRun,
   notifyPosterSyncFailed,
   redactUrl,
@@ -88,6 +93,10 @@ function normaliseQty(
 /**
  * Insert/update one Poster spot into a `locations(type='store')` row. The PM
  * may later edit `name`, `parent_id`, `manager_user_id` via PATCH.
+ *
+ * The ON CONFLICT clause updates ONLY the name — never `poster_storage_id`.
+ * A store-backing storage merged onto this row (ADR-0017 §4, `upsertStorage`)
+ * must survive a re-run of the spot sync.
  */
 async function upsertSpot(spotId: number, name: string): Promise<void> {
   await query(
@@ -100,17 +109,61 @@ async function upsertSpot(spotId: number, name: string): Promise<void> {
 }
 
 /**
- * Insert/update one Poster storage. The owner classifies storage_id ->
- * location_type in spec section 8.2 (Shablon A); until then we default to
- * `central_warehouse`. Existing rows keep their type — only the name updates.
+ * Insert/update one Poster storage (ADR-0017).
+ *
+ *   - Store-backing storages (3/4/5) are NOT inserted as standalone
+ *     locations. Their `poster_storage_id` is merged onto the matching POS
+ *     spot row (P2, ADR §4) so sales + stock land on one store location.
+ *   - Every other storage is inserted at its ADR §3 classified type, with
+ *     `sex_storage` as the safe default for any unknown id.
+ *
+ * Insert-time classification only: ON CONFLICT DO UPDATE rotates ONLY the
+ * `name`, NEVER the `type` — a PM's manual reclassification (PATCH
+ * /api/locations/:id) must not be reverted by a later sync.
  */
 async function upsertStorage(storageId: number, name: string): Promise<void> {
+  const backingSpotId = STORE_BACKING_STORAGE[storageId];
+  if (backingSpotId !== undefined) {
+    await mergeStorageIntoSpot(storageId, backingSpotId);
+    return;
+  }
+  const type = STORAGE_TYPE_BY_ID[storageId] ?? DEFAULT_STORAGE_TYPE;
   await query(
     `INSERT INTO locations (name, type, poster_storage_id)
-     VALUES ($1, 'central_warehouse', $2)
+     VALUES ($1, $2, $3)
      ON CONFLICT (poster_storage_id) WHERE poster_storage_id IS NOT NULL
      DO UPDATE SET name = EXCLUDED.name`,
-    [name, storageId],
+    [name, type, storageId],
+  );
+}
+
+/**
+ * P2 merge (ADR-0017 §4): attach a store-backing `storage_id` to its POS
+ * spot location so that sales (`poster_spot_id`) and stock
+ * (`poster_storage_id`) resolve to the SAME store row.
+ *
+ * The UPDATE is gated so it:
+ *   - only runs when the spot row exists and does not already carry the id
+ *     (idempotent re-run = no-op);
+ *   - never steals a storage id already owned by another spot row
+ *     (preserves uq_locations_poster_storage).
+ *
+ * If the spot row does not exist yet (storage synced before its spot) the
+ * merge is a no-op — the next sync, with the spot present, completes it.
+ */
+async function mergeStorageIntoSpot(storageId: number, spotId: number): Promise<void> {
+  await query(
+    `UPDATE locations AS spot
+        SET poster_storage_id = $1, updated_at = now()
+      WHERE spot.poster_spot_id = $2
+        AND spot.type = 'store'
+        AND spot.poster_storage_id IS DISTINCT FROM $1
+        AND NOT EXISTS (
+          SELECT 1 FROM locations other
+           WHERE other.poster_storage_id = $1
+             AND other.id <> spot.id
+        )`,
+    [storageId, spotId],
   );
 }
 

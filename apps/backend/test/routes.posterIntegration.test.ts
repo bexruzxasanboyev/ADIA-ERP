@@ -179,7 +179,12 @@ describe('POST /api/integrations/poster/sync (pm)', () => {
     const { rows } = await ctx.db.query<{ poster_spot_id: number | null; poster_storage_id: number | null }>(
       `SELECT poster_spot_id, poster_storage_id FROM locations`,
     );
-    expect(rows.length).toBe(2);
+    // ADR-0017 §4 (P2): storage 3 is store-backing — it does NOT create a
+    // standalone location, it merges onto spot 1's row. So a single store
+    // location carries BOTH the spot id and the storage id.
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.poster_spot_id).toBe(1);
+    expect(rows[0]?.poster_storage_id).toBe(3);
   });
 });
 

@@ -110,25 +110,92 @@ describe('Poster seedSync — spots', () => {
   });
 });
 
-describe('Poster seedSync — storages', () => {
-  it('upserts storages and keeps existing type on re-run', async () => {
+describe('Poster seedSync — storages (ADR-0017 classification)', () => {
+  it('classifies storages at insert time and keeps a PM reclassification on re-run', async () => {
     const client = clientForResponses({
       'storage.getStorages': [
-        { storage_id: '3', storage_name: 'Склад Кукча' },
-        { storage_id: '20', storage_name: 'Производственный Цех' },
+        { storage_id: '2', storage_name: 'Основной склад' }, // raw_warehouse
+        { storage_id: '8', storage_name: 'Склад Центральный' }, // central_warehouse
+        { storage_id: '20', storage_name: 'Производственный Цех' }, // production
+        { storage_id: '19', storage_name: 'Склад Тортов' }, // sex_storage
+        { storage_id: '777', storage_name: 'Склад Новый' }, // unknown -> default sex_storage
       ],
     });
     await syncStorages(client);
-    // PM reclassifies the second storage as a `production` location.
-    await ctx.db.query(`UPDATE locations SET type='production' WHERE poster_storage_id=20`);
 
-    // Second run must NOT overwrite the PM's classification.
-    await syncStorages(client);
-    const { rows } = await ctx.db.query<{ type: string; poster_storage_id: number }>(
+    const { rows: first } = await ctx.db.query<{ type: string; poster_storage_id: number }>(
       `SELECT type, poster_storage_id FROM locations ORDER BY poster_storage_id`,
     );
-    expect(rows.find((r) => r.poster_storage_id === 20)?.type).toBe('production');
-    expect(rows.find((r) => r.poster_storage_id === 3)?.type).toBe('central_warehouse');
+    expect(first.find((r) => r.poster_storage_id === 2)?.type).toBe('raw_warehouse');
+    expect(first.find((r) => r.poster_storage_id === 8)?.type).toBe('central_warehouse');
+    expect(first.find((r) => r.poster_storage_id === 20)?.type).toBe('production');
+    expect(first.find((r) => r.poster_storage_id === 19)?.type).toBe('sex_storage');
+    // Unknown id falls back to the safe default.
+    expect(first.find((r) => r.poster_storage_id === 777)?.type).toBe('sex_storage');
+
+    // PM reclassifies storage 19 as a `central_warehouse` by mistake-fix.
+    await ctx.db.query(`UPDATE locations SET type='raw_warehouse' WHERE poster_storage_id=19`);
+
+    // Second run must NOT overwrite the PM's classification — only name updates.
+    await syncStorages(client);
+    const { rows: second } = await ctx.db.query<{ type: string; poster_storage_id: number }>(
+      `SELECT type, poster_storage_id FROM locations ORDER BY poster_storage_id`,
+    );
+    expect(second.find((r) => r.poster_storage_id === 19)?.type).toBe('raw_warehouse');
+    // No duplicate rows on re-run.
+    expect(second.filter((r) => r.poster_storage_id === 19)).toHaveLength(1);
+  });
+
+  it('merges store-backing storages (3/4/5) onto their POS spot rows (P2)', async () => {
+    // Spots first (runSeedSync order), then storages.
+    const client = clientForResponses({
+      'access.getSpots': [
+        { spot_id: '1', spot_name: 'Кукча' },
+        { spot_id: '2', spot_name: 'Рабочий' },
+        { spot_id: '3', spot_name: 'Чигатай' },
+      ],
+      'storage.getStorages': [
+        { storage_id: '3', storage_name: 'Склад Кукча' },
+        { storage_id: '4', storage_name: 'Склад Рабочий' },
+        { storage_id: '5', storage_name: 'Склад Чигатай' },
+      ],
+    });
+    await syncSpots(client);
+    await syncStorages(client);
+
+    const { rows } = await ctx.db.query<{
+      type: string;
+      poster_spot_id: number | null;
+      poster_storage_id: number | null;
+    }>(`SELECT type, poster_spot_id, poster_storage_id FROM locations ORDER BY poster_spot_id`);
+
+    // No standalone storage rows were created — exactly the 3 spot rows exist.
+    expect(rows).toHaveLength(3);
+    expect(rows.every((r) => r.type === 'store')).toBe(true);
+    // Each spot now carries its backing storage id (sales + stock co-located).
+    expect(rows.find((r) => r.poster_spot_id === 1)?.poster_storage_id).toBe(3);
+    expect(rows.find((r) => r.poster_spot_id === 2)?.poster_storage_id).toBe(4);
+    expect(rows.find((r) => r.poster_spot_id === 3)?.poster_storage_id).toBe(5);
+  });
+
+  it('store-backing merge is idempotent and survives a spot re-sync', async () => {
+    const client = clientForResponses({
+      'access.getSpots': [{ spot_id: '1', spot_name: 'Кукча' }],
+      'storage.getStorages': [{ storage_id: '3', storage_name: 'Склад Кукча' }],
+    });
+    await syncSpots(client);
+    await syncStorages(client);
+    // Re-run both in either order — still one row, storage id intact.
+    await syncStorages(client);
+    await syncSpots(client);
+
+    const { rows } = await ctx.db.query<{
+      poster_spot_id: number | null;
+      poster_storage_id: number | null;
+    }>(`SELECT poster_spot_id, poster_storage_id FROM locations`);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.poster_spot_id).toBe(1);
+    expect(rows[0]?.poster_storage_id).toBe(3);
   });
 });
 
