@@ -147,6 +147,71 @@ export type PosterPaymentReportRow = {
   payment_sum: string | number;
 };
 
+/**
+ * Real `dash.getPaymentsReport` response shape verified against the live
+ * `adia` Poster account on 2026-05-28. Poster does NOT emit an array of
+ * `{payment_id, payment_title, payment_sum}` rows — it emits a single
+ * aggregate object with a per-day breakdown and a grand `total` block.
+ * Money is in tiyin (1 so'm = 100). All numeric-looking fields may arrive
+ * as either strings or numbers — Poster is inconsistent across endpoints.
+ */
+export type PosterPaymentDay = {
+  date: string;
+  payed_cash_sum?: string | number;
+  payed_card_sum?: string | number;
+  payed_cert_in_sum?: string | number;
+  payed_cert_out_sum?: string | number;
+  payed_bonus_sum?: string | number;
+  payed_third_party_sum?: string | number;
+  payed_ewallet_sum?: string | number;
+  payed_sum_sum?: string | number;
+  round_sum?: string | number;
+};
+
+export type PosterPaymentTotal = {
+  payed_cash_sum?: string | number;
+  payed_card_sum?: string | number;
+  payed_cert_in_sum?: string | number;
+  payed_cert_out_sum?: string | number;
+  payed_bonus_sum?: string | number;
+  payed_third_party_sum?: string | number;
+  payed_ewallet_sum?: string | number;
+  payed_sum_sum?: string | number;
+  transactions_count?: string | number;
+};
+
+export type PosterPaymentReport = {
+  days?: PosterPaymentDay[];
+  total: PosterPaymentTotal;
+};
+
+/**
+ * EPIC 0.1 / 0.2 / P4 — `dash.getAnalytics` response (doc §5.1).
+ *
+ * UNIT NOTE: unlike `getPaymentsReport` (tiyin), the analytics `data` series
+ * and `counters.revenue` are ALREADY in so'm — verified live 2026-05-29:
+ * the 2026-05-29 daily revenue was "19553300.0000" (so'm) here vs
+ * 1955330000 (tiyin) in getPaymentsReport. So NO ÷100 for analytics values.
+ *
+ * `data` is the per-interval series (one entry per day when
+ * `interpolate=day`). Values are decimal strings ("31059707.0000").
+ */
+export type PosterAnalyticsCounters = {
+  revenue?: string | number;
+  profit?: string | number;
+  transactions?: string | number;
+  visitors?: string | number;
+  average_receipt?: string | number;
+  average_time?: string | number;
+};
+
+export type PosterAnalytics = {
+  data?: Array<string | number>;
+  data_hourly?: Array<string | number>;
+  data_weekday?: Array<string | number>;
+  counters?: PosterAnalyticsCounters;
+};
+
 // -----------------------------------------------------------------------------
 // Client options + errors
 // -----------------------------------------------------------------------------
@@ -303,14 +368,47 @@ export class PosterClient {
     dateFrom: string; // YYYYMMDD
     dateTo: string;   // YYYYMMDD
     spotId?: number;
-  }): Promise<PosterPaymentReportRow[]> {
+  }): Promise<PosterPaymentReportRow[] | PosterPaymentReport> {
+    // Poster returns ONE of two shapes here:
+    //   • the real `{days, total}` aggregate (production today);
+    //   • a legacy/synthetic per-method row array (used by older tests).
+    // We return the raw response and let the caller branch on shape — that
+    // way a future Poster format change touches one place, not every caller.
     const qs: Record<string, string> = {
       dateFrom: params.dateFrom,
       dateTo: params.dateTo,
     };
     if (params.spotId !== undefined) qs.spot_id = String(params.spotId);
-    const r = await this.call<PosterPaymentReportRow[]>('dash.getPaymentsReport', qs);
+    const r = await this.call<PosterPaymentReportRow[] | PosterPaymentReport>(
+      'dash.getPaymentsReport',
+      qs,
+    );
     return r ?? [];
+  }
+
+  /**
+   * EPIC 0.1 / 0.2 — `dash.getAnalytics`: revenue/profit/transactions series.
+   * The single authoritative revenue source (already in so'm — see
+   * `PosterAnalytics`). Used by the dashboard chart + historical backfill so
+   * the 30-day chart reflects Poster instead of the locally-corrupted `sales`
+   * aggregate. Date strings follow Poster's `YYYYMMDD` convention.
+   */
+  async getAnalytics(params: {
+    dateFrom: string; // YYYYMMDD
+    dateTo: string; // YYYYMMDD
+    interpolate?: 'day' | 'week' | 'month';
+    select?: 'revenue' | 'profit' | 'transactions' | 'visitors' | 'average_receipt';
+    spotId?: number;
+  }): Promise<PosterAnalytics> {
+    const qs: Record<string, string> = {
+      dateFrom: params.dateFrom,
+      dateTo: params.dateTo,
+      interpolate: params.interpolate ?? 'day',
+      select: params.select ?? 'revenue',
+    };
+    if (params.spotId !== undefined) qs.spot_id = String(params.spotId);
+    const r = await this.call<PosterAnalytics>('dash.getAnalytics', qs);
+    return r ?? {};
   }
 
   async getTransaction(transactionId: number): Promise<PosterTransactionFull | null> {

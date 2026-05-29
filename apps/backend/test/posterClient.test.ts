@@ -97,6 +97,42 @@ describe('PosterClient', () => {
     expect(() => new PosterClient({ token: '   ' })).toThrow(/token is missing/);
   });
 
+  it('getAnalytics unwraps the {data, counters} shape and passes day params', async () => {
+    let seenUrl: string | undefined;
+    const client = new PosterClient({
+      token: 'acc:xxx',
+      minIntervalMs: 0,
+      fetcher: ((url: string | URL) => {
+        seenUrl = (typeof url === 'string' ? new URL(url) : url).toString();
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              response: {
+                data: ['31059707.0000', '34788091.0000'],
+                counters: { revenue: '65847798.0000', transactions: '120' },
+              },
+            }),
+            { status: 200 },
+          ),
+        );
+      }) as unknown as typeof fetch,
+    });
+    const a = await client.getAnalytics({
+      dateFrom: '20260430',
+      dateTo: '20260501',
+      interpolate: 'day',
+      select: 'revenue',
+    });
+    expect(a.data).toHaveLength(2);
+    expect(a.counters?.revenue).toBe('65847798.0000');
+    expect(seenUrl).toContain('dash.getAnalytics');
+    expect(seenUrl).toContain('interpolate=day');
+    expect(seenUrl).toContain('select=revenue');
+    // Token never appears un-redacted in our own surfaces — but here we just
+    // assert the request carried the right params.
+    expect(seenUrl).toContain('dateFrom=20260430');
+  });
+
   // Sprint 3 audit P2: `menu.getIngredients` surfaced as `fetch failed` on the
   // very first call after process start (Poster's cold-start is 4–5s; old 10s
   // timeout left no headroom). Fix: bump default timeout to 20s AND retry

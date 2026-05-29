@@ -252,10 +252,18 @@ function resolveScope(principal: AuthPrincipal): Scope {
  * The partial index `ix_stock_below_min` makes the `qty <= min_level` scan
  * O(matches). The LATERAL join picks at most one open request per
  * (product, location) — invariant 2 guarantees there is at most one.
+ *
+ * The `min_level > 0 AND max_level > 0` guard mirrors the replenishment scan
+ * rule (`services/replenishment.ts`: `qty <= min_level AND max_level > 0`): a
+ * product with no configured threshold (e.g. a Poster-synced row at
+ * min/max = 0) has no reorder point and must NOT count as below-min/critical.
+ * This is the SINGLE source the M8 `below_min` array AND the `below_min_count`
+ * KPI both derive from, so the dashboard's critical count is internally
+ * consistent.
  */
 async function fetchBelowMin(scope: Exclude<Scope, { kind: 'empty' }>): Promise<BelowMinRaw[]> {
   const params: SqlParam[] = [];
-  let where = 'WHERE s.qty <= s.min_level';
+  let where = 'WHERE s.qty <= s.min_level AND s.min_level > 0 AND s.max_level > 0';
   if (scope.kind === 'location') {
     params.push(scope.locationId);
     where += ` AND s.location_id = $${params.length}`;
@@ -910,7 +918,10 @@ async function fetchPosterStatus(
            AND started_at > now() - interval '24 hours'`,
     ),
     query<{ cnt: string; total: string | null }>(
-      `SELECT count(*) AS cnt, coalesce(sum(qty),0) AS total
+      // `total` is REVENUE (so'm), not a unit count — multiply qty by price.
+      // The earlier `sum(qty)` rendered "OYLIK TUSHUM" as a piece/kg count,
+      // which the UI labelled as currency. QA Prove-It pinned this regression.
+      `SELECT count(*) AS cnt, coalesce(sum(qty * price),0) AS total
          FROM sales
          ${salesWhere}`,
       salesParams,
@@ -977,7 +988,10 @@ async function fetchChainFlow(
        LEFT JOIN LATERAL (
          SELECT count(*) AS below_min_count
            FROM stock s
-          WHERE s.location_id = l.id AND s.qty <= s.min_level
+          WHERE s.location_id = l.id
+            AND s.qty <= s.min_level
+            AND s.min_level > 0
+            AND s.max_level > 0
        ) bm ON TRUE
        LEFT JOIN LATERAL (
          SELECT count(*) AS open_requests_count
@@ -1083,7 +1097,7 @@ async function fetchChainSummary(
            count(DISTINCT l.id)                                                    AS location_count,
            count(DISTINCT s.product_id) FILTER (WHERE s.product_id IS NOT NULL)    AS total_products,
            coalesce(sum(CASE
-                          WHEN s.qty <= s.min_level AND s.min_level > 0 THEN 1
+                          WHEN s.qty <= s.min_level AND s.min_level > 0 AND s.max_level > 0 THEN 1
                           ELSE 0
                         END), 0)                                                   AS below_min_count
       FROM locations l
@@ -1959,7 +1973,11 @@ async function fetchChainLayerLocations(
        ) tp ON TRUE
        LEFT JOIN LATERAL (
          SELECT count(*) AS below_min_count
-           FROM stock s WHERE s.location_id = l.id AND s.qty <= s.min_level
+           FROM stock s
+          WHERE s.location_id = l.id
+            AND s.qty <= s.min_level
+            AND s.min_level > 0
+            AND s.max_level > 0
        ) bm ON TRUE
        LEFT JOIN LATERAL (
          SELECT count(*) AS open_requests_count
@@ -2358,48 +2376,39 @@ dashboardRouter.get(
       }
     }
 
-    // Lazy import — avoid loading the Poster client at module init when
-    // POSTER_TOKEN is not set in dev (e.g. unit tests that stub the route).
+    // EPIC 0.3 — REAL Poster path. `dash.getPaymentsReport` is already
+    // aggregated by the POS, so we ask Poster for the day's split directly
+    // instead of synthesising a fixed ratio from the (possibly corrupted)
+    // local `sales` table. Money arrives in TIYIN and is converted to so'm by
+    // `paymentReportToBuckets` (see posterMoney.ts for the live-verified ÷100
+    // proof). The buckets always reconcile back to `total`.
+    const { paymentReportToBuckets } = await import(
+      '../integrations/poster/posterMoney.js'
+    );
     const { createPosterClientFromConfig } = await import(
       '../integrations/poster/client.js'
     );
-    const { classifyPosterPayment, emptyPaymentBuckets } = await import(
-      '../integrations/poster/paymentMethods.js'
-    );
 
     const client = createPosterClientFromConfig();
-    const compact = dateStr.replace(/-/g, ''); // Poster wants YYYYMMDD.
-    const rows = await client.getPaymentsReport({
+    const compact = dateStr.replace(/-/g, ''); // YYYY-MM-DD -> YYYYMMDD
+    const report = await client.getPaymentsReport({
       dateFrom: compact,
       dateTo: compact,
-      spotId: spotIdParam ?? undefined,
+      ...(spotIdParam !== null ? { spotId: spotIdParam } : {}),
     });
 
-    const buckets = emptyPaymentBuckets();
-    for (const row of rows) {
-      const id = Number(row.payment_id);
-      const key = classifyPosterPayment(
-        Number.isFinite(id) ? id : undefined,
-        row.payment_title,
-      );
-      const sum = Number(row.payment_sum);
-      if (!Number.isFinite(sum)) continue;
-      buckets[key] += sum;
-    }
-
-    const total =
-      buckets.cash + buckets.card + buckets.payme + buckets.click + buckets.other;
+    const { byMethod, total } = paymentReportToBuckets(report);
 
     const response: RevenueBreakdownResponse = {
       date: dateStr,
       spot_id: spotIdParam,
-      total: Math.round(total * 100) / 100,
+      total,
       by_method: {
-        cash: Math.round(buckets.cash * 100) / 100,
-        card: Math.round(buckets.card * 100) / 100,
-        payme: Math.round(buckets.payme * 100) / 100,
-        click: Math.round(buckets.click * 100) / 100,
-        other: Math.round(buckets.other * 100) / 100,
+        cash: byMethod.cash,
+        card: byMethod.card,
+        payme: byMethod.payme,
+        click: byMethod.click,
+        other: byMethod.other,
       },
     };
     res.status(200).json(response);
