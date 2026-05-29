@@ -115,6 +115,112 @@ describe('GET /api/sales/receipts/stock — chek-level reconciliation', () => {
     expect(earlier.has_force_majeure).toBe(false);
   });
 
+  it('paginates correctly: opening/remaining hold when offset>0 and window>page', async () => {
+    // Regression for the opening-cursor pagination bug: the window-head seed
+    // (live_stock + Σ window sales) is the opening of the NEWEST check, so a
+    // page that starts `offset` checks deep must first subtract the sales of
+    // the newer (preceding) checks. Three checks on one product: oldest sold 3,
+    // middle sold 5, newest sold 2; live stock after all = 4.
+    const store = await makeLocation(ctx.db, { type: 'store', name: 'Page Store' });
+    const product = await makeProduct(ctx.db, { type: 'finished', name: 'Eclair', unit: 'pcs' });
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+
+    const baseTxn = 900000 + Math.floor(Math.random() * 90000);
+    const oldestTxn = baseTxn; // sold 3, sold_at -3h
+    const middleTxn = baseTxn + 1; // sold 5, sold_at -2h
+    const newestTxn = baseTxn + 2; // sold 2, sold_at -1h
+    await ctx.db.query(
+      `INSERT INTO sales (store_id, product_id, qty, price, sold_at, poster_transaction_id, poster_line_id)
+       VALUES ($1, $2, 3, 100, now() - interval '3 hours', $3, 1)`,
+      [store, product, oldestTxn],
+    );
+    await ctx.db.query(
+      `INSERT INTO sales (store_id, product_id, qty, price, sold_at, poster_transaction_id, poster_line_id)
+       VALUES ($1, $2, 5, 100, now() - interval '2 hours', $3, 1)`,
+      [store, product, middleTxn],
+    );
+    await ctx.db.query(
+      `INSERT INTO sales (store_id, product_id, qty, price, sold_at, poster_transaction_id, poster_line_id)
+       VALUES ($1, $2, 2, 100, now() - interval '1 hours', $3, 1)`,
+      [store, product, newestTxn],
+    );
+    // window head opening = live(4) + (3+5+2) = 14.
+    //   newest : opening 14, sold 2, remaining 12
+    //   middle : opening 12, sold 5, remaining 7
+    //   oldest : opening  7, sold 3, remaining 4  (= live)
+    await setStock(ctx.db, { locationId: store, productId: product, qty: 4 });
+
+    // Page 1: limit 1, offset 0 -> the newest check only.
+    const page0 = await request(ctx.app)
+      .get(`/api/sales/receipts/stock?store_id=${store}&limit=1&offset=0`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(page0.status).toBe(200);
+    expect(page0.body.total).toBe(3);
+    expect(page0.body.items).toHaveLength(1);
+    expect(page0.body.items[0].poster_transaction_id).toBe(newestTxn);
+    expect(page0.body.items[0].lines[0].opening_qty).toBe(14);
+    expect(page0.body.items[0].lines[0].remaining_qty).toBe(12);
+    expect(page0.body.items[0].has_force_majeure).toBe(false);
+
+    // Page 2: limit 1, offset 1 -> the middle check. opening MUST be 12, not 14.
+    const page1 = await request(ctx.app)
+      .get(`/api/sales/receipts/stock?store_id=${store}&limit=1&offset=1`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(page1.status).toBe(200);
+    expect(page1.body.items).toHaveLength(1);
+    expect(page1.body.items[0].poster_transaction_id).toBe(middleTxn);
+    expect(page1.body.items[0].lines[0].opening_qty).toBe(12);
+    expect(page1.body.items[0].lines[0].sold_qty).toBe(5);
+    expect(page1.body.items[0].lines[0].remaining_qty).toBe(7);
+    expect(page1.body.items[0].has_force_majeure).toBe(false);
+
+    // Page 3: limit 1, offset 2 -> the oldest check. opening 7, remaining 4=live.
+    const page2 = await request(ctx.app)
+      .get(`/api/sales/receipts/stock?store_id=${store}&limit=1&offset=2`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(page2.status).toBe(200);
+    expect(page2.body.items).toHaveLength(1);
+    expect(page2.body.items[0].poster_transaction_id).toBe(oldestTxn);
+    expect(page2.body.items[0].lines[0].opening_qty).toBe(7);
+    expect(page2.body.items[0].lines[0].remaining_qty).toBe(4);
+    expect(page2.body.items[0].has_force_majeure).toBe(false);
+  });
+
+  it('no false force-majeure on a deep page when stock+sales are consistent', async () => {
+    // Before the fix, offset>0 overstated opening, which could not flip FM true;
+    // but the inverse (a deep page whose corrected opening dips below sold)
+    // must NOT misfire either. Two checks, live 0: newest sold 1, oldest sold 9.
+    const store = await makeLocation(ctx.db, { type: 'store', name: 'DeepFM Store' });
+    const product = await makeProduct(ctx.db, { type: 'finished', name: 'Slice', unit: 'pcs' });
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+
+    const baseTxn = 990000 + Math.floor(Math.random() * 9000);
+    const oldTxn = baseTxn;
+    const newTxn = baseTxn + 1;
+    await ctx.db.query(
+      `INSERT INTO sales (store_id, product_id, qty, price, sold_at, poster_transaction_id, poster_line_id)
+       VALUES ($1, $2, 9, 100, now() - interval '2 hours', $3, 1)`,
+      [store, product, oldTxn],
+    );
+    await ctx.db.query(
+      `INSERT INTO sales (store_id, product_id, qty, price, sold_at, poster_transaction_id, poster_line_id)
+       VALUES ($1, $2, 1, 100, now() - interval '1 hours', $3, 1)`,
+      [store, product, newTxn],
+    );
+    await setStock(ctx.db, { locationId: store, productId: product, qty: 0 });
+    // head = 0 + 10 = 10. newest: opening 10 sold 1 rem 9. oldest: opening 9 sold 9 rem 0.
+
+    const deep = await request(ctx.app)
+      .get(`/api/sales/receipts/stock?store_id=${store}&limit=1&offset=1`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(deep.status).toBe(200);
+    expect(deep.body.items[0].poster_transaction_id).toBe(oldTxn);
+    expect(deep.body.items[0].lines[0].opening_qty).toBe(9);
+    expect(deep.body.items[0].lines[0].sold_qty).toBe(9);
+    expect(deep.body.items[0].lines[0].remaining_qty).toBe(0);
+    expect(deep.body.items[0].has_force_majeure).toBe(false);
+  });
+
   it('store_manager sees only its own store; foreign store_id -> 403', async () => {
     const storeA = await makeLocation(ctx.db, { type: 'store', name: 'StockA' });
     const storeB = await makeLocation(ctx.db, { type: 'store', name: 'StockB' });

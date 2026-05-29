@@ -567,8 +567,8 @@ salesRouter.get(
     }
 
     // 5) Total sold per (store, product) across the ENTIRE window — seeds the
-    //    backward walk from the live stock head (so the oldest check in the
-    //    window opens at the window head).
+    //    backward walk from the live stock head (so the newest check in the
+    //    window opens at the window head: live_stock + Σ window sales).
     const { rows: windowSoldRows } = await query<{
       store_id: string;
       product_id: string;
@@ -587,6 +587,55 @@ salesRouter.get(
       const key = `${r.store_id}:${r.product_id}`;
       const cur = currentStock.get(key) ?? 0;
       openingCursor.set(key, cur + Number(r.sold_qty));
+    }
+
+    // 5b) Pagination correction. The window-head seed (step 5) is the opening
+    //     of the NEWEST check in the window, but this page may start `offset`
+    //     checks deep. Every check newer than this page's first row has already
+    //     drawn its sold qty down from the head, so step the cursor down by the
+    //     sales of those `offset` preceding checks before walking the page.
+    //     Without this, opening/remaining are overstated and `has_force_majeure`
+    //     misfires whenever offset > 0. (offset === 0 → page starts at the head,
+    //     nothing to subtract.)
+    if (offset > 0) {
+      const precedingParams: SqlParam[] = [
+        ...params,
+        reportStoreIds,
+        reportProductIds,
+        offset,
+      ];
+      const precedingLimitIdx = precedingParams.length;
+      const { rows: precedingSoldRows } = await query<{
+        store_id: string;
+        product_id: string;
+        sold_qty: string;
+      }>(
+        // The `offset` checks that sort BEFORE this page (same ORDER BY as the
+        // header page), then their per-(store,product) sold totals.
+        `WITH preceding_checks AS (
+           SELECT s.poster_transaction_id, s.store_id
+             FROM sales s
+             ${where}
+              AND s.store_id  = ANY($${params.length + 1}::bigint[])
+              AND s.product_id = ANY($${params.length + 2}::bigint[])
+            GROUP BY s.poster_transaction_id, s.store_id
+            ORDER BY max(s.sold_at) DESC, s.poster_transaction_id DESC
+            LIMIT $${precedingLimitIdx}
+         )
+         SELECT s.store_id, s.product_id, sum(s.qty) AS sold_qty
+           FROM sales s
+           JOIN preceding_checks pc
+             ON pc.poster_transaction_id = s.poster_transaction_id
+            AND pc.store_id = s.store_id
+          WHERE s.product_id = ANY($${params.length + 2}::bigint[])
+          GROUP BY s.store_id, s.product_id`,
+        precedingParams,
+      );
+      for (const r of precedingSoldRows) {
+        const key = `${r.store_id}:${r.product_id}`;
+        const cur = openingCursor.get(key) ?? 0;
+        openingCursor.set(key, cur - Number(r.sold_qty));
+      }
     }
 
     // 6) Group lines by check, then walk checks NEWEST→OLDEST (header order),
