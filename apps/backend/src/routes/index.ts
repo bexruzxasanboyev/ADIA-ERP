@@ -29,6 +29,7 @@ import { assistantRouter } from './assistant.js';
 import { telegramWebhookRouter } from './telegramWebhook.js';
 import { forecastsRouter } from './forecasts.js';
 import { salesRouter } from './sales.js';
+import { nakladnoyRouter } from './nakladnoy.js';
 
 export const apiRouter: Router = Router();
 
@@ -52,6 +53,8 @@ apiRouter.use('/assistant', assistantRouter);
 apiRouter.use('/forecasts', forecastsRouter);
 // F4.6 — read-only sales window for the Stores layer page.
 apiRouter.use('/sales', salesRouter);
+// EPIC 8.4 — material requisition (nakladnoy) generated from a BOM demand.
+apiRouter.use('/nakladnoy', nakladnoyRouter);
 // EPIC 4.3 (2026-05-29) — the "Yetkazib berish" / delivery module was removed.
 // Departments now ship directly and the receiver accepts on arrival; there is
 // no separate courier-assignment surface. The replenishment state machine
