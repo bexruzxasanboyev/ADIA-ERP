@@ -1,10 +1,8 @@
 import { Fragment, useMemo, useState } from 'react';
-import { Plus } from 'lucide-react';
+import { Plus, CheckCircle2, Circle } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Label } from '@/components/ui/label';
-import { Select } from '@/components/ui/select';
 import {
   Table,
   TableBody,
@@ -19,9 +17,15 @@ import {
   LoadingState,
   PageHeader,
 } from '@/components/PageState';
+import {
+  FilterPopover,
+  type FilterGroup,
+  type FilterValue,
+} from '@/components/ui/filter-popover';
 import { ViewToggle, useViewMode } from '@/components/ViewToggle';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useCanAct } from '@/hooks/useCanAct';
+import { cn } from '@/lib/utils';
 import { formatDateTime, formatQty } from '@/lib/format';
 import {
   PURCHASE_ORDER_STATUS_LABELS,
@@ -36,6 +40,52 @@ import type {
 } from '@/lib/types';
 import { PurchaseOrderFormDialog } from './PurchaseOrderFormDialog';
 import { ApprovalPanel } from './ApprovalPanel';
+
+/**
+ * EPIC 6.1 — at-a-glance two-step approval indicator.
+ *
+ * The full admin→skladchi flow lives in `ApprovalPanel` (inside the
+ * expanded row), but the owner asked for the two-step state to be
+ * visible on the list itself: who has signed (boshliq) and whether the
+ * skladchi has signed. We render two compact pills mirroring the panel's
+ * StepCard icons so a manager can scan the queue without expanding.
+ */
+function ApprovalSteps({ order }: { order: PurchaseOrder }) {
+  const managerSigned = order.manager_approved_by !== null;
+  const keeperSigned = order.keeper_approved_by !== null;
+  return (
+    <div
+      className="flex flex-wrap items-center gap-1.5"
+      aria-label="Ikki bosqichli tasdiq holati"
+    >
+      <StepPill label="Boshliq" signed={managerSigned} />
+      <span aria-hidden="true" className="text-muted-foreground/50">
+        →
+      </span>
+      <StepPill label="Skladchi" signed={keeperSigned} />
+    </div>
+  );
+}
+
+function StepPill({ label, signed }: { label: string; signed: boolean }) {
+  const Icon = signed ? CheckCircle2 : Circle;
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]',
+        signed
+          ? 'border-success/40 bg-success/10 text-success'
+          : 'border-border text-muted-foreground',
+      )}
+    >
+      <Icon className="size-3" aria-hidden="true" />
+      {label}
+      <span className="sr-only">
+        {signed ? ' tasdiqladi' : ' hali tasdiqlamagan'}
+      </span>
+    </span>
+  );
+}
 
 /**
  * M6 — purchase orders list (sotib olish so‘rovlari).
@@ -54,17 +104,37 @@ export function PurchaseOrdersPage() {
   // final check, and a 403 surfaces as a toast inside the dialog.
   const canCreate = isOperator;
 
-  const [status, setStatus] = useState<PurchaseOrderStatus | ''>('');
+  // EPIC 6.2 — status is now one dimension inside the shared
+  // FilterPopover (held as a string[] keyed by 'status'). We still send a
+  // single `?status=` to the backend when exactly one is picked; multiple
+  // selections fall back to client-side filtering so the API contract
+  // stays unchanged.
+  const [filter, setFilter] = useState<FilterValue>({});
   const [dialogOpen, setDialogOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [view, setView] = useViewMode('purchase-orders', 'card');
 
+  const selectedStatuses = useMemo(
+    () => (filter['status'] ?? []) as PurchaseOrderStatus[],
+    [filter],
+  );
   const path =
-    status === ''
-      ? '/api/purchase-orders'
-      : `/api/purchase-orders?status=${status}`;
+    selectedStatuses.length === 1
+      ? `/api/purchase-orders?status=${selectedStatuses[0]}`
+      : '/api/purchase-orders';
   const { data, isLoading, error, refetch } =
     useApiQuery<PurchaseOrder[]>(path);
+
+  const filterGroups = useMemo<FilterGroup[]>(
+    () => [
+      {
+        key: 'status',
+        label: 'Holat',
+        options: PURCHASE_ORDER_STATUS_OPTIONS,
+      },
+    ],
+    [],
+  );
 
   // The table reads `product_name`, `target_location_name`,
   // `manager_approved_name`, `keeper_approved_name`, `supplier_name`
@@ -82,13 +152,28 @@ export function PurchaseOrdersPage() {
     return m;
   }, [products.data]);
 
-  const rows = data ?? [];
+  // When the backend already scoped by a single status the extra filter
+  // is a no-op; for a multi-status selection we narrow client-side.
+  const rows = useMemo(() => {
+    const all = data ?? [];
+    if (selectedStatuses.length <= 1) return all;
+    const set = new Set<PurchaseOrderStatus>(selectedStatuses);
+    return all.filter((r) => set.has(r.status));
+  }, [data, selectedStatuses]);
 
   return (
     <div className="mx-auto max-w-[120rem] space-y-6">
       <PageHeader
         title="Sotib olish so‘rovlari"
-        description="Sex skladining sotib olish hujjatlari va ikki bosqichli tasdiq."
+        description="Admin buyurtma qiladi → skladchi qabul qiladi; ikki bosqichli tasdiq (boshliq + skladchi)."
+        dateTime
+        filter={
+          <FilterPopover
+            groups={filterGroups}
+            value={filter}
+            onApply={setFilter}
+          />
+        }
         action={
           <div className="flex flex-wrap items-center gap-2">
             {isReadOnly && (
@@ -106,27 +191,6 @@ export function PurchaseOrdersPage() {
           </div>
         }
       />
-
-      <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4">
-        <div className="space-y-1">
-          <Label htmlFor="purch-status">Holat bo‘yicha</Label>
-          <Select
-            id="purch-status"
-            className="w-full sm:w-56"
-            value={status}
-            onChange={(e) =>
-              setStatus(e.target.value as PurchaseOrderStatus | '')
-            }
-          >
-            <option value="">Barcha holatlar</option>
-            {PURCHASE_ORDER_STATUS_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </Select>
-        </div>
-      </div>
 
       <Card
         className={
@@ -180,6 +244,12 @@ export function PurchaseOrdersPage() {
                       <dt className="text-muted-foreground">Qabul qiluvchi</dt>
                       <dd className="truncate">{row.target_location_name}</dd>
                     </div>
+                    <div className="col-span-2">
+                      <dt className="mb-1 text-muted-foreground">Tasdiq</dt>
+                      <dd>
+                        <ApprovalSteps order={row} />
+                      </dd>
+                    </div>
                   </dl>
                   <Button
                     variant="outline"
@@ -209,6 +279,7 @@ export function PurchaseOrdersPage() {
                 <TableHead className="text-right">Miqdor</TableHead>
                 <TableHead>Qabul qiluvchi</TableHead>
                 <TableHead>Holat</TableHead>
+                <TableHead>Tasdiq</TableHead>
                 <TableHead>Yaratilgan</TableHead>
                 <TableHead className="text-right">Amal</TableHead>
               </TableRow>
@@ -235,6 +306,9 @@ export function PurchaseOrdersPage() {
                           {PURCHASE_ORDER_STATUS_LABELS[row.status]}
                         </Badge>
                       </TableCell>
+                      <TableCell>
+                        <ApprovalSteps order={row} />
+                      </TableCell>
                       <TableCell className="whitespace-nowrap text-muted-foreground">
                         {formatDateTime(row.created_at)}
                       </TableCell>
@@ -252,7 +326,7 @@ export function PurchaseOrdersPage() {
                     </TableRow>
                     {isOpen && (
                       <TableRow>
-                        <TableCell colSpan={7} className="bg-muted/20">
+                        <TableCell colSpan={8} className="bg-muted/20">
                           <ApprovalPanel order={row} onChanged={refetch} />
                         </TableCell>
                       </TableRow>
