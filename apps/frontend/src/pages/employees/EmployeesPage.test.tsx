@@ -81,7 +81,7 @@ describe('EmployeesPage', () => {
 
     renderWithProviders(<EmployeesPage />);
 
-    expect(screen.getByText('Hodimlar')).toBeTruthy();
+    expect(screen.getByText('Hodimlar / Foydalanuvchilar')).toBeTruthy();
 
     await waitFor(() => {
       expect(screen.getByText('Anvar Karimov')).toBeTruthy();

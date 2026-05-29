@@ -8,7 +8,6 @@ import {
   RefreshCw,
   MapPin,
   Package,
-  Users,
   UserCog,
   ClipboardList,
   ShoppingCart,
@@ -212,13 +211,10 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         roles: MANAGER_ROLES,
       },
       {
-        path: '/users',
-        label: 'Foydalanuvchilar',
-        icon: Users,
-        roles: ['pm'],
-      },
-      {
-        // F4.1 — extended employees admin with M:N location flow.
+        // EPIC 3 — "Foydalanuvchilar" va "Hodimlar" bitta sahifaga
+        // birlashtirildi (hodim = foydalanuvchi). M:N bo'g'in oqimi +
+        // Telegram self-link shu yerda. Eski `/users` → `/employees`
+        // redirect (AppRouter).
         path: '/employees',
         label: 'Hodimlar',
         icon: UserCog,

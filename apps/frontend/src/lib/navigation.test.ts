@@ -7,10 +7,13 @@ import {
 } from './navigation';
 
 describe('navSectionsForRole', () => {
-  it('gives pm every module plus the Users reference screen', () => {
+  it('gives pm every module plus the merged Hodimlar reference screen', () => {
     const sections = navSectionsForRole('pm');
     const paths = sections.flatMap((s) => s.items.map((i) => i.path));
-    expect(paths).toContain('/users');
+    // EPIC 3 — "Foydalanuvchilar" (/users) was merged into "Hodimlar"
+    // (/employees); the standalone /users nav entry no longer exists.
+    expect(paths).toContain('/employees');
+    expect(paths).not.toContain('/users');
     expect(paths).toContain('/locations');
     expect(paths).toContain('/products');
     expect(paths).toContain('/raw-warehouse');
@@ -33,10 +36,11 @@ describe('navSectionsForRole', () => {
     }
   });
 
-  it('hides Users from non-pm roles', () => {
+  it('hides Hodimlar from non-pm roles', () => {
     const sections = navSectionsForRole('store_manager');
     const paths = sections.flatMap((s) => s.items.map((i) => i.path));
     expect(paths).not.toContain('/users');
+    expect(paths).not.toContain('/employees');
   });
 
   it('scopes module screens to the owning role', () => {
@@ -112,9 +116,10 @@ describe('findGroupForPath', () => {
     expect(findGroupForPath('/replenishment/42')?.key).toBe('modules');
   });
 
-  it('returns reference for /products and /users', () => {
+  it('returns reference for /products and /employees', () => {
     expect(findGroupForPath('/products')?.key).toBe('reference');
-    expect(findGroupForPath('/users')?.key).toBe('reference');
+    // EPIC 3 — /users merged into /employees.
+    expect(findGroupForPath('/employees')?.key).toBe('reference');
   });
 
   it('returns dashboard / forecasts for their single screens', () => {
@@ -143,14 +148,15 @@ describe('resolveGroupLanding', () => {
   it('returns null when the role has no visible items in the group', () => {
     // Synthesize a section that nobody but pm can see, then test it.
     const refSection = NAV_SECTIONS.find((s) => s.key === 'reference')!;
-    // /users + /employees are pm-only inside reference, but products
-    // and locations are visible to all manager roles — so reference is
-    // never empty for a manager role. Use a degenerate filter instead.
+    // /employees (merged users+hodimlar) is pm-only inside reference,
+    // but products and locations are visible to all manager roles — so
+    // reference is never empty for a manager role. Use a degenerate
+    // filter to the pm-only item instead.
     const pmOnly = {
       ...refSection,
-      items: refSection.items.filter((item) => item.path === '/users'),
+      items: refSection.items.filter((item) => item.path === '/employees'),
     };
     expect(resolveGroupLanding(pmOnly, 'store_manager')).toBeNull();
-    expect(resolveGroupLanding(pmOnly, 'pm')).toBe('/users');
+    expect(resolveGroupLanding(pmOnly, 'pm')).toBe('/employees');
   });
 });

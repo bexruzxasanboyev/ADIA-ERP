@@ -6,7 +6,6 @@ import { LoginPage } from '@/pages/LoginPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
 import { LocationsPage } from '@/pages/locations/LocationsPage';
 import { LocationDetailPage } from '@/pages/locations/LocationDetailPage';
-import { UsersPage } from '@/pages/users/UsersPage';
 import { EmployeesPage } from '@/pages/employees/EmployeesPage';
 import { ProductsPage } from '@/pages/products/ProductsPage';
 import { StockPage } from '@/pages/stock/StockPage';
@@ -173,18 +172,13 @@ export function AppRouter() {
         {/* M2 — products & recipes. */}
         <Route path="/products" element={<ProductsPage />} />
 
-        {/* M1 — locations & users. */}
+        {/* M1 — locations. */}
         <Route path="/locations" element={<LocationsPage />} />
-        <Route
-          path="/users"
-          element={
-            <RoleRoute allow={['pm']}>
-              <UsersPage />
-            </RoleRoute>
-          }
-        />
 
-        {/* F4.1 — Hodimlar (M:N locations admin). */}
+        {/* EPIC 3 — "Foydalanuvchilar" va "Hodimlar" bitta sahifaga
+            birlashtirildi (hodim = foydalanuvchi). Eski `/users`
+            bookmarklar yangi birlashtirilgan sahifaga yo'naltiriladi. */}
+        <Route path="/users" element={<Navigate to="/employees" replace />} />
         <Route
           path="/employees"
           element={

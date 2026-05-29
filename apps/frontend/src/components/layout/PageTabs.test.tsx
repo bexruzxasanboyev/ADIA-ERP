@@ -108,7 +108,7 @@ describe('PageTabs', () => {
     const list = screen.getByTestId('page-tabs');
     expect(within(list).getByTestId('page-tab-products')).toBeInTheDocument();
     expect(within(list).getByTestId('page-tab-locations')).toBeInTheDocument();
-    expect(within(list).getByTestId('page-tab-users')).toBeInTheDocument();
+    // EPIC 3 — /users merged into /employees; only the merged tab remains.
     expect(within(list).getByTestId('page-tab-employees')).toBeInTheDocument();
   });
 

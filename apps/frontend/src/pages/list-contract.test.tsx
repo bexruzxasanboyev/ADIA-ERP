@@ -14,7 +14,7 @@ import userEvent from '@testing-library/user-event';
 import { renderWithProviders, jsonResponse } from '@/test/render-helpers';
 import { ProductsPage } from './products/ProductsPage';
 import { LocationsPage } from './locations/LocationsPage';
-import { UsersPage } from './users/UsersPage';
+import { EmployeesPage } from './employees/EmployeesPage';
 import { StockPage } from './stock/StockPage';
 import type {
   Location,
@@ -143,9 +143,9 @@ describe('list screen response contracts', () => {
     expect(screen.getAllByText('Markaziy sklad').length).toBeGreaterThan(0);
   });
 
-  it('UsersPage renders rows from a bare User[] response', async () => {
+  it('EmployeesPage renders rows from a bare User[] response (merged users+employees)', async () => {
     mockFetchByPath();
-    renderWithProviders(<UsersPage />);
+    renderWithProviders(<EmployeesPage />);
     expect(await screen.findByText('Aziz Karimov')).toBeInTheDocument();
   });
 
