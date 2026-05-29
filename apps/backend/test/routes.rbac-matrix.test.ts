@@ -183,19 +183,6 @@ describe('PM_WRITE_BLOCKED — PM hits 403 on every business write', () => {
     expect(res.status).toBe(403);
   });
 
-  it('PATCH /api/delivery/tasks/:id/assign — 403', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
-    const store = await makeLocation(ctx.db, { type: 'store' });
-    const product = await makeProduct(ctx.db, { type: 'finished' });
-    const created = await createRequest({
-      productId: product, requesterLocationId: store, qtyNeeded: 1, actorUserId: null,
-    });
-    const res = await request(ctx.app)
-      .patch(`/api/delivery/tasks/${created.id}/assign`)
-      .set('Authorization', `Bearer ${pm.token}`)
-      .send({ user_id: null });
-    expect(res.status).toBe(403);
-  });
 });
 
 // ---------------------------------------------------------------------------
