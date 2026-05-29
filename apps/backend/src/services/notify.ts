@@ -30,7 +30,12 @@ export type NotificationType =
   | 'purchase_request_created'
   | 'purchase_request_approved'
   | 'poster_sync_failed'
-  | 'negative_stock_detected';
+  | 'negative_stock_detected'
+  // EPIC 8.3 — a Poster sale check rang up MORE units than ADIA had on hand
+  // ("noto'g'ri urilgan chek"): POS sold N but stock only had M < N. The sale
+  // is clamped (invariant 3 — qty never negative) and this alert is raised so
+  // an admin/manager can reconcile the discrepancy.
+  | 'wrong_keyed_check';
 
 /**
  * Inline keyboard payload persisted into `notifications.inline_callback`

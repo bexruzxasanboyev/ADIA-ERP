@@ -17,8 +17,13 @@
  * `poster_ingredient_id`) — sales come from the menu side, leftovers come
  * from the storage side. See ADR-0002 §1.
  */
-import { query, withTransaction } from '../../db/index.js';
+import { query, withTransaction, type TxClient } from '../../db/index.js';
 import { writeAudit } from '../../lib/audit.js';
+import {
+  createNotification,
+  getLocationManager,
+  getPmRecipients,
+} from '../../services/notify.js';
 import type { PosterClient, PosterTransactionFull } from './client.js';
 import {
   finishSyncRun,
@@ -44,6 +49,8 @@ export type SalesIngestResult = {
    * even though the wrapping fetch / scan loop succeeded.
    */
   readonly failedLines: number;
+  /** EPIC 8.3 — chek-level shortfalls detected (sold > on-hand). */
+  readonly wrongKeyedLines: number;
 };
 
 /** Locate an ADIA store (`type='store'`) by Poster spot_id. */
@@ -88,15 +95,17 @@ export async function ingestTransaction(
   movementsApplied: number;
   storeFound: boolean;
   failedLines: number;
+  /** EPIC 8.3 — lines whose sold qty exceeded on-hand ("noto'g'ri urilgan"). */
+  wrongKeyedLines: number;
 }> {
   const transactionId = Number(tx.transaction_id);
   if (!Number.isInteger(transactionId) || transactionId <= 0) {
-    return { linesInserted: 0, movementsApplied: 0, storeFound: false, failedLines: 0 };
+    return { linesInserted: 0, movementsApplied: 0, storeFound: false, failedLines: 0, wrongKeyedLines: 0 };
   }
   const spotId = Number(tx.spot_id);
   const storeId = Number.isInteger(spotId) && spotId > 0 ? await resolveStoreId(spotId) : null;
   if (storeId === null) {
-    return { linesInserted: 0, movementsApplied: 0, storeFound: false, failedLines: 0 };
+    return { linesInserted: 0, movementsApplied: 0, storeFound: false, failedLines: 0, wrongKeyedLines: 0 };
   }
   const closedAt = parseCloseDate(tx.date_close);
   const lines = Array.isArray(tx.products) ? tx.products : [];
@@ -107,6 +116,8 @@ export async function ingestTransaction(
   // SQL error silently (only console.error). Now we expose a counter so the
   // sync log can flip to `partial` when any line of any event failed.
   let failedLines = 0;
+  // EPIC 8.3 — count chek-level shortfalls (sold > on-hand).
+  let wrongKeyedLines = 0;
 
   // Each line is its own transaction — a single bad line must not abort the
   // whole check (and the UNIQUE indexes give us idempotency line-by-line).
@@ -151,8 +162,23 @@ export async function ingestTransaction(
           `SELECT qty FROM stock WHERE location_id = $1 AND product_id = $2`,
           [storeId, productId],
         );
-        const have = current.rows[0]?.qty ?? 0;
+        const have = Number(current.rows[0]?.qty ?? 0);
         const decrement = Math.min(have, num);
+        // EPIC 8.3 — fors major: the check rang up MORE than ADIA had on hand.
+        // Stock is clamped to 0 (invariant 3 — never negative); we surface a
+        // chek-level "noto'g'ri urilgan" alert so a human reconciles it.
+        const shortfall = num > have ? num - have : 0;
+        if (shortfall > 0) {
+          await notifyWrongKeyedCheck(txc, {
+            storeId,
+            productId,
+            transactionId,
+            lineId,
+            sold: num,
+            had: have,
+            shortfall,
+          });
+        }
         if (decrement > 0) {
           await txc.query(
             `UPDATE stock SET qty = qty - $1
@@ -183,11 +209,12 @@ export async function ingestTransaction(
             decrement,
           },
         });
-        return { applied: true, decrement };
+        return { applied: true, decrement, shortfall };
       });
       if (result.applied) {
         linesInserted += 1;
         if ((result.decrement ?? 0) > 0) movementsApplied += 1;
+        if ((result.shortfall ?? 0) > 0) wrongKeyedLines += 1;
       }
     } catch (err) {
       failedLines += 1;
@@ -198,7 +225,54 @@ export async function ingestTransaction(
     }
   }
 
-  return { linesInserted, movementsApplied, storeFound: true, failedLines };
+  return { linesInserted, movementsApplied, storeFound: true, failedLines, wrongKeyedLines };
+}
+
+/**
+ * EPIC 8.3 — emit a chek-level "noto'g'ri urilgan" alert when a sale check rang
+ * up more units than ADIA tracked on hand. Runs inside the line's own
+ * transaction so the alert commits with the (clamped) sale. Recipients: PMs +
+ * the store's manager. Debounced one-per-(store,product) per 6h so a busy POS
+ * that keeps over-ringing the same item does not flood the admins.
+ */
+async function notifyWrongKeyedCheck(
+  txc: TxClient,
+  info: {
+    storeId: number;
+    productId: number;
+    transactionId: number;
+    lineId: number;
+    sold: number;
+    had: number;
+    shortfall: number;
+  },
+): Promise<void> {
+  const pmIds = await getPmRecipients(txc);
+  const managerId = await getLocationManager(txc, info.storeId);
+  const recipients = new Set<number>(pmIds);
+  if (managerId !== null) recipients.add(managerId);
+  for (const userId of recipients) {
+    await createNotification(txc, {
+      recipientUserId: userId,
+      type: 'wrong_keyed_check',
+      title: 'Kassa: noto\'g\'ri urilgan chek',
+      body:
+        `Chek #${info.transactionId}: sotildi ${info.sold}, ostatka ${info.had} edi — ` +
+        `${info.shortfall} ortiqcha (do'kon ${info.storeId}, mahsulot ${info.productId}). ` +
+        `Ostatka 0 ga tushirildi.`,
+      payload: {
+        store_id: info.storeId,
+        product_id: info.productId,
+        poster_transaction_id: info.transactionId,
+        line_id: info.lineId,
+        sold: info.sold,
+        had: info.had,
+        shortfall: info.shortfall,
+      },
+      dedupeKey: `wrong_keyed_check:${info.storeId}:${info.productId}:user:${userId}`,
+      dedupeWindowMinutes: 6 * 60,
+    });
+  }
 }
 
 /**
@@ -217,6 +291,7 @@ export async function processPendingWebhookEvents(
     movementsApplied: 0,
     storeMisses: 0,
     failedLines: 0,
+    wrongKeyedLines: 0,
   };
   try {
     const { rows } = await query<{ id: number; event_type: string; poster_object_id: number | null }>(
@@ -259,6 +334,7 @@ export async function processPendingWebhookEvents(
       summary.linesInserted += result.linesInserted;
       summary.movementsApplied += result.movementsApplied;
       summary.failedLines += result.failedLines;
+      summary.wrongKeyedLines += result.wrongKeyedLines;
       await query(
         `UPDATE poster_webhook_events SET processed = TRUE, processed_at = now() WHERE id = $1`,
         [ev.id],
@@ -312,6 +388,7 @@ export async function fallbackPollTransactions(
     movementsApplied: 0,
     storeMisses: 0,
     failedLines: 0,
+    wrongKeyedLines: 0,
   };
   try {
     const to = new Date();
@@ -337,6 +414,7 @@ export async function fallbackPollTransactions(
       summary.linesInserted += result.linesInserted;
       summary.movementsApplied += result.movementsApplied;
       summary.failedLines += result.failedLines;
+      summary.wrongKeyedLines += result.wrongKeyedLines;
     }
     if (summary.failedLines > 0) {
       const detail =
