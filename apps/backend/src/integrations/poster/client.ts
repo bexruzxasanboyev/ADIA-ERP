@@ -212,6 +212,64 @@ export type PosterAnalytics = {
   counters?: PosterAnalyticsCounters;
 };
 
+/**
+ * EPIC 8.5 / P8 — `finance.getCashshifts` row (kassa smenasi). One row per
+ * opened/closed cash-register shift. Money fields are in TIYIN (Poster finance
+ * convention — divide by 100 via `tiyinToSom`). Field names follow Poster's
+ * public finance schema; all numeric fields may arrive as string or number.
+ *
+ *   cash_shift_id     — shift id.
+ *   spot_id           — the retail spot (maps to an ADIA store).
+ *   amount_start      — opening till float.
+ *   amount_end        — closing till count (factual cash counted).
+ *   amount_sell_cash  — cash sales during the shift.
+ *   amount_sell_card  — card / non-cash sales during the shift.
+ *   amount_debit      — pay-outs from the till (rasxod / expenses).
+ *   amount_collection — cash collected up the chain (inkassatsiya).
+ *   date_start/end    — open/close timestamps ("YYYY-MM-DD HH:mm:ss").
+ *   user_id           — cashier (Poster employee id).
+ */
+export type PosterCashShift = {
+  cash_shift_id: string | number;
+  spot_id?: string | number;
+  amount_start?: string | number;
+  amount_end?: string | number;
+  amount_sell_cash?: string | number;
+  amount_sell_card?: string | number;
+  amount_debit?: string | number;
+  amount_collection?: string | number;
+  date_start?: string;
+  date_end?: string | null;
+  user_id?: string | number;
+};
+
+/**
+ * EPIC 8.7 / P8 — `finance.getTransactions` row (moliyaviy operatsiya). A safe
+ * (seyf) income/expense entry. `type` 0 = expense (rasxod), 1 = income; we
+ * surface expenses for the safe-expense view. `amount` is in TIYIN.
+ *
+ *   transaction_id  — finance transaction id.
+ *   account_id      — the money account (the safe).
+ *   category_id     — expense/income category id.
+ *   category_name   — category label ("Ijara", "Maosh"…).
+ *   type            — "0" expense, "1" income.
+ *   amount          — money in tiyin (positive).
+ *   date            — "YYYY-MM-DD HH:mm:ss".
+ *   user_id         — who recorded it.
+ *   comment         — free-text note.
+ */
+export type PosterFinanceTransaction = {
+  transaction_id: string | number;
+  account_id?: string | number;
+  category_id?: string | number;
+  category_name?: string;
+  type?: string | number;
+  amount?: string | number;
+  date?: string;
+  user_id?: string | number;
+  comment?: string | null;
+};
+
 // -----------------------------------------------------------------------------
 // Client options + errors
 // -----------------------------------------------------------------------------
@@ -418,6 +476,42 @@ export class PosterClient {
     );
     if (r === null || r === undefined) return null;
     return Array.isArray(r) ? (r[0] ?? null) : r;
+  }
+
+  /**
+   * EPIC 8.5 — cash-register shifts in a date range (read-only). Date strings
+   * follow Poster's `YYYYMMDD` convention. Returns `[]` when none.
+   */
+  async getCashShifts(params: {
+    dateFrom: string; // YYYYMMDD
+    dateTo: string; // YYYYMMDD
+    spotId?: number;
+  }): Promise<PosterCashShift[]> {
+    const qs: Record<string, string> = {
+      dateFrom: params.dateFrom,
+      dateTo: params.dateTo,
+    };
+    if (params.spotId !== undefined) qs.spot_id = String(params.spotId);
+    const r = await this.call<PosterCashShift[]>('finance.getCashshifts', qs);
+    return r ?? [];
+  }
+
+  /**
+   * EPIC 8.7 — finance transactions (safe income/expense) in a date range
+   * (read-only). Date strings follow Poster's `YYYYMMDD` convention.
+   */
+  async getFinanceTransactions(params: {
+    dateFrom: string; // YYYYMMDD
+    dateTo: string; // YYYYMMDD
+    accountId?: number;
+  }): Promise<PosterFinanceTransaction[]> {
+    const qs: Record<string, string> = {
+      dateFrom: params.dateFrom,
+      dateTo: params.dateTo,
+    };
+    if (params.accountId !== undefined) qs.account_id = String(params.accountId);
+    const r = await this.call<PosterFinanceTransaction[]>('finance.getTransactions', qs);
+    return r ?? [];
   }
 
   // --- Internal: throttled, timed-out, parameterized call -----------------

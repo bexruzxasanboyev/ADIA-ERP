@@ -30,6 +30,8 @@ import { telegramWebhookRouter } from './telegramWebhook.js';
 import { forecastsRouter } from './forecasts.js';
 import { salesRouter } from './sales.js';
 import { nakladnoyRouter } from './nakladnoy.js';
+import { cashShiftsRouter } from './cashShifts.js';
+import { safeExpensesRouter } from './safeExpenses.js';
 
 export const apiRouter: Router = Router();
 
@@ -55,6 +57,10 @@ apiRouter.use('/forecasts', forecastsRouter);
 apiRouter.use('/sales', salesRouter);
 // EPIC 8.4 — material requisition (nakladnoy) generated from a BOM demand.
 apiRouter.use('/nakladnoy', nakladnoyRouter);
+// EPIC 8.5 — kassa smenasi (cash shift) close-out, read-only from Poster.
+apiRouter.use('/cash-shifts', cashShiftsRouter);
+// EPIC 8.7 — seyf rasxodlari (safe expenses), read-only from Poster finance.
+apiRouter.use('/safe-expenses', safeExpensesRouter);
 // EPIC 4.3 (2026-05-29) — the "Yetkazib berish" / delivery module was removed.
 // Departments now ship directly and the receiver accepts on arrival; there is
 // no separate courier-assignment surface. The replenishment state machine
