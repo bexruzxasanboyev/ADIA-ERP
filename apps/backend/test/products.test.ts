@@ -44,6 +44,53 @@ describe('products', () => {
     expect((rawOnly.body as { type: string }[]).every((p) => p.type === 'raw')).toBe(true);
   });
 
+  it('EPIC 1.2 — ?search= matches translit (Latin query finds Cyrillic name)', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const sku = `SRCH-${Math.random().toString(36).slice(2, 8)}`;
+    await request(ctx.app)
+      .post('/api/products')
+      .set('Authorization', `Bearer ${pm.token}`)
+      .send({ name: 'Шоколад тёмный', type: 'raw', unit: 'kg', sku });
+
+    const latin = await request(ctx.app)
+      .get('/api/products?search=shokolad')
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(latin.status).toBe(200);
+    expect(
+      (latin.body as { name: string }[]).some((p) => p.name === 'Шоколад тёмный'),
+    ).toBe(true);
+
+    // A non-matching query excludes it.
+    const miss = await request(ctx.app)
+      .get('/api/products?search=napoleon')
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(
+      (miss.body as { name: string }[]).some((p) => p.name === 'Шоколад тёмный'),
+    ).toBe(false);
+  });
+
+  it('EPIC 1.3 — list rows carry smart category + effective_type', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const created = await request(ctx.app)
+      .post('/api/products')
+      .set('Authorization', `Bearer ${pm.token}`)
+      .send({ name: 'Г/П Торт Медовик', type: 'semi', unit: 'pcs' });
+    expect(created.status).toBe(201);
+    // Even on create the smart fields are present.
+    expect(created.body.product.category).toBe('cake');
+    expect(created.body.product.effective_type).toBe('finished');
+
+    const list = await request(ctx.app)
+      .get('/api/products')
+      .set('Authorization', `Bearer ${pm.token}`);
+    const row = (list.body as { name: string; category: string; effective_type: string }[]).find(
+      (p) => p.name === 'Г/П Торт Медовик',
+    );
+    expect(row).toBeDefined();
+    expect(row?.category).toBe('cake');
+    expect(row?.effective_type).toBe('finished');
+  });
+
   it('a store manager cannot create a product (403)', async () => {
     const mgr = await makeUser(ctx.db, {
       role: 'store_manager',

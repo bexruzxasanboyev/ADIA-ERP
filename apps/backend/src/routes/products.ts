@@ -31,6 +31,13 @@ import {
   requirePositiveNumber,
   requireString,
 } from '../lib/validate.js';
+import { matchesSearch } from '../lib/translit.js';
+import {
+  deriveCategory,
+  effectiveType,
+  type ProductCategory,
+  type ProductType,
+} from '../lib/productCategory.js';
 
 export const productsRouter: Router = Router();
 
@@ -49,6 +56,27 @@ type ProductRow = {
   created_at: Date;
   updated_at: Date;
 };
+
+/**
+ * EPIC 1.3 — a product row enriched with the smart-category fields. `category`
+ * is the fine-grained semantic class; `effective_type` upgrades `Г/П`-prefixed
+ * names to `finished`. The frontend prefers these over its own client-side
+ * derivation.
+ */
+type EnrichedProductRow = ProductRow & {
+  category: ProductCategory;
+  effective_type: ProductType;
+};
+
+/** Attach the EPIC 1.3 smart-category fields to a product row. */
+function enrich(row: ProductRow): EnrichedProductRow {
+  const type = row.type as ProductType;
+  return {
+    ...row,
+    category: deriveCategory(row.name, type),
+    effective_type: effectiveType(row.name, type),
+  };
+}
 
 type RecipeRow = {
   id: number;
@@ -77,6 +105,14 @@ productsRouter.get(
     if (typeRaw !== undefined && !(PRODUCT_TYPES as readonly string[]).includes(typeRaw)) {
       throw AppError.validation(`Query "type" must be one of: ${PRODUCT_TYPES.join(', ')}.`);
     }
+
+    // EPIC 1.2 — translit-aware `?search=` over name + sku. The match is a
+    // phonetic Latin↔Cyrillic normalisation (see lib/translit) that plain SQL
+    // LIKE cannot express, so we apply it in application code after the `type`
+    // filter narrows the candidate set in SQL.
+    const searchRaw =
+      typeof req.query.search === 'string' ? req.query.search.trim() : undefined;
+
     const { rows } =
       typeRaw === undefined
         ? await query<ProductRow>(`SELECT ${PRODUCT_COLUMNS} FROM products ORDER BY id`)
@@ -84,8 +120,15 @@ productsRouter.get(
             `SELECT ${PRODUCT_COLUMNS} FROM products WHERE type = $1 ORDER BY id`,
             [typeRaw],
           );
+
+    const filtered =
+      searchRaw === undefined || searchRaw === ''
+        ? rows
+        : rows.filter((r) => matchesSearch(`${r.name} ${r.sku ?? ''}`, searchRaw));
+
     // List endpoints return a bare array (spec section 4) — no envelope.
-    res.status(200).json(rows);
+    // Each row carries the EPIC 1.3 smart-category fields.
+    res.status(200).json(filtered.map(enrich));
   }),
 );
 
@@ -129,7 +172,7 @@ productsRouter.post(
       entityId: created.id,
       payload: { name, type },
     });
-    res.status(201).json({ product: created });
+    res.status(201).json({ product: enrich(created) });
   }),
 );
 
