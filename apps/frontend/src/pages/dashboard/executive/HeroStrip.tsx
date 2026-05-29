@@ -48,6 +48,13 @@ export interface HeroStripProps {
    * thread the range still render something sensible.
    */
   range?: DateRangeValue;
+  /**
+   * EPIC 7.1 — KPI click → detail. When supplied, each card with an
+   * `href` becomes a clickable button that calls this with the target
+   * route. The page wires `react-router`'s `navigate`; keeping the
+   * navigation in the parent lets HeroStrip render router-free in tests.
+   */
+  onNavigate?: (href: string) => void;
   className?: string;
 }
 
@@ -78,6 +85,13 @@ interface HeroKpi {
   caption?: string;
   tone: Tone;
   Icon: ComponentType<{ className?: string }>;
+  /**
+   * Drill-down route opened when the card is clicked (EPIC 7.1). When
+   * undefined the card stays static (no affordance, no handler).
+   */
+  href?: string;
+  /** Short Uzbek hint shown to invite the click ("Batafsil →"). */
+  detailHint?: string;
   /**
    * "Better when it goes up" (sales, receipts) vs. "better when it goes
    * down" (open requests, critical positions). Drives the colour of the
@@ -119,6 +133,7 @@ export function HeroStrip({
   overview,
   ecosystem,
   range,
+  onNavigate,
   className,
 }: HeroStripProps) {
   const copy = rangeCopy(range?.range ?? 'today');
@@ -153,6 +168,9 @@ export function HeroStrip({
       direction: 'up-good',
       deltaPct: revenueDelta,
       prevLabel: copy.comparisonLabel,
+      // Full sales charts + payment breakdown live on the operations view.
+      href: '/dashboard/operations',
+      detailHint: "Sotuv tafsilotlari",
     },
     {
       testId: 'hero-strip-receipts',
@@ -164,6 +182,8 @@ export function HeroStrip({
       direction: 'up-good',
       deltaPct: receiptsDelta,
       prevLabel: copy.comparisonLabel,
+      href: '/dashboard/operations',
+      detailHint: "Cheklar tafsilotlari",
     },
     {
       testId: 'hero-strip-requests',
@@ -174,6 +194,9 @@ export function HeroStrip({
       Icon: ClipboardList,
       direction: 'down-good',
       deltaPct: null,
+      // Open replenishment + production + supply requests inbox.
+      href: '/sorovnomalar',
+      detailHint: "So'rovlarni ko'rish",
     },
     {
       testId: 'hero-strip-critical',
@@ -184,6 +207,9 @@ export function HeroStrip({
       Icon: AlertTriangle,
       direction: 'down-good',
       deltaPct: null,
+      // Below-min positions across the chain — the stock screen lists them.
+      href: '/stock',
+      detailHint: belowMin > 0 ? "Kritik qoldiqlar" : "Qoldiqni ko'rish",
     },
   ];
 
@@ -196,26 +222,27 @@ export function HeroStrip({
       )}
     >
       {kpis.map((kpi) => (
-        <HeroKpiCard key={kpi.testId} kpi={kpi} />
+        <HeroKpiCard key={kpi.testId} kpi={kpi} onNavigate={onNavigate} />
       ))}
     </div>
   );
 }
 
-function HeroKpiCard({ kpi }: { kpi: HeroKpi }) {
+function HeroKpiCard({
+  kpi,
+  onNavigate,
+}: {
+  kpi: HeroKpi;
+  onNavigate?: (href: string) => void;
+}) {
   const { Icon } = kpi;
-  return (
-    <Card
-      data-testid={kpi.testId}
-      data-tone={kpi.tone}
-      role="region"
-      aria-label={kpi.label}
-      className={cn(
-        'flex min-h-[140px] flex-col justify-between gap-3 p-5 sm:p-6',
-        'border-border/60 transition-colors hover:border-border',
-        'focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background',
-      )}
-    >
+  // The card is interactive only when both a target route and a
+  // navigation handler are present. Otherwise it stays a plain region
+  // (e.g. in unit tests that render HeroStrip without a router).
+  const isClickable = kpi.href !== undefined && onNavigate !== undefined;
+
+  const body = (
+    <>
       <div className="flex items-start justify-between gap-3">
         <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {kpi.label}
@@ -245,6 +272,58 @@ function HeroKpiCard({ kpi }: { kpi: HeroKpi }) {
         </div>
         <DeltaPill kpi={kpi} />
       </div>
+
+      {isClickable && kpi.detailHint !== undefined && (
+        <span
+          className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+          aria-hidden="true"
+        >
+          {kpi.detailHint}
+          <ArrowRight className="size-3" />
+        </span>
+      )}
+    </>
+  );
+
+  // Shared visual: matches the shadcn Card surface so the clickable
+  // button is pixel-identical to the static region.
+  const surfaceClass = cn(
+    'rounded-lg border border-border bg-card text-card-foreground shadow-sm',
+    'flex min-h-[140px] flex-col justify-between gap-3 p-5 sm:p-6',
+    'border-border/60 transition-colors hover:border-border',
+  );
+
+  if (isClickable) {
+    return (
+      <button
+        type="button"
+        data-testid={kpi.testId}
+        data-tone={kpi.tone}
+        aria-label={`${kpi.label} — batafsil`}
+        onClick={() => onNavigate?.(kpi.href as string)}
+        className={cn(
+          surfaceClass,
+          'group w-full text-left cursor-pointer hover:bg-muted/30',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+        )}
+      >
+        {body}
+      </button>
+    );
+  }
+
+  return (
+    <Card
+      data-testid={kpi.testId}
+      data-tone={kpi.tone}
+      role="region"
+      aria-label={kpi.label}
+      className={cn(
+        surfaceClass,
+        'focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background',
+      )}
+    >
+      {body}
     </Card>
   );
 }

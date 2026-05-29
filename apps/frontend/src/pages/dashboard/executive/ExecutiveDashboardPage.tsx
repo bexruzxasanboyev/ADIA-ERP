@@ -301,6 +301,7 @@ export function ExecutiveDashboardPage() {
         overview={overview.data}
         ecosystem={ecosystem.data}
         range={range}
+        onNavigate={navigate}
       />
 
       <RevenueBreakdown

@@ -104,7 +104,8 @@ export function CentralWarehousePage() {
       value: totals.total_products,
       icon: Package,
       tone: 'accent',
-      hint: `${formatQty(totals.total_locations)} ta omborda`,
+      hint: 'Markaziy sklad qoldig‘i',
+      href: '/stock?location_type=central_warehouse',
     },
     {
       label: 'Min’dan past',
@@ -112,6 +113,7 @@ export function CentralWarehousePage() {
       icon: AlertTriangle,
       tone: totals.below_min_count > 0 ? 'destructive' : 'neutral',
       hint: 'Tezda jo‘natma kerak',
+      href: '/stock?location_type=central_warehouse',
     },
     {
       label: 'Jo‘natma topshiriqlari',
@@ -119,6 +121,7 @@ export function CentralWarehousePage() {
       icon: Send,
       tone: (shipTasks.data?.length ?? 0) > 0 ? 'amber' : 'neutral',
       hint: 'Do‘konlarga jo‘natish',
+      href: '/replenishment?status=SHIP_TO_REQUESTER',
     },
     {
       label: 'Kelayotgan',
@@ -126,6 +129,7 @@ export function CentralWarehousePage() {
       icon: Inbox,
       tone: (incoming.data?.length ?? 0) > 0 ? 'accent' : 'neutral',
       hint: 'Sex skladidan topshiriladi',
+      href: '/replenishment?status=DONE_TO_WAREHOUSE',
     },
   ];
 
