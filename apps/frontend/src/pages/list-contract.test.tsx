@@ -24,12 +24,15 @@ import type {
   MovementsResponse,
 } from '@/lib/types';
 
+// EPIC 1.4b — ProductsPage defaults its filter to "Tayyor mahsulot"
+// (finished), so the contract fixture is a finished product to prove the
+// bare-array response is consumed without first clearing the filter.
 const PRODUCT: Product = {
   id: 1,
-  name: 'Un',
-  type: 'raw',
-  unit: 'kg',
-  sku: 'UN-01',
+  name: 'Shokoladli tort',
+  type: 'finished',
+  unit: 'pcs',
+  sku: 'FIN-01',
   poster_ingredient_id: null,
   poster_product_id: null,
   is_active: true,
@@ -125,7 +128,7 @@ describe('list screen response contracts', () => {
   it('ProductsPage renders rows from a bare Product[] response', async () => {
     mockFetchByPath();
     renderWithProviders(<ProductsPage />);
-    expect(await screen.findByText('Un')).toBeInTheDocument();
+    expect(await screen.findByText('Shokoladli tort')).toBeInTheDocument();
   });
 
   it('LocationsPage renders rows from a bare Location[] response', async () => {
