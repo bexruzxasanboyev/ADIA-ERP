@@ -64,7 +64,6 @@ describe('AuthProvider — /api/auth/me hydration', () => {
         user: {
           id: 1,
           name: 'Loyiha menejeri',
-          email: 'pm@adia.local',
           role: 'pm',
           location_id: null,
           telegram_id: null,
@@ -98,7 +97,6 @@ describe('AuthProvider — /api/auth/me hydration', () => {
         user: {
           id: 9,
           name: 'Filial menejeri',
-          email: 'store@adia.local',
           role: 'store_manager',
           location_id: 11,
         },

@@ -17,7 +17,6 @@ import type { User } from '@/lib/types';
 const BASE: User = {
   id: 5,
   name: 'Anvar Karimov',
-  email: 'anvar@adia.test',
   username: 'anvar',
   role: 'store_manager',
   location_id: 10,

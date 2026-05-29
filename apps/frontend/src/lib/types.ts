@@ -65,12 +65,11 @@ export type MovementReason =
 export interface User {
   id: number;
   name: string;
-  email: string;
   /**
-   * F4.12 — short login handle (3-32 chars, `[a-z0-9._-]`). The backend
-   * guarantees this on every user record (it auto-derives one from the
-   * email-local-part when the PM does not supply it). Login accepts
-   * either `email` OR `username` via the unified `login` field.
+   * Sole login handle (2-32 chars, `[a-z0-9._-]`). Email was dropped from
+   * the identity model entirely (migration 0027): `username` is now the
+   * only unique, human-friendly credential. Login is `{ login, password }`
+   * where `login` is matched case-insensitively against this field.
    */
   username: string;
   role: Role;
@@ -238,10 +237,10 @@ export interface ApiErrorBody {
 }
 
 /**
- * `POST /api/auth/login` request body — F4.12. The unified `login` field
- * accepts either an email or a username (3-32 chars, `[a-z0-9._-]`).
- * The backend still accepts the legacy `{email, password}` shape for
- * back-compat, but the client always sends `login`.
+ * `POST /api/auth/login` request body. `login` is the username (2-32 chars,
+ * `[a-z0-9._-]`), matched case-insensitively against `users.username`.
+ * Email was removed from the identity model (migration 0027) — username is
+ * the sole login handle.
  */
 export interface LoginRequest {
   login: string;

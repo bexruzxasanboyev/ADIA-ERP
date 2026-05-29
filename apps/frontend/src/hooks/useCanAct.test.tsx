@@ -27,7 +27,6 @@ function makeUser(role: Role, locationId: number | null): User {
   return {
     id: 42,
     name: 'Test User',
-    email: 'test@example.com',
     username: 'testuser',
     role,
     location_id: locationId,

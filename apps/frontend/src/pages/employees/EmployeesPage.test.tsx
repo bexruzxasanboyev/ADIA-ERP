@@ -37,14 +37,12 @@ describe('EmployeesPage', () => {
           {
             id: 1,
             name: 'Anvar Karimov',
-            email: 'anvar@adia.local',
             role: 'store_manager',
             location_id: 10,
           },
           {
             id: 2,
             name: 'Nodira Rustamova',
-            email: 'nodira@adia.local',
             role: 'production_manager',
             location_id: 20,
           },

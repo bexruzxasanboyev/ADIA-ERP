@@ -39,8 +39,8 @@ describe('LoginPage', () => {
 
   it('labels every form field with an id (WCAG)', () => {
     renderLogin();
-    // F4.12 — single combined field; type=text accepts either an email
-    // or a short username handle.
+    // Username-only identity (migration 0027) — a single `login` field
+    // carrying the username; type=text, autocomplete=username.
     expect(
       screen.getByLabelText('Foydalanuvchi nomi'),
     ).toHaveAttribute('id', 'login');
@@ -56,7 +56,7 @@ describe('LoginPage', () => {
     ).toHaveAttribute('autocomplete', 'username');
   });
 
-  it('POSTs {login, password} (F4.12 unified handle field)', async () => {
+  it('POSTs {login, password} (username-only login handle)', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       jsonResponse(200, {
         access_token: 'A',
@@ -64,7 +64,6 @@ describe('LoginPage', () => {
         user: {
           id: 1,
           name: 'PM',
-          email: 'pm@adia.local',
           username: 'pm',
           role: 'pm',
           location_id: null,
@@ -126,7 +125,6 @@ describe('LoginPage', () => {
         user: {
           id: 1,
           name: 'PM',
-          email: 'pm@adia.local',
           username: 'pm',
           role: 'pm',
           location_id: null,
@@ -163,7 +161,6 @@ describe('LoginPage', () => {
         user: {
           id: 7,
           name: 'Supply menejeri',
-          email: 'supply@adia.local',
           username: 'supply',
           role: 'supply_manager',
           location_id: 42,
@@ -200,7 +197,6 @@ describe('LoginPage', () => {
         user: {
           id: 1,
           name: 'PM',
-          email: 'pm@adia.local',
           username: 'pm',
           role: 'pm',
           location_id: null,

@@ -53,7 +53,6 @@ const LOCATION: Location = {
 const ACCOUNT: User = {
   id: 3,
   name: 'Aziz Karimov',
-  email: 'aziz@adia.test',
   username: 'aziz',
   role: 'store_manager',
   location_id: 7,

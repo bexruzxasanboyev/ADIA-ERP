@@ -88,7 +88,7 @@ export function EmployeesPage() {
     const tgFilter = filter['tg'] ?? [];
     return allRows.filter((u) => {
       if (q !== '') {
-        const haystack = `${u.name} ${u.email} ${u.username ?? ''}`.toLowerCase();
+        const haystack = `${u.name} ${u.username}`.toLowerCase();
         if (!haystack.includes(q)) return false;
       }
       if (roleFilter.length > 0 && !roleFilter.includes(u.role)) return false;
@@ -135,7 +135,7 @@ export function EmployeesPage() {
         <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Ism, email yoki foydalanuvchi nomi…"
+          placeholder="Ism yoki foydalanuvchi nomi…"
           aria-label="Hodimlarni qidirish"
           className="h-9 pl-8"
         />
@@ -194,14 +194,9 @@ export function EmployeesPage() {
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-semibold">{u.name}</p>
-                      <p className="truncate text-xs text-muted-foreground">
-                        {u.email}
+                      <p className="truncate font-mono text-xs text-muted-foreground">
+                        @{u.username}
                       </p>
-                      {u.username && (
-                        <p className="truncate font-mono text-[11px] text-muted-foreground/80">
-                          @{u.username}
-                        </p>
-                      )}
                     </div>
                   </button>
                   <div className="flex flex-wrap items-center gap-2">
@@ -224,7 +219,6 @@ export function EmployeesPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Ism-familiya</TableHead>
-                <TableHead>Elektron pochta</TableHead>
                 <TableHead>Foydalanuvchi nomi</TableHead>
                 <TableHead>Rol</TableHead>
                 <TableHead>Asosiy bo‘g‘in</TableHead>
@@ -241,11 +235,8 @@ export function EmployeesPage() {
                   data-testid={`employee-row-${u.id}`}
                 >
                   <TableCell className="font-medium">{u.name}</TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {u.email}
-                  </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">
-                    {u.username ? `@${u.username}` : '—'}
+                    @{u.username}
                   </TableCell>
                   <TableCell>
                     <Badge variant="outline">{ROLE_LABELS[u.role]}</Badge>

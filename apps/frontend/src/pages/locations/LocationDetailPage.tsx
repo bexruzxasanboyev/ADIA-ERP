@@ -656,12 +656,9 @@ function ManagerCard({
             <p className="truncate text-xs text-muted-foreground">
               {ROLE_LABELS[manager.role]}
             </p>
-            <a
-              href={`mailto:${manager.email}`}
-              className="mt-1 inline-block truncate text-xs text-primary hover:underline"
-            >
-              {manager.email}
-            </a>
+            <p className="mt-1 truncate font-mono text-xs text-muted-foreground">
+              @{manager.username}
+            </p>
           </div>
         </div>
       ) : (

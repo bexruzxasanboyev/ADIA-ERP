@@ -17,7 +17,6 @@ export function fakeUser(overrides: Partial<User> = {}): User {
   return {
     id: 1,
     name: 'Test PM',
-    email: 'pm@adia.test',
     username: 'pm',
     role: 'pm',
     location_id: null,

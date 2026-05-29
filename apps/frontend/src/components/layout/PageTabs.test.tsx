@@ -11,7 +11,6 @@ function fakeUser(role: Role): User {
   return {
     id: 1,
     name: `Test ${role}`,
-    email: `${role}@adia.test`,
     username: role,
     role,
     location_id: null,
