@@ -13,7 +13,12 @@ import type {
   DateRangePreset,
   DateRangeValue,
 } from '@/components/DateRangeFilter';
-import { formatQty } from '@/lib/format';
+import { formatPlainNumber, formatQty } from '@/lib/format';
+import {
+  COMPARISON_LABEL_BY_RANGE,
+  RECEIPTS_TITLE_BY_RANGE,
+  REVENUE_TITLE_BY_RANGE,
+} from '@/lib/labels';
 import type { DashboardEcosystem, DashboardOverview } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
@@ -37,7 +42,7 @@ export interface HeroStripProps {
   ecosystem: DashboardEcosystem | null;
   /**
    * Active date-range filter. Drives the dynamic copy on the revenue
-   * and receipts cards ("Bugungi tushum" / "Haftalik tushum" / …) and
+   * and receipts cards ("Bugungi tushum" / "Bu haftalik tushum" / …) and
    * the comparison label on the delta pill ("kechaga" / "o'tgan haftaga"
    * / …). Defaults to `{ range: 'today' }` so callers that don't yet
    * thread the range still render something sensible.
@@ -47,40 +52,22 @@ export interface HeroStripProps {
 }
 
 interface RangeCopy {
-  /** Card title prefix, e.g. "Bugungi tushum", "Haftalik tushum". */
+  /** Card title prefix, e.g. "Bugungi tushum", "Bu haftalik tushum". */
   revenueTitle: string;
   receiptsTitle: string;
   /** Caption under the delta arrow, e.g. "kechaga", "o'tgan haftaga". */
   comparisonLabel: string;
 }
 
-const RANGE_COPY: Record<DateRangePreset, RangeCopy> = {
-  today: {
-    revenueTitle: 'Bugungi tushum',
-    receiptsTitle: 'Bugungi sotuvlar',
-    comparisonLabel: 'kechaga',
-  },
-  week: {
-    revenueTitle: 'Haftalik tushum',
-    receiptsTitle: 'Haftalik sotuvlar',
-    comparisonLabel: "o'tgan haftaga",
-  },
-  month: {
-    revenueTitle: 'Oylik tushum',
-    receiptsTitle: 'Oylik sotuvlar',
-    comparisonLabel: "o'tgan oyga",
-  },
-  '6m': {
-    revenueTitle: '6 oylik tushum',
-    receiptsTitle: '6 oylik sotuvlar',
-    comparisonLabel: 'oldingi 6 oyga',
-  },
-  custom: {
-    revenueTitle: 'Davr tushumi',
-    receiptsTitle: 'Davr sotuvlari',
-    comparisonLabel: 'oldingi davrga',
-  },
-};
+// Period copy is derived from the shared maps in `@/lib/labels` so the
+// revenue / receipts headline wording stays identical to RevenueBreakdown.
+function rangeCopy(preset: DateRangePreset): RangeCopy {
+  return {
+    revenueTitle: REVENUE_TITLE_BY_RANGE[preset],
+    receiptsTitle: RECEIPTS_TITLE_BY_RANGE[preset],
+    comparisonLabel: COMPARISON_LABEL_BY_RANGE[preset],
+  };
+}
 
 type Tone = 'default' | 'warning' | 'danger';
 
@@ -115,17 +102,10 @@ const ICON_TONE: Record<Tone, string> = {
   danger: 'text-destructive',
 };
 
-// `Intl.NumberFormat('uz-UZ')` groups with a non-breaking space — perfect
-// for "2 400 000". A dedicated formatter so we never accidentally fall
-// back to the compact "2.4M" form on hero cards.
-const fullNumberFormatter = new Intl.NumberFormat('uz-UZ', {
-  maximumFractionDigits: 0,
-});
-
-function formatFullNumber(value: number): string {
-  if (!Number.isFinite(value)) return '—';
-  return fullNumberFormatter.format(Math.round(value));
-}
+// Hero KPI cards always render the FULL grouped number ("2 400 000"),
+// never the compact "2.4M" form — `formatPlainNumber` (uz-UZ, no
+// fractional digits, NaN-guarded) is exactly that.
+const formatFullNumber = formatPlainNumber;
 
 function computeDeltaPct(today: number, prev: number): number | null {
   if (prev > 0) {
@@ -141,7 +121,7 @@ export function HeroStrip({
   range,
   className,
 }: HeroStripProps) {
-  const copy = RANGE_COPY[range?.range ?? 'today'];
+  const copy = rangeCopy(range?.range ?? 'today');
   const salesToday = ecosystem?.poster_status.sales_today_sum ?? 0;
   const receiptsToday = ecosystem?.poster_status.sales_today_count ?? 0;
   const activeRequests =

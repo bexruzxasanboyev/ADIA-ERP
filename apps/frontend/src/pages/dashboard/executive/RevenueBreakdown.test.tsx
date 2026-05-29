@@ -74,6 +74,58 @@ describe('RevenueBreakdown', () => {
     });
   });
 
+  it('resolves to a zero-state (not a perpetual spinner) on an empty/zero response', async () => {
+    // Defect: "BUGUNGI TUSHUM" stuck on "...yuklanmoqda…" forever when the
+    // day had no/zero revenue. A successful response — even one without a
+    // `byMethod` block — must clear the loading note and render real chips.
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/api/dashboard/revenue-breakdown')) {
+        // Zero-revenue day: server returns a total but no per-method block.
+        return Promise.resolve(jsonResponse(200, { total: 0 }));
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+    renderWithProviders(
+      <RevenueBreakdown isoDate="2026-05-28" fallbackTotal={0} />,
+      { role: 'pm' },
+    );
+    // The cash chip (zeroed) appears — proving we left the loading branch.
+    await waitFor(() => {
+      expect(screen.getByTestId('revenue-chip-cash')).toBeInTheDocument();
+    });
+    // The infinite-spinner note must be gone.
+    expect(screen.queryByText(/yuklanmoqda/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId('revenue-chip-card')).toBeInTheDocument();
+  });
+
+  it('renders "Bugungi tushum" by default and follows the selected period (EPIC 0.4)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/api/dashboard/revenue-breakdown')) {
+        return Promise.resolve(jsonResponse(200, { total: 0 }));
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+
+    const { rerender } = renderWithProviders(
+      <RevenueBreakdown isoDate="2026-05-28" fallbackTotal={0} />,
+      { role: 'pm' },
+    );
+    await waitFor(() => {
+      expect(screen.getByText('Bugungi tushum')).toBeInTheDocument();
+    });
+
+    rerender(
+      <RevenueBreakdown isoDate="2026-05-28" fallbackTotal={0} range="month" />,
+    );
+    expect(screen.getByText('Bu oylik tushum')).toBeInTheDocument();
+    // The region's aria-label tracks the title too, for screen readers.
+    expect(
+      screen.getByRole('region', { name: /Bu oylik tushum brekdown/i }),
+    ).toBeInTheDocument();
+  });
+
   it('falls back to fallbackTotal + hint when the endpoint 404s', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
       Promise.resolve(

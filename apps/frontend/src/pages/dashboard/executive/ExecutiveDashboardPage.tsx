@@ -306,6 +306,7 @@ export function ExecutiveDashboardPage() {
       <RevenueBreakdown
         isoDate={today}
         fallbackTotal={ecosystem.data?.poster_status.sales_today_sum ?? 0}
+        range={range.range}
       />
 
       <div className="flex items-center justify-between gap-3">
@@ -367,6 +368,7 @@ export function ExecutiveDashboardPage() {
         <CriticalAlerts
           belowMin={overview.data.below_min}
           alerts={ecosystem.data?.alerts_feed ?? []}
+          criticalCount={overview.data.kpis.below_min_count}
           className="xl:col-span-7"
         />
         <MyActionsList

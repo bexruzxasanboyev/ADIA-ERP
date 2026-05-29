@@ -112,8 +112,8 @@ describe('HeroStrip', () => {
         range={{ range: 'week' }}
       />,
     );
-    expect(screen.getByText('Haftalik tushum')).toBeInTheDocument();
-    expect(screen.getByText('Haftalik sotuvlar')).toBeInTheDocument();
+    expect(screen.getByText('Bu haftalik tushum')).toBeInTheDocument();
+    expect(screen.getByText('Bu haftalik sotuvlar')).toBeInTheDocument();
   });
 
   it('switches revenue/receipts titles when range=month', () => {
@@ -124,8 +124,8 @@ describe('HeroStrip', () => {
         range={{ range: 'month' }}
       />,
     );
-    expect(screen.getByText('Oylik tushum')).toBeInTheDocument();
-    expect(screen.getByText('Oylik sotuvlar')).toBeInTheDocument();
+    expect(screen.getByText('Bu oylik tushum')).toBeInTheDocument();
+    expect(screen.getByText('Bu oylik sotuvlar')).toBeInTheDocument();
   });
 
   it('uses the generic "Davr" copy when range=custom', () => {

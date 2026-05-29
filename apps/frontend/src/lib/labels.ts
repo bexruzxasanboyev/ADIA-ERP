@@ -2,6 +2,7 @@
  * Uzbek display labels for domain enum values.
  * UI text is Uzbek (CLAUDE.md §2); enum keys stay English.
  */
+import type { DateRangePreset } from '@/components/DateRangeFilter';
 import type {
   DashboardAlertType,
   LocationType,
@@ -54,6 +55,47 @@ export const UNIT_LABELS: Record<Unit, string> = {
   l: 'l',
   pcs: 'dona',
 };
+
+// ---------------------------------------------------------------------------
+// Dashboard date-range copy (EPIC 0.4).
+//
+// The revenue / receipts KPI titles must follow the selected period filter
+// instead of staying frozen on "Bugungi tushum". These maps are the single
+// source of truth shared by HeroStrip and RevenueBreakdown so the headline
+// wording never drifts between the two widgets.
+// ---------------------------------------------------------------------------
+
+/** Revenue card title per period, e.g. `today → "Bugungi tushum"`. */
+export const REVENUE_TITLE_BY_RANGE: Record<DateRangePreset, string> = {
+  today: 'Bugungi tushum',
+  week: 'Bu haftalik tushum',
+  month: 'Bu oylik tushum',
+  '6m': '6 oylik tushum',
+  custom: 'Davr tushumi',
+};
+
+/** Receipts card title per period, e.g. `today → "Bugungi sotuvlar"`. */
+export const RECEIPTS_TITLE_BY_RANGE: Record<DateRangePreset, string> = {
+  today: 'Bugungi sotuvlar',
+  week: 'Bu haftalik sotuvlar',
+  month: 'Bu oylik sotuvlar',
+  '6m': '6 oylik sotuvlar',
+  custom: 'Davr sotuvlari',
+};
+
+/** Delta-pill comparison caption per period, e.g. `today → "kechaga"`. */
+export const COMPARISON_LABEL_BY_RANGE: Record<DateRangePreset, string> = {
+  today: 'kechaga',
+  week: "o'tgan haftaga",
+  month: "o'tgan oyga",
+  '6m': 'oldingi 6 oyga',
+  custom: 'oldingi davrga',
+};
+
+/** Revenue title for an optional range; falls back to "Bugungi tushum". */
+export function revenueTitleForRange(range?: DateRangePreset): string {
+  return REVENUE_TITLE_BY_RANGE[range ?? 'today'];
+}
 
 export const MOVEMENT_REASON_LABELS: Record<MovementReason, string> = {
   sale: 'Savdo',
