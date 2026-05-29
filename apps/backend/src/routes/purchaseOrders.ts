@@ -41,6 +41,7 @@ import {
 } from '../lib/validate.js';
 import {
   approvePurchaseOrder,
+  createAdminPurchaseOrder,
   receivePurchaseOrder,
   PURCHASE_ORDER_COLUMNS,
   type ApprovalStep,
@@ -225,6 +226,61 @@ purchaseOrdersRouter.post(
         });
       }
       return inserted;
+    });
+    res.status(201).json({ purchase_order: created });
+  }),
+);
+
+// POST /api/purchase-orders/admin  — EPIC 6.1 (admin → skladchi)
+//
+// The admin (PM) places a purchase order and routes it to the warehouse
+// keeper (skladchi). This is an ADMIN action — unlike the supply-manager
+// create above it is gated by `authorize('pm')`, mirroring the other admin
+// endpoints (users / locations / products) that are exempt from the
+// `authorizeWrite` PM-block. The two-step approval is preserved: the admin
+// fills the manager step, the skladchi confirms the keeper step.
+purchaseOrdersRouter.post(
+  '/admin',
+  authenticate,
+  authorize('pm'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const body = asObject(req.body);
+    const productId = requireId(body, 'product_id');
+    const qty = requirePositiveNumber(body, 'qty');
+    const supplierId = optionalId(body, 'supplier_id') ?? null;
+    const targetLocationId = requireId(body, 'target_location_id');
+    const note = optionalString(body, 'note') ?? null;
+
+    // The target must be a raw warehouse — the keeper of a raw warehouse is
+    // the skladchi who confirms. Validate up front for a clean 422.
+    const { rows: locRows } = await query<{ type: string }>(
+      `SELECT type::text AS type FROM locations WHERE id = $1`,
+      [targetLocationId],
+    );
+    if (locRows[0] === undefined) {
+      throw AppError.validation('Target location does not exist.');
+    }
+    if (locRows[0].type !== 'raw_warehouse') {
+      throw AppError.validation(
+        'An admin purchase order must target a raw warehouse (skladchi).',
+      );
+    }
+    const { rows: prodRows } = await query<{ id: string }>(
+      `SELECT id FROM products WHERE id = $1`,
+      [productId],
+    );
+    if (prodRows[0] === undefined) {
+      throw AppError.validation('Product does not exist.');
+    }
+
+    const created = await createAdminPurchaseOrder({
+      productId,
+      qty,
+      supplierId,
+      targetLocationId,
+      note,
+      adminUserId: principal.userId,
     });
     res.status(201).json({ purchase_order: created });
   }),

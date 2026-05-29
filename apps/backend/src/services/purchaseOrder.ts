@@ -42,6 +42,7 @@ export type PurchaseOrderRow = {
   received_movement_id: number | null;
   note: string | null;
   created_by: number | null;
+  initiated_by_admin: boolean;
   created_at: Date;
   updated_at: Date;
 };
@@ -49,7 +50,8 @@ export type PurchaseOrderRow = {
 export const PURCHASE_ORDER_COLUMNS = `id, product_id, qty, supplier_id,
   target_location_id, status, replenishment_id, manager_approved_by,
   manager_approved_at, keeper_approved_by, keeper_approved_at,
-  received_movement_id, note, created_by, created_at, updated_at`;
+  received_movement_id, note, created_by, initiated_by_admin,
+  created_at, updated_at`;
 
 /** Which approval step is being taken. */
 export type ApprovalStep = 'manager' | 'keeper';
@@ -170,6 +172,120 @@ export async function approvePurchaseOrder(
     return result;
   };
 
+  return tx !== undefined ? run(tx) : withTransaction(run);
+}
+
+/** Input for an admin-initiated purchase order (EPIC 6.1). */
+export type AdminPurchaseOrderInput = {
+  readonly productId: number;
+  readonly qty: number;
+  readonly supplierId: number | null;
+  readonly targetLocationId: number;
+  readonly note: string | null;
+  /** The admin (PM) placing the order — becomes the manager approver. */
+  readonly adminUserId: number;
+};
+
+/**
+ * EPIC 6.1 — create an admin-initiated purchase order routed to the warehouse
+ * keeper (skladchi). The admin (PM) is the orderer, so the MANAGER approval
+ * step is filled immediately; the order stays `draft` awaiting only the KEEPER
+ * (raw_warehouse_manager) confirmation — the two-step approval invariant (D5)
+ * is preserved.
+ *
+ * The insert, the audit row, and the skladchi notification all commit in ONE
+ * transaction (no orphan nudges). Recipients: the target raw warehouse's
+ * keeper(s) + the location manager + every PM (visibility).
+ */
+export async function createAdminPurchaseOrder(
+  input: AdminPurchaseOrderInput,
+  tx?: TxClient,
+): Promise<PurchaseOrderRow> {
+  const run = async (client: TxClient): Promise<PurchaseOrderRow> => {
+    const { rows } = await client.query<PurchaseOrderRow>(
+      `INSERT INTO purchase_orders
+         (product_id, qty, supplier_id, target_location_id, status, note,
+          created_by, initiated_by_admin, manager_approved_by, manager_approved_at)
+       VALUES ($1, $2, $3, $4, 'draft', $5, $6, TRUE, $6, now())
+       RETURNING ${PURCHASE_ORDER_COLUMNS}`,
+      [
+        input.productId,
+        input.qty,
+        input.supplierId,
+        input.targetLocationId,
+        input.note,
+        input.adminUserId,
+      ],
+    );
+    const inserted = rows[0];
+    if (inserted === undefined) {
+      throw AppError.internal('Admin purchase order insert returned no row.');
+    }
+
+    await writeAudit(client, {
+      actorUserId: input.adminUserId,
+      action: 'purchase_order.admin_create',
+      entity: 'purchase_orders',
+      entityId: inserted.id,
+      payload: {
+        product_id: input.productId,
+        qty: input.qty,
+        target_location_id: input.targetLocationId,
+        routed_to: 'keeper',
+      },
+    });
+
+    // Route to the skladchi: every raw_warehouse_manager + the target
+    // location's manager + every PM (visibility). The keeper confirms via the
+    // existing `approve` endpoint with step='keeper'.
+    const rawMgrs = await getUsersByRole(client, 'raw_warehouse_manager');
+    const locationMgr = await getLocationManager(client, input.targetLocationId);
+    const pms = await getUsersByRole(client, 'pm');
+    const recipients: number[] = [];
+    for (const id of [...rawMgrs, ...pms]) {
+      if (!recipients.includes(id)) recipients.push(id);
+    }
+    if (locationMgr !== null && !recipients.includes(locationMgr)) {
+      recipients.push(locationMgr);
+    }
+    if (recipients.length > 0) {
+      const { rows: ctx } = await client.query<{
+        product_name: string;
+        product_unit: string;
+      }>(
+        `SELECT name AS product_name, unit AS product_unit FROM products WHERE id = $1`,
+        [input.productId],
+      );
+      const productName = ctx[0]?.product_name ?? `#${input.productId}`;
+      const productUnit = ctx[0]?.product_unit ?? '';
+      await createNotificationsForRecipients(client, recipients, {
+        type: 'purchase_request_created',
+        title: `Admin buyurtmasi #${inserted.id}`,
+        body:
+          `Admin so'rovi: ${input.qty} ${productUnit} ${productName} — ` +
+          `skladchi tasdig'i kutilmoqda.`,
+        payload: {
+          purchase_order_id: inserted.id,
+          product_id: input.productId,
+          qty: input.qty,
+          target_location_id: input.targetLocationId,
+          initiated_by_admin: true,
+        },
+        // F3.3 / ADR-0011 — the skladchi confirms (keeper step) or rejects.
+        inlineCallback: {
+          buttons: [
+            [
+              { text: '✅ Tasdiqlash', data: `apprv:po:${inserted.id}` },
+              { text: '❌ Rad qilish', data: `rej:po:${inserted.id}` },
+            ],
+            [{ text: "📋 Ko'rish", data: `view:po:${inserted.id}` }],
+          ],
+        },
+      });
+    }
+
+    return inserted;
+  };
   return tx !== undefined ? run(tx) : withTransaction(run);
 }
 
