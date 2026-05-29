@@ -25,6 +25,9 @@ export const ErrorCode = {
   ACTION_EXPIRED: 'ACTION_EXPIRED',
   // F3.4 / ADR-0010 — feature gated by an external sidecar that is not configured.
   SERVICE_UNAVAILABLE: 'SERVICE_UNAVAILABLE',
+  // EPIC 5 / ADR-0016 — production dialog lifecycle.
+  SESSION_EXPIRED: 'SESSION_EXPIRED',
+  INVALID_OPTION: 'INVALID_OPTION',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -44,6 +47,8 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   ACTION_NOT_PENDING: 409,
   ACTION_EXPIRED: 410,
   SERVICE_UNAVAILABLE: 503,
+  SESSION_EXPIRED: 409,
+  INVALID_OPTION: 422,
 };
 
 /** The JSON body shape sent to clients. */

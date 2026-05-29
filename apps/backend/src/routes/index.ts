@@ -19,6 +19,7 @@ import { productsRouter } from './products.js';
 import { stockRouter } from './stock.js';
 import { replenishmentRouter } from './replenishment.js';
 import { productionOrdersRouter } from './productionOrders.js';
+import { productionDialogRouter } from './productionDialog.js';
 import { purchaseOrdersRouter } from './purchaseOrders.js';
 import { posterIntegrationRouter } from './posterIntegration.js';
 import { dashboardRouter } from './dashboard.js';
@@ -39,6 +40,8 @@ apiRouter.use('/products', productsRouter);
 apiRouter.use('/stock', stockRouter);
 apiRouter.use('/replenishment', replenishmentRouter);
 apiRouter.use('/production-orders', productionOrdersRouter);
+// EPIC 5 / ADR-0016 — channel-agnostic AI production dialog (web channel).
+apiRouter.use('/production/dialog', productionDialogRouter);
 apiRouter.use('/purchase-orders', purchaseOrdersRouter);
 apiRouter.use('/dashboard', dashboardRouter);
 // Dashboard MEGA Redesign Sprint C — per-stage detail drawers

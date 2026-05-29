@@ -40,6 +40,11 @@ import {
   confirmAction,
   rejectAction,
 } from '../../services/assistantActions.js';
+import {
+  answerDialog,
+  cancelDialog,
+  getDialog,
+} from '../../services/productionDialog.js';
 import type { AuthPrincipal } from '../../auth/jwt.js';
 
 /** A Telegram presser, post-spoofing-check. */
@@ -68,6 +73,9 @@ export const CALLBACK_VERBS = [
   'apprv_all',
   'rej_all',
   'clarify',
+  // EPIC 5 / ADR-0016 — production dialog answer/cancel.
+  'dlg',
+  'dlgx',
 ] as const;
 export type CallbackVerb = (typeof CALLBACK_VERBS)[number];
 
@@ -80,6 +88,8 @@ export const CALLBACK_ENTITIES = [
   // F4.3 — `act` (assistant_action), `vmsg` (voice_message).
   'act',
   'vmsg',
+  // EPIC 5 / ADR-0016 — `pdlg` (production_dialog_session).
+  'pdlg',
 ] as const;
 export type CallbackEntity = (typeof CALLBACK_ENTITIES)[number];
 
@@ -121,8 +131,9 @@ export function parseCallbackData(raw: string): ParsedCallback | null {
     if (!Number.isInteger(n) || n <= 0) return null;
     extraId = n;
   }
-  // 4-segment formati faqat `clarify` verb uchun.
-  if (parts.length === 4 && verbRaw !== 'clarify') return null;
+  // 4-segment formati `clarify` (voice) va `dlg` (production dialog answer)
+  // verblari uchun — `dlg:pdlg:<id>:<optionCode>`.
+  if (parts.length === 4 && verbRaw !== 'clarify' && verbRaw !== 'dlg') return null;
   return {
     verb: verbRaw as CallbackVerb,
     entity: entityRaw as CallbackEntity,
@@ -183,6 +194,14 @@ export async function dispatchCallback(
   }
   if (verb === 'clarify' && entity === 'vmsg' && parsed.extraId !== null) {
     return clarifyVoiceCallback(id, parsed.extraId, principal);
+  }
+
+  // ---- EPIC 5 / ADR-0016 — production dialog answer / cancel ------------
+  if (verb === 'dlg' && entity === 'pdlg' && parsed.extraId !== null) {
+    return answerDialogCallback(id, parsed.extraId, principal);
+  }
+  if (verb === 'dlgx' && entity === 'pdlg') {
+    return cancelDialogCallback(id, principal);
   }
 
   return {
@@ -868,6 +887,126 @@ async function markVoiceExecutedIfDone(voiceId: number): Promise<void> {
       WHERE id = $1 AND status = 'actions_pending'`,
     [voiceId],
   );
+}
+
+// -----------------------------------------------------------------------------
+// EPIC 5 / ADR-0016 — production dialog callbacks
+// -----------------------------------------------------------------------------
+
+/**
+ * Option codes for the production dialog inline buttons. Telegram callback
+ * data is numeric-only (`dlg:pdlg:<id>:<code>`), so the option STRINGS used by
+ * the service are mapped to short numeric codes here and back. The outbox
+ * worker that renders the dialog buttons MUST use the same mapping.
+ */
+const DIALOG_OPTION_BY_CODE: Readonly<Record<number, string>> = {
+  1: 'ready',
+  2: 'zero',
+  3: 'mixed',
+  4: 'make',
+  5: 'buy',
+};
+export const DIALOG_CODE_BY_OPTION: Readonly<Record<string, number>> = {
+  ready: 1,
+  zero: 2,
+  mixed: 3,
+  make: 4,
+  buy: 5,
+};
+
+/**
+ * Shared RBAC scope check for production dialog verbs — the presser must be
+ * `pm` OR the production_manager whose location owns the dialog.
+ */
+async function checkDialogRbac(
+  dialogId: number,
+  principal: CallbackPrincipal,
+): Promise<DispatchOutcome | null> {
+  const session = await getDialog(dialogId);
+  if (session === null) return { kind: 'invalid', message: 'Dialog topilmadi' };
+  if (principal.role === 'pm') return null;
+  if (principal.role !== 'production_manager') {
+    return { kind: 'rbac', message: 'Sizning rolingiz bu dialogga javob berolmaydi' };
+  }
+  if (principal.locationId !== session.location_id) {
+    return { kind: 'rbac', message: 'Bu dialog boshqa sex uchun' };
+  }
+  return null;
+}
+
+/** dlg:pdlg:<id>:<optionCode> — answer one production dialog question. */
+async function answerDialogCallback(
+  dialogId: number,
+  optionCode: number,
+  principal: CallbackPrincipal,
+): Promise<DispatchOutcome> {
+  const optionId = DIALOG_OPTION_BY_CODE[optionCode];
+  if (optionId === undefined) {
+    return { kind: 'invalid', message: "Noto'g'ri tanlov kodi" };
+  }
+  const rbac = await checkDialogRbac(dialogId, principal);
+  if (rbac !== null) return rbac;
+  try {
+    const result = await answerDialog({
+      dialogId,
+      optionId,
+      actorUserId: principal.userId,
+    });
+    const docs = result.created_requests.length;
+    const docNote = docs > 0 ? ` (${docs} ta so'rovnoma/buyurtma yaratildi)` : '';
+    if (result.resolved) {
+      return {
+        kind: 'ok',
+        message: `Dialog #${dialogId} yakunlandi${docNote}`,
+        result: { dialog_id: dialogId, resolved: true, created: docs },
+        removeButtons: true,
+      };
+    }
+    // Q2 — the bot's next nudge (with the new options) is delivered by the
+    // outbox worker; here we just confirm Q1 was recorded and strip Q1's
+    // buttons so the user does not re-answer the same question.
+    return {
+      kind: 'ok',
+      message: `Qabul qilindi${docNote}. Keyingi savol yuboriladi.`,
+      result: {
+        dialog_id: dialogId,
+        resolved: false,
+        next_state: result.session.state,
+        created: docs,
+      },
+      removeButtons: true,
+    };
+  } catch (err) {
+    return {
+      kind: 'failed',
+      message: 'Dialogga javob berib bo\'lmadi',
+      error: (err as Error).message,
+    };
+  }
+}
+
+/** dlgx:pdlg:<id> — cancel an open production dialog. */
+async function cancelDialogCallback(
+  dialogId: number,
+  principal: CallbackPrincipal,
+): Promise<DispatchOutcome> {
+  const rbac = await checkDialogRbac(dialogId, principal);
+  if (rbac !== null) return rbac;
+  try {
+    const updated = await cancelDialog({ dialogId, actorUserId: principal.userId });
+    return {
+      kind: 'ok',
+      message: `Dialog #${dialogId} bekor qilindi`,
+      result: { dialog_id: dialogId, new_state: updated.state },
+      removeButtons: true,
+    };
+  } catch (err) {
+    return {
+      kind: 'failed',
+      message: 'Dialog bekor qilinmadi',
+      error: (err as Error).message,
+    };
+  }
 }
 
 /** Lookup the principal for a given Telegram numeric user id. */

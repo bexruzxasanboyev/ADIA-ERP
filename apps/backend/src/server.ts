@@ -40,6 +40,10 @@ import {
   stopActionExpireWorker,
 } from './workers/actionExpireCron.js';
 import {
+  startProductionDialogExpireWorker,
+  stopProductionDialogExpireWorker,
+} from './workers/productionDialogExpireCron.js';
+import {
   startForecastRefreshWorker,
   stopForecastRefreshWorker,
 } from './workers/forecastRefreshCron.js';
@@ -81,6 +85,11 @@ function main(): void {
   // TTL has elapsed. One UPDATE per minute, atomic and idempotent.
   startActionExpireWorker();
   console.log('[server] assistant action expire worker started (* * * * *)');
+
+  // EPIC 5 (ADR-0016) — sweep production dialogs whose 6-hour TTL has elapsed;
+  // stamp EXPIRED + escalate to PM. One UPDATE per minute, atomic + idempotent.
+  startProductionDialogExpireWorker();
+  console.log('[server] production dialog expire worker started (* * * * *)');
 
   // F4.3 (ADR-0014) — har kuni 03:30 da eski voice tmp fayllarni tozalash.
   startVoiceCleanupWorker();
@@ -135,6 +144,7 @@ function main(): void {
     stopMinmaxRecalcWorker();
     stopRefreshTokenCleanupWorker();
     stopActionExpireWorker();
+    stopProductionDialogExpireWorker();
     stopForecastRefreshWorker();
     stopVoiceCleanupWorker();
     // F3.3 — stop long-polling (if running); webhook mode has no task.
