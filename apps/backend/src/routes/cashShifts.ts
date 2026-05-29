@@ -18,16 +18,11 @@ import { asyncHandler } from '../lib/asyncHandler.js';
 import { AppError } from '../errors/index.js';
 import { getPrincipal, isSuperAdmin } from '../lib/principal.js';
 import { parseOptionalIdParam } from '../lib/validate.js';
-import { parseDateRange } from '../lib/dateRange.js';
+import { parseDateRange, toPosterDate } from '../lib/dateRange.js';
 import { listCashShifts } from '../services/cashShift.js';
 import { createPosterClientFromConfig } from '../integrations/poster/client.js';
 
 export const cashShiftsRouter: Router = Router();
-
-/** Date -> Poster YYYYMMDD. */
-function toPosterDate(d: Date): string {
-  return d.toISOString().slice(0, 10).replace(/-/g, '');
-}
 
 cashShiftsRouter.get(
   '/',

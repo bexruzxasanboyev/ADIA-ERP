@@ -29,7 +29,7 @@ import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { getPrincipal, isSuperAdmin } from '../lib/principal.js';
-import { parseDateRange, type DateRange } from '../lib/dateRange.js';
+import { parseDateRange, toPosterDate, type DateRange } from '../lib/dateRange.js';
 import type { AuthPrincipal } from '../auth/jwt.js';
 import type { Role } from '../auth/roles.js';
 
@@ -1646,6 +1646,7 @@ async function fetchAlertsFeed(
 function severityFor(type: string): AlertSeverity {
   switch (type) {
     case 'negative_stock_detected':
+    case 'wrong_keyed_check':
     case 'poster_sync_failed':
       return 'danger';
     case 'stock_below_min':
@@ -2390,7 +2391,8 @@ dashboardRouter.get(
     );
 
     const client = createPosterClientFromConfig();
-    const compact = dateStr.replace(/-/g, ''); // YYYY-MM-DD -> YYYYMMDD
+    // YYYY-MM-DD -> Poster YYYYMMDD (shared helper; UTC-anchored).
+    const compact = toPosterDate(new Date(`${dateStr}T00:00:00.000Z`));
     const report = await client.getPaymentsReport({
       dateFrom: compact,
       dateTo: compact,

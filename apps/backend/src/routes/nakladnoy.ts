@@ -21,9 +21,9 @@ import { asyncHandler } from '../lib/asyncHandler.js';
 import {
   getEffectiveLocationIds,
   getPrincipal,
-  isSuperAdmin,
   requireLocationOperator,
 } from '../lib/principal.js';
+import type { AuthPrincipal } from '../auth/jwt.js';
 import {
   asObject,
   optionalId,
@@ -41,6 +41,29 @@ import {
 } from '../services/nakladnoy.js';
 
 export const nakladnoyRouter: Router = Router();
+
+/**
+ * Shared read scope for both nakladnoy read endpoints, so the list and the
+ * single-document fetch make the IDENTICAL RBAC decision (incl. the
+ * `ai_assistant` and `activeLocationId`-narrowing behaviour):
+ *
+ *   - `null`  -> chain-wide (PM/super-admin): no location filter.
+ *   - `[]`    -> scoped principal with no assigned locations: sees nothing.
+ *   - `[..]`  -> the location ids this principal may read.
+ */
+function nakladnoyReadScope(principal: AuthPrincipal): number[] | null {
+  return getEffectiveLocationIds(principal);
+}
+
+/** Whether a scoped principal may read a single nakladnoy at `locationId`. */
+function canReadNakladnoyLocation(
+  scope: number[] | null,
+  locationId: number | null,
+): boolean {
+  if (scope === null) return true; // chain-wide
+  if (locationId === null) return false; // location-less doc, scoped principal
+  return scope.includes(locationId);
+}
 
 const ALLOWED_SOURCES: readonly NakladnoySource[] = [
   'sale',
@@ -94,7 +117,7 @@ nakladnoyRouter.get(
     const principal = getPrincipal(req);
     const limitRaw = Number(req.query.limit ?? 50);
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : 50;
-    const scope = getEffectiveLocationIds(principal);
+    const scope = nakladnoyReadScope(principal);
 
     const params: Array<number | number[]> = [];
     let where = '';
@@ -207,11 +230,10 @@ nakladnoyRouter.get(
     if (result === null) {
       throw AppError.notFound('Nakladnoy not found.');
     }
-    // Scope guard — a non-PM principal may only read its own locations'.
-    if (!isSuperAdmin(principal) && result.header.location_id !== null) {
-      if (!principal.locationIds.includes(result.header.location_id)) {
-        throw AppError.forbidden('You may only read nakladnoy for your own location.');
-      }
+    // Scope guard — identical RBAC decision as the list endpoint (shared helper).
+    const scope = nakladnoyReadScope(principal);
+    if (!canReadNakladnoyLocation(scope, result.header.location_id)) {
+      throw AppError.forbidden('You may only read nakladnoy for your own location.');
     }
     // Resolve product/store names for the frontend `Nakladnoy` contract.
     const { rows: nameRows } = await query<{

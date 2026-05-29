@@ -20,7 +20,7 @@
  * Telegram dispatch'ga FAQAT shu link verb qo'shiladi — ishlab chiqarish/
  * kassa telegram kodiga tegilmaydi.
  */
-import { withTransaction, type TxClient } from '../db/index.js';
+import { query, withTransaction, type TxClient } from '../db/index.js';
 import { AppError } from '../errors/index.js';
 import { writeAudit } from '../lib/audit.js';
 import { generateRefreshToken, hashRefreshToken } from '../auth/jwt.js';
@@ -199,7 +199,7 @@ export async function getLinkStatus(
   readonly telegramId: string | null;
   readonly hasPendingToken: boolean;
 }> {
-  const runner = tx ?? (await import('../db/index.js'));
+  const runner = tx ?? { query };
   const { rows: userRows } = await runner.query<{ telegram_id: string | null }>(
     // `telegram_id` is BIGINT; cast to text so the value is always a string
     // (small ids would otherwise arrive as JS numbers from pg).

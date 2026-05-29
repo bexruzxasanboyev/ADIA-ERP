@@ -95,6 +95,14 @@ export function parseDateRange(query: {
   return { from, to: now, preset };
 }
 
+/**
+ * Date -> Poster `YYYYMMDD` (the format Poster's report endpoints expect).
+ * Uses the UTC date so it agrees with the half-open `[from, to)` windows above.
+ */
+export function toPosterDate(d: Date): string {
+  return d.toISOString().slice(0, 10).replace(/-/g, '');
+}
+
 function parseDateOnly(raw: string, label: string): Date {
   // Strict YYYY-MM-DD only — Date(raw) accepts too many shapes.
   if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) {

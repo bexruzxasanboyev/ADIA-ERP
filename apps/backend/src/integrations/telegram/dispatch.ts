@@ -661,21 +661,6 @@ async function checkReqRbac(
 }
 
 // -----------------------------------------------------------------------------
-// Helpers exposed for the bot handler / tests
-// -----------------------------------------------------------------------------
-
-/** TEST hook — `tx` parameter is unused but exported so unit tests can stub. */
-export type DispatchInternalsForTesting = {
-  readonly query: typeof query;
-  readonly withTransaction: typeof withTransaction;
-};
-
-export const __forTestingOnly: DispatchInternalsForTesting = {
-  query,
-  withTransaction,
-};
-
-// -----------------------------------------------------------------------------
 // F4.3 / ADR-0014 — voice flow callback handlers
 // -----------------------------------------------------------------------------
 
