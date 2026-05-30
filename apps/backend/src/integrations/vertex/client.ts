@@ -22,7 +22,13 @@
  * with the `model` string passed in. We still cache the `GoogleGenAI`
  * instance itself because constructing it eagerly reads ADC credentials.
  */
-import { GoogleGenAI, type Content, type GenerateContentResponse, type Tool } from '@google/genai';
+import {
+  GoogleGenAI,
+  type Content,
+  type GenerateContentResponse,
+  type Tool,
+  type ToolConfig,
+} from '@google/genai';
 import { loadConfig } from '../../config/index.js';
 
 /**
@@ -33,6 +39,15 @@ export type VertexGenerateRequest = {
   readonly systemInstruction: string;
   readonly contents: Content[];
   readonly tools: Tool[];
+  /**
+   * Optional function-calling policy for this round-trip. The assistant
+   * service uses `mode: ANY` on the FIRST turn to FORCE the model to call a
+   * grounding tool (so it can never answer data questions from its own
+   * "knowledge" — the ungrounded-hallucination bug, ADR-0006 §5), and
+   * `mode: AUTO` on follow-up turns so the model can synthesise a text
+   * answer from the tool results. When omitted, Vertex defaults to AUTO.
+   */
+  readonly toolConfig?: ToolConfig;
 };
 
 export type VertexClient = {
@@ -88,6 +103,11 @@ export const defaultVertexClient: VertexClient = {
       config: {
         systemInstruction: req.systemInstruction,
         tools: req.tools,
+        // Function-calling policy — forwarded verbatim from the caller. The
+        // assistant service forces `mode: ANY` on the first turn so the model
+        // grounds every answer in a tool call (anti-hallucination). Omitted ⇒
+        // Vertex default (AUTO).
+        ...(req.toolConfig !== undefined ? { toolConfig: req.toolConfig } : {}),
         temperature: 0.2, // deterministic-leaning — domain answers, not creative writing
         maxOutputTokens: cfg.vertex.maxOutputTokens,
       },

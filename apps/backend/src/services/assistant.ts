@@ -47,12 +47,14 @@ import {
   type CanExecuteDenial,
 } from '../integrations/vertex/tools/write.js';
 import { loadConfig } from '../config/index.js';
-import type {
-  Content,
-  FunctionCall,
-  GenerateContentResponse,
-  Part,
-  Tool,
+import {
+  FunctionCallingConfigMode,
+  type Content,
+  type FunctionCall,
+  type GenerateContentResponse,
+  type Part,
+  type Tool,
+  type ToolConfig,
 } from '@google/genai';
 
 // ---------------------------------------------------------------------------
@@ -175,6 +177,28 @@ type StagedAction = {
 /** Pending action lifetime — ADR-0009 §1 says 5 minutes. */
 const PENDING_ACTION_TTL_MINUTES = 5;
 
+/**
+ * Tool-calling policy per turn (anti-hallucination — ADR-0006 §5).
+ *
+ * The live bug: the model answered a data question ("Markaziy skladda nima
+ * qizil?") with invented numbers and `tool_calls: []`. Root cause — Vertex
+ * defaults to `AUTO`, letting the model skip every tool and answer from its
+ * own (non-existent) "knowledge".
+ *
+ * Fix: on the FIRST round-trip we force `mode: ANY`, which constrains the
+ * model to emit a function call (it cannot return free text). It therefore
+ * MUST ground in a read tool before it can say anything. On every follow-up
+ * round-trip we switch to `AUTO` so the model can synthesise a natural-language
+ * answer from the tool results (or chain another tool). This guarantees: no
+ * data answer is ever produced without at least one tool call behind it.
+ */
+const FORCE_TOOL_CALL_CONFIG: ToolConfig = {
+  functionCallingConfig: { mode: FunctionCallingConfigMode.ANY },
+};
+const AUTO_TOOL_CALL_CONFIG: ToolConfig = {
+  functionCallingConfig: { mode: FunctionCallingConfigMode.AUTO },
+};
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -232,10 +256,15 @@ export async function runAssistantQuery(
 
   let finalText = '';
   for (let turn = 0; turn <= cfg.vertex.maxToolCallsPerTurn; turn += 1) {
+    // First turn FORCES a tool call (mode: ANY) so the model can never answer
+    // a data question from invented numbers; follow-up turns use AUTO so it
+    // can synthesise text from the tool results. See FORCE_TOOL_CALL_CONFIG.
+    const toolConfig = turn === 0 ? FORCE_TOOL_CALL_CONFIG : AUTO_TOOL_CALL_CONFIG;
     const response: GenerateContentResponse = await client.generate({
       systemInstruction,
       contents,
       tools,
+      toolConfig,
     });
     const candidate = response.candidates?.[0];
     if (candidate === undefined) {

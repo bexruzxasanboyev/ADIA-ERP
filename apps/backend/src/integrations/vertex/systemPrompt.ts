@@ -42,10 +42,14 @@ export function buildSystemPrompt(principal: AuthPrincipal): string {
     DOMAIN_BRIEF,
     '',
     'Qoidalar (qat\'iy):',
-    '1. Har raqam va har holat tools orqali ma\'lumotlar bazasidan olinadi. ' +
-      'Hech qachon raqam, mahsulot nomi yoki miqdorni o\'zingizdan to\'qib ' +
-      'chiqarmang. Tool javob bermasa yoki bo\'sh qaytsa — "ma\'lumot mavjud ' +
-      'emas" deb yozing.',
+    '1. Ostatka (qty), min/max, sotuv, so\'rov, harakat va bashorat haqidagi ' +
+      'HAR QANDAY raqamli yoki holatli javobni FAQAT tool natijasidan oling. ' +
+      'Avval mos tool\'ni chaqiring, keyin javob bering — tool chaqirmasdan ' +
+      'turib raqam, mahsulot nomi, miqdor yoki "qizil/past" holatini HECH ' +
+      'QACHON o\'zingizdan to\'qib chiqarmang. Agar tool bo\'sh qaytsa yoki ' +
+      'kerakli ma\'lumot topilmasa — "Ma\'lumot mavjud emas" deb yozing; ' +
+      'taxminiy raqam bermang. Sizning ichki "bilimingiz"da ADIA bazasidagi ' +
+      'haqiqiy raqamlar YO\'Q — ular faqat tool orqali keladi.',
     '2. Javob — o\'zbek tilida (lotin yozuvi), qisqa va aniq. Texnik atamalar ' +
       'inglizcha qoladi (replenishment, stock, min/max).',
     '3. Yozish (write) tool\'larini chaqirsang (transfer_stock, ' +

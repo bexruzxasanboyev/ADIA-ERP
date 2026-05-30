@@ -120,15 +120,29 @@ ostida ishlaydi. Foydalanuvchi sifatida login qilinmaydi.
 "Markaziy skladda 50 kg un bor" — aslida tool javobida 32 kg edi).
 
 **Strategiya:**
-1. **System prompt'da qattiq qoida:** "Raqamlar har doim tool'dan. Tool
-   javob bermasa — 'ma'lumot yo'q'."
-2. **Tool javobi zaruriy** — agar model tool chaqirmasdan raqamli javob
-   bersa, backend `audit_log` ga `flag='no_tool_call'` belgisi qo'yadi (PM
-   monitorlashi uchun).
-3. **Multi-call limit** — model 5 tool call'da yechilmaydigan savolga "Men
-   javob topa olmadim, operatorga murojaat qiling" qaytaradi.
+1. **Tool-call majburlash (`functionCallingConfig.mode = ANY`) — birlamchi
+   himoya (2026-05-30 amalga oshirildi).** Birinchi Vertex round-trip'da
+   `toolConfig.functionCallingConfig.mode = ANY` o'rnatiladi — model erkin
+   matn qaytara olmaydi, MAJBURAN bitta read tool chaqiradi. Keyingi
+   turlarda `AUTO` — model tool natijalaridan matn javob sintez qiladi.
+   Natija: hech qanday ma'lumotli javob kamida bitta tool chaqirig'isiz
+   chiqmaydi. Sabab — Vertex default rejimi `AUTO`, u model'ga har tool'ni
+   o'tkazib yuborib o'zidan raqam to'qishga ruxsat berardi (live bug:
+   "Markaziy skladda nima qizil?" → `tool_calls: []` + to'qilgan raqamlar).
+   Amalga oshirish: `assistant.ts` (`FORCE_TOOL_CALL_CONFIG` /
+   `AUTO_TOOL_CALL_CONFIG`), `client.ts` (`VertexGenerateRequest.toolConfig`).
+2. **System prompt'da qattiq qoida:** "Ostatka/min/sotuv/so'rov/bashorat
+   bo'yicha har qanday raqamli javob FAQAT tool natijasidan; ma'lumot
+   bo'lmasa 'Ma'lumot mavjud emas'; HECH QACHON raqam o'ylab topma."
+3. **Multi-call limit** — model 5 tool call'da yechilmaydigan savolga
+   fallback xabar qaytaradi.
 4. **Future (Faza-3):** retrieval-grounded validation — har raqam javobda
    tool natijasiga mos kelishini regex/parse bilan tekshirish.
+
+**Test:** `test/services.assistant.test.ts` — "tool-call grounding
+(anti-hallucination)" bloki: (a) birinchi turda mode=ANY, keyingisida AUTO;
+(b) har round-trip'da read tool'lar e'lon qilinadi; (c) yakuniy javob
+real tool natijasidan (DB qty) quriladi, model tasavvuridan emas.
 
 ### 6. Function-calling oqimi (state diagram)
 
