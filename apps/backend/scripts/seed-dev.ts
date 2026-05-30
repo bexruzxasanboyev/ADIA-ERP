@@ -1,11 +1,11 @@
 /**
  * Dev seed — minimal data so the frontend can log in and exercise M1-M3.
  *
- * LOCAL DEV ONLY. Idempotent: re-running upserts by natural keys (email, name)
- * and never duplicates rows.
+ * LOCAL DEV ONLY. Idempotent: re-running upserts by natural keys (username,
+ * name) and never duplicates rows.
  *
  * Seeds:
- *   - a `pm` super-admin user (login: pm@adia.local / changeme123);
+ *   - a `pm` super-admin user (login: pm / changeme123);
  *   - one location per chain link (raw_warehouse -> store) with a parent chain;
  *   - a manager user per non-pm location;
  *   - a handful of sample products (raw / semi / finished);
@@ -79,36 +79,30 @@ const PRODUCTS: ProductSeed[] = [
   { name: 'Shokoladli tort', type: 'finished', unit: 'pcs', sku: 'FIN-CHOCO-CAKE' },
 ];
 
-/** Insert a user if the email is free; return the user id either way. */
+/** Insert a user if the username is free; return the user id either way. */
 async function upsertUser(
   name: string,
-  email: string,
+  username: string,
   role: string,
   locationId: number | null,
 ): Promise<number> {
-  const existing = await query<{ id: number }>('SELECT id FROM users WHERE email = $1', [email]);
+  // `username` is the sole login handle (email was removed entirely). It must
+  // satisfy chk_users_username_format (`^[a-z0-9._-]{3,32}$`).
+  const existing = await query<{ id: number }>('SELECT id FROM users WHERE username = $1', [
+    username,
+  ]);
   if (existing.rows[0] !== undefined) {
     return existing.rows[0].id;
   }
   const hash = await bcrypt.hash(SEED_PASSWORD, BCRYPT_ROUNDS);
-  // F4.12 — derive a username from the email local-part. Must satisfy
-  // chk_users_username_format (`^[a-z0-9._-]{3,32}$`); fall back to
-  // `user_<role>_<random>` when the derivation is too short.
-  const cleaned = (email.split('@')[0] ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]/g, '')
-    .slice(0, 24);
-  const username = cleaned.length >= 3
-    ? cleaned
-    : `user_${role}_${Math.random().toString(36).slice(2, 8)}`;
   const { rows } = await query<{ id: number }>(
-    `INSERT INTO users (name, email, username, password_hash, role, location_id)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-    [name, email, username, hash, role, locationId],
+    `INSERT INTO users (name, username, password_hash, role, location_id)
+     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+    [name, username, hash, role, locationId],
   );
   const row = rows[0];
   if (row === undefined) {
-    throw new Error(`Failed to insert user ${email}.`);
+    throw new Error(`Failed to insert user ${username}.`);
   }
   return row.id;
 }
@@ -155,8 +149,8 @@ async function main(): Promise<void> {
   console.log('[seed-dev] seeding development data...');
 
   // 1. PM super-admin (chain-wide, no location).
-  const pmId = await upsertUser('Loyiha menejeri', 'pm@adia.local', 'pm', null);
-  console.log(`[seed-dev] pm user id=${pmId}  (login: pm@adia.local / ${SEED_PASSWORD})`);
+  const pmId = await upsertUser('Loyiha menejeri', 'pm', 'pm', null);
+  console.log(`[seed-dev] pm user id=${pmId}  (login: pm / ${SEED_PASSWORD})`);
 
   // 2. Locations in chain order; each parent is created before its child.
   const locationIdByName = new Map<string, number>();
@@ -167,12 +161,13 @@ async function main(): Promise<void> {
   }
 
   // 3. One manager user per location, then attach as the location's manager.
-  //    The email must be unique per location: roles like supply_manager are
-  //    now shared across 3 supply nodes (Tort / Perojniy / Yarim Fabrika), so
-  //    role-only slugs would collapse all three managers into the same user.
-  //    The role-slug counters below preserve the historical email of the
-  //    first location in a role (e.g. supply-manager@adia.local stays mapped
-  //    to "Ta'minot — Tort") and append `-2`, `-3`, ... for the rest.
+  //    The username (login) must be unique per location: roles like
+  //    supply_manager are now shared across 3 supply nodes (Tort / Perojniy /
+  //    Yarim Fabrika), so role-only slugs would collapse all three managers
+  //    into the same user. The role-slug counters below keep the first
+  //    location in a role on the bare slug (e.g. `supply-manager` stays mapped
+  //    to "Tort skladi") and append `-2`, `-3`, ... for the rest. The slug
+  //    matches chk_users_username_format (`^[a-z0-9._-]{3,32}$`).
   const roleSlugCount = new Map<string, number>();
   for (const loc of LOCATIONS) {
     const locId = locationIdByName.get(loc.name);
@@ -182,9 +177,10 @@ async function main(): Promise<void> {
     const slug = loc.managerRole.replace(/_/g, '-');
     const seen = roleSlugCount.get(slug) ?? 0;
     roleSlugCount.set(slug, seen + 1);
-    const email = seen === 0 ? `${slug}@adia.local` : `${slug}-${seen + 1}@adia.local`;
-    const managerId = await upsertUser(`${loc.name} — boshliq`, email, loc.managerRole, locId);
+    const username = seen === 0 ? slug : `${slug}-${seen + 1}`;
+    const managerId = await upsertUser(`${loc.name} — boshliq`, username, loc.managerRole, locId);
     await query('UPDATE locations SET manager_user_id = $1 WHERE id = $2', [managerId, locId]);
+    console.log(`[seed-dev]   manager login: ${username} / ${SEED_PASSWORD}  (${loc.name})`);
   }
 
   // 4. Products.
@@ -220,7 +216,7 @@ async function main(): Promise<void> {
       await query(
         `INSERT INTO recipes (product_id, component_product_id, qty_per_unit)
          VALUES ($1, $2, $3)
-         ON CONFLICT (product_id, component_product_id) DO NOTHING`,
+         ON CONFLICT (product_id, component_product_id, stage) DO NOTHING`,
         [cakeId, componentId, qtyPerUnit],
       );
     }

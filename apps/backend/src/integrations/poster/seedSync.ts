@@ -304,7 +304,7 @@ async function replaceRecipe(
         await tx.query(
           `INSERT INTO recipes (product_id, component_product_id, qty_per_unit)
            VALUES ($1, $2, $3)
-           ON CONFLICT (product_id, component_product_id) DO UPDATE
+           ON CONFLICT (product_id, component_product_id, stage) DO UPDATE
              SET qty_per_unit = EXCLUDED.qty_per_unit`,
           [parentProductId, c.componentProductId, c.qtyPerUnit],
         );
