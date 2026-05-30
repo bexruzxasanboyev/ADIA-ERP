@@ -243,16 +243,4 @@
       opacity: 0.35;
     }
   }
-
-  /*
-   * Dashboard v3 — Variant B canvas — disable React Flow's edge dash
-   * animation for users who prefer reduced motion. The edge stroke
-   * stays visible, only the moving flow dot freezes.
-   */
-  @media (prefers-reduced-motion: reduce) {
-    .react-flow__edge-path,
-    .react-flow__edge.animated .react-flow__edge-path {
-      animation: none !important;
-    }
-  }
 }

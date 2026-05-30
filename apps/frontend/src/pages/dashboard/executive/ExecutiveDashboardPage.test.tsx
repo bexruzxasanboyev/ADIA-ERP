@@ -1,17 +1,19 @@
 /**
- * Dashboard v3 — Contract test for the executive dashboard (Variant B
- * "Calm Canvas").
+ * Contract test for the executive dashboard (insight-first redesign).
  *
  * Pins the mocked endpoints (overview, ecosystem, purchase orders,
  * replenishment, production detail, stores detail) to the rendered UI:
  *   • HeroStrip surfaces 4 compact KPI cards (revenue / receipts /
  *     active requests / critical positions).
- *   • CanvasFlow renders one chain-node per supply-chain stage.
+ *   • ChainHealthRow renders one status card per supply-chain stage
+ *     (replaces the retired React-Flow canvas).
  *   • CriticalAlerts ranks zero-stock items first.
  *   • MyActionsList surfaces draft purchase orders.
+ *   • ProductionPlanSummary digests today's plan above the fold.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { renderWithProviders, jsonResponse } from '@/test/render-helpers';
 import { ExecutiveDashboardPage } from './ExecutiveDashboardPage';
 import type {
@@ -316,11 +318,11 @@ describe('ExecutiveDashboardPage — Variant B', () => {
     expect(value.textContent?.replace(/\s+/g, '')).toBe('2400000');
   });
 
-  it('renders the canvas with one chain-node per supply-chain stage', async () => {
+  it('renders the chain-health row with one card per supply-chain stage', async () => {
     mockAll();
     renderWithProviders(<ExecutiveDashboardPage />, { role: 'pm' });
 
-    expect(await screen.findByTestId('canvas-flow')).toBeInTheDocument();
+    expect(await screen.findByTestId('chain-health-row')).toBeInTheDocument();
     expect(screen.getByTestId('chain-node-raw_warehouse')).toBeInTheDocument();
     expect(screen.getByTestId('chain-node-production')).toBeInTheDocument();
     expect(screen.getByTestId('chain-node-supply')).toBeInTheDocument();
@@ -328,6 +330,39 @@ describe('ExecutiveDashboardPage — Variant B', () => {
       screen.getByTestId('chain-node-central_warehouse'),
     ).toBeInTheDocument();
     expect(screen.getByTestId('chain-node-store')).toBeInTheDocument();
+  });
+
+  it('opens the per-stage detail drawer when a chain card is clicked', async () => {
+    mockAll();
+    const user = userEvent.setup();
+    renderWithProviders(<ExecutiveDashboardPage />, { role: 'pm' });
+
+    const storeCard = await screen.findByTestId('chain-node-store');
+    await user.click(storeCard);
+    expect(
+      await screen.findByTestId('chain-detail-header-store'),
+    ).toBeInTheDocument();
+  });
+
+  it('renders the production-plan summary above the fold', async () => {
+    mockAll();
+    renderWithProviders(<ExecutiveDashboardPage />, { role: 'pm' });
+
+    expect(
+      await screen.findByTestId('prod-summary-counts'),
+    ).toBeInTheDocument();
+    // "Pishloqli non" also appears in the below-the-fold full table, so
+    // scope the lookup to the above-the-fold summary card.
+    expect(screen.getAllByText('Pishloqli non').length).toBeGreaterThan(0);
+  });
+
+  it('does not render the retired ecosystem canvas', async () => {
+    mockAll();
+    renderWithProviders(<ExecutiveDashboardPage />, { role: 'pm' });
+
+    await screen.findByTestId('chain-health-row');
+    expect(screen.queryByTestId('canvas-flow')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ecosystem-canvas')).not.toBeInTheDocument();
   });
 
   it('lists the critical zero-stock item at the top of CriticalAlerts', async () => {

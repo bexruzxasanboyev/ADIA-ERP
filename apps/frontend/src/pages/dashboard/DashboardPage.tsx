@@ -42,7 +42,6 @@ import type {
 import { cn } from '@/lib/utils';
 import { OpenRequestsChart } from './OpenRequestsChart';
 import { ForecastsPanel } from './ForecastsPanel';
-import { EcosystemFlow } from './EcosystemFlow';
 import { SalesChart } from './SalesChart';
 
 /**
@@ -147,10 +146,6 @@ export function DashboardPage() {
       />
 
       <KpiStrip overview={data} />
-
-      {ecosystem.data !== null && (
-        <EcosystemFlow nodes={ecosystem.data.chain_flow} />
-      )}
 
       {isEmpty ? (
         <Card className="p-6">
