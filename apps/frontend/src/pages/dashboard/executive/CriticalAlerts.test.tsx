@@ -63,7 +63,42 @@ describe('CriticalAlerts', () => {
     renderWithProviders(
       <CriticalAlerts belowMin={BELOW_MIN} alerts={alerts} />,
     );
-    // 2 below-min + 1 danger alert = 3
+    // 2 below-min + 1 danger alert = 3 (legacy: no server count given)
     expect(screen.getByText('3')).toBeInTheDocument();
+  });
+
+  it('badge reflects the server criticalCount, not the client row count', () => {
+    // Defect: the KPI ("Kritik pozitsiya") showed `below_min_count` (435)
+    // while this panel showed `rows.length` (455 — below_min + alerts).
+    // When the server count is supplied it must win in BOTH places so the
+    // numbers agree.
+    const alerts: DashboardAlert[] = [
+      {
+        id: 1,
+        type: 'poster_sync_failed',
+        severity: 'danger',
+        message: 'Poster sync failed',
+        location_id: null,
+        location_name: null,
+        created_at: '2026-05-24T10:00:00.000Z',
+      },
+    ];
+    renderWithProviders(
+      <CriticalAlerts belowMin={BELOW_MIN} alerts={alerts} criticalCount={2} />,
+    );
+    // Server says 2 critical positions — badge shows 2, NOT 3.
+    expect(screen.getByText('2')).toBeInTheDocument();
+    expect(screen.queryByText('3')).not.toBeInTheDocument();
+  });
+
+  it('overflow footer counts against the server criticalCount', () => {
+    // 2 rows are displayed (TOP_LIMIT=3 not exceeded by display rows),
+    // but the server reports 10 critical positions → footer shows the
+    // remainder relative to the server count.
+    renderWithProviders(
+      <CriticalAlerts belowMin={BELOW_MIN} alerts={[]} criticalCount={10} />,
+    );
+    // 10 total - 2 shown = "Yana 8 ta →"
+    expect(screen.getByText(/Yana 8 ta/)).toBeInTheDocument();
   });
 });

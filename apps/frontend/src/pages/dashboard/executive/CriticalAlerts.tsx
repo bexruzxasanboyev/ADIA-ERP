@@ -94,16 +94,31 @@ function belowMinRow(
 export function CriticalAlerts({
   belowMin,
   alerts,
+  criticalCount,
   className,
 }: {
   belowMin: DashboardBelowMinItem[];
   alerts: DashboardAlert[];
+  /**
+   * Canonical critical count from the server (`kpis.below_min_count`).
+   * When provided, this drives the header badge AND the overflow footer
+   * so the panel and the "Kritik pozitsiya" KPI always show the SAME
+   * number — the count is the single server-side source of truth, not a
+   * client recomputation over `below_min` + `alerts` (which double-counts
+   * the alerts feed and drifts from the KPI). Falls back to the row count
+   * when omitted (older call sites / unit tests).
+   */
+  criticalCount?: number;
   className?: string;
 }) {
   const rows = buildRows(belowMin, alerts);
   const top = rows.slice(0, TOP_LIMIT);
-  const overflow = rows.length - top.length;
   const headingId = useId();
+  // Badge/overflow use the server count when available so the panel
+  // agrees with the KPI; the rows list itself stays a display-only
+  // composition of the most urgent items.
+  const totalCount = criticalCount ?? rows.length;
+  const overflow = Math.max(0, totalCount - top.length);
 
   return (
     <Card
@@ -125,9 +140,9 @@ export function CriticalAlerts({
             Eng yuqori ustuvorlikdagi vaziyatlar.
           </p>
         </div>
-        {rows.length > 0 && (
+        {totalCount > 0 && (
           <Badge variant="danger" className="tabular-nums">
-            {formatQty(rows.length)}
+            {formatQty(totalCount)}
           </Badge>
         )}
       </header>

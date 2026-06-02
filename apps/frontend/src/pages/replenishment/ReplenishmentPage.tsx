@@ -25,7 +25,6 @@ import {
   LoadingState,
   PageHeader,
 } from '@/components/PageState';
-import { ViewToggle, useViewMode } from '@/components/ViewToggle';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { formatDateTime, formatQty } from '@/lib/format';
@@ -86,7 +85,6 @@ const EMPTY_FILTER: FilterValue = { unit: [], status: [], department: [] };
 export function ReplenishmentPage() {
   const bp = useBreakpoint();
   const showMobileCards = bp === 'xs';
-  const [view, setView] = useViewMode('replenishment', 'card');
   const [filter, setFilter] = useState<FilterValue>(EMPTY_FILTER);
   const [search, setSearch] = useState('');
 
@@ -155,7 +153,6 @@ export function ReplenishmentPage() {
       <PageHeader
         title="To‘ldirish so‘rovlari"
         description="Avtomatik to‘ldirish tsikli va so‘rovlar holati."
-        action={<ViewToggle value={view} onChange={setView} />}
       />
 
       <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center">
@@ -195,13 +192,7 @@ export function ReplenishmentPage() {
         </p>
       </div>
 
-      <Card
-        className={
-          view === 'card' && !showMobileCards
-            ? 'border-0 bg-transparent p-0 shadow-none'
-            : undefined
-        }
-      >
+      <Card>
         {isLoading && <LoadingState />}
         {!isLoading && error && (
           <ErrorState message={error} onRetry={refetch} />
@@ -209,86 +200,33 @@ export function ReplenishmentPage() {
         {!isLoading && !error && rows.length === 0 && (
           <EmptyState message="So‘rovlar topilmadi." />
         )}
-        {!isLoading && !error && rows.length > 0 && (showMobileCards || view === 'card') && (
-          <div>
-            {showMobileCards ? (
-              <MobileCardList
-                items={rows.map((row) => ({
-                  id: row.id,
-                  title: `#${row.id} · ${row.product_name}`,
-                  subtitle: row.requester_location_name,
-                  badge: (
-                    <Badge variant={REPLENISHMENT_STATUS_VARIANT[row.status]}>
-                      {REPLENISHMENT_STATUS_LABELS[row.status]}
-                    </Badge>
-                  ),
-                  fields: [
-                    {
-                      label: 'Miqdor',
-                      value: `${formatQty(row.qty_needed)} ${row.product_unit}`,
-                    },
-                    { label: 'Yaratilgan', value: formatDateTime(row.created_at) },
-                  ],
-                  footer: (
-                    <Button variant="outline" size="sm" asChild className="w-full">
-                      <Link to={`/replenishment/${row.id}`}>Ochish</Link>
-                    </Button>
-                  ),
-                }))}
-              />
-            ) : (
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
-                {rows.map((row) => (
-                  <div
-                    key={row.id}
-                    className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/40 p-4 shadow-sm transition-colors hover:bg-card/70"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="text-xs text-muted-foreground">#{row.id}</p>
-                        <p className="truncate text-sm font-semibold">
-                          {row.product_name}
-                        </p>
-                      </div>
-                      <Badge variant={REPLENISHMENT_STATUS_VARIANT[row.status]}>
-                        {REPLENISHMENT_STATUS_LABELS[row.status]}
-                      </Badge>
-                    </div>
-                    <dl className="space-y-1 text-xs">
-                      <div className="flex justify-between">
-                        <dt className="text-muted-foreground">Miqdor</dt>
-                        <dd className="tabular-nums">
-                          {formatQty(row.qty_needed)} {row.product_unit}
-                        </dd>
-                      </div>
-                      <div className="flex justify-between gap-2">
-                        <dt className="text-muted-foreground">So‘rovchi</dt>
-                        <dd className="truncate text-right">
-                          {row.requester_location_name}
-                        </dd>
-                      </div>
-                      <div className="flex justify-between">
-                        <dt className="text-muted-foreground">Yaratilgan</dt>
-                        <dd className="text-right text-muted-foreground">
-                          {formatDateTime(row.created_at)}
-                        </dd>
-                      </div>
-                    </dl>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      asChild
-                      className="w-full"
-                    >
-                      <Link to={`/replenishment/${row.id}`}>Ochish</Link>
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+        {!isLoading && !error && rows.length > 0 && showMobileCards && (
+          <MobileCardList
+            items={rows.map((row) => ({
+              id: row.id,
+              title: `#${row.id} · ${row.product_name}`,
+              subtitle: row.requester_location_name,
+              badge: (
+                <Badge variant={REPLENISHMENT_STATUS_VARIANT[row.status]}>
+                  {REPLENISHMENT_STATUS_LABELS[row.status]}
+                </Badge>
+              ),
+              fields: [
+                {
+                  label: 'Miqdor',
+                  value: `${formatQty(row.qty_needed)} ${row.product_unit}`,
+                },
+                { label: 'Yaratilgan', value: formatDateTime(row.created_at) },
+              ],
+              footer: (
+                <Button variant="outline" size="sm" asChild className="w-full">
+                  <Link to={`/replenishment/${row.id}`}>Ochish</Link>
+                </Button>
+              ),
+            }))}
+          />
         )}
-        {!isLoading && !error && rows.length > 0 && !showMobileCards && view === 'table' && (
+        {!isLoading && !error && rows.length > 0 && !showMobileCards && (
           <Table>
             <TableHeader>
               <TableRow>

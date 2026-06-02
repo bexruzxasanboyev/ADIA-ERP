@@ -97,6 +97,33 @@ export function effectiveType(product: Product): ProductType {
   return product.type;
 }
 
+/**
+ * Poster categories whose products are bought-in for resale (or non-stocked
+ * consumables) and therefore legitimately have NO recipe. A product in one of
+ * these categories must never raise a "recipe missing" warning — it is
+ * neutral. Everything else with a category (Торты, Пирожные, Десерты, …) or a
+ * finished/semi product is treated as PRODUCED and is expected to carry a BOM.
+ *
+ * Match is exact on the raw Poster category name (Russian).
+ */
+const RESALE_CATEGORY_NAMES: ReadonlySet<string> = new Set([
+  'Холодные напитки',
+  'Горячие напитки',
+  'Свечи для торта',
+  'Витрина',
+  'Коробки',
+  'Картонные упаковки',
+]);
+
+/**
+ * True when the Poster category is a resale / non-produced one (no recipe is
+ * normal). `null` (no category) is NOT resale — an uncategorised produced item
+ * should still be flaggable; resale status must be positively asserted.
+ */
+export function isResaleCategory(name: string | null): boolean {
+  return name != null && RESALE_CATEGORY_NAMES.has(name);
+}
+
 /** Derive the fine-grained category for a product (EPIC 1.3 / 1.4). */
 export function deriveCategory(product: Product): ProductCategory {
   const name = product.name.toLowerCase();

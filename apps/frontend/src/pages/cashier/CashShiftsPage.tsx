@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -68,21 +67,12 @@ export function CashShiftsPage() {
       <PageHeader
         title="Kassa smenalari"
         description="Do‘kon smenasi yopilganda: savdo, naqd/karta, rasxod, inkassatsiya va qoldiq. Nomuvofiqlik ogohlantiriladi."
-        dateTime
-        filter={
+        actions={
           <FilterPopover
             groups={filterGroups}
             value={filter}
             onApply={setFilter}
           />
-        }
-        action={
-          <Link
-            to="/cashier/nakladnoy"
-            className="inline-flex items-center rounded-md border border-border bg-card/40 px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            Nakladnoylar
-          </Link>
         }
       />
 

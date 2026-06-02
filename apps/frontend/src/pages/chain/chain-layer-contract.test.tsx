@@ -445,7 +445,7 @@ describe('SupplyPage — contract', () => {
     expect(supplyMatches.length).toBeGreaterThan(0);
     expect(
       screen.getByRole('heading', { level: 1 }).textContent,
-    ).toMatch(/Sex skladlari/);
+    ).toMatch(/Ishlab chiqarish omborlari/);
     expect(screen.getAllByText('Jo‘natmaga tayyor').length).toBeGreaterThan(0);
     // Ready-to-ship surfaces the in-stock product.
     expect(screen.getAllByText('Tort qoplama').length).toBeGreaterThan(0);

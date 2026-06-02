@@ -35,7 +35,7 @@ describe('RevenueBreakdown', () => {
       return Promise.reject(new Error(`unexpected fetch: ${url}`));
     });
     renderWithProviders(
-      <RevenueBreakdown isoDate="2026-05-28" fallbackTotal={0} />,
+      <RevenueBreakdown range={{ range: 'today' }} fallbackTotal={0} />,
       { role: 'pm' },
     );
     await waitFor(() => {
@@ -66,7 +66,7 @@ describe('RevenueBreakdown', () => {
       ),
     );
     renderWithProviders(
-      <RevenueBreakdown isoDate="2026-05-28" fallbackTotal={0} />,
+      <RevenueBreakdown range={{ range: 'today' }} fallbackTotal={0} />,
       { role: 'pm' },
     );
     await waitFor(() => {
@@ -87,7 +87,7 @@ describe('RevenueBreakdown', () => {
       return Promise.reject(new Error(`unexpected fetch: ${url}`));
     });
     renderWithProviders(
-      <RevenueBreakdown isoDate="2026-05-28" fallbackTotal={0} />,
+      <RevenueBreakdown range={{ range: 'today' }} fallbackTotal={0} />,
       { role: 'pm' },
     );
     // The cash chip (zeroed) appears — proving we left the loading branch.
@@ -109,7 +109,7 @@ describe('RevenueBreakdown', () => {
     });
 
     const { rerender } = renderWithProviders(
-      <RevenueBreakdown isoDate="2026-05-28" fallbackTotal={0} />,
+      <RevenueBreakdown range={{ range: 'today' }} fallbackTotal={0} />,
       { role: 'pm' },
     );
     await waitFor(() => {
@@ -117,7 +117,7 @@ describe('RevenueBreakdown', () => {
     });
 
     rerender(
-      <RevenueBreakdown isoDate="2026-05-28" fallbackTotal={0} range="month" />,
+      <RevenueBreakdown range={{ range: 'month' }} fallbackTotal={0} />,
     );
     expect(screen.getByText('Bu oylik tushum')).toBeInTheDocument();
     // The region's aria-label tracks the title too, for screen readers.
@@ -135,7 +135,7 @@ describe('RevenueBreakdown', () => {
       ),
     );
     renderWithProviders(
-      <RevenueBreakdown isoDate="2026-05-28" fallbackTotal={3_300_000} />,
+      <RevenueBreakdown range={{ range: 'today' }} fallbackTotal={3_300_000} />,
       { role: 'pm' },
     );
     await waitFor(() => {

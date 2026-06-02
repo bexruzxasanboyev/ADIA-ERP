@@ -27,7 +27,6 @@ import {
   EmptyState,
   ErrorState,
   LoadingState,
-  PageHeader,
 } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
@@ -252,32 +251,36 @@ function LocationHeader({
   const status = deriveStatus(stockRows);
 
   return (
-    <PageHeader
-      title={location.name}
-      description={LOCATION_TYPE_LABELS[location.type]}
-      action={
-        <div
-          className="flex flex-wrap items-center gap-2"
-          data-testid="location-detail-header-meta"
+    <header className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-4">
+      <div className="min-w-0">
+        <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">
+          {location.name}
+        </h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {LOCATION_TYPE_LABELS[location.type]}
+        </p>
+      </div>
+      <div
+        className="flex flex-wrap items-center gap-2 sm:justify-end"
+        data-testid="location-detail-header-meta"
+      >
+        <Badge variant="outline" className={cn('gap-1.5', classes.text)}>
+          <Icon className="size-3.5" aria-hidden="true" />
+          {LOCATION_TYPE_LABELS[location.type]}
+        </Badge>
+        <span
+          className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-card/40 px-2 py-0.5 text-xs"
+          data-testid="location-detail-status"
+          aria-label={statusLabel(status)}
         >
-          <Badge variant="outline" className={cn('gap-1.5', classes.text)}>
-            <Icon className="size-3.5" aria-hidden="true" />
-            {LOCATION_TYPE_LABELS[location.type]}
-          </Badge>
           <span
-            className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-card/40 px-2 py-0.5 text-xs"
-            data-testid="location-detail-status"
-            aria-label={statusLabel(status)}
-          >
-            <span
-              aria-hidden="true"
-              className={cn('inline-block size-2 rounded-full', statusDotClass(status))}
-            />
-            {statusLabel(status)}
-          </span>
-        </div>
-      }
-    />
+            aria-hidden="true"
+            className={cn('inline-block size-2 rounded-full', statusDotClass(status))}
+          />
+          {statusLabel(status)}
+        </span>
+      </div>
+    </header>
   );
 }
 

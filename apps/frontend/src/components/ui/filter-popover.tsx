@@ -193,7 +193,7 @@ function FilterBody({
           onValueChange={setActiveKey}
           options={tabOptions}
           ariaLabel="Filter turkumlari"
-          className="w-full"
+          fullWidth
         />
       )}
       {active && (

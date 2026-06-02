@@ -26,6 +26,13 @@ export interface AuthContextValue {
     user: User,
   ) => void;
   /**
+   * Merge a partial update into the current user (e.g. after the user
+   * edits their own `name`/`username` on the Profil page). No-op when no
+   * user is signed in. Every consumer reading the context user — the
+   * Profil card AND the sidebar user block — re-renders immediately.
+   */
+  updateUser: (partial: Partial<User>) => void;
+  /**
    * Revokes the refresh token on the backend (best-effort, idempotent)
    * and clears the local session — including the active-location.
    */

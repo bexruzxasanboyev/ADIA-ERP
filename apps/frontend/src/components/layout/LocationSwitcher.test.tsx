@@ -35,6 +35,7 @@ function makeAuth(
     activeLocationId: null,
     login: () => {},
     logout: async () => {},
+    updateUser: () => {},
     setActiveLocation: async () => {},
     ...overrides,
   };

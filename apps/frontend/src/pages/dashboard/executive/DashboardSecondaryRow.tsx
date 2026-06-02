@@ -1,9 +1,8 @@
 import { Card } from '@/components/ui/card';
 import { EmptyState } from '@/components/PageState';
-import { SalesChart } from '../SalesChart';
+import { SalesChartsRow } from '../SalesChartsRow';
 import { ForecastsPanel } from '../ForecastsPanel';
 import { OpenRequestsChart } from '../OpenRequestsChart';
-import { PosterStatusCard } from '../PosterStatusCard';
 import type {
   DashboardEcosystem,
   DashboardOverview,
@@ -45,17 +44,14 @@ export function DashboardSecondaryRow({
   return (
     <div className="space-y-6">
       {ecosystem !== null && (
-        <SalesChart points={ecosystem.sales_chart.days} />
+        <SalesChartsRow days={ecosystem.sales_chart.days} />
       )}
 
       <ForecastsPanel />
 
       <ProductionPlanPanel items={overview.production_plan} />
 
-      <div className="grid gap-6 xl:grid-cols-2">
-        <PosterStatusCard status={ecosystem?.poster_status ?? null} />
-        <OpenRequestsPanel overview={overview} />
-      </div>
+      <OpenRequestsPanel overview={overview} />
     </div>
   );
 }
@@ -88,7 +84,7 @@ function ProductionPlanPanel({
       {items.length === 0 ? (
         <EmptyState message="Bugungi reja bo‘sh." />
       ) : (
-        <div className="overflow-x-auto">
+        <div className="scrollbar-thin overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>

@@ -67,6 +67,39 @@ export type PosterIngredient = {
   ingredient_unit: string;
   ingredients_type?: number | string;
   limit_value?: number | string;
+  /**
+   * RAW-ingredient category id (the join target into
+   * `menu.getCategoriesIngredients`). "0"/0 or absent = uncategorised.
+   * Verified present on every `menu.getIngredients` row (2026-05-30).
+   */
+  category_id?: number | string;
+};
+
+/**
+ * Row shape from `menu.getCategories` (doc §5.3). Verified live against the
+ * `adia` Poster account 2026-05-30: every field arrives as a string. We only
+ * need `category_id` + `category_name`; the rest (photo, color, tree pointers)
+ * are surfaced as optional in case a later feature wants them.
+ */
+export type PosterCategory = {
+  category_id: string;
+  category_name: string;
+  parent_category?: string;
+  category_color?: string;
+  category_hidden?: string;
+  sort_order?: string;
+};
+
+/**
+ * Row shape from `menu.getCategoriesIngredients` — the RAW-ingredient category
+ * lookup. Verified live against the `adia` account 2026-05-30: 14 rows, each
+ * `{ category_id, name }` (both strings). This is a DIFFERENT namespace from
+ * `menu.getCategories` (finished goods) — the numeric ids collide but mean
+ * different things, so callers must keep them separate (categories.kind).
+ */
+export type PosterIngredientCategory = {
+  category_id: string;
+  name: string;
 };
 
 export type PosterMenuProductRow = {
@@ -88,12 +121,45 @@ export type PosterRecipeIngredient = {
   structure_type: string;
   structure_brutto: number | string;
   structure_netto: number | string;
+  /**
+   * Себестоимость of this composition LINE in TIYIN, for the line's
+   * `structure_brutto` quantity (verified live 2026-05-30). For a RAW
+   * (structure_type=1) line, the raw unit cost = selfprice ÷ brutto-in-unit.
+   * Absent on some older fixtures — treat as unavailable then.
+   */
+  structure_selfprice?: number | string;
+  structure_selfprice_netto?: number | string;
   ingredient_name: string;
   ingredient_unit: string;
 };
 
+/**
+ * One modification under a finished product's `group_modifications` (Поля
+ * "Размеры": ЦЕЛЫЙ / ПОЛОВИНА / КУСОК). `ingredient_id` here is a PREPACK's
+ * `product_id` (NOT a raw ingredient id). `brutto` is the portion of one
+ * prepack unit this modification consumes — ЦЕЛЫЙ is the full unit.
+ */
+export type PosterModification = {
+  dish_modification_id: number | string;
+  name: string;
+  ingredient_id: number | string;
+  type?: number | string;
+  brutto?: number | string;
+};
+
+export type PosterModificationGroup = {
+  dish_modification_group_id: number | string;
+  name?: string;
+  modifications?: PosterModification[];
+};
+
 export type PosterMenuProductFull = PosterMenuProductRow & {
   ingredients?: PosterRecipeIngredient[];
+  /** Себестоимость of the finished product (TIYIN); often "0" / stale. */
+  cost?: number | string;
+  cost_netto?: number | string;
+  /** Размеры variants — present when the product has no flat `ingredients`. */
+  group_modifications?: PosterModificationGroup[];
 };
 
 export type PosterPrepack = {
@@ -102,6 +168,9 @@ export type PosterPrepack = {
   product_name: string;
   /** Yield of one batch — used to normalise BOM qty per produced unit. */
   out: number | string;
+  /** Себестоимость of the whole `out` batch (TIYIN); may be stale — see sync. */
+  cost?: number | string;
+  cost_netto?: number | string;
   ingredients: PosterRecipeIngredient[];
 };
 
@@ -384,6 +453,21 @@ export class PosterClient {
     return r ?? [];
   }
 
+  /** All Poster product categories (menu.getCategories — doc §5.3). */
+  async getCategories(): Promise<PosterCategory[]> {
+    const r = await this.call<PosterCategory[]>('menu.getCategories');
+    return r ?? [];
+  }
+
+  /**
+   * RAW-ingredient categories (menu.getCategoriesIngredients). A SEPARATE
+   * namespace from getCategories — used to group `products(type='raw')`.
+   */
+  async getIngredientCategories(): Promise<PosterIngredientCategory[]> {
+    const r = await this.call<PosterIngredientCategory[]>('menu.getCategoriesIngredients');
+    return r ?? [];
+  }
+
   async getProduct(productId: number): Promise<PosterMenuProductFull | null> {
     const r = await this.call<PosterMenuProductFull | PosterMenuProductFull[]>(
       'menu.getProduct',
@@ -492,7 +576,11 @@ export class PosterClient {
       dateTo: params.dateTo,
     };
     if (params.spotId !== undefined) qs.spot_id = String(params.spotId);
-    const r = await this.call<PosterCashShift[]>('finance.getCashshifts', qs);
+    // NB: Poster method names are CASE-SENSITIVE. The correct method is
+    // `finance.getCashShifts` (capital S) — the lowercase `finance.getCashshifts`
+    // returns HTTP 405 `{code:30, Method Not Allowed}` for the `adia` token.
+    // Verified live 2026-06-01.
+    const r = await this.call<PosterCashShift[]>('finance.getCashShifts', qs);
     return r ?? [];
   }
 

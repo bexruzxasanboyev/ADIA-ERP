@@ -28,7 +28,7 @@ interface LocationState {
  * The client always sends `{login, password}`.
  *
  * On success the session is stored and the user is sent to the path
- * they originally requested (or the dashboard).
+ * they originally requested (or the home launcher).
  */
 export function LoginPage() {
   const { login: loginToContext } = useAuth();
@@ -41,7 +41,7 @@ export function LoginPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const redirectTo =
-    (location.state as LocationState | null)?.from ?? '/dashboard';
+    (location.state as LocationState | null)?.from ?? '/home';
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

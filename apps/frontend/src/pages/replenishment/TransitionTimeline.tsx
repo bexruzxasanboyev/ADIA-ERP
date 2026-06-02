@@ -44,17 +44,17 @@ const TONE_STYLES: Record<
   },
   progress: {
     ring: 'border-sky-500/40 bg-sky-500/10',
-    icon: 'text-sky-300',
+    icon: 'text-sky-600 dark:text-sky-300',
     rail: 'bg-sky-500/30',
   },
   success: {
     ring: 'border-emerald-500/40 bg-emerald-500/15',
-    icon: 'text-emerald-300',
+    icon: 'text-emerald-600 dark:text-emerald-300',
     rail: 'bg-emerald-500/30',
   },
   danger: {
     ring: 'border-red-500/40 bg-red-500/15',
-    icon: 'text-red-300',
+    icon: 'text-red-600 dark:text-red-300',
     rail: 'bg-red-500/30',
   },
 };

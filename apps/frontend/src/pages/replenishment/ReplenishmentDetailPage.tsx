@@ -222,10 +222,10 @@ export function ReplenishmentDetailPage() {
       <PageHeader
         title={`So‘rov #${request.id}`}
         description={request.product_name}
-        action={
-          <div className="flex items-center gap-2">
+        actions={
+          <>
             {isReadOnly && (
-              <Badge variant="secondary" aria-label="Faqat o‘qish rejimi">
+              <Badge variant="secondary" className="h-10 items-center px-3" aria-label="Faqat o‘qish rejimi">
                 Faqat o‘qish
               </Badge>
             )}
@@ -285,7 +285,7 @@ export function ReplenishmentDetailPage() {
                 Bekor qilish
               </Button>
             )}
-          </div>
+          </>
         }
       />
 

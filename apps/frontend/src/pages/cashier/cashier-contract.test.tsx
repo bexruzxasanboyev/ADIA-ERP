@@ -15,45 +15,11 @@ import { jsonResponse, renderWithProviders } from '@/test/render-helpers';
 import { ReceiptsPage } from './ReceiptsPage';
 import { CashShiftsPage } from './CashShiftsPage';
 import { SafeExpensesPage } from './SafeExpensesPage';
-import { NakladnoyPage } from './NakladnoyPage';
-import { NakladnoyView } from './NakladnoyView';
 import type {
   CashShiftsResponse,
-  Nakladnoy,
-  NakladnoyListResponse,
   ReceiptsStockResponse,
   SafeExpensesResponse,
 } from '@/lib/types';
-
-const NAKLADNOY: Nakladnoy = {
-  id: 7,
-  product_id: 100,
-  product_name: 'Napoleon',
-  order_qty: 10,
-  store_id: 3,
-  store_name: 'Kukcha',
-  created_at: '2026-05-29T08:00:00.000Z',
-  sections: [
-    {
-      stage: 'dough',
-      lines: [
-        { product_id: 1, product_name: 'Un', unit: 'kg', qty: 5 },
-        { product_id: 2, product_name: 'Shakar', unit: 'kg', qty: 2 },
-      ],
-    },
-    {
-      stage: 'cream',
-      lines: [
-        { product_id: 1, product_name: 'Un', unit: 'kg', qty: 1 },
-        { product_id: 2, product_name: 'Shakar', unit: 'kg', qty: 3 },
-      ],
-    },
-  ],
-  totals: [
-    { product_id: 1, product_name: 'Un', unit: 'kg', qty: 6 },
-    { product_id: 2, product_name: 'Shakar', unit: 'kg', qty: 5 },
-  ],
-};
 
 const RECEIPTS: ReceiptsStockResponse = {
   total: 2,
@@ -155,19 +121,8 @@ function mock404() {
   );
 }
 
-describe('EPIC 8 — kassa / nakladnoy screens', () => {
+describe('EPIC 8 — kassa screens', () => {
   afterEach(() => vi.restoreAllMocks());
-
-  it('NakladnoyView renders per-stage sections + ITOGO total (8.4)', () => {
-    renderWithProviders(<NakladnoyView nakladnoy={NAKLADNOY} />, { role: 'pm' });
-    expect(screen.getByText('Hamir uchun')).toBeInTheDocument();
-    expect(screen.getByText('Krem uchun')).toBeInTheDocument();
-    expect(screen.getByText('Itogo (umumiy)')).toBeInTheDocument();
-    // Un appears in both sections + the ITOGO roll-up.
-    expect(screen.getAllByText('Un').length).toBeGreaterThanOrEqual(3);
-    // ITOGO total for Un = 6 kg.
-    expect(screen.getByText(/6 kg/)).toBeInTheDocument();
-  });
 
   it('ReceiptsPage flags an over-sold receipt as fors-major (8.3)', async () => {
     mockGet('/api/sales/receipts/stock', RECEIPTS);
@@ -202,14 +157,5 @@ describe('EPIC 8 — kassa / nakladnoy screens', () => {
     renderWithProviders(<SafeExpensesPage />, { role: 'pm' });
     expect(await screen.findByText('Ijara')).toBeInTheDocument();
     expect(screen.getByText(/Jami:/)).toBeInTheDocument();
-  });
-
-  it('NakladnoyPage shows a collapsed nakladnoy row that expands (8.4)', async () => {
-    const body: NakladnoyListResponse = { items: [NAKLADNOY] };
-    mockGet('/api/nakladnoy', body);
-    renderWithProviders(<NakladnoyPage />, { role: 'pm' });
-    expect(
-      await screen.findByText('10 × Napoleon'),
-    ).toBeInTheDocument();
   });
 });

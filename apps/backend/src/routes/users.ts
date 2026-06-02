@@ -274,10 +274,15 @@ usersRouter.post(
 usersRouter.patch(
   '/:id',
   authenticate,
-  authorize('pm'),
   asyncHandler(async (req, res) => {
     const principal = getPrincipal(req);
     const userId = parseIdParam(req.params['id'], 'id');
+    // Self-service profile edit: a user may rename their own name/username;
+    // PM may edit anyone. (Role/location/password stay on dedicated, PM-gated
+    // endpoints — this handler only touches name + username.)
+    if (principal.role !== 'pm' && principal.userId !== userId) {
+      throw AppError.forbidden('You may only edit your own profile.');
+    }
     const body = asObject(req.body);
 
     const usernameRaw = optionalString(body, 'username');

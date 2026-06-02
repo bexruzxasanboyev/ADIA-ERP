@@ -38,6 +38,7 @@ import {
   type ProductCategory,
   type ProductType,
 } from '../lib/productCategory.js';
+import { readRecipeTree } from '../services/bom.js';
 
 export const productsRouter: Router = Router();
 
@@ -52,10 +53,18 @@ type ProductRow = {
   sku: string | null;
   poster_ingredient_id: number | null;
   poster_product_id: number | null;
+  category_id: number | null;
+  /** Joined from categories — the REAL Poster category name (NULL when none). */
+  category_name: string | null;
+  /** EXISTS flag — true when the product has at least one row in `recipes`. */
+  has_recipe: boolean;
   is_active: boolean;
   created_at: Date;
   updated_at: Date;
 };
+
+/** The real Poster category DTO: `{ id, name }` or `null` when uncategorised. */
+type PosterCategoryDto = { id: number; name: string } | null;
 
 /**
  * EPIC 1.3 — a product row enriched with the smart-category fields. `category`
@@ -63,18 +72,29 @@ type ProductRow = {
  * names to `finished`. The frontend prefers these over its own client-side
  * derivation.
  */
-type EnrichedProductRow = ProductRow & {
+type EnrichedProductRow = Omit<ProductRow, 'category_name'> & {
   category: ProductCategory;
   effective_type: ProductType;
+  /**
+   * The REAL Poster category (menu.getCategories). `{ id, name }` or `null`.
+   * Distinct from `category` above (which is the EPIC 1.3 heuristic string
+   * guess). The frontend should prefer `poster_category` for grouping.
+   */
+  poster_category: PosterCategoryDto;
 };
 
-/** Attach the EPIC 1.3 smart-category fields to a product row. */
+/** Attach the EPIC 1.3 smart-category fields + the real Poster category. */
 function enrich(row: ProductRow): EnrichedProductRow {
   const type = row.type as ProductType;
+  const { category_name, ...rest } = row;
   return {
-    ...row,
+    ...rest,
     category: deriveCategory(row.name, type),
     effective_type: effectiveType(row.name, type),
+    poster_category:
+      row.category_id !== null && category_name !== null
+        ? { id: Number(row.category_id), name: category_name }
+        : null,
   };
 }
 
@@ -85,8 +105,20 @@ type RecipeRow = {
   qty_per_unit: number;
 };
 
-const PRODUCT_COLUMNS = `id, name, type, unit, sku, poster_ingredient_id,
-  poster_product_id, is_active, created_at, updated_at`;
+// Product columns + the joined real-Poster category name. `c.name` is aliased
+// to `category_name` so the row shape matches `ProductRow`; the LEFT JOIN keeps
+// uncategorised products (category_id IS NULL) in the result.
+const PRODUCT_SELECT = `SELECT p.id, p.name, p.type, p.unit, p.sku,
+    p.poster_ingredient_id, p.poster_product_id, p.category_id,
+    c.name AS category_name,
+    EXISTS (SELECT 1 FROM recipes r WHERE r.product_id = p.id) AS has_recipe,
+    p.is_active, p.created_at, p.updated_at
+  FROM products p
+  LEFT JOIN categories c ON c.id = p.category_id`;
+
+// Columns for INSERT ... RETURNING (no join — category_name resolved separately).
+const PRODUCT_RETURNING = `id, name, type, unit, sku, poster_ingredient_id,
+  poster_product_id, category_id, is_active, created_at, updated_at`;
 
 // GET /api/products?type=
 productsRouter.get(
@@ -115,9 +147,9 @@ productsRouter.get(
 
     const { rows } =
       typeRaw === undefined
-        ? await query<ProductRow>(`SELECT ${PRODUCT_COLUMNS} FROM products ORDER BY id`)
+        ? await query<ProductRow>(`${PRODUCT_SELECT} ORDER BY p.id`)
         : await query<ProductRow>(
-            `SELECT ${PRODUCT_COLUMNS} FROM products WHERE type = $1 ORDER BY id`,
+            `${PRODUCT_SELECT} WHERE p.type = $1 ORDER BY p.id`,
             [typeRaw],
           );
 
@@ -155,16 +187,20 @@ productsRouter.post(
       }
     }
 
-    const { rows } = await query<ProductRow>(
+    const { rows } = await query<Omit<ProductRow, 'category_name' | 'has_recipe'>>(
       `INSERT INTO products (name, type, unit, sku, poster_ingredient_id, poster_product_id)
        VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING ${PRODUCT_COLUMNS}`,
+       RETURNING ${PRODUCT_RETURNING}`,
       [name, type, unit, sku, posterIngredientId ?? null, posterProductId ?? null],
     );
-    const created = rows[0];
-    if (created === undefined) {
+    const inserted = rows[0];
+    if (inserted === undefined) {
       throw AppError.internal('Product insert returned no row.');
     }
+    // A manually-created product is never assigned a Poster category here, so
+    // category_name is always NULL — the create endpoint does not set category_id.
+    // A brand-new product has no recipe rows yet, so has_recipe is always false.
+    const created: ProductRow = { ...inserted, category_name: null, has_recipe: false };
     await writeAudit(poolRunner, {
       actorUserId: principal.userId,
       action: 'product.create',
@@ -177,6 +213,15 @@ productsRouter.post(
 );
 
 // GET /api/products/:id/recipe
+//
+// Returns BOTH:
+//   - `recipe` — the flat top-level lines (backward-compatible; the PUT editor
+//                and any existing consumer keep working unchanged);
+//   - `tree`   — the NESTED recipe (prepacks expandable), each node carrying
+//                qty_per_unit, unit_cost, line_cost, total_cost (so'm);
+//   - `total_cost` — the product's full recipe Себестоимость (Σ top-level
+//                line_cost), or null when any leg's cost is unknown.
+// Cost is computed bottom-up from `products.cost_per_unit` (raw leaf cost).
 productsRouter.get(
   '/:id/recipe',
   authenticate,
@@ -194,7 +239,13 @@ productsRouter.get(
        FROM recipes WHERE product_id = $1 ORDER BY id`,
       [productId],
     );
-    res.status(200).json({ product_id: productId, recipe: rows });
+    const tree = await readRecipeTree(poolRunner, productId);
+    res.status(200).json({
+      product_id: productId,
+      recipe: rows,
+      tree: tree.nodes,
+      total_cost: tree.total_cost,
+    });
   }),
 );
 

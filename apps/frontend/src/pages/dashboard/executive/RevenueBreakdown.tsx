@@ -1,6 +1,9 @@
 import { Wallet, CreditCard, Smartphone, Zap } from 'lucide-react';
 import type { ComponentType } from 'react';
-import type { DateRangePreset } from '@/components/DateRangeFilter';
+import {
+  dateRangeToQuery,
+  type DateRangeValue,
+} from '@/components/DateRangeFilter';
 import { Card } from '@/components/ui/card';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { formatPlainNumber } from '@/lib/format';
@@ -9,32 +12,30 @@ import { cn } from '@/lib/utils';
 import type { DashboardRevenueBreakdown } from '@/lib/types';
 
 /**
- * F4.14 — "BUGUNGI TUSHUM" breakdown widget.
+ * F4.14 / EPIC 0.4 — revenue breakdown widget.
  *
- * Hits `GET /api/dashboard/revenue-breakdown?date=YYYY-MM-DD` and renders
- * the day's total revenue plus chips for each payment method (cash, card,
- * payme, click — and an "other" bucket when present). The widget is
+ * Hits `GET /api/dashboard/revenue-breakdown?range=…` and renders the
+ * SELECTED period's total revenue plus chips for each payment method
+ * (cash, card, payme, click — and an "other" bucket when present). Both
+ * the data fetch AND the headline copy follow the dashboard date-range
+ * filter, so the numbers change when the period changes. The widget is
  * tolerant of a missing endpoint: when the call returns 404, it falls
  * back to showing the `fallbackTotal` (Poster `sales_today_sum`) and a
  * subtle inline note instead of an error state.
  */
 export interface RevenueBreakdownProps {
-  /** Used as the `?date=` query param; ISO `YYYY-MM-DD`. */
-  isoDate: string;
+  /**
+   * Active date-range filter. Drives BOTH the `?range=…&from=…&to=…`
+   * query (so the breakdown re-fetches per period) and the headline copy
+   * ("Bugungi tushum" / "Bu oylik tushum" / …).
+   */
+  range: DateRangeValue;
   /**
    * Total revenue surfaced by the existing Poster status block — used as
    * the fallback when the breakdown endpoint is unavailable so the user
    * still sees an answer to "bugun qancha tushdi".
    */
   fallbackTotal?: number;
-  /**
-   * Active period filter. Drives the headline copy ("Bugungi tushum" /
-   * "Bu haftalik tushum" / …) so the title tracks the selected range
-   * instead of staying frozen on "Bugungi tushum" (EPIC 0.4). The data
-   * fetch is still day-scoped via `isoDate` — only the wording follows
-   * the range until the backend exposes a ranged breakdown endpoint.
-   */
-  range?: DateRangePreset;
   className?: string;
 }
 
@@ -53,25 +54,25 @@ const CHIPS: ChipDef[] = [
     key: 'cash',
     label: 'Naqd',
     Icon: Wallet,
-    toneClass: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10',
+    toneClass: 'text-emerald-600 dark:text-emerald-400 border-emerald-500/30 bg-emerald-500/10',
   },
   {
     key: 'card',
     label: 'Karta',
     Icon: CreditCard,
-    toneClass: 'text-sky-400 border-sky-500/30 bg-sky-500/10',
+    toneClass: 'text-sky-600 dark:text-sky-400 border-sky-500/30 bg-sky-500/10',
   },
   {
     key: 'payme',
     label: 'Payme',
     Icon: Smartphone,
-    toneClass: 'text-cyan-400 border-cyan-500/30 bg-cyan-500/10',
+    toneClass: 'text-cyan-600 dark:text-cyan-400 border-cyan-500/30 bg-cyan-500/10',
   },
   {
     key: 'click',
     label: 'Click',
     Icon: Zap,
-    toneClass: 'text-violet-400 border-violet-500/30 bg-violet-500/10',
+    toneClass: 'text-violet-600 dark:text-violet-400 border-violet-500/30 bg-violet-500/10',
   },
 ];
 
@@ -96,14 +97,13 @@ function formatPct(part: number, total: number): string {
 }
 
 export function RevenueBreakdown({
-  isoDate,
-  fallbackTotal,
   range,
+  fallbackTotal,
   className,
 }: RevenueBreakdownProps) {
-  const title = revenueTitleForRange(range);
+  const title = revenueTitleForRange(range.range);
   const { data, isLoading, error } = useApiQuery<DashboardRevenueBreakdown>(
-    `/api/dashboard/revenue-breakdown?date=${isoDate}`,
+    `/api/dashboard/revenue-breakdown?${dateRangeToQuery(range)}`,
   );
 
   // Graceful degradation: when the endpoint isn't wired yet (or any

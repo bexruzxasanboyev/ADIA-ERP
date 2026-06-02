@@ -21,7 +21,7 @@ import { cn } from '@/lib/utils';
  * The old node-graph degraded as locations multiplied: edges crossed,
  * nodes overlapped, nothing scanned cleanly. This row collapses the
  * whole supply chain into FIVE compact, ordered status cards — one per
- * stage (Xom-ashyo → Ishlab chiqarish → Sex skladi → Markaziy → Do'kon).
+ * stage (Xom-ashyo → Ishlab chiqarish → Ishlab chiqarish ombori → Markaziy → Do'kon).
  * It scales: each card aggregates *all* locations of its type, so adding
  * a 30th store never reshapes the layout.
  *

@@ -11,37 +11,68 @@ import {
 } from 'recharts';
 import { Card } from '@/components/ui/card';
 import { EmptyState } from '@/components/PageState';
-import { formatQty } from '@/lib/format';
 import type { DashboardSalesPoint } from '@/lib/types';
 import { cn } from '@/lib/utils';
+
+type SalesMetric = 'qty' | 'amount';
 
 /**
  * F4.4 — 30-day sales trend (phase-4.md §2.4).
  *
- * Renders an area chart with the day-level sold-quantity series. The
- * chart reads the same cobalt accent that drives `--primary`, with a
- * soft gradient fill to keep the premium dark aesthetic.
+ * Renders an area chart for one day-level sales series. The chart is
+ * metric-agnostic: it can plot either the sold-quantity series (`qty`)
+ * or the revenue series (`amount`, so'm). Two instances are rendered
+ * side by side on the dashboard — one per metric — so the boshliq sees
+ * both volume and money on the same row.
+ *
+ * The header `Jami` total is computed from the active `dataKey` and
+ * formatted with the matching formatter (qty grouping vs. compact so'm).
  */
 export function SalesChart({
   points,
+  title,
+  description,
+  dataKey,
+  valueFormatter,
+  totalFormatter = valueFormatter,
+  tooltipLabel,
+  accent = 'primary',
   className,
 }: {
   points: DashboardSalesPoint[];
+  /** Card heading, e.g. "Sotuv soni — 30 kun". */
+  title: string;
+  /** Sub-heading describing the series. */
+  description: string;
+  /** Which series to plot. */
+  dataKey: SalesMetric;
+  /** Formats axis ticks and tooltip values for the active metric. */
+  valueFormatter: (value: number) => string;
+  /** Formats the header `Jami` total; defaults to `valueFormatter`. */
+  totalFormatter?: (value: number) => string;
+  /** Tooltip series label, e.g. "Soni" / "Summa". */
+  tooltipLabel: string;
+  /** Accent colour family — drives stroke/gradient/cursor. */
+  accent?: 'primary' | 'success';
   className?: string;
 }) {
   const data = useMemo(
     () =>
       points.map((p) => ({
         date: p.date,
-        qty: p.qty,
+        value: p[dataKey],
         label: shortDate(p.date),
       })),
-    [points],
+    [points, dataKey],
   );
   const total = useMemo(
-    () => points.reduce((acc, p) => acc + p.qty, 0),
-    [points],
+    () => points.reduce((acc, p) => acc + p[dataKey], 0),
+    [points, dataKey],
   );
+
+  const accentVar = accent === 'success' ? '--success' : '--primary';
+  const accentColor = `hsl(var(${accentVar}))`;
+  const gradientId = `sales-fill-${dataKey}`;
 
   return (
     <Card className={cn('flex flex-col', className)}>
@@ -49,21 +80,20 @@ export function SalesChart({
         <div className="space-y-0.5">
           <h2 className="flex items-center gap-2 text-base font-semibold">
             <LineChartIcon
-              className="size-4 text-primary"
+              className="size-4"
+              style={{ color: accentColor }}
               aria-hidden="true"
             />
-            Sotuv — 30 kun
+            {title}
           </h2>
-          <p className="text-xs text-muted-foreground">
-            Oxirgi 30 kun davomida sotilgan miqdor.
-          </p>
+          <p className="text-xs text-muted-foreground">{description}</p>
         </div>
         <div className="text-right">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">
             Jami
           </p>
           <p className="text-lg font-semibold tabular-nums leading-none">
-            {formatQty(total)}
+            {totalFormatter(total)}
           </p>
         </div>
       </header>
@@ -75,7 +105,7 @@ export function SalesChart({
           <div
             className="h-56 w-full"
             data-testid="sales-chart"
-            aria-label="30 kunlik sotuv grafigi"
+            aria-label={title}
           >
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart
@@ -83,15 +113,15 @@ export function SalesChart({
                 margin={{ top: 8, right: 12, bottom: 0, left: 0 }}
               >
                 <defs>
-                  <linearGradient id="sales-fill" x1="0" y1="0" x2="0" y2="1">
+                  <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
                     <stop
                       offset="0%"
-                      stopColor="hsl(var(--primary))"
+                      stopColor={accentColor}
                       stopOpacity={0.4}
                     />
                     <stop
                       offset="100%"
-                      stopColor="hsl(var(--primary))"
+                      stopColor={accentColor}
                       stopOpacity={0.02}
                     />
                   </linearGradient>
@@ -115,11 +145,11 @@ export function SalesChart({
                   tickLine={false}
                   axisLine={false}
                   width={36}
-                  tickFormatter={(value: number) => formatQty(value)}
+                  tickFormatter={(value: number) => valueFormatter(value)}
                 />
                 <Tooltip
                   cursor={{
-                    stroke: 'hsl(var(--primary))',
+                    stroke: accentColor,
                     strokeOpacity: 0.4,
                   }}
                   contentStyle={{
@@ -129,15 +159,18 @@ export function SalesChart({
                     fontSize: '0.75rem',
                     color: 'hsl(var(--popover-foreground))',
                   }}
-                  formatter={(value: number) => [formatQty(value), 'Soni']}
+                  formatter={(value: number) => [
+                    valueFormatter(value),
+                    tooltipLabel,
+                  ]}
                   labelFormatter={(label: string) => label}
                 />
                 <Area
                   type="monotone"
-                  dataKey="qty"
-                  stroke="hsl(var(--primary))"
+                  dataKey="value"
+                  stroke={accentColor}
                   strokeWidth={2}
-                  fill="url(#sales-fill)"
+                  fill={`url(#${gradientId})`}
                   isAnimationActive={false}
                 />
               </AreaChart>

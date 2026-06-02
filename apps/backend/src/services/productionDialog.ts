@@ -322,7 +322,7 @@ export function buildQuestion(session: DialogSessionRow): DialogQuestion | null 
     const enough = have >= need;
     const options: DialogQuestion['options'] = enough
       ? [
-          { id: 'ready', label: 'Tayyordan ol', hint: `Sex skladida ${have} ta tayyor` },
+          { id: 'ready', label: 'Tayyordan ol', hint: `Ishlab chiqarish omborida ${have} ta tayyor` },
           { id: 'zero', label: '0dan qil', hint: 'Hamir retsepti bo\'yicha yangi tayyorla' },
         ]
       : have > 0
@@ -334,10 +334,10 @@ export function buildQuestion(session: DialogSessionRow): DialogQuestion | null 
             },
             { id: 'zero', label: 'Hammasini 0dan qil', hint: 'Barchasini yangi tayyorla' },
           ]
-        : [{ id: 'zero', label: '0dan qil', hint: 'Sex skladida zagatovka yo\'q' }];
+        : [{ id: 'zero', label: '0dan qil', hint: 'Ishlab chiqarish omborida zagatovka yo\'q' }];
     return {
       text:
-        `${Number(session.qty_ordered)} ta buyurtma. Sex skladida ${have} ta zagatovka bor ` +
+        `${Number(session.qty_ordered)} ta buyurtma. Ishlab chiqarish omborida ${have} ta zagatovka bor ` +
         `(kerak ${need}). Qaysi yo'l bilan tayyorlaymiz?`,
       options,
     };

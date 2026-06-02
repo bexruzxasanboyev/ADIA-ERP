@@ -247,7 +247,7 @@ function ActiveOrdersPanel({
       <header className="flex items-center justify-between gap-3 border-b border-border/60 p-5">
         <div className="space-y-0.5">
           <h2 className="flex items-center gap-2 text-base font-semibold">
-            <Factory className="size-4 text-amber-300" aria-hidden="true" />
+            <Factory className="size-4 text-amber-600 dark:text-amber-300" aria-hidden="true" />
             Faol zayafkalar
           </h2>
           <p className="text-xs text-muted-foreground">
@@ -275,7 +275,7 @@ function ActiveOrdersPanel({
         <EmptyState message="Faol zayafkalar yo‘q." />
       )}
       {!isLoading && !error && rows.length > 0 && (
-        <div className="overflow-x-auto">
+        <div className="scrollbar-thin overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -389,7 +389,7 @@ function PendingOrdersPanel({
         <EmptyState message="Yangi zayafkalar yo‘q." />
       )}
       {!isLoading && !error && rows.length > 0 && (
-        <div className="overflow-x-auto">
+        <div className="scrollbar-thin overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -514,7 +514,7 @@ function SubDepartmentsPanel({
       <header className="flex items-center justify-between gap-3 border-b border-border/60 p-5">
         <div className="space-y-0.5">
           <h2 className="flex items-center gap-2 text-base font-semibold">
-            <Factory className="size-4 text-amber-300" aria-hidden="true" />
+            <Factory className="size-4 text-amber-600 dark:text-amber-300" aria-hidden="true" />
             Sub-bo‘limlar
           </h2>
           <p className="text-xs text-muted-foreground">
@@ -541,7 +541,7 @@ function SubDepartmentsPanel({
               <div key={root.id} className="space-y-3">
                 <header className="flex items-center gap-2">
                   <Factory
-                    className="size-4 text-amber-300"
+                    className="size-4 text-amber-600 dark:text-amber-300"
                     aria-hidden="true"
                   />
                   <h3 className="text-sm font-semibold">{root.name}</h3>
@@ -629,7 +629,7 @@ function ProductionStockPanel({
         <EmptyState message="Qoldiq topilmadi." />
       )}
       {!isLoading && !error && rows.length > 0 && (
-        <div className="overflow-x-auto">
+        <div className="scrollbar-thin overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>

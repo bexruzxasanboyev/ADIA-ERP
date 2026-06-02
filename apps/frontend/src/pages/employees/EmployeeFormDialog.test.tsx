@@ -231,6 +231,110 @@ describe('EmployeeFormDialog', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it('filters the bo‘g‘in list by the selected role and clears now-invalid selections', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse(201, { user: { id: 99 } }),
+    );
+
+    // A mixed list: two stores + one central warehouse.
+    const mixed: Location[] = [
+      ...LOCATIONS,
+      {
+        id: 20,
+        name: 'Markaz',
+        type: 'central_warehouse',
+        parent_id: null,
+        manager_user_id: null,
+        poster_storage_id: null,
+        lead_time_days: null,
+        review_days: null,
+        safety_factor: null,
+      },
+    ];
+
+    renderWithProviders(
+      <EmployeeFormDialog
+        open={true}
+        onOpenChange={() => {}}
+        locations={mixed}
+        onSaved={() => {}}
+      />,
+    );
+    const user = userEvent.setup();
+
+    // Default role is store_manager → only the two stores are visible.
+    expect(screen.getByLabelText('Filial-1')).toBeInTheDocument();
+    expect(screen.getByLabelText('Filial-2')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Markaz')).not.toBeInTheDocument();
+
+    // Select a store, then switch role away from store_manager.
+    await user.click(screen.getByLabelText('Filial-1'));
+    await user.selectOptions(
+      screen.getByLabelText('Rol'),
+      'central_warehouse_manager',
+    );
+
+    // Now only the central warehouse is visible; the store selection is gone.
+    expect(screen.queryByLabelText('Filial-1')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Markaz')).toBeInTheDocument();
+
+    // Submitting without picking a valid location for the new role fails.
+    await user.type(screen.getByLabelText('Ism-familiya'), 'Test');
+    await user.type(screen.getByLabelText('Foydalanuvchi nomi'), 'cw.user');
+    await user.type(screen.getByLabelText('Parol'), 'pass1234');
+    await user.click(screen.getByRole('button', { name: 'Saqlash' }));
+
+    expect(screen.getByRole('alert').textContent).toMatch(/bo‘g‘in/i);
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    // Pick the valid central-warehouse location → submit succeeds with it.
+    await user.click(screen.getByLabelText('Markaz'));
+    await user.click(screen.getByRole('button', { name: 'Saqlash' }));
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalled();
+    });
+    const body = JSON.parse(
+      (fetchSpy.mock.calls[0]![1] as RequestInit).body as string,
+    );
+    expect(body.role).toBe('central_warehouse_manager');
+    expect(body.location_ids).toEqual([20]);
+    expect(body.primary_location_id).toBe(20);
+  });
+
+  it('never sends telegram_id in the create payload', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse(201, { user: { id: 99 } }),
+    );
+
+    renderWithProviders(
+      <EmployeeFormDialog
+        open={true}
+        onOpenChange={() => {}}
+        locations={LOCATIONS}
+        onSaved={() => {}}
+      />,
+    );
+    const user = userEvent.setup();
+
+    // The field itself is gone — TG linking is self-service on /profile.
+    expect(screen.queryByLabelText(/telegram/i)).not.toBeInTheDocument();
+
+    await user.type(screen.getByLabelText('Ism-familiya'), 'Test');
+    await user.type(screen.getByLabelText('Foydalanuvchi nomi'), 'tg.user');
+    await user.type(screen.getByLabelText('Parol'), 'pass1234');
+    await user.click(screen.getByLabelText('Filial-1'));
+    await user.click(screen.getByRole('button', { name: 'Saqlash' }));
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalled();
+    });
+    const body = JSON.parse(
+      (fetchSpy.mock.calls[0]![1] as RequestInit).body as string,
+    );
+    expect('telegram_id' in body).toBe(false);
+  });
+
   it('rejects a password shorter than 8 characters without firing a request', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       jsonResponse(201, { user: { id: 99 } }),

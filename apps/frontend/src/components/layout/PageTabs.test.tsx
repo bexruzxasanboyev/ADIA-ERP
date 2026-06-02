@@ -27,12 +27,13 @@ function fakeAuth(user: User): AuthContextValue {
     activeLocationId: null,
     login: () => {},
     logout: async () => {},
+    updateUser: () => {},
     setActiveLocation: async () => {},
   };
 }
 
 function renderTabs(opts: {
-  group: 'dashboard' | 'forecasts' | 'modules' | 'reference';
+  group: 'dashboard' | 'forecasts' | 'modules' | 'cashier' | 'reference';
   role: Role;
   initialPath: string;
 }) {
@@ -49,32 +50,39 @@ function renderTabs(opts: {
 }
 
 describe('PageTabs', () => {
-  it('renders the full modules tab list for pm', () => {
-    renderTabs({ group: 'modules', role: 'pm', initialPath: '/raw-warehouse' });
+  it('renders only the SECONDARY modules tabs for pm (home-tile modules excluded)', () => {
+    renderTabs({ group: 'modules', role: 'pm', initialPath: '/replenishment' });
     const list = screen.getByTestId('page-tabs');
     expect(list).toHaveAttribute('role', 'tablist');
 
-    // Every modules-group tab is visible to pm.
+    // Secondary (non-home-tile) modules screens are present.
+    for (const key of [
+      'replenishment',
+      'sorovnomalar',
+      'production-orders',
+      'purchase-orders',
+    ]) {
+      expect(within(list).getByTestId(`page-tab-${key}`)).toBeInTheDocument();
+    }
+
+    // The 11 home-tile modules are NOT in the tab strip.
     for (const key of [
       'raw-warehouse',
       'production',
       'supply',
       'central-warehouse',
       'stores',
-      'replenishment',
-      'production-orders',
-      'purchase-orders',
     ]) {
-      expect(within(list).getByTestId(`page-tab-${key}`)).toBeInTheDocument();
+      expect(within(list).queryByTestId(`page-tab-${key}`)).not.toBeInTheDocument();
     }
   });
 
   it('marks the tab matching the current route as aria-selected', () => {
-    renderTabs({ group: 'modules', role: 'pm', initialPath: '/production' });
-    const active = screen.getByTestId('page-tab-production');
+    renderTabs({ group: 'modules', role: 'pm', initialPath: '/production-orders' });
+    const active = screen.getByTestId('page-tab-production-orders');
     expect(active).toHaveAttribute('aria-selected', 'true');
 
-    const other = screen.getByTestId('page-tab-raw-warehouse');
+    const other = screen.getByTestId('page-tab-replenishment');
     expect(other).toHaveAttribute('aria-selected', 'false');
   });
 
@@ -91,39 +99,47 @@ describe('PageTabs', () => {
   });
 
   it('filters tabs by RBAC — store_manager only sees their own scope', () => {
-    renderTabs({ group: 'modules', role: 'store_manager', initialPath: '/stores' });
+    // store_manager sees only /replenishment + /sorovnomalar among the
+    // secondary modules screens; the home-tile modules are excluded for
+    // everyone.
+    renderTabs({ group: 'modules', role: 'store_manager', initialPath: '/replenishment' });
     const list = screen.getByTestId('page-tabs');
-    expect(within(list).getByTestId('page-tab-stores')).toBeInTheDocument();
+    expect(within(list).getByTestId('page-tab-replenishment')).toBeInTheDocument();
+    expect(within(list).getByTestId('page-tab-sorovnomalar')).toBeInTheDocument();
     expect(
-      within(list).queryByTestId('page-tab-raw-warehouse'),
+      within(list).queryByTestId('page-tab-stores'),
     ).not.toBeInTheDocument();
     expect(
-      within(list).queryByTestId('page-tab-production'),
+      within(list).queryByTestId('page-tab-purchase-orders'),
     ).not.toBeInTheDocument();
   });
 
-  it('renders the reference tab list (Mahsulotlar / Bo‘g‘inlar / …)', () => {
+  it('renders ALL cashier tabs incl. Cheklar (/cashier/receipts) — the Kassa group keeps its landing tab', () => {
+    renderTabs({ group: 'cashier', role: 'pm', initialPath: '/cashier/shifts' });
+    const list = screen.getByTestId('page-tabs');
+    expect(within(list).getByTestId('page-tab-cashier/shifts')).toBeInTheDocument();
+    expect(within(list).getByTestId('page-tab-cashier/nakladnoy')).toBeInTheDocument();
+    expect(within(list).getByTestId('page-tab-cashier/safe')).toBeInTheDocument();
+    // Unlike the other groups, the Kassa group is exempt from the home-tile
+    // exclusion: "Cheklar" (/cashier/receipts) must remain reachable as a tab
+    // from any cashier sub-page.
+    expect(
+      within(list).getByTestId('page-tab-cashier/receipts'),
+    ).toBeInTheDocument();
+  });
+
+  it('renders nothing for the reference group (all its pages are home tiles)', () => {
+    // Mahsulotlar / Bo‘g‘inlar / Hodimlar are home tiles; only /profile
+    // remains, which is NOT in the reference items as a tab target here —
+    // /profile IS a reference item but not a home tile, so it stays.
     renderTabs({ group: 'reference', role: 'pm', initialPath: '/products' });
     const list = screen.getByTestId('page-tabs');
-    expect(within(list).getByTestId('page-tab-products')).toBeInTheDocument();
-    expect(within(list).getByTestId('page-tab-locations')).toBeInTheDocument();
-    // EPIC 3 — /users merged into /employees; only the merged tab remains.
-    expect(within(list).getByTestId('page-tab-employees')).toBeInTheDocument();
-  });
-
-  it('hides users/employees from non-pm roles inside the reference group', () => {
-    renderTabs({
-      group: 'reference',
-      role: 'store_manager',
-      initialPath: '/products',
-    });
-    expect(
-      screen.queryByTestId('page-tab-users'),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId('page-tab-employees'),
-    ).not.toBeInTheDocument();
-    expect(screen.getByTestId('page-tab-products')).toBeInTheDocument();
+    // Home-tile reference pages are excluded.
+    expect(within(list).queryByTestId('page-tab-products')).not.toBeInTheDocument();
+    expect(within(list).queryByTestId('page-tab-locations')).not.toBeInTheDocument();
+    expect(within(list).queryByTestId('page-tab-employees')).not.toBeInTheDocument();
+    // /profile is the only non-home-tile reference page → it remains.
+    expect(within(list).getByTestId('page-tab-profile')).toBeInTheDocument();
   });
 
   it('renders nothing when the group key is unknown', () => {

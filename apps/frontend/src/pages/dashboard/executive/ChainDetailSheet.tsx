@@ -53,8 +53,8 @@ const TITLE_BY_TYPE: Record<LocationType, string> = {
 const DESCRIPTION_BY_TYPE: Record<LocationType, string> = {
   raw_warehouse: "Xom-ashyo ombori bo'yicha jonli ko'rsatkichlar.",
   production: "Sexlardagi faollik, yuklamasi va ishlab chiqarish ritmi.",
-  supply: "Sex skladi: kirim/chiqim va ochiq so'rovlar.",
-  sex_storage: "Sex skladi: kirim/chiqim va ochiq so'rovlar.",
+  supply: "Ishlab chiqarish ombori: kirim/chiqim va ochiq so'rovlar.",
+  sex_storage: "Ishlab chiqarish ombori: kirim/chiqim va ochiq so'rovlar.",
   central_warehouse: "Bloklar, Poster sinx jurnali va sklad qoldiqlari.",
   store: "Do'konlardagi savdo, cheklar va to'ldirish so'rovlari.",
 };

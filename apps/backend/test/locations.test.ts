@@ -179,17 +179,18 @@ describe('users RBAC (pm only)', () => {
       .set('Authorization', `Bearer ${pm.token}`)
       .send({
         name: 'New manager',
-        email: 'created@test.local',
+        login: 'created-mgr',
         password: 'a-strong-pass',
         role: 'store_manager',
         location_id: loc,
       });
     expect(res.status).toBe(201);
     expect(res.body.user).not.toHaveProperty('password_hash');
+    expect(res.body.user).not.toHaveProperty('email');
 
     const stored = await ctx.db.query<{ password_hash: string }>(
-      'SELECT password_hash FROM users WHERE email = $1',
-      ['created@test.local'],
+      'SELECT password_hash FROM users WHERE username = $1',
+      ['created-mgr'],
     );
     expect(stored.rows[0]?.password_hash).not.toBe('a-strong-pass');
     expect(stored.rows[0]?.password_hash.startsWith('$2')).toBe(true);
@@ -211,7 +212,7 @@ describe('users RBAC (pm only)', () => {
     const shortPw = await request(ctx.app)
       .post('/api/users')
       .set('Authorization', `Bearer ${pm.token}`)
-      .send({ name: 'X', email: 'x1@test.local', password: 'short', role: 'pm' });
+      .send({ name: 'X', login: 'x1-user', password: 'short', role: 'pm' });
     expect(shortPw.status).toBe(422);
 
     const noLoc = await request(ctx.app)
@@ -219,7 +220,7 @@ describe('users RBAC (pm only)', () => {
       .set('Authorization', `Bearer ${pm.token}`)
       .send({
         name: 'Y',
-        email: 'y1@test.local',
+        login: 'y1-user',
         password: 'a-strong-pass',
         role: 'store_manager',
       });

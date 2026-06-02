@@ -243,7 +243,7 @@ async function fetchRawKpis(
   }>(
     `SELECT
        count(DISTINCT s.product_id) FILTER (WHERE p.type = 'raw') AS raw_product_types,
-       count(*) FILTER (WHERE s.qty <= s.min_level AND s.min_level > 0) AS below_min_count
+       count(*) FILTER (WHERE s.qty <= s.min_level AND s.min_level > 0 AND s.max_level > 0) AS below_min_count
      FROM stock s
      JOIN products p ON p.id = s.product_id
      WHERE s.location_id IN ${rawLocs}`,
@@ -315,6 +315,7 @@ async function fetchRawBelowMinItems(
       WHERE s.location_id IN ${rawLocs}
         AND s.qty <= s.min_level
         AND s.min_level > 0
+        AND s.max_level > 0
       ORDER BY (s.min_level - s.qty) DESC, s.product_id
       LIMIT $${limitIdx}`,
     params,
@@ -1048,7 +1049,7 @@ async function fetchCentralKpis(
     `SELECT
        (SELECT count(*) FROM locations WHERE id IN ${centralLocs})            AS block_count,
        count(DISTINCT s.product_id)                                           AS total_sku,
-       count(*) FILTER (WHERE s.qty <= s.min_level AND s.min_level > 0)       AS below_min_count
+       count(*) FILTER (WHERE s.qty <= s.min_level AND s.min_level > 0 AND s.max_level > 0) AS below_min_count
      FROM stock s
      WHERE s.location_id IN ${centralLocs}`,
     params,
@@ -1111,7 +1112,7 @@ async function fetchCentralBlocks(
        FROM locations l
        LEFT JOIN LATERAL (
          SELECT count(DISTINCT product_id) AS product_count,
-                count(*) FILTER (WHERE qty <= min_level AND min_level > 0) AS below_min_count,
+                count(*) FILTER (WHERE qty <= min_level AND min_level > 0 AND max_level > 0) AS below_min_count,
                 coalesce(sum(qty), 0) AS total_qty
            FROM stock s
           WHERE s.location_id = l.id
@@ -1342,6 +1343,7 @@ async function fetchStoresBreakdown(
           WHERE s.location_id = l.id
             AND s.qty <= s.min_level
             AND s.min_level > 0
+            AND s.max_level > 0
        ) stock_agg ON TRUE
        LEFT JOIN LATERAL (
          SELECT count(*) AS open_replenishments

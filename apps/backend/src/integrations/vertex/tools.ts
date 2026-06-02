@@ -183,6 +183,80 @@ const LOCATION_TYPES = [
 
 const PRODUCT_TYPES = ['raw', 'semi', 'finished'] as const;
 
+/**
+ * Domain-term -> location.type synonym map (ADR-0017 + cake-erp-domain).
+ *
+ * The chain's locations are named in mixed Uzbek/Russian (e.g. the central
+ * warehouse is "Склад Центральный"), so a literal name match on an Uzbek query
+ * like "markaziy sklad" finds nothing. This map lets the location lookup fall
+ * back to matching by TYPE when the user used a well-known domain phrase.
+ *
+ * Keys are lowercased, apostrophe-normalised phrases; the longest matching key
+ * wins (so "markaziy ombor" beats "ombor"). Per ADR-0017 ONLY "Склад
+ * Центральный" is the central warehouse.
+ */
+const LOCATION_SYNONYM_TO_TYPE: ReadonlyArray<readonly [string, (typeof LOCATION_TYPES)[number]]> = [
+  // central warehouse (markaziy sklad) — finished-goods hub.
+  ['markaziy sklad', 'central_warehouse'],
+  ['markaziy ombor', 'central_warehouse'],
+  ['markaziy skladi', 'central_warehouse'],
+  ['central warehouse', 'central_warehouse'],
+  ['centralniy', 'central_warehouse'],
+  ['tsentralniy', 'central_warehouse'],
+  // raw-material warehouse (xom ashyo / mahsulotlar ombori).
+  ['xom ashyo ombori', 'raw_warehouse'],
+  ['xom-ashyo ombori', 'raw_warehouse'],
+  ['xom ashyo', 'raw_warehouse'],
+  ['mahsulotlar ombori', 'raw_warehouse'],
+  ['raw warehouse', 'raw_warehouse'],
+  ['syrye', 'raw_warehouse'],
+  ['osnovnoy sklad', 'raw_warehouse'],
+  // production (ishlab chiqarish / sex / tsex).
+  ['ishlab chiqarish', 'production'],
+  ['production', 'production'],
+  ['tsex', 'production'],
+  // sex skladi (supply-dept storages).
+  ['sex skladi', 'sex_storage'],
+  ['sex sklad', 'sex_storage'],
+  ['sex storage', 'sex_storage'],
+  // stores (do'konlar).
+  ["do'kon", 'store'],
+  ['dokon', 'store'],
+  ['magazin', 'store'],
+  ['store', 'store'],
+];
+
+/**
+ * Normalise a free-text location phrase for synonym matching: lowercase, fold
+ * the various apostrophe glyphs to a plain `'`, collapse whitespace.
+ */
+function normalizeLocationPhrase(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[‘’ʻʼ`]/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Map a domain phrase (from either the `type` or `name_contains` arg) to a
+ * canonical location.type via the synonym table. The longest key that appears
+ * as a substring of the normalised phrase wins. Returns null when nothing
+ * matches — the caller then keeps the literal behaviour.
+ */
+function resolveTypeFromSynonym(value: unknown): (typeof LOCATION_TYPES)[number] | null {
+  if (typeof value !== 'string') return null;
+  const phrase = normalizeLocationPhrase(value);
+  if (phrase === '') return null;
+  let best: { key: string; type: (typeof LOCATION_TYPES)[number] } | null = null;
+  for (const [key, type] of LOCATION_SYNONYM_TO_TYPE) {
+    if (phrase.includes(key) && (best === null || key.length > best.key.length)) {
+      best = { key, type };
+    }
+  }
+  return best?.type ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // 0a. list_locations
 // ---------------------------------------------------------------------------
@@ -225,17 +299,32 @@ const listLocations: ToolExecutor = {
       params.push(scope.locationId);
       conditions.push(`l.id = $${params.length}`);
     }
+    // Resolve a type filter from the literal `type` arg, or — failing that —
+    // from a domain synonym found in either `type` or `name_contains`, so a
+    // phrase like "markaziy sklad" maps to `central_warehouse` even though the
+    // row is named "Склад Центральный" (the literal ILIKE would find nothing).
+    let typeFilter: string | null = null;
     if (typeof args.type === 'string') {
       const t = args.type.trim().toLowerCase();
-      if ((LOCATION_TYPES as readonly string[]).includes(t)) {
-        params.push(t);
-        conditions.push(`l.type::text = $${params.length}`);
-      }
+      if ((LOCATION_TYPES as readonly string[]).includes(t)) typeFilter = t;
     }
-    const nameLike = parseNameContains(args.name_contains);
-    if (nameLike !== null) {
-      params.push(`%${nameLike}%`);
-      conditions.push(`l.name ILIKE $${params.length}`);
+    const nameSynonymType = resolveTypeFromSynonym(args.name_contains);
+    if (typeFilter === null) {
+      typeFilter = resolveTypeFromSynonym(args.type) ?? nameSynonymType;
+    }
+    if (typeFilter !== null) {
+      params.push(typeFilter);
+      conditions.push(`l.type::text = $${params.length}`);
+    }
+    // Apply the literal name substring ONLY when the phrase did not resolve to
+    // a type synonym — otherwise an ILIKE on the Uzbek phrase would AND with
+    // the type filter and match nothing (the stored name is Russian).
+    if (nameSynonymType === null) {
+      const nameLike = parseNameContains(args.name_contains);
+      if (nameLike !== null) {
+        params.push(`%${nameLike}%`);
+        conditions.push(`l.name ILIKE $${params.length}`);
+      }
     }
     const where = `WHERE ${conditions.join(' AND ')}`;
     const { rows } = await query<Record<string, unknown>>(

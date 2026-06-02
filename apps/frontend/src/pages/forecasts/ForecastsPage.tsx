@@ -139,7 +139,7 @@ export function ForecastsPage() {
           <EmptyState message="Bashorat ma’lumotlari topilmadi." />
         )}
         {forecasts.data !== null && filtered.length > 0 && (
-          <div className="overflow-x-auto">
+          <div className="scrollbar-thin overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>

@@ -37,12 +37,12 @@ import type {
 } from '@/lib/types';
 
 /**
- * F4.6 — `/supply` chain-layer screen ("Sex skladlari").
+ * F4.6 — `/supply` chain-layer screen ("Ishlab chiqarish omborlari").
  *
- * Renamed from "Ta'minot" — the layer is now "Sex skladi" (Tort skladi,
+ * Renamed from "Ta'minot" — the layer is now "Ishlab chiqarish ombori" (Tort skladi,
  * Perojniy skladi, Yarim Fabrika skladi). The `/supply` URL is kept so
  * external bookmarks keep working; the route label and on-page copy now
- * read "Sex skladlari". The backend ENUM is migrating from `supply` to
+ * read "Ishlab chiqarish omborlari". The backend ENUM is migrating from `supply` to
  * `sex_storage` — this page calls `chain-layer/supply` until the API
  * flips, then will switch via a single string change.
  *
@@ -70,8 +70,8 @@ export function SupplyPage() {
     return (
       <div className="space-y-6">
         <PageHeader
-          title="Sex skladlari"
-          description="Sex skladlari — Tort skladi, Perojniy skladi, Yarim Fabrika skladi va kelayotgan so‘rovlar."
+          title="Ishlab chiqarish omborlari"
+          description="Ishlab chiqarish omborlari — Tort skladi, Perojniy skladi, Yarim Fabrika skladi va kelayotgan so‘rovlar."
         />
         <LoadingState />
       </div>
@@ -82,8 +82,8 @@ export function SupplyPage() {
     return (
       <div className="space-y-6">
         <PageHeader
-          title="Sex skladlari"
-          description="Sex skladlari — Tort skladi, Perojniy skladi, Yarim Fabrika skladi va kelayotgan so‘rovlar."
+          title="Ishlab chiqarish omborlari"
+          description="Ishlab chiqarish omborlari — Tort skladi, Perojniy skladi, Yarim Fabrika skladi va kelayotgan so‘rovlar."
         />
         <ErrorState message={overview.error} onRetry={overview.refetch} />
       </div>
@@ -98,7 +98,7 @@ export function SupplyPage() {
 
   const kpis: ChainKpi[] = [
     {
-      label: 'Sex skladlari',
+      label: 'Ishlab chiqarish omborlari',
       value: totals.total_locations,
       icon: Truck,
       tone: 'accent',
@@ -130,8 +130,8 @@ export function SupplyPage() {
   return (
     <ChainLayerLayout
       layerType="supply"
-      title="Sex skladlari"
-      description="Sex skladlari — Tort skladi, Perojniy skladi, Yarim Fabrika skladi va kelayotgan so‘rovlar."
+      title="Ishlab chiqarish omborlari"
+      description="Ishlab chiqarish omborlari — Tort skladi, Perojniy skladi, Yarim Fabrika skladi va kelayotgan so‘rovlar."
       totals={totals}
       kpis={kpis}
       locations={locations}
@@ -168,11 +168,11 @@ function ReadyToShipPanel({ rows }: { rows: StockRow[] }) {
       <header className="flex items-center justify-between gap-3 border-b border-border/60 p-5">
         <div className="space-y-0.5">
           <h2 className="flex items-center gap-2 text-base font-semibold">
-            <PackageCheck className="size-4 text-sky-300" aria-hidden="true" />
+            <PackageCheck className="size-4 text-sky-600 dark:text-sky-300" aria-hidden="true" />
             Jo‘natmaga tayyor
           </h2>
           <p className="text-xs text-muted-foreground">
-            Sex skladlarida mavjud tayyor/yarim tayyor mahsulotlar.
+            Ishlab chiqarish omborlarida mavjud tayyor/yarim tayyor mahsulotlar.
           </p>
         </div>
         <Badge variant="outline" className="tabular-nums">
@@ -182,7 +182,7 @@ function ReadyToShipPanel({ rows }: { rows: StockRow[] }) {
       {top.length === 0 ? (
         <EmptyState message="Hozircha jo‘natmaga tayyor mahsulot yo‘q." />
       ) : (
-        <div className="overflow-x-auto">
+        <div className="scrollbar-thin overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -256,7 +256,7 @@ function PendingReplenishmentPanel({
         <EmptyState message="Kutilayotgan so‘rovlar yo‘q." />
       )}
       {!isLoading && !error && rows.length > 0 && (
-        <div className="overflow-x-auto">
+        <div className="scrollbar-thin overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -322,7 +322,7 @@ function SupplyStockPanel({
             Qoldiq jadvali
           </h2>
           <p className="text-xs text-muted-foreground">
-            Sex skladlari bo‘yicha jami qoldiq.
+            Ishlab chiqarish omborlari bo‘yicha jami qoldiq.
           </p>
         </div>
       </header>
@@ -332,7 +332,7 @@ function SupplyStockPanel({
         <EmptyState message="Qoldiq topilmadi." />
       )}
       {!isLoading && !error && rows.length > 0 && (
-        <div className="overflow-x-auto">
+        <div className="scrollbar-thin overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>

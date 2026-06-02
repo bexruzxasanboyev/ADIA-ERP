@@ -15,7 +15,7 @@ import { Select } from '@/components/ui/select';
 import { useToast } from '@/components/ui/toast';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import { ROLE_OPTIONS } from '@/lib/labels';
-import type { Location, Role } from '@/lib/types';
+import type { Location, LocationType, Role } from '@/lib/types';
 
 /**
  * F4.1 — `pm`-only "Yangi hodim" form.
@@ -46,7 +46,6 @@ interface FormState {
   username: string;
   password: string;
   role: Role;
-  telegramId: string;
   /**
    * Set of selected location ids. Insertion order is preserved by `Set`,
    * which we rely on for the "first selected → defaults to primary" UX
@@ -61,13 +60,32 @@ const EMPTY_FORM: FormState = {
   username: '',
   password: '',
   role: 'store_manager',
-  telegramId: '',
   selectedLocationIds: new Set(),
   primaryLocationId: null,
 };
 
 /** Roles whose principals are NOT bound to a bo'g'in (chain-wide view). */
 const CHAIN_WIDE_ROLES: ReadonlySet<Role> = new Set(['pm', 'ai_assistant']);
+
+/**
+ * Which `location_type`(s) each role may be assigned to. Mirrors the
+ * chain layout / navigation pairing (a role manages exactly one layer):
+ *   - store_manager              → store
+ *   - central_warehouse_manager  → central_warehouse
+ *   - raw_warehouse_manager      → raw_warehouse
+ *   - production_manager         → production (the sexlar)
+ *   - supply_manager             → sex_storage (sex skladlari — labelled
+ *                                  "Ishlab chiqarish ombori boshlig'i")
+ * Chain-wide roles (`pm`, `ai_assistant`) are absent: they take no
+ * location, so the section is disabled for them entirely.
+ */
+const ROLE_LOCATION_TYPES: Partial<Record<Role, ReadonlySet<LocationType>>> = {
+  store_manager: new Set(['store']),
+  central_warehouse_manager: new Set(['central_warehouse']),
+  raw_warehouse_manager: new Set(['raw_warehouse']),
+  production_manager: new Set(['production']),
+  supply_manager: new Set(['sex_storage']),
+};
 
 /**
  * Same regex the backend enforces (migration 0027 `chk_users_username_format`).
@@ -100,6 +118,45 @@ export function EmployeeFormDialog({
   }, [open]);
 
   const locationRequired = !CHAIN_WIDE_ROLES.has(form.role);
+
+  // Only the location types this role may manage. `undefined` (chain-wide
+  // roles) means "no restriction" — but those roles take no location at
+  // all, so the section is disabled anyway.
+  const allowedTypes = ROLE_LOCATION_TYPES[form.role];
+  const visibleLocations =
+    allowedTypes === undefined
+      ? locations
+      : locations.filter((loc) => allowedTypes.has(loc.type));
+
+  /**
+   * Switch role: re-filter the bo'g'in list and drop any selection that is
+   * no longer valid for the new role so a mismatched assignment can never
+   * be submitted.
+   */
+  function changeRole(nextRole: Role) {
+    setForm((current) => {
+      const types = ROLE_LOCATION_TYPES[nextRole];
+      if (types === undefined) {
+        return { ...current, role: nextRole };
+      }
+      const stillValid = new Set(
+        [...current.selectedLocationIds].filter((id) =>
+          locations.some((loc) => loc.id === id && types.has(loc.type)),
+        ),
+      );
+      const primary =
+        current.primaryLocationId !== null &&
+        stillValid.has(current.primaryLocationId)
+          ? current.primaryLocationId
+          : (stillValid.values().next().value ?? null);
+      return {
+        ...current,
+        role: nextRole,
+        selectedLocationIds: stillValid,
+        primaryLocationId: primary,
+      };
+    });
+  }
 
   function toggleLocation(locationId: number) {
     setForm((current) => {
@@ -170,16 +227,9 @@ export function EmployeeFormDialog({
       }
     }
 
-    let telegramIdValue: number | undefined;
-    if (form.telegramId.trim() !== '') {
-      const parsed = Number(form.telegramId.trim());
-      if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
-        setError('Telegram ID butun son bo‘lishi kerak.');
-        return;
-      }
-      telegramIdValue = parsed;
-    }
-
+    // No `telegram_id` here by design: TG linking is self-service on the
+    // /profile page. Admins never set a TG ID at create time; the field is
+    // simply omitted from the payload.
     const body: Record<string, unknown> = {
       name,
       username,
@@ -189,9 +239,6 @@ export function EmployeeFormDialog({
     if (locationRequired) {
       body['location_ids'] = locationIds;
       body['primary_location_id'] = form.primaryLocationId;
-    }
-    if (telegramIdValue !== undefined) {
-      body['telegram_id'] = telegramIdValue;
     }
 
     setIsSubmitting(true);
@@ -284,31 +331,12 @@ export function EmployeeFormDialog({
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="employee-telegram">
-              Telegram ID (ixtiyoriy)
-            </Label>
-            <Input
-              id="employee-telegram"
-              name="telegram_id"
-              type="text"
-              inputMode="numeric"
-              autoComplete="off"
-              value={form.telegramId}
-              onChange={(e) =>
-                setForm({ ...form, telegramId: e.target.value })
-              }
-            />
-          </div>
-
-          <div className="space-y-2">
             <Label htmlFor="employee-role">Rol</Label>
             <Select
               id="employee-role"
               name="role"
               value={form.role}
-              onChange={(e) =>
-                setForm({ ...form, role: e.target.value as Role })
-              }
+              onChange={(e) => changeRole(e.target.value as Role)}
             >
               {ROLE_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -332,13 +360,13 @@ export function EmployeeFormDialog({
               )}
             </legend>
 
-            {locations.length === 0 ? (
+            {visibleLocations.length === 0 ? (
               <p className="text-xs text-muted-foreground">
-                Bo‘g‘inlar ro‘yxati topilmadi.
+                Bu rol uchun mos bo‘g‘in topilmadi.
               </p>
             ) : (
               <ul className="space-y-1">
-                {locations.map((loc) => {
+                {visibleLocations.map((loc) => {
                   const selected = form.selectedLocationIds.has(loc.id);
                   const isPrimary = form.primaryLocationId === loc.id;
                   return (

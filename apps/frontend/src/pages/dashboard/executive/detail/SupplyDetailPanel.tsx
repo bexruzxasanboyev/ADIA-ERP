@@ -180,7 +180,7 @@ export function SupplyDetailPanelView({
 
       <PanelSection
         title="Kutilayotgan so'rovlar"
-        description="Sex skladi tomonidan bajarilishi kerak."
+        description="Ishlab chiqarish ombori tomonidan bajarilishi kerak."
       >
         {data.open_request_items.length === 0 ? (
           <p className="py-6 text-center text-xs text-muted-foreground">

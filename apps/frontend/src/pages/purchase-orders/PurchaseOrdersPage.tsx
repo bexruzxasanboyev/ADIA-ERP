@@ -22,7 +22,6 @@ import {
   type FilterGroup,
   type FilterValue,
 } from '@/components/ui/filter-popover';
-import { ViewToggle, useViewMode } from '@/components/ViewToggle';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useCanAct } from '@/hooks/useCanAct';
 import { cn } from '@/lib/utils';
@@ -112,7 +111,6 @@ export function PurchaseOrdersPage() {
   const [filter, setFilter] = useState<FilterValue>({});
   const [dialogOpen, setDialogOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
-  const [view, setView] = useViewMode('purchase-orders', 'card');
 
   const selectedStatuses = useMemo(
     () => (filter['status'] ?? []) as PurchaseOrderStatus[],
@@ -166,39 +164,29 @@ export function PurchaseOrdersPage() {
       <PageHeader
         title="Sotib olish so‘rovlari"
         description="Admin buyurtma qiladi → skladchi qabul qiladi; ikki bosqichli tasdiq (boshliq + skladchi)."
-        dateTime
-        filter={
-          <FilterPopover
-            groups={filterGroups}
-            value={filter}
-            onApply={setFilter}
-          />
-        }
-        action={
-          <div className="flex flex-wrap items-center gap-2">
+        actions={
+          <>
+            <FilterPopover
+              groups={filterGroups}
+              value={filter}
+              onApply={setFilter}
+            />
             {isReadOnly && (
-              <Badge variant="secondary" aria-label="Faqat o‘qish rejimi">
+              <Badge variant="secondary" className="h-10 items-center px-3" aria-label="Faqat o‘qish rejimi">
                 Faqat o‘qish
               </Badge>
             )}
-            <ViewToggle value={view} onChange={setView} />
             {canCreate && (
               <Button onClick={() => setDialogOpen(true)}>
                 <Plus className="size-4" aria-hidden="true" />
                 Yangi sotib olish
               </Button>
             )}
-          </div>
+          </>
         }
       />
 
-      <Card
-        className={
-          view === 'card'
-            ? 'border-0 bg-transparent p-0 shadow-none'
-            : undefined
-        }
-      >
+      <Card>
         {isLoading && <LoadingState />}
         {!isLoading && error && (
           <ErrorState message={error} onRetry={refetch} />
@@ -206,71 +194,7 @@ export function PurchaseOrdersPage() {
         {!isLoading && !error && rows.length === 0 && (
           <EmptyState message="So‘rovlar topilmadi." />
         )}
-        {!isLoading && !error && rows.length > 0 && view === 'card' && (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {rows.map((row) => {
-              const unit = productById.get(row.product_id)?.unit ?? '';
-              const isOpen = expandedId === row.id;
-              return (
-                <div
-                  key={row.id}
-                  className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card/40 p-4 shadow-sm"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="text-xs text-muted-foreground">#{row.id}</p>
-                      <p className="truncate text-sm font-semibold">
-                        {row.product_name}
-                      </p>
-                    </div>
-                    <Badge variant={PURCHASE_ORDER_STATUS_VARIANT[row.status]}>
-                      {PURCHASE_ORDER_STATUS_LABELS[row.status]}
-                    </Badge>
-                  </div>
-                  <dl className="grid grid-cols-2 gap-2 text-xs">
-                    <div>
-                      <dt className="text-muted-foreground">Miqdor</dt>
-                      <dd className="tabular-nums">
-                        {formatQty(row.qty)} {unit}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Yaratilgan</dt>
-                      <dd className="text-muted-foreground">
-                        {formatDateTime(row.created_at)}
-                      </dd>
-                    </div>
-                    <div className="col-span-2">
-                      <dt className="text-muted-foreground">Qabul qiluvchi</dt>
-                      <dd className="truncate">{row.target_location_name}</dd>
-                    </div>
-                    <div className="col-span-2">
-                      <dt className="mb-1 text-muted-foreground">Tasdiq</dt>
-                      <dd>
-                        <ApprovalSteps order={row} />
-                      </dd>
-                    </div>
-                  </dl>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() =>
-                      setExpandedId(isOpen ? null : row.id)
-                    }
-                  >
-                    {isOpen ? 'Yashirish' : 'Ko‘rish'}
-                  </Button>
-                  {isOpen && (
-                    <div className="rounded-md bg-muted/20 p-3">
-                      <ApprovalPanel order={row} onChanged={refetch} />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-        {!isLoading && !error && rows.length > 0 && view === 'table' && (
+        {!isLoading && !error && rows.length > 0 && (
           <Table>
             <TableHeader>
               <TableRow>

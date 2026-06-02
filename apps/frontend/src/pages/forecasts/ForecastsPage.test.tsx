@@ -101,6 +101,7 @@ const PRODUCTS: Product[] = [
     poster_ingredient_id: null,
     poster_product_id: null,
     is_active: true,
+    poster_category: null,
   },
   {
     id: 2,
@@ -111,6 +112,7 @@ const PRODUCTS: Product[] = [
     poster_ingredient_id: null,
     poster_product_id: null,
     is_active: true,
+    poster_category: null,
   },
   {
     id: 3,
@@ -121,6 +123,7 @@ const PRODUCTS: Product[] = [
     poster_ingredient_id: null,
     poster_product_id: null,
     is_active: true,
+    poster_category: null,
   },
 ];
 

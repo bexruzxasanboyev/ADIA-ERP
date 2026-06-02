@@ -171,6 +171,19 @@ const UZ_WEEKDAYS = [
   'shanba',
 ];
 
+/**
+ * Today's date as a LOCAL-timezone `YYYY-MM-DD`. Unlike
+ * `new Date().toISOString().slice(0, 10)` (which is UTC and shows the
+ * previous day during the early local-morning hours, e.g. 00:34 at UTC+5),
+ * this builds the string from local date parts.
+ */
+export function todayIso(date: Date = new Date()): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 export function formatDateLong(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;

@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { AlertTriangle, ReceiptText } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, Loader2, ReceiptText } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -8,11 +8,19 @@ import {
   LoadingState,
   PageHeader,
 } from '@/components/PageState';
-import { useApiQuery } from '@/hooks/useApiQuery';
+import {
+  DateRangeFilter,
+  dateRangeToQuery,
+  type DateRangeValue,
+} from '@/components/DateRangeFilter';
+import { ApiError, apiRequest } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
 import { formatQty, formatSom, formatDateTime } from '@/lib/format';
 import { UNIT_LABELS } from '@/lib/labels';
 import type { ReceiptsStockResponse, ReceiptWithStock } from '@/lib/types';
+
+/** Cheques fetched per scroll page. */
+const PAGE_SIZE = 50;
 
 /**
  * EPIC 8.2 / 8.3 — kassa cheklari bo'yicha ostatka.
@@ -28,15 +36,139 @@ import type { ReceiptsStockResponse, ReceiptWithStock } from '@/lib/types';
  * TODO(backend): EPIC 8.2 chek-darajali ost−sotildi−qoldi endpoint.
  */
 export function ReceiptsPage() {
-  const { data, isLoading, error, refetch } =
-    useApiQuery<ReceiptsStockResponse>('/api/sales/receipts/stock');
-
+  // Date-range filter — the backend `/api/sales/receipts/stock` endpoint
+  // accepts ?range=today|week|month|6m|custom (default today), so the cashier
+  // can browse cheques for any day, not just the current one.
+  const [range, setRange] = useState<DateRangeValue>({ range: 'today' });
   const [onlyForceMajeure, setOnlyForceMajeure] = useState(false);
 
-  const items = useMemo(() => data?.items ?? [], [data]);
+  // Manual infinite-scroll pagination state. `useApiQuery` is single-shot
+  // (one fetch per path), so it can't accumulate pages — we drive the
+  // fetches by hand, accumulating `items` across pages and tracking the
+  // server-reported `total`.
+  const [items, setItems] = useState<ReceiptWithStock[]>([]);
+  const [total, setTotal] = useState(0);
+  // Distinguish the very first page (drives LoadingState / ErrorState) from
+  // subsequent "load more" pages (drive the small bottom indicator).
+  const [isLoadingFirst, setIsLoadingFirst] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  // Live count of accumulated cheques — read inside the IntersectionObserver
+  // callback (which closes over a stale render) without re-creating the
+  // observer on every append.
+  const loadedCountRef = useRef(0);
+  const totalRef = useRef(0);
+  // Single-flight guard: blocks duplicate concurrent / re-entrant fetches.
+  const isFetchingRef = useRef(false);
+  // Next page offset to request.
+  const offsetRef = useRef(0);
+  // Aborts the in-flight request on unmount or range change.
+  const abortRef = useRef<AbortController | null>(null);
+
+  const serializedRange = dateRangeToQuery(range);
+
+  /**
+   * Fetch a single page and append it. `reset === true` starts a fresh
+   * accumulation (first page after mount or a range change); otherwise it
+   * appends the next page. Guarded by `isFetchingRef` so overlapping
+   * scroll events / resets can't issue duplicate requests.
+   */
+  const fetchPage = useCallback(
+    async (reset: boolean) => {
+      if (isFetchingRef.current) return;
+      isFetchingRef.current = true;
+
+      // Cancel any previous in-flight request before starting a new one.
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      const offset = reset ? 0 : offsetRef.current;
+      if (reset) {
+        setIsLoadingFirst(true);
+        setError(null);
+      } else {
+        setIsLoadingMore(true);
+      }
+
+      try {
+        const res = await apiRequest<ReceiptsStockResponse>(
+          `/api/sales/receipts/stock?${serializedRange}&limit=${PAGE_SIZE}&offset=${offset}`,
+          { signal: controller.signal },
+        );
+        if (controller.signal.aborted) return;
+
+        const pageItems = res.items ?? [];
+        offsetRef.current = offset + pageItems.length;
+        totalRef.current = res.total;
+        setTotal(res.total);
+
+        if (reset) {
+          loadedCountRef.current = pageItems.length;
+          setItems(pageItems);
+        } else {
+          loadedCountRef.current += pageItems.length;
+          setItems((prev) => [...prev, ...pageItems]);
+        }
+      } catch (err: unknown) {
+        if (controller.signal.aborted) return;
+        const message =
+          err instanceof ApiError ? err.message : 'Ma’lumotni yuklab bo‘lmadi.';
+        // Only the first page surfaces a blocking error state; a failed
+        // "load more" leaves the already-loaded cheques visible.
+        if (reset) setError(message);
+      } finally {
+        if (!controller.signal.aborted) {
+          if (reset) setIsLoadingFirst(false);
+          else setIsLoadingMore(false);
+        }
+        isFetchingRef.current = false;
+      }
+    },
+    [serializedRange],
+  );
+
+  // Reset + refetch the first page on mount and whenever the date range
+  // changes. The serialized range is the simplest reset key.
+  useEffect(() => {
+    loadedCountRef.current = 0;
+    totalRef.current = 0;
+    offsetRef.current = 0;
+    setItems([]);
+    setTotal(0);
+    void fetchPage(true);
+    return () => abortRef.current?.abort();
+  }, [fetchPage]);
+
+  // Auto-load the next page when the sentinel scrolls into view, while
+  // there are still unfetched cheques and nothing is in flight.
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (sentinel === null) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (entry === undefined || !entry.isIntersecting) return;
+        if (isFetchingRef.current) return;
+        if (loadedCountRef.current >= totalRef.current) return;
+        void fetchPage(false);
+      },
+      { rootMargin: '200px' },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [fetchPage]);
+
+  const refetch = useCallback(() => void fetchPage(true), [fetchPage]);
+
   const notImplemented =
     error !== null && /404|topilmadi|mavjud emas/i.test(error);
 
+  // Fors-major count + filter operate on the ACCUMULATED loaded cheques
+  // (only the pages fetched so far), not the full server-side range.
   const forceMajeureCount = useMemo(
     () => items.filter((r) => r.has_force_majeure).length,
     [items],
@@ -47,16 +179,19 @@ export function ReceiptsPage() {
     [items, onlyForceMajeure],
   );
 
+  const loadedCount = items.length;
+  const allLoaded = loadedCount >= total;
+
   return (
     <div className="mx-auto max-w-[120rem] space-y-6">
       <PageHeader
         title="Kassa cheklari"
         description="Har chek bo‘yicha ostatka: ost − sotildi − qoldi. Manfiy qoldiq — noto‘g‘ri urilgan chek (fors-major)."
-        dateTime
+        actions={<DateRangeFilter value={range} onChange={setRange} />}
       />
 
-      {/* Fors-major summary + toggle. */}
-      {!isLoading && !error && items.length > 0 && (
+      {/* Fors-major summary + toggle. Reflects loaded cheques only. */}
+      {!isLoadingFirst && !error && items.length > 0 && (
         <div className="flex flex-wrap items-center gap-3">
           {forceMajeureCount > 0 ? (
             <button
@@ -80,35 +215,57 @@ export function ReceiptsPage() {
         </div>
       )}
 
-      {isLoading && (
+      {isLoadingFirst && (
         <Card>
           <LoadingState />
         </Card>
       )}
 
-      {!isLoading && error && notImplemented && (
+      {!isLoadingFirst && error && notImplemented && (
         <Card>
           <EmptyState message="Chek-darajali ostatka moduli tayyorlanmoqda — backend kontrakti hali ulanmagan." />
         </Card>
       )}
 
-      {!isLoading && error && !notImplemented && (
+      {!isLoadingFirst && error && !notImplemented && (
         <Card>
           <ErrorState message={error} onRetry={refetch} />
         </Card>
       )}
 
-      {!isLoading && !error && rows.length === 0 && (
+      {!isLoadingFirst && !error && rows.length === 0 && (
         <Card>
           <EmptyState message="Cheklar topilmadi." />
         </Card>
       )}
 
-      {!isLoading && !error && rows.length > 0 && (
+      {!isLoadingFirst && !error && rows.length > 0 && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           {rows.map((r) => (
             <ReceiptCard key={`${r.poster_transaction_id}-${r.store_id}`} receipt={r} />
           ))}
+        </div>
+      )}
+
+      {/* Infinite-scroll sentinel + bottom indicators. The observer watches
+          this div; it stays mounted (under the list) so scrolling near the
+          bottom triggers the next page. */}
+      {!isLoadingFirst && !error && (
+        <div ref={sentinelRef} aria-hidden={!isLoadingMore}>
+          {isLoadingMore && (
+            <div
+              className="flex items-center justify-center gap-2 py-4 text-sm text-muted-foreground"
+              role="status"
+            >
+              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+              Yana yuklanmoqda…
+            </div>
+          )}
+          {!isLoadingMore && allLoaded && loadedCount > 0 && (
+            <p className="py-4 text-center text-xs text-muted-foreground">
+              Barchasi yuklandi — {loadedCount} ta chek
+            </p>
+          )}
         </div>
       )}
     </div>

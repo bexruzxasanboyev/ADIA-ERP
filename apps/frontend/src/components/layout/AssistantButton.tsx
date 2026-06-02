@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AssistantDrawer } from '@/pages/assistant/AssistantDrawer';
@@ -18,12 +18,26 @@ import { AssistantDrawer } from '@/pages/assistant/AssistantDrawer';
 export function AssistantButton({ className }: { className?: string }) {
   const [open, setOpen] = useState(false);
 
+  // Global Ctrl+K / ⌘K toggles the assistant. preventDefault stops the
+  // browser's own Ctrl+K (focus address/search bar).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        setOpen((o) => !o);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   return (
     <>
       <button
         type="button"
         onClick={() => setOpen(true)}
-        aria-label="AI yordamchini ochish"
+        aria-label="AI yordamchini ochish (Ctrl+K)"
+        title="AI yordamchi · Ctrl+K"
         aria-haspopup="dialog"
         aria-expanded={open}
         className={cn(
@@ -40,6 +54,9 @@ export function AssistantButton({ className }: { className?: string }) {
           aria-hidden="true"
         />
         <span className="hidden sm:inline">AI yordamchi</span>
+        <kbd className="hidden rounded border border-primary-foreground/30 bg-primary-foreground/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary-foreground/80 sm:inline-block">
+          ⌘K
+        </kbd>
       </button>
       <AssistantDrawer open={open} onOpenChange={setOpen} />
     </>

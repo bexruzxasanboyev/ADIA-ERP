@@ -87,6 +87,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const updateUser = useCallback((partial: Partial<User>): void => {
+    setUser((prev) => (prev === null ? prev : { ...prev, ...partial }));
+  }, []);
+
   const logout = useCallback(async (): Promise<void> => {
     const refreshToken = getRefreshToken();
 
@@ -211,6 +215,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       activeLocationId,
       login,
       logout,
+      updateUser,
       setActiveLocation,
     }),
     [
@@ -221,6 +226,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       activeLocationId,
       login,
       logout,
+      updateUser,
       setActiveLocation,
     ],
   );

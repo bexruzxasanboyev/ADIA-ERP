@@ -65,6 +65,10 @@ describe('ingestTransaction', () => {
     const { rows: sales } = await ctx.db.query<{ qty: number; price: number }>(`SELECT qty, price FROM sales`);
     expect(sales).toHaveLength(1);
     expect(sales[0]?.qty).toBeCloseTo(2, 4);
+    // Poster `product_price` is in TIYIN — it must be stored as so'm (÷100)
+    // so `qty * price` agrees with the Poster payments report. 19_200_000
+    // tiyin = 192_000 so'm.
+    expect(Number(sales[0]?.price)).toBeCloseTo(192_000, 2);
     const { rows: stock } = await ctx.db.query<{ qty: number }>(`SELECT qty FROM stock`);
     expect(stock[0]?.qty).toBeCloseTo(3, 4);
 

@@ -302,6 +302,7 @@ function renderDetail(
     activeLocationId: locationId,
     login: () => {},
     logout: async () => {},
+    updateUser: () => {},
     setActiveLocation: async () => {},
   };
   return render(

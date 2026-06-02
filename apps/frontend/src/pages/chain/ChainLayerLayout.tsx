@@ -6,6 +6,7 @@ import {
   Factory,
   MapPin,
   Package,
+  PackageOpen,
   RefreshCw,
   Store,
   Truck,
@@ -68,34 +69,34 @@ const LAYER_ACCENT: Record<
 > = {
   raw_warehouse: {
     ring: 'ring-1 ring-teal-500/30',
-    iconWrap: 'bg-teal-500/15 text-teal-300',
-    valueText: 'text-teal-200',
+    iconWrap: 'bg-teal-500/15 text-teal-600 dark:text-teal-300',
+    valueText: 'text-teal-700 dark:text-teal-200',
     icon: Boxes,
   },
   production: {
     ring: 'ring-1 ring-amber-500/30',
-    iconWrap: 'bg-amber-500/15 text-amber-300',
-    valueText: 'text-amber-200',
+    iconWrap: 'bg-amber-500/15 text-amber-600 dark:text-amber-300',
+    valueText: 'text-amber-700 dark:text-amber-200',
     icon: Factory,
   },
   supply: {
     ring: 'ring-1 ring-sky-500/30',
-    iconWrap: 'bg-sky-500/15 text-sky-300',
-    valueText: 'text-sky-200',
-    icon: Truck,
+    iconWrap: 'bg-sky-500/15 text-sky-600 dark:text-sky-300',
+    valueText: 'text-sky-700 dark:text-sky-200',
+    icon: PackageOpen,
   },
   // `sex_storage` reuses the supply accent — the layer is the same
   // visual stage, only the name has changed.
   sex_storage: {
     ring: 'ring-1 ring-sky-500/30',
-    iconWrap: 'bg-sky-500/15 text-sky-300',
-    valueText: 'text-sky-200',
-    icon: Truck,
+    iconWrap: 'bg-sky-500/15 text-sky-600 dark:text-sky-300',
+    valueText: 'text-sky-700 dark:text-sky-200',
+    icon: PackageOpen,
   },
   central_warehouse: {
     ring: 'ring-1 ring-emerald-500/30',
-    iconWrap: 'bg-emerald-500/15 text-emerald-300',
-    valueText: 'text-emerald-200',
+    iconWrap: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300',
+    valueText: 'text-emerald-700 dark:text-emerald-200',
     icon: Warehouse,
   },
   store: {
@@ -151,8 +152,8 @@ export function ChainLayerLayout({
   const accent = LAYER_ACCENT[layerType];
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6">
-      <PageHeader title={title} description={description} action={headerAction} />
+    <div className="space-y-6">
+      <PageHeader title={title} description={description} actions={headerAction} />
 
       <KpiStrip layerType={layerType} kpis={kpis} />
 
@@ -209,7 +210,7 @@ function KpiCard({ kpi, layerType }: { kpi: ChainKpi; layerType: LocationType })
     kpi.tone === 'destructive'
       ? 'bg-destructive/15 text-destructive'
       : kpi.tone === 'amber'
-        ? 'bg-amber-500/15 text-amber-300'
+        ? 'bg-amber-500/15 text-amber-600 dark:text-amber-300'
         : kpi.tone === 'accent'
           ? accent.iconWrap
           : 'bg-muted text-muted-foreground';
@@ -217,7 +218,7 @@ function KpiCard({ kpi, layerType }: { kpi: ChainKpi; layerType: LocationType })
     kpi.tone === 'destructive'
       ? 'text-destructive'
       : kpi.tone === 'amber'
-        ? 'text-amber-200'
+        ? 'text-amber-700 dark:text-amber-200'
         : kpi.tone === 'accent'
           ? accent.valueText
           : 'text-foreground';
@@ -284,8 +285,8 @@ function KpiCard({ kpi, layerType }: { kpi: ChainKpi; layerType: LocationType })
 const LOCATION_ICON: Record<LocationType, ComponentType<{ className?: string }>> = {
   raw_warehouse: Warehouse,
   production: Factory,
-  supply: Truck,
-  sex_storage: Truck,
+  supply: PackageOpen,
+  sex_storage: PackageOpen,
   central_warehouse: Package,
   store: Store,
 };
@@ -398,7 +399,7 @@ function Stat({
     tone === 'danger'
       ? 'text-destructive font-semibold'
       : tone === 'amber'
-        ? 'text-amber-200 font-semibold'
+        ? 'text-amber-700 dark:text-amber-200 font-semibold'
         : 'text-foreground';
   return (
     <div className="rounded-md border border-border/40 bg-background/40 p-2">

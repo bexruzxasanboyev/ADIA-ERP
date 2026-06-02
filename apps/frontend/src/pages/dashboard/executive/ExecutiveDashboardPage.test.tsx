@@ -199,6 +199,7 @@ const ECOSYSTEM: DashboardEcosystem = {
     days: Array.from({ length: 14 }, (_, i) => ({
       date: `2026-05-${String(i + 11).padStart(2, '0')}`,
       qty: 100 + i * 5,
+      amount: (100 + i * 5) * 12_000,
     })),
   },
 };

@@ -18,9 +18,16 @@ import type { User } from '@/lib/types';
  * EPIC 3.2 — Telegram self-link control on the merged Hodimlar /
  * Foydalanuvchilar screen.
  *
- * Two states:
- *   - linked   (`user.telegram_id` set) → a green "Ulangan" badge.
- *   - unlinked → a "TG ulash" button that opens a dialog.
+ * Self-service: only the account owner links their OWN Telegram. The
+ * backend enforces this (`POST /api/users/:id/telegram-link-token` →
+ * 403 unless principal is the row's user). The UI mirrors it via the
+ * `readOnly` prop — on other people's rows we render only a status
+ * indicator and never the "TG ulash" button or its dialog.
+ *
+ * States:
+ *   - linked   (`user.telegram_id` set) → a green "TG ulangan" badge.
+ *   - unlinked + own row    → a "TG ulash" button that opens a dialog.
+ *   - unlinked + readOnly   → a muted, non-interactive "TG ulanmagan" badge.
  *
  * The dialog mints a one-time link token via
  * `POST /api/users/:id/telegram-link-token` (backend, commit 08f660e). The
@@ -47,9 +54,19 @@ interface TelegramLinkButtonProps {
   user: User;
   /** Compact variant for the card grid. */
   size?: 'sm' | 'default';
+  /**
+   * When true the control is a status-only indicator: no "TG ulash"
+   * button, no dialog. Used on rows that don't belong to the viewer,
+   * since Telegram linking is self-service (the backend 403s anyway).
+   */
+  readOnly?: boolean;
 }
 
-export function TelegramLinkButton({ user, size = 'sm' }: TelegramLinkButtonProps) {
+export function TelegramLinkButton({
+  user,
+  size = 'sm',
+  readOnly = false,
+}: TelegramLinkButtonProps) {
   const { notify } = useToast();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -67,11 +84,26 @@ export function TelegramLinkButton({ user, size = 'sm' }: TelegramLinkButtonProp
     return (
       <Badge
         variant="outline"
-        className="gap-1 border-emerald-500/40 text-emerald-400"
+        className="gap-1 border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
         aria-label="Telegram ulangan"
       >
         <Check className="size-3" aria-hidden="true" />
         TG ulangan
+      </Badge>
+    );
+  }
+
+  // Other people's rows: self-service linking is owner-only, so show a
+  // muted, non-interactive status instead of the action.
+  if (readOnly) {
+    return (
+      <Badge
+        variant="outline"
+        className="gap-1 border-border/60 text-muted-foreground"
+        aria-label="Telegram ulanmagan"
+      >
+        <Send className="size-3" aria-hidden="true" />
+        TG ulanmagan
       </Badge>
     );
   }

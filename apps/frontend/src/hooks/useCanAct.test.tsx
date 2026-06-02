@@ -52,6 +52,7 @@ function wrapWithAuth(ctx: Partial<AuthContextValue>) {
     activeLocationId: null,
     login: vi.fn(),
     logout: vi.fn(async () => undefined),
+    updateUser: vi.fn(),
     setActiveLocation: vi.fn(async () => undefined),
     ...ctx,
   };

@@ -123,15 +123,16 @@ describe('GET /api/dashboard/revenue-breakdown', () => {
 
     const pm = await makeUser(ctx.db, { role: 'pm', locationId: null });
     const res = await request(ctx.app)
-      .get('/api/dashboard/revenue-breakdown?date=2026-05-29')
+      .get('/api/dashboard/revenue-breakdown?range=custom&from=2026-05-29&to=2026-05-29')
       .set('Authorization', `Bearer ${pm.token}`);
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
-      date: '2026-05-29',
+      from: '2026-05-29',
+      to: '2026-05-29',
       spot_id: null,
       total: 19_553_300,
-      by_method: {
+      byMethod: {
         cash: 8_705_770,
         card: 10_847_530,
         payme: 0,
@@ -141,11 +142,11 @@ describe('GET /api/dashboard/revenue-breakdown', () => {
     });
     // Internal consistency: the buckets sum back to the reported total.
     const sumOfBuckets =
-      res.body.by_method.cash +
-      res.body.by_method.card +
-      res.body.by_method.payme +
-      res.body.by_method.click +
-      res.body.by_method.other;
+      res.body.byMethod.cash +
+      res.body.byMethod.card +
+      res.body.byMethod.payme +
+      res.body.byMethod.click +
+      res.body.byMethod.other;
     expect(sumOfBuckets).toBe(res.body.total);
   });
 
@@ -180,22 +181,23 @@ describe('GET /api/dashboard/revenue-breakdown', () => {
     const pm = await makeUser(ctx.db, { role: 'pm', locationId: null });
 
     const res = await request(ctx.app)
-      .get('/api/dashboard/revenue-breakdown?date=2019-01-15')
+      .get('/api/dashboard/revenue-breakdown?range=custom&from=2019-01-15&to=2019-01-15')
       .set('Authorization', `Bearer ${pm.token}`);
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
-      date: '2019-01-15',
+      from: '2019-01-15',
+      to: '2019-01-15',
       spot_id: null,
       total: 0,
-      by_method: { cash: 0, card: 0, payme: 0, click: 0, other: 0 },
+      byMethod: { cash: 0, card: 0, payme: 0, click: 0, other: 0 },
     });
   });
 
-  it('rejects a malformed date with 422', async () => {
+  it('rejects a malformed range with 422', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm', locationId: null });
     const res = await request(ctx.app)
-      .get('/api/dashboard/revenue-breakdown?date=not-a-date')
+      .get('/api/dashboard/revenue-breakdown?range=custom&from=not-a-date&to=2026-01-01')
       .set('Authorization', `Bearer ${pm.token}`);
 
     expect(res.status).toBe(422);
@@ -271,31 +273,32 @@ describe('GET /api/dashboard/revenue-breakdown', () => {
 
     const pm = await makeUser(ctx.db, { role: 'pm', locationId: null });
     const res = await request(ctx.app)
-      .get('/api/dashboard/revenue-breakdown?date=2026-05-28')
+      .get('/api/dashboard/revenue-breakdown?range=custom&from=2026-05-28&to=2026-05-28')
       .set('Authorization', `Bearer ${pm.token}`);
 
     // Must NOT crash with 500 — the route has to handle Poster's real shape.
     expect(res.status).toBe(200);
     expect(res.body).not.toBeNull();
     expect(res.body).toMatchObject({
-      date: '2026-05-28',
+      from: '2026-05-28',
+      to: '2026-05-28',
       spot_id: null,
     });
     // Total must equal `payed_sum_sum`. The route may divide by 100 to turn
     // tiyin into so'm — accept either convention as long as everything stays
-    // internally consistent (sum of by_method buckets == total).
+    // internally consistent (sum of byMethod buckets == total).
     expect(typeof res.body.total).toBe('number');
     expect(res.body.total).toBeGreaterThan(0);
     const sumOfBuckets =
-      res.body.by_method.cash +
-      res.body.by_method.card +
-      res.body.by_method.payme +
-      res.body.by_method.click +
-      res.body.by_method.other;
+      res.body.byMethod.cash +
+      res.body.byMethod.card +
+      res.body.byMethod.payme +
+      res.body.byMethod.click +
+      res.body.byMethod.other;
     expect(sumOfBuckets).toBeCloseTo(res.body.total, 0);
     // The two largest Poster buckets must show up under cash + card.
-    expect(res.body.by_method.cash).toBeGreaterThan(0);
-    expect(res.body.by_method.card).toBeGreaterThan(0);
+    expect(res.body.byMethod.cash).toBeGreaterThan(0);
+    expect(res.body.byMethod.card).toBeGreaterThan(0);
   });
 
   it('rejects a store_manager asking for a spot outside their stores', async () => {

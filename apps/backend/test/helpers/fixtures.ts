@@ -11,7 +11,7 @@ import type { TestDb } from './testDb.js';
 
 export type SeededUser = {
   id: number;
-  email: string;
+  username: string;
   role: Role;
   locationId: number | null;
   /** A signed JWT for this user — ready for `Authorization: Bearer`. */
@@ -24,38 +24,25 @@ export async function makeUser(
   opts: {
     role: Role;
     locationId?: number | null;
-    email?: string;
     password?: string;
-    /** F4.12 — explicit username override; default derives a unique one. */
+    /** Explicit username (login) override; default derives a unique one. */
     username?: string;
   },
 ): Promise<SeededUser> {
-  const email = opts.email ?? `${opts.role}-${Math.random().toString(36).slice(2, 8)}@test.local`;
   const password = opts.password ?? 'password123';
   const locationId = opts.locationId ?? null;
   const hash = await bcrypt.hash(password, 6); // low rounds — tests favour speed.
-  // F4.12 — pick a unique username (the DB UNIQUE constraint would otherwise
-  // collide between parallel suites that all derive the same handle from the
-  // role-only default email). We hash the email so the username is
-  // deterministic for that user, and we strip everything outside the CHECK
-  // regex `[a-z0-9._-]{3,32}`.
+  // Username is the sole login handle (email was removed entirely). Pick a
+  // unique one by default — the DB UNIQUE constraint would otherwise collide
+  // between parallel suites. Stays inside the CHECK regex `[a-z0-9._-]{2,32}`.
   const fallback = `u_${Math.random().toString(36).slice(2, 10)}`;
-  const rawHandle = email.split('@')[0]!.toLowerCase().replace(/[^a-z0-9._-]/g, '');
-  // If the handle is too long for the 32-char username cap, keep the head +
-  // a random tail so the username stays unique across users that share a
-  // long role prefix (e.g. multiple `central_warehouse_manager-*`).
-  const sanitised =
-    rawHandle.length > 24
-      ? `${rawHandle.slice(0, 16)}-${Math.random().toString(36).slice(2, 8)}`
-      : rawHandle.slice(0, 24);
-  const derivedUsername = opts.username ?? (sanitised || fallback);
-  const username =
-    derivedUsername.length >= 3 ? derivedUsername : fallback;
+  const candidate = opts.username ?? fallback;
+  const username = candidate.length >= 2 ? candidate.slice(0, 32) : fallback;
 
   const { rows } = await db.query<{ id: string }>(
-    `INSERT INTO users (name, email, username, password_hash, role, location_id)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-    [`Test ${opts.role}`, email, username, hash, opts.role, locationId],
+    `INSERT INTO users (name, username, password_hash, role, location_id)
+     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+    [`Test ${opts.role}`, username, hash, opts.role, locationId],
   );
   const idRaw = rows[0]?.id;
   if (idRaw === undefined) {
@@ -76,7 +63,7 @@ export async function makeUser(
     );
   }
   const token = signToken({ userId: id, role: opts.role, locationId });
-  return { id, email, role: opts.role, locationId, token };
+  return { id, username, role: opts.role, locationId, token };
 }
 
 /** Insert a location and return its id. */

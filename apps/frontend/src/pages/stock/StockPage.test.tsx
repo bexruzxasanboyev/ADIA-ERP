@@ -24,6 +24,7 @@ const PRODUCT: Product = {
   poster_ingredient_id: null,
   poster_product_id: null,
   is_active: true,
+  poster_category: null,
 };
 
 const LOCATION: Location = {

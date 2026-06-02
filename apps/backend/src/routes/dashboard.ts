@@ -763,6 +763,7 @@ type AlertsFeedItem = {
 type SalesChartItem = {
   date: string; // YYYY-MM-DD
   qty: number;
+  amount: number; // so'm — sum(qty * price) for the day
 };
 
 /**
@@ -829,6 +830,12 @@ dashboardRouter.get(
       return;
     }
 
+    // D-0028 — Poster is the single source of truth for revenue. Make the ONE
+    // Poster call up-front and share its result between `poster_status`
+    // (range total + cheque count) and `sales_chart` (per-day so'm amount), so
+    // a single `?range` request never hits Poster twice.
+    const posterRevenue = await fetchPosterRevenue(scope, range);
+
     const [
       posterStatus,
       chainFlow,
@@ -837,12 +844,12 @@ dashboardRouter.get(
       alertsFeed,
       salesChart,
     ] = await Promise.all([
-      fetchPosterStatus(scope, range),
+      fetchPosterStatus(posterRevenue),
       fetchChainFlow(scope),
       fetchChainSummary(scope),
       fetchChainEdges(scope),
       fetchAlertsFeed(principal),
-      fetchSalesChart(scope, range),
+      fetchSalesChart(scope, range, posterRevenue),
     ]);
 
     const response: EcosystemResponse = {
@@ -883,24 +890,144 @@ function isAlertsChainWide(principal: AuthPrincipal): boolean {
 }
 
 /**
+ * D-0028 (2026-06-01) — POSTER IS THE SINGLE SOURCE OF TRUTH FOR REVENUE.
+ *
+ * The local `sales` table money column is unreliable (mixed units: real
+ * Poster-synced rows arrive in TIYIN, older synthetic seed rows are in so'm),
+ * so `sum(qty*price)` over it is not a trustworthy revenue figure. The owner
+ * decided dashboard tushum must come from Poster `dash.getPaymentsReport` —
+ * the same source the `/revenue-breakdown` card already reads correctly.
+ *
+ * This helper makes the ONE Poster call the ecosystem endpoint needs and
+ * returns, for the requested `?range` (+ RBAC scope):
+ *   - `total`   : the range revenue total in so'm (sum of `total.payed_sum_sum`,
+ *                 ÷100 via `tiyinToSom`) — reconciles with RevenueBreakdown.
+ *   - `count`   : the range cheque count (`total.transactions_count`).
+ *   - `perDay`  : a per-DAY revenue series `[{date 'YYYY-MM-DD', amount so'm}]`,
+ *                 read from the report's `days[]` block (each day carries its
+ *                 own explicit `date` + `payed_sum_sum`, ÷100). We use `days[]`
+ *                 rather than `getAnalytics(interpolate=day)` because the days
+ *                 are EXPLICITLY DATED (no positional index-from-dateFrom
+ *                 alignment guesswork, no gaps-as-zero ambiguity) and come from
+ *                 the SAME report as the total/split — one call, one unit
+ *                 convention, fully consistent with RevenueBreakdown.
+ *
+ * Date bounds mirror the revenue-breakdown route: `dateFrom = toPosterDate(
+ * range.from)`, `dateTo = toPosterDate(range.to - 1ms)` (the inclusive last
+ * day of the half-open `[from, to)` window).
+ *
+ * RBAC: a `chain`-scoped principal (PM / ai_assistant / central / supply)
+ * queries Poster chain-wide (no `spotId`). A `locations`-scoped principal is
+ * restricted to the Poster `poster_spot_id`(s) of their assigned STORE
+ * locations; with >1 spot we call once per spot and SUM totals/counts and
+ * merge the per-day series. Stores with no `poster_spot_id` contribute
+ * nothing.
+ *
+ * RESILIENCE: any Poster failure resolves to ZEROES (never throws) so a Poster
+ * outage cannot 500 the whole `/api/dashboard/ecosystem` payload — the rest of
+ * the dashboard (chain_flow, alerts, local qty) still renders.
+ */
+type PosterRevenue = {
+  total: number;
+  count: number;
+  perDay: Map<string, number>;
+};
+
+async function fetchPosterRevenue(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+  range: DateRange,
+): Promise<PosterRevenue> {
+  const empty: PosterRevenue = { total: 0, count: 0, perDay: new Map() };
+  try {
+    // Lazy imports — the ecosystem endpoint otherwise never touches Poster, so
+    // we mirror the revenue-breakdown route and only pull the client in when a
+    // call is actually made (keeps cold-start + test-stub seams identical).
+    const { tiyinToSom } = await import('../integrations/poster/posterMoney.js');
+    const { createPosterClientFromConfig } = await import(
+      '../integrations/poster/client.js'
+    );
+
+    // Resolve the spot scope. PM/global/central/supply -> chain-wide (no spot).
+    // A locations-scoped principal -> the poster_spot_id of their assigned
+    // STORE locations. No mapped spot -> zero contribution.
+    let spotIds: number[] | null = null; // null = chain-wide (no spotId param)
+    if (scope.kind === 'locations') {
+      const { rows } = await query<{ poster_spot_id: string }>(
+        `SELECT DISTINCT poster_spot_id
+           FROM locations
+          WHERE id = ANY($1::bigint[])
+            AND type = 'store'
+            AND is_active = TRUE
+            AND poster_spot_id IS NOT NULL`,
+        [scope.locationIds],
+      );
+      spotIds = rows.map((r) => Number(r.poster_spot_id));
+      // Scoped principal whose stores map to NO Poster spot -> nothing to ask.
+      if (spotIds.length === 0) return empty;
+    }
+
+    const client = createPosterClientFromConfig();
+    const dateFrom = toPosterDate(range.from);
+    const dateTo = toPosterDate(new Date(range.to.getTime() - 1));
+
+    // One call chain-wide, OR one call per assigned spot (summed/merged).
+    const calls =
+      spotIds === null
+        ? [client.getPaymentsReport({ dateFrom, dateTo })]
+        : spotIds.map((spotId) =>
+            client.getPaymentsReport({ dateFrom, dateTo, spotId }),
+          );
+    const reports = await Promise.all(calls);
+
+    const out: PosterRevenue = { total: 0, count: 0, perDay: new Map() };
+    for (const report of reports) {
+      // The legacy per-method row-array shape carries no day/total split, so
+      // only the real `{days, total}` aggregate contributes here.
+      if (report === null || report === undefined || Array.isArray(report)) {
+        continue;
+      }
+      out.total += tiyinToSom(report.total?.payed_sum_sum);
+      out.count += toCount(report.total?.transactions_count);
+      for (const day of report.days ?? []) {
+        if (typeof day.date !== 'string') continue;
+        const som = tiyinToSom(day.payed_sum_sum);
+        out.perDay.set(day.date, (out.perDay.get(day.date) ?? 0) + som);
+      }
+    }
+    // Round the aggregate total (per-day buckets are summed raw then rounded
+    // at the merge site in fetchSalesChart).
+    out.total = Math.round(out.total * 100) / 100;
+    return out;
+  } catch (err) {
+    // RESILIENCE — Poster down / token missing / network error must NOT 500
+    // the dashboard. Log and fall back to zeroes.
+    console.error('[dashboard/ecosystem] Poster revenue fetch failed:', err);
+    return empty;
+  }
+}
+
+/** Coerce a Poster `transactions_count` (string|number|undefined) to an int. */
+function toCount(value: string | number | undefined | null): number {
+  if (value === undefined || value === null) return 0;
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? Math.trunc(n) : 0;
+}
+
+/**
  * Poster status block.
  *   - last_sync_*  : the most recent `poster_sync_log` row (any entity).
  *   - sync_errors_24h: count of `failed` rows in the last 24h.
- *   - sales_today_* : today's `sales` rows; for a scoped principal, filtered
- *     to their assigned stores. Stock movements/sync are chain-wide.
+ *   - sales_today_* : D-0028 — sourced from Poster `dash.getPaymentsReport`
+ *     (the single source of truth for revenue), windowed to `?range` and
+ *     scoped to the principal's assigned store spots. `sales_today_sum` is the
+ *     range revenue total (so'm); `sales_today_count` is the cheque count.
+ *     `last_sync_*` / `sync_errors_24h` stay DB-sourced (sync health is a
+ *     backend-wide event, not a Poster revenue figure).
  */
 async function fetchPosterStatus(
-  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
-  range: DateRange,
+  revenue: PosterRevenue,
 ): Promise<PosterStatusBlock> {
-  const salesParams: SqlParam[] = [range.from, range.to];
-  let salesWhere = 'WHERE sold_at >= $1 AND sold_at < $2';
-  if (scope.kind === 'locations') {
-    salesParams.push(scope.locationIds);
-    salesWhere += ` AND store_id = ANY($${salesParams.length}::bigint[])`;
-  }
-
-  const [lastSync, errors24h, salesToday] = await Promise.all([
+  const [lastSync, errors24h] = await Promise.all([
     query<{ finished_at: Date | null; started_at: Date; status: 'ok' | 'partial' | 'failed' }>(
       // Order by `started_at` (NOT by id) — id reflects insert order, which
       // is fine for the common case, but back-fills or replayed rows could
@@ -917,15 +1044,6 @@ async function fetchPosterStatus(
          WHERE status = 'failed'
            AND started_at > now() - interval '24 hours'`,
     ),
-    query<{ cnt: string; total: string | null }>(
-      // `total` is REVENUE (so'm), not a unit count — multiply qty by price.
-      // The earlier `sum(qty)` rendered "OYLIK TUSHUM" as a piece/kg count,
-      // which the UI labelled as currency. QA Prove-It pinned this regression.
-      `SELECT count(*) AS cnt, coalesce(sum(qty * price),0) AS total
-         FROM sales
-         ${salesWhere}`,
-      salesParams,
-    ),
   ]);
 
   const lastRow = lastSync.rows[0];
@@ -935,8 +1053,8 @@ async function fetchPosterStatus(
     last_sync_at: lastWhen === null ? null : lastWhen.toISOString(),
     last_sync_status: lastRow?.status ?? null,
     sync_errors_24h: Number(errors24h.rows[0]?.cnt ?? 0),
-    sales_today_count: Number(salesToday.rows[0]?.cnt ?? 0),
-    sales_today_sum: Number(salesToday.rows[0]?.total ?? 0),
+    sales_today_count: revenue.count,
+    sales_today_sum: revenue.total,
   };
 }
 
@@ -1657,41 +1775,69 @@ function severityFor(type: string): AlertSeverity {
 }
 
 /**
- * Last 30 days of sales, aggregated from `sales_stats_daily`. For a scoped
- * principal, only their assigned locations contribute. The chart is fed by
- * the nightly `salesAggregateCron`, so per-day rows always exist for days
- * that had sales.
+ * Daily sales over the requested range.
+ *
+ * Two series per day, from TWO sources (D-0028):
+ *   - `amount` — so'm REVENUE, from Poster `dash.getPaymentsReport.days[]`
+ *     (the single source of truth for money; ÷100 already applied upstream in
+ *     `fetchPosterRevenue`). The "Sotuv summasi" chart is Poster-authoritative
+ *     and therefore reconciles with the HeroStrip headline + RevenueBreakdown.
+ *   - `qty`    — UNITS sold, from the raw local `sales` table (`sum(qty)`).
+ *     Units are not money and are not part of the revenue mismatch, so they
+ *     stay local. Reading the raw table (not `sales_stats_daily`) keeps
+ *     TODAY's partial-but-real units in the "Sotuv soni" chart.
+ *
+ * The two series are MERGED by calendar day: the day set is the UNION of the
+ * Poster days and the local-sales days, so a day present in EITHER source
+ * appears (missing side = 0). For a scoped principal, only their assigned
+ * stores contribute the local `qty`, and `fetchPosterRevenue` already scoped
+ * the Poster `amount` to their store spots.
+ *
+ * `sales` rows are POS/store sales keyed by `store_id`, which equals the
+ * location id (mirrors how `fetchStorePulse` reads `sales` directly).
  */
 async function fetchSalesChart(
   scope: Exclude<EcosystemScope, { kind: 'empty' }>,
   range: DateRange,
+  poster: PosterRevenue,
 ): Promise<SalesChartItem[]> {
-  // F4.9 — chart window equals the requested range. The aggregate table is
-  // keyed by `stat_date` (DATE, not TIMESTAMPTZ), so we compare against the
-  // calendar bounds, inclusive on both ends.
-  const fromDate = toIsoDate(range.from);
-  // Subtract 1 ms so a half-open `[from, to)` window maps back to the last
-  // inclusive calendar day in `to`. Without it `2026-05-25T00:00:00Z` would
-  // pull in 2026-05-25 even when the caller asked through 2026-05-24.
-  const toInclusive = new Date(range.to.getTime() - 1);
-  const toDate = toIsoDate(toInclusive);
-  const params: SqlParam[] = [fromDate, toDate];
-  let where = `WHERE stat_date >= $1::date AND stat_date <= $2::date`;
+  // F4.9 — chart window equals the requested range. `sales.sold_at` is a
+  // TIMESTAMPTZ, so we apply the same half-open `[from, to)` window the rest
+  // of the dashboard uses, then bucket by calendar day via `sold_at::date`.
+  const params: SqlParam[] = [range.from, range.to];
+  let where = `WHERE sold_at >= $1 AND sold_at < $2`;
   if (scope.kind === 'locations') {
     params.push(scope.locationIds);
-    where += ` AND location_id = ANY($${params.length}::bigint[])`;
+    where += ` AND store_id = ANY($${params.length}::bigint[])`;
   }
-  const { rows } = await query<{ stat_date: Date; qty: string }>(
-    `SELECT stat_date, sum(qty_sold) AS qty
-       FROM sales_stats_daily
+  // Bucket by calendar day and return the day as TEXT (`YYYY-MM-DD`) straight
+  // from SQL. Returning a pg `date` would round-trip through a JS Date at the
+  // Node process's local midnight, which `toIsoDate` then re-projects to UTC —
+  // shifting the day backward whenever the process TZ is ahead of UTC (e.g.
+  // Asia/Tashkent, +05). `to_char` sidesteps that timezone trap entirely.
+  const { rows } = await query<{ day: string; qty: string }>(
+    `SELECT to_char(sold_at::date, 'YYYY-MM-DD') AS day,
+            sum(qty)                             AS qty
+       FROM sales
        ${where}
-       GROUP BY stat_date
-       ORDER BY stat_date`,
+       GROUP BY sold_at::date
+       ORDER BY sold_at::date`,
     params,
   );
-  return rows.map((r) => ({
-    date: toIsoDate(r.stat_date),
-    qty: Number(r.qty),
+
+  // Local units, keyed by day.
+  const qtyByDate = new Map<string, number>();
+  for (const r of rows) qtyByDate.set(r.day, Number(r.qty));
+
+  // Union of days seen by EITHER source — a day with revenue but no local
+  // unit row (or vice versa) still appears, with the missing side = 0.
+  const dateSet = new Set<string>([...qtyByDate.keys(), ...poster.perDay.keys()]);
+  const dates = [...dateSet].sort();
+
+  return dates.map((date) => ({
+    date,
+    qty: qtyByDate.get(date) ?? 0,
+    amount: Math.round((poster.perDay.get(date) ?? 0) * 100) / 100,
   }));
 }
 
@@ -2314,29 +2460,33 @@ dashboardRouter.get(
 // Sub-task #7 — GET /api/dashboard/revenue-breakdown
 // =============================================================================
 //
-// Today's revenue split by payment method (naqd / karta / Payme / Click /
-// other). Backed by Poster `dash.getPaymentsReport` — already aggregated by
-// the POS, so we don't pull every check line ourselves.
+// Revenue split by payment method (naqd / karta / Payme / Click / other) for
+// the SELECTED date range. Backed by Poster `dash.getPaymentsReport` — already
+// aggregated by the POS, so we don't pull every check line ourselves.
 //
-// Query params:
-//   ?date=YYYY-MM-DD   default = today (the venue's local day).
+// Query params (same range contract as /overview, /ecosystem, /sales-chart):
+//   ?range=today|week|month|6m|custom   default = today.
+//   ?from=YYYY-MM-DD&to=YYYY-MM-DD       required when range=custom.
 //   ?spotId=<int>      optional Poster spot_id; restricts the lookup to one
 //                       store. PM may pass any spot; a scoped principal may
 //                       only pass a spot that maps to one of their assigned
 //                       store locations.
 //
 // Response shape:
-//   { date, spotId?, total, byMethod: { cash, card, payme, click, other } }
+//   { from, to, spot_id, total, byMethod: { cash, card, payme, click, other } }
 //
 // RBAC: pm / ai_assistant / store_manager / central_warehouse_manager /
 //       supply_manager — the same set that can read /api/sales.
 // =============================================================================
 
 type RevenueBreakdownResponse = {
-  date: string;
+  /** Inclusive window bounds, ISO `YYYY-MM-DD`, echoing the resolved range. */
+  from: string;
+  to: string;
   spot_id: number | null;
   total: number;
-  by_method: {
+  // camelCase to match the frontend contract (DashboardRevenueBreakdown).
+  byMethod: {
     cash: number;
     card: number;
     payme: number;
@@ -2357,7 +2507,9 @@ dashboardRouter.get(
   ),
   asyncHandler(async (req, res) => {
     const principal = getPrincipal(req);
-    const dateStr = parseDateParam(req.query.date);
+    // EPIC 0.4 — follow the dashboard date-range filter instead of a single
+    // hard-coded day, so the breakdown changes when the period changes.
+    const range = parseDateRange(req.query);
     const spotIdParam = parseOptionalSpotId(req.query.spotId ?? req.query.spot_id);
 
     // RBAC scoping for spotId: a scoped principal may only target a spot
@@ -2391,21 +2543,23 @@ dashboardRouter.get(
     );
 
     const client = createPosterClientFromConfig();
-    // YYYY-MM-DD -> Poster YYYYMMDD (shared helper; UTC-anchored).
-    const compact = toPosterDate(new Date(`${dateStr}T00:00:00.000Z`));
+    // Half-open [from, to) -> Poster's inclusive YYYYMMDD bounds. `to` is the
+    // exclusive next-instant, so the inclusive last day is `to - 1ms`.
+    const lastDay = new Date(range.to.getTime() - 1);
     const report = await client.getPaymentsReport({
-      dateFrom: compact,
-      dateTo: compact,
+      dateFrom: toPosterDate(range.from),
+      dateTo: toPosterDate(lastDay),
       ...(spotIdParam !== null ? { spotId: spotIdParam } : {}),
     });
 
     const { byMethod, total } = paymentReportToBuckets(report);
 
     const response: RevenueBreakdownResponse = {
-      date: dateStr,
+      from: range.from.toISOString().slice(0, 10),
+      to: lastDay.toISOString().slice(0, 10),
       spot_id: spotIdParam,
       total,
-      by_method: {
+      byMethod: {
         cash: byMethod.cash,
         card: byMethod.card,
         payme: byMethod.payme,
@@ -2416,21 +2570,6 @@ dashboardRouter.get(
     res.status(200).json(response);
   }),
 );
-
-/** Parse `?date=YYYY-MM-DD`; default to today's date (UTC) when missing. */
-function parseDateParam(raw: unknown): string {
-  if (raw === undefined || raw === null || raw === '') {
-    const d = new Date();
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
-    const day = String(d.getUTCDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-  }
-  if (typeof raw !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-    throw AppError.validation('"date" must be a YYYY-MM-DD string.');
-  }
-  return raw;
-}
 
 /** Parse `?spotId=` to a positive integer, or `null` when missing. */
 function parseOptionalSpotId(raw: unknown): number | null {

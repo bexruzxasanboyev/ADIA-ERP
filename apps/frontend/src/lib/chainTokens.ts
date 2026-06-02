@@ -23,7 +23,7 @@ export type ChainTone =
 /**
  * Map a `LocationType` (DB enum) to its chain tone.
  *
- * The "Ta'minot" layer has been renamed to "Sex skladi" — the DB ENUM
+ * The "Ta'minot" layer has been renamed to "Ishlab chiqarish ombori" — the DB ENUM
  * is migrating from `supply` to `sex_storage`. Both values map to the
  * same chain tone so the canvas/tokens stay stable while the backend
  * rolls forward.
@@ -41,9 +41,9 @@ export const CHAIN_TONE_BY_TYPE: Record<LocationType, ChainTone> = {
 export const CHAIN_LABELS: Record<ChainTone, string> = {
   raw: "Xom-ashyo ombori",
   production: "Ishlab chiqarish",
-  // Legacy "Ta'minot" — back-compat label; canonical text is "Sex skladi".
-  supply: "Sex skladi",
-  sex_storage: "Sex skladi",
+  // Legacy "Ta'minot" — back-compat label; canonical text is "Ishlab chiqarish ombori".
+  supply: "Ishlab chiqarish ombori",
+  sex_storage: "Ishlab chiqarish ombori",
   central: "Markaziy sklad",
   store: "Do'konlar",
 };

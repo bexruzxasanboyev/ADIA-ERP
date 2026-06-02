@@ -75,8 +75,7 @@ export function SafeExpensesPage() {
       <PageHeader
         title="Seyf rasxodlari"
         description="Seyfdan chiqarilgan rasxodlar (ijara, maosh, transport...) — har biri transaksiya sifatida qayd etiladi."
-        dateTime
-        filter={
+        actions={
           filterGroups.length > 0 ? (
             <FilterPopover
               groups={filterGroups}

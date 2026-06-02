@@ -8,6 +8,7 @@ import {
 } from '@/components/DateRangeFilter';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
+import { todayIso } from '@/lib/format';
 import type {
   ChainSummaryNode,
   DashboardEcosystem,
@@ -118,7 +119,7 @@ export function ExecutiveDashboardPage() {
   ]);
 
   const userName = user?.name ?? 'Foydalanuvchi';
-  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const today = useMemo(() => todayIso(), []);
 
   useHeaderSlot(
     <DashboardHeaderSlot
@@ -199,9 +200,8 @@ export function ExecutiveDashboardPage() {
       </div>
 
       <RevenueBreakdown
-        isoDate={today}
+        range={range}
         fallbackTotal={ecosystem.data?.poster_status.sales_today_sum ?? 0}
-        range={range.range}
       />
 
       <SecondaryRowGuard overview={overview.data} ecosystem={ecosystem.data} />

@@ -13,9 +13,9 @@ import {
   ShoppingCart,
   TrendingUp,
   BookOpen,
+  CircleUser,
   Wallet,
   ReceiptText,
-  FileText,
   Banknote,
   type LucideIcon,
 } from 'lucide-react';
@@ -101,14 +101,14 @@ const MANAGER_ROLES: readonly Role[] = [
 export const NAV_SECTIONS: readonly NavSection[] = [
   {
     key: 'dashboard',
-    label: 'Boshqaruv paneli',
+    label: 'Dashboard',
     icon: LayoutDashboard,
     defaultPath: '/dashboard',
     hasTabs: false,
     items: [
       {
         path: '/dashboard',
-        label: 'Boshqaruv paneli',
+        label: 'Dashboard',
         icon: LayoutDashboard,
         roles: ALL_ROLES,
       },
@@ -151,11 +151,11 @@ export const NAV_SECTIONS: readonly NavSection[] = [
       {
         // URL stays `/supply` for back-compat with existing bookmarks
         // and the backend chain-layer endpoint; on-page copy + nav label
-        // now reads "Sex skladlari" (renamed from "Ta'minot"). Once the
+        // now reads "Ishlab chiqarish omborlari" (renamed from "Ta'minot"). Once the
         // backend ENUM rolls forward to `sex_storage` we can flip the
         // URL and the chain-layer fetch in a single follow-up commit.
         path: '/supply',
-        label: 'Sex skladlari',
+        label: 'Ishlab chiqarish omborlari',
         icon: Truck,
         roles: ['pm', 'supply_manager'],
       },
@@ -222,12 +222,6 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         roles: ['pm', 'store_manager'],
       },
       {
-        path: '/cashier/nakladnoy',
-        label: 'Nakladnoylar',
-        icon: FileText,
-        roles: ['pm', 'store_manager', 'production_manager'],
-      },
-      {
         path: '/cashier/safe',
         label: 'Seyf rasxodlari',
         icon: Wallet,
@@ -249,10 +243,12 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         roles: MANAGER_ROLES,
       },
       {
+        // Bo'g'inlar = chain-wide location admin → PM only. Ordinary
+        // single-link roles don't need to see the whole chain.
         path: '/locations',
         label: 'Bo‘g‘inlar',
         icon: MapPin,
-        roles: MANAGER_ROLES,
+        roles: ['pm'],
       },
       {
         // EPIC 3 — "Foydalanuvchilar" va "Hodimlar" bitta sahifaga
@@ -264,9 +260,84 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         icon: UserCog,
         roles: ['pm'],
       },
+      {
+        // EPIC 3 — self-service "Profil" sahifasi: har bir
+        // foydalanuvchi o'z hisobini ko'radi (Telegram self-link,
+        // parol o'zgartirish). PM-only EMAS — barcha rollar uchun.
+        path: '/profile',
+        label: 'Profil',
+        icon: CircleUser,
+        roles: ALL_ROLES,
+      },
     ],
   },
 ];
+
+/**
+ * A single tile on the Home launcher grid.
+ */
+export interface HomeTile {
+  path: string;
+  label: string;
+  icon: LucideIcon;
+  /** Roles allowed to see this tile (same RBAC filter the nav uses). */
+  roles: readonly Role[];
+}
+
+/**
+ * The 11 PRIMARY modules, shown as ONE flat ordered grid on the Home
+ * launcher. The REST of the navigable pages (secondary screens such as
+ * To'ldirish so'rovlari, Sotib olish so'rovlari, cashier shifts, …) are
+ * NOT here — they are reached via the header sub-tabs (see PageTabs,
+ * which filters each group's items to exclude these tile paths).
+ *
+ * Order, label and route are explicit and authoritative. Each `roles`
+ * set mirrors the matching NAV_SECTIONS item so the launcher and the
+ * tabs apply the same RBAC filter.
+ */
+export const HOME_TILES: readonly HomeTile[] = [
+  { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ALL_ROLES },
+  { path: '/forecasts', label: 'Bashorat', icon: TrendingUp, roles: ALL_ROLES },
+  {
+    path: '/raw-warehouse',
+    label: 'Xom-ashyo ombori',
+    icon: Boxes,
+    roles: ['pm', 'raw_warehouse_manager'],
+  },
+  {
+    path: '/supply',
+    label: 'Ishlab chiqarish ombori',
+    icon: Truck,
+    roles: ['pm', 'supply_manager'],
+  },
+  {
+    path: '/central-warehouse',
+    label: 'Markaziy ombor',
+    icon: Warehouse,
+    roles: ['pm', 'central_warehouse_manager'],
+  },
+  {
+    path: '/production',
+    label: 'Ishlab chiqarish',
+    icon: Factory,
+    roles: ['pm', 'production_manager'],
+  },
+  { path: '/stores', label: 'Do‘konlar', icon: Store, roles: ['pm', 'store_manager'] },
+  {
+    path: '/cashier/receipts',
+    label: 'Kassa',
+    icon: Wallet,
+    roles: ['pm', 'store_manager'],
+  },
+  { path: '/products', label: 'Mahsulotlar', icon: Package, roles: MANAGER_ROLES },
+  { path: '/locations', label: 'Bo‘g‘inlar', icon: MapPin, roles: ['pm'] },
+  { path: '/employees', label: 'Hodimlar', icon: UserCog, roles: ['pm'] },
+];
+
+/** Path set of the 11 home tiles — used to exclude them from PageTabs. */
+export const HOME_TILE_PATHS: ReadonlySet<string> = new Set(
+  HOME_TILES.map((tile) => tile.path),
+);
 
 /**
  * Filter the navigation sections down to those the role may see.

@@ -125,7 +125,11 @@ export async function ingestTransaction(
     const line = lines[i]!;
     const posterProductId = Number(line.product_id);
     const num = Number(line.num);
-    const price = Number(line.product_price ?? 0);
+    // Poster reports ALL money in TIYIN (1 so'm = 100 tiyin) — the same
+    // convention `paymentReportToBuckets` divides by 100. `product_price` is
+    // the per-unit price in tiyin; store it as so'm so `qty * price` agrees
+    // with the Poster payments report instead of being 100× inflated.
+    const price = Number(line.product_price ?? 0) / 100;
     if (!Number.isInteger(posterProductId) || posterProductId <= 0) continue;
     if (!Number.isFinite(num) || num <= 0) continue;
 

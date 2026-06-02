@@ -22,10 +22,10 @@ export const ROLE_LABELS: Record<Role, string> = {
   pm: 'Loyiha rahbari',
   raw_warehouse_manager: 'Xom-ashyo ombori boshlig‘i',
   production_manager: 'Ishlab chiqarish boshlig‘i',
-  // Renamed from "Ta'minot boshlig'i" — the layer is now "Sex skladi"
+  // Renamed from "Ta'minot boshlig'i" — the layer is now "Ishlab chiqarish ombori"
   // (Tort / Perojniy / Yarim Fabrika sex storages). The Role enum key
   // stays `supply_manager` for back-compat with the backend.
-  supply_manager: 'Sex skladi boshlig‘i',
+  supply_manager: 'Ishlab chiqarish ombori boshlig‘i',
   central_warehouse_manager: 'Markaziy sklad boshlig‘i',
   store_manager: 'Do‘kon boshlig‘i',
   // `ai_assistant` mirrors the backend enum but is not user-facing in
@@ -34,14 +34,35 @@ export const ROLE_LABELS: Record<Role, string> = {
   ai_assistant: 'AI assistent',
 };
 
+/**
+ * EPIC 3 (Hodimlar redesign) — per-role accent tokens for the grouped
+ * employee cards/sections, mirroring the products page colour-coding.
+ * `accent` is the Tailwind left-border colour used as the card's left rail;
+ * all are light-mode-safe (a 500-weight border reads on both themes).
+ * `ring` tints the section heading dot. Every Role key is covered so the
+ * map is total (no `??` fallback needed at the call site).
+ */
+export const ROLE_ACCENT_STYLE: Record<Role, { accent: string; dot: string }> = {
+  pm: { accent: 'border-l-violet-500', dot: 'bg-violet-500' },
+  raw_warehouse_manager: { accent: 'border-l-amber-500', dot: 'bg-amber-500' },
+  production_manager: { accent: 'border-l-rose-500', dot: 'bg-rose-500' },
+  supply_manager: { accent: 'border-l-sky-500', dot: 'bg-sky-500' },
+  central_warehouse_manager: {
+    accent: 'border-l-emerald-500',
+    dot: 'bg-emerald-500',
+  },
+  store_manager: { accent: 'border-l-orange-500', dot: 'bg-orange-500' },
+  ai_assistant: { accent: 'border-l-fuchsia-500', dot: 'bg-fuchsia-500' },
+};
+
 export const LOCATION_TYPE_LABELS: Record<LocationType, string> = {
   raw_warehouse: 'Xom-ashyo ombori',
   production: 'Ishlab chiqarish',
   // Legacy "Ta'minot bo'limi" — kept as a back-compat label until the
   // backend ENUM migration finishes; once the API only emits
   // `sex_storage` this entry can be dropped.
-  supply: 'Sex skladi',
-  sex_storage: 'Sex skladi',
+  supply: 'Ishlab chiqarish ombori',
+  sex_storage: 'Ishlab chiqarish ombori',
   central_warehouse: 'Markaziy sklad',
   store: 'Do‘kon',
 };
@@ -173,7 +194,7 @@ export const ROLE_OPTIONS: { value: Role; label: string }[] = (
   .map((value) => ({ value, label: ROLE_LABELS[value] }));
 
 // `supply` is the legacy synonym of `sex_storage` and would otherwise
-// produce a duplicate "Sex skladi" entry in pickers — exclude it from
+// produce a duplicate "Ishlab chiqarish ombori" entry in pickers — exclude it from
 // the visible option list. The label entry stays so any row arriving
 // from the backend with the legacy enum still renders correctly.
 export const LOCATION_TYPE_OPTIONS: { value: LocationType; label: string }[] = (

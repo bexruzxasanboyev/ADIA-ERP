@@ -35,7 +35,14 @@ export type NotificationType =
   // ("noto'g'ri urilgan chek"): POS sold N but stock only had M < N. The sale
   // is clamped (invariant 3 — qty never negative) and this alert is raised so
   // an admin/manager can reconcile the discrepancy.
-  | 'wrong_keyed_check';
+  | 'wrong_keyed_check'
+  // EPIC 8.5 — a cashier submitted a shift close-out via the Telegram bot
+  // (rasxod/qoldiq/karta/itogo); a `cash_shift` money nakladnoy was formed and
+  // is surfaced to the cashier + admin/PM ("unga va menga ko'rinadigan").
+  | 'cash_shift_submitted'
+  // EPIC 8.6 — a store voice message ("10 ta Napoleon keldi") was turned into a
+  // `voice` material nakladnoy; PM + the store manager are notified to review it.
+  | 'nakladnoy_created';
 
 /**
  * Inline keyboard payload persisted into `notifications.inline_callback`

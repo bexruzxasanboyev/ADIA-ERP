@@ -20,9 +20,26 @@ import { getPrincipal, isSuperAdmin } from '../lib/principal.js';
 import { parseOptionalIdParam } from '../lib/validate.js';
 import { parseDateRange, toPosterDate } from '../lib/dateRange.js';
 import { listCashShifts } from '../services/cashShift.js';
-import { createPosterClientFromConfig } from '../integrations/poster/client.js';
+import { createPosterClientFromConfig, PosterApiError } from '../integrations/poster/client.js';
 
 export const cashShiftsRouter: Router = Router();
+
+/**
+ * A Poster failure that means "this method is unavailable for this account",
+ * not "the network is down". We DEGRADE on these (return an empty list) so the
+ * page renders its clean empty state instead of 500-ing. A genuine transient
+ * error (timeout / `fetch failed`) has neither `status` nor `posterCode` set —
+ * we let those propagate so they are still visible.
+ *
+ * Examples that degrade: HTTP 4xx (incl. 405 Method Not Allowed) and the
+ * Poster `{code:30, Method Not Allowed}` envelope.
+ */
+function isMethodLevelPosterError(err: unknown): err is PosterApiError {
+  if (!(err instanceof PosterApiError)) return false;
+  if (err.status !== undefined && err.status >= 400 && err.status < 500) return true;
+  if (err.posterCode === 30) return true;
+  return false;
+}
 
 cashShiftsRouter.get(
   '/',
@@ -56,13 +73,26 @@ cashShiftsRouter.get(
     }
 
     const poster = createPosterClientFromConfig();
-    const items = await listCashShifts(poster, {
-      dateFrom: toPosterDate(range.from),
-      // `to` is the exclusive upper bound; step back a ms so the YYYYMMDD day
-      // is the last full day in the window.
-      dateTo: toPosterDate(new Date(range.to.getTime() - 1)),
-      storeIds,
-    });
-    res.status(200).json({ items });
+    try {
+      const items = await listCashShifts(poster, {
+        dateFrom: toPosterDate(range.from),
+        // `to` is the exclusive upper bound; step back a ms so the YYYYMMDD day
+        // is the last full day in the window.
+        dateTo: toPosterDate(new Date(range.to.getTime() - 1)),
+        storeIds,
+      });
+      res.status(200).json({ items });
+    } catch (err) {
+      // Degrade gracefully when Poster says the method is unavailable for this
+      // account — never 500 the page. The frontend renders an empty state.
+      if (isMethodLevelPosterError(err)) {
+        console.warn(
+          `[cash-shifts] Poster cash-shift method unavailable, returning empty: ${err.message}`,
+        );
+        res.status(200).json({ items: [] });
+        return;
+      }
+      throw err; // genuine transient/unexpected error — let it surface.
+    }
   }),
 );

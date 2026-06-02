@@ -42,7 +42,7 @@ import type {
 import { cn } from '@/lib/utils';
 import { OpenRequestsChart } from './OpenRequestsChart';
 import { ForecastsPanel } from './ForecastsPanel';
-import { SalesChart } from './SalesChart';
+import { SalesChartsRow } from './SalesChartsRow';
 
 /**
  * M8 — Boshqaruv paneli (phase-1-mvp.md §2.8, §4.8).
@@ -159,7 +159,7 @@ export function DashboardPage() {
           </div>
 
           {ecosystem.data !== null && (
-            <SalesChart points={ecosystem.data.sales_chart.days} />
+            <SalesChartsRow days={ecosystem.data.sales_chart.days} />
           )}
 
           <ForecastsPanel />
@@ -324,7 +324,7 @@ function BelowMinPanel({
         {items.length === 0 ? (
           <EmptyState message="Min’dan tushgan pozitsiyalar yo‘q." />
         ) : (
-          <div className="overflow-x-auto">
+          <div className="scrollbar-thin overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -465,7 +465,7 @@ function ProductionPlanPanel({ overview }: { overview: DashboardOverview }) {
       {items.length === 0 ? (
         <EmptyState message="Bugungi reja bo‘sh." />
       ) : (
-        <div className="overflow-x-auto">
+        <div className="scrollbar-thin overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>

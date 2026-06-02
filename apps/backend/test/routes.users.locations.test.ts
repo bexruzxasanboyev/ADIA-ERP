@@ -40,7 +40,7 @@ describe('POST /api/users — `location_ids` (M:N create)', () => {
       .set('Authorization', `Bearer ${pm.token}`)
       .send({
         name: 'Multi Keeper',
-        email: 'multi-keeper@test.local',
+        login: 'multi-keeper',
         password: 'a-strong-pass',
         role: 'store_manager',
         location_ids: [store1, store2, store3],
@@ -75,7 +75,7 @@ describe('POST /api/users — `location_ids` (M:N create)', () => {
       .set('Authorization', `Bearer ${pm.token}`)
       .send({
         name: 'Bad Primary',
-        email: 'bad-primary@test.local',
+        login: 'bad-primary',
         password: 'a-strong-pass',
         role: 'store_manager',
         location_ids: [a, b],
@@ -94,7 +94,7 @@ describe('POST /api/users — `location_ids` (M:N create)', () => {
       .set('Authorization', `Bearer ${pm.token}`)
       .send({
         name: 'Dup',
-        email: 'dup-loc@test.local',
+        login: 'dup-loc',
         password: 'a-strong-pass',
         role: 'store_manager',
         location_ids: [a, a],
@@ -111,7 +111,7 @@ describe('POST /api/users — `location_ids` (M:N create)', () => {
       .set('Authorization', `Bearer ${pm.token}`)
       .send({
         name: 'Ghost',
-        email: 'ghost-loc@test.local',
+        login: 'ghost-loc',
         password: 'a-strong-pass',
         role: 'store_manager',
         location_ids: [a, 999_999_999],
@@ -128,7 +128,7 @@ describe('POST /api/users — `location_ids` (M:N create)', () => {
       .set('Authorization', `Bearer ${pm.token}`)
       .send({
         name: 'Legacy',
-        email: 'legacy@test.local',
+        login: 'legacy',
         password: 'a-strong-pass',
         role: 'store_manager',
         location_id: store,

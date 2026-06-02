@@ -1,8 +1,7 @@
 /**
  * M1 + Sprint-3 — Auth routes (spec section 4.1, ADR-0005).
  *
- *   POST /api/auth/login    — { login, password }  (F4.12; also accepts
- *                              the legacy `{ email, password }` shape)
+ *   POST /api/auth/login    — { login, password }  (username-only)
  *                             -> { access_token, refresh_token, user }
  *   POST /api/auth/refresh  — { refresh_token }
  *                             -> { access_token, refresh_token, user }
@@ -29,6 +28,7 @@ import { query } from '../db/index.js';
 import { signAccessToken } from '../auth/jwt.js';
 import {
   issueRefreshToken,
+  revokeAllForUser,
   revokeOne,
   validateAndRotate,
 } from '../auth/refreshTokens.js';
@@ -42,6 +42,16 @@ import { writeAudit, poolRunner } from '../lib/audit.js';
 import { loadConfig } from '../config/index.js';
 
 export const authRouter: Router = Router();
+
+/**
+ * bcrypt work factor for newly minted hashes — kept in step with the
+ * user-management path (`routes/users.ts` BCRYPT_ROUNDS) and the seed so
+ * every hash in `users.password_hash` uses one cost factor.
+ */
+const BCRYPT_ROUNDS = 10;
+
+/** Minimum length accepted for a new password (mirrors routes/users.ts). */
+const MIN_PASSWORD_LENGTH = 8;
 
 /**
  * Brute-force guard on the login endpoint: at most 20 attempts per IP per
@@ -100,7 +110,6 @@ const refreshRateLimit: RequestHandler =
 type UserRow = {
   id: number;
   name: string;
-  email: string;
   username: string;
   password_hash: string;
   role: string;
@@ -113,7 +122,6 @@ type UserRow = {
 type PublicUser = {
   id: number;
   name: string;
-  email: string;
   username: string;
   role: Role;
   location_id: number | null;
@@ -128,7 +136,6 @@ function toPublicUser(row: UserRow): PublicUser {
   return {
     id: row.id,
     name: row.name,
-    email: row.email,
     username: row.username,
     role: row.role,
     location_id: row.location_id,
@@ -152,33 +159,27 @@ authRouter.post(
   loginRateLimit,
   asyncHandler(async (req, res) => {
     const body = asObject(req.body);
-    // F4.12 — accept both the new `{ login, password }` body and the
-    // legacy `{ email, password }` shape. The first non-empty value wins;
-    // when both are present, `login` takes precedence (frontend is
-    // migrating onto the new field name).
-    const loginRaw =
-      optionalString(body, 'login') ?? optionalString(body, 'email');
+    // Username-only login. The body field is `login`; it is matched against
+    // `users.username` (case-insensitive). Email was removed from the
+    // identity model entirely.
+    const loginRaw = optionalString(body, 'login');
     if (loginRaw === undefined) {
       throw AppError.validation('Field "login" must be a non-empty string.');
     }
     const password = requireString(body, 'password');
 
-    // Anything with `@` is treated as an email (matched against
-    // users.email); everything else is matched against users.username.
-    // Both columns hold lowercased values, so a single normalisation pass
-    // here is enough.
+    // `users.username` is stored lowercased (CHECK `^[a-z0-9._-]{3,32}$`), so a
+    // single normalisation pass makes the lookup case-insensitive.
     const normalised = loginRaw.toLowerCase();
-    const isEmail = normalised.includes('@');
-    const sql = isEmail
-      ? `SELECT id, name, email, username, password_hash, role, location_id, telegram_id, is_active
-           FROM users WHERE email = $1`
-      : `SELECT id, name, email, username, password_hash, role, location_id, telegram_id, is_active
-           FROM users WHERE username = $1`;
-    const { rows } = await query<UserRow>(sql, [normalised]);
+    const { rows } = await query<UserRow>(
+      `SELECT id, name, username, password_hash, role, location_id, telegram_id, is_active
+         FROM users WHERE username = $1`,
+      [normalised],
+    );
     const user = rows[0];
 
     // Generic failure for missing user, wrong password or deactivated account
-    // — never reveal which leg of the OR failed (no user enumeration).
+    // — never reveal which leg failed (no user enumeration).
     const invalid = AppError.unauthenticated('Invalid login or password.');
     if (user === undefined || !user.is_active) {
       throw invalid;
@@ -197,15 +198,14 @@ authRouter.post(
     const issued = await issueRefreshToken(publicUser.id, {
       userAgent: readUserAgent(req),
     });
-    // F4.12 — record the ORIGINAL login value (email or username, whichever
-    // the caller actually sent) so a forensic reader can answer "which
-    // handle was used to sign in?" without re-deriving it from the email.
+    // Record the login handle (username) used to sign in so a forensic reader
+    // can answer "which handle was used?".
     await writeAudit(poolRunner, {
       actorUserId: publicUser.id,
       action: 'auth.login',
       entity: 'users',
       entityId: publicUser.id,
-      payload: { login: loginRaw, via: isEmail ? 'email' : 'username' },
+      payload: { login: publicUser.username },
     });
     // NOTE: `token` field retained for one release as a backward-compat
     // alias of `access_token` — the frontend migrates over Sprint-3 and
@@ -238,10 +238,10 @@ authRouter.post(
       throw AppError.unauthenticated('Invalid or expired refresh token.');
     }
 
-    // Re-read the user so the response carries fresh `name`, `email`,
+    // Re-read the user so the response carries fresh `name`, `username`,
     // `telegram_id`, etc., not just the columns the rotate path needs.
     const { rows } = await query<UserRow>(
-      `SELECT id, name, email, username, password_hash, role, location_id, telegram_id, is_active
+      `SELECT id, name, username, password_hash, role, location_id, telegram_id, is_active
        FROM users WHERE id = $1 AND is_active = TRUE`,
       [rotated.user.userId],
     );
@@ -301,7 +301,7 @@ authRouter.get(
   asyncHandler(async (req, res) => {
     const principal = getPrincipal(req);
     const { rows } = await query<UserRow>(
-      `SELECT id, name, email, username, password_hash, role, location_id, telegram_id, is_active
+      `SELECT id, name, username, password_hash, role, location_id, telegram_id, is_active
        FROM users WHERE id = $1 AND is_active = TRUE`,
       [principal.userId],
     );
@@ -384,5 +384,78 @@ authRouter.patch(
       activeLocationId: locationId,
     });
     res.status(200).json({ active_location_id: locationId });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/change-password — self-service password change (Profil page)
+// ---------------------------------------------------------------------------
+// Operates on the CURRENT user only (principal.userId). There is NO target
+// `userId` field — a user can only change their OWN password. Admin-driven
+// resets, if ever needed, belong on a separate users-management endpoint.
+//
+// Flow:
+//   1. validate the body ({ current_password, new_password }, min length 8),
+//   2. load the user's current `password_hash`,
+//   3. verify `current_password` with bcrypt — wrong -> 401,
+//   4. hash `new_password` (BCRYPT_ROUNDS) and UPDATE users.password_hash,
+//   5. revoke every refresh token for the user so other sessions are forced
+//      to re-authenticate (consistent with the revoke-on-logout model),
+//   6. write one audit-log row (who / when / what — never the passwords),
+//   7. 204.
+authRouter.post(
+  '/change-password',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const body = asObject(req.body);
+    const currentPassword = requireString(body, 'current_password');
+    const newPassword = requireString(body, 'new_password');
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      throw AppError.validation(
+        `Field "new_password" must be at least ${MIN_PASSWORD_LENGTH} characters.`,
+      );
+    }
+
+    // Load only the hash + activity flag for the CURRENT user.
+    const { rows } = await query<{ password_hash: string; is_active: boolean }>(
+      `SELECT password_hash, is_active FROM users WHERE id = $1`,
+      [principal.userId],
+    );
+    const user = rows[0];
+    if (user === undefined || !user.is_active) {
+      // The access token outlived the account (deactivated / deleted).
+      throw AppError.unauthenticated('User no longer exists or is inactive.');
+    }
+
+    const currentOk = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!currentOk) {
+      // User-facing message in Uzbek (UI language); 401 keeps it in the
+      // authn family the rest of this router uses for credential failures.
+      throw AppError.unauthenticated("Joriy parol noto'g'ri.");
+    }
+
+    const newHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+    await query(
+      `UPDATE users SET password_hash = $1 WHERE id = $2`,
+      [newHash, principal.userId],
+    );
+
+    // A password change should not leave other sessions logged in — revoke
+    // every active refresh token for this user (force re-login elsewhere).
+    // The current caller already holds an access token; it stays valid until
+    // it expires, but it can no longer be refreshed.
+    await revokeAllForUser(principal.userId);
+
+    await writeAudit(poolRunner, {
+      actorUserId: principal.userId,
+      action: 'auth.password.change',
+      entity: 'users',
+      entityId: principal.userId,
+      // Never log password material — record only that the change happened.
+      payload: { self_service: true },
+    });
+
+    res.status(204).end();
   }),
 );

@@ -244,3 +244,61 @@
     }
   }
 }
+
+/*
+ * Thin, theme-aware scrollbar — replaces the chunky native bar on
+ * horizontal-scroll strips (e.g. the module tab strip, wide tables).
+ * Track is transparent; thumb uses the border token and lifts to
+ * muted-foreground on hover.
+ */
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    height: 6px;
+    width: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border));
+    border-radius: 9999px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--muted-foreground));
+  }
+}
+
+/*
+ * Global custom scrollbar — replaces the chunky native bar across the whole
+ * app (main content, popovers, any overflow). Slim (10px gutter with a 2px
+ * transparent inset, ~6px visible), fully rounded, theme-aware, and lifts to
+ * muted-foreground on hover. Firefox uses the thin native variant.
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--border) / 0.7) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: hsl(var(--border) / 0.8);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: hsl(var(--muted-foreground) / 0.7);
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}

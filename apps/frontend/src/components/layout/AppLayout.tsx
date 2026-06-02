@@ -1,31 +1,33 @@
-import { useEffect, useState } from 'react';
-import { Outlet, useLocation } from 'react-router-dom';
-import { CakeSlice, Menu } from 'lucide-react';
-import { AppSidebar } from './AppSidebar';
+import { Link, Outlet, useLocation } from 'react-router-dom';
+import { CakeSlice, CircleUser } from 'lucide-react';
 import { AssistantButton } from './AssistantButton';
 import { LocationSwitcher } from './LocationSwitcher';
 import { PageTabs } from './PageTabs';
-import { Sheet, SheetContent } from '@/components/ui/sheet';
-import { cn } from '@/lib/utils';
 import { findGroupForPath } from '@/lib/navigation';
 import {
   HeaderSlotProvider,
-  useHeaderSlotContent,
+  useHeaderActionsContent,
+  useHeaderCenterContent,
 } from './HeaderSlot';
 
 /**
- * Authenticated layout shell — hybrid navigation (F4.13).
+ * Authenticated inner-page layout shell (IA redesign).
  *
- * Desktop (`lg+`):
- *   - 64px icon rail on the left, four group icons (Boshqaruv paneli,
- *     Bashorat, Modullar, Ma'lumotnoma) — see `AppSidebar`.
- *   - When the current route belongs to a tabbed group (Modullar or
- *     Ma'lumotnoma), Jira-style pill tabs render at the top of the
- *     page automatically via `findGroupForPath`.
+ * The left sidebar / icon rail and the mobile drawer are gone; the
+ * PRIMARY modules live on the Home launcher (`/home`). The header logo
+ * links back to it. The centred sub-tabs (PageTabs) are restored but
+ * CURATED: they surface only the SECONDARY screens of the active nav
+ * group (the home-tile modules are excluded), so secondary pages stay
+ * reachable from any page in their group.
  *
- * Below `lg`:
- *   - Sidebar lives in a Sheet drawer. A hamburger button in the
- *     header opens it; nav clicks and route changes auto-close it.
+ * Header layout:
+ *   - left:   ADIA ERP logo → Link to /home
+ *   - center: the dashboard's header center slot (greeting + date +
+ *             clock + range) when present; otherwise the active group's
+ *             secondary-page tabs (PageTabs) for tabbed groups
+ *   - right:  LocationSwitcher + Profil link
+ *
+ * The theme toggle and "Chiqish" (logout) moved to the Profil page.
  */
 export function AppLayout() {
   return (
@@ -35,90 +37,62 @@ export function AppLayout() {
   );
 }
 
-const SIDEBAR_EXPANDED_KEY = 'adia.sidebar.expanded';
-
-function readStoredExpanded(): boolean {
-  if (typeof window === 'undefined') return false;
-  try {
-    return window.localStorage.getItem(SIDEBAR_EXPANDED_KEY) === 'true';
-  } catch {
-    return false;
-  }
-}
-
 function AppLayoutShell() {
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [sidebarExpanded, setSidebarExpanded] = useState<boolean>(
-    readStoredExpanded,
-  );
+  const centerSlot = useHeaderCenterContent();
+  const actionsSlot = useHeaderActionsContent();
   const location = useLocation();
-  const headerSlot = useHeaderSlotContent();
 
-  useEffect(() => {
-    setDrawerOpen(false);
-  }, [location.pathname]);
-
-  const toggleSidebar = () => {
-    setSidebarExpanded((prev) => {
-      const next = !prev;
-      try {
-        window.localStorage.setItem(SIDEBAR_EXPANDED_KEY, String(next));
-      } catch {
-        // best-effort — private mode / quota
-      }
-      return next;
-    });
-  };
-
-  const activeGroup = findGroupForPath(location.pathname);
-  const showTabs = activeGroup?.hasTabs === true;
+  // Restore the centred sub-tabs — but only for tabbed groups, and the
+  // page-supplied center slot (the dashboard greeting/range) always wins
+  // when present. PageTabs itself returns null if the group has no
+  // secondary (non-home-tile) screens for this role.
+  const group = findGroupForPath(location.pathname);
+  const showTabs = !centerSlot && group?.hasTabs === true;
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-background">
-      <AppSidebar expanded={sidebarExpanded} onToggle={toggleSidebar} />
-      <div
-        className={cn(
-          'flex flex-1 flex-col overflow-hidden transition-[padding] duration-200',
-          sidebarExpanded ? 'lg:pl-56' : 'lg:pl-16',
-        )}
-      >
-        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-3 sm:px-6 lg:px-8">
-          <button
-            type="button"
-            aria-label="Menyu"
-            aria-expanded={drawerOpen}
-            onClick={() => setDrawerOpen(true)}
-            className="inline-flex size-10 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:hidden"
-          >
-            <Menu className="size-5" aria-hidden="true" />
-          </button>
-          <div className="flex min-w-0 items-center gap-2 lg:hidden">
-            <CakeSlice
-              className="size-5 shrink-0 text-primary"
-              aria-hidden="true"
-            />
-            <span className="truncate text-sm font-semibold tracking-tight">
-              ADIA ERP
-            </span>
-          </div>
-          <div className="flex min-w-0 flex-1 items-center">{headerSlot}</div>
-          <div className="flex shrink-0 items-center justify-end">
-            <LocationSwitcher />
-          </div>
-        </header>
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
-          {showTabs && activeGroup && <PageTabs group={activeGroup.key} />}
-          <Outlet />
-        </main>
-      </div>
+    <div className="flex h-screen w-full flex-col overflow-hidden bg-background">
+      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-3 sm:px-6 lg:px-8">
+        <Link
+          to="/home"
+          className="flex min-w-0 shrink-0 items-center gap-2 rounded-md px-1 py-1 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label="Bosh sahifa"
+          title="Bosh sahifa"
+        >
+          <CakeSlice className="size-5 shrink-0 text-primary" aria-hidden="true" />
+          <span className="hidden truncate text-sm font-semibold tracking-tight sm:inline">
+            ADIA ERP
+          </span>
+        </Link>
 
-      {/* Mobile / tablet drawer — `lg+` users use the rail sidebar
-          instead, the hamburger button is hidden. */}
-      <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
-        <SheetContent side="left" className="w-72 p-0">
-          <AppSidebar inDrawer onNavigate={() => setDrawerOpen(false)} />
-        </SheetContent>
-      </Sheet>
+        {/* Center — the dashboard fills this with greeting + date + clock
+            + range; for tabbed groups without a center slot we render the
+            curated secondary-page tabs (PageTabs). The page ACTION buttons
+            drop into the content row below. Scrolls horizontally on narrow
+            screens so a wide center slot doesn't push the right-hand
+            controls off-screen. */}
+        <div className="flex min-w-0 flex-1 items-center justify-center overflow-x-auto">
+          {centerSlot}
+          {showTabs && group && <PageTabs group={group.key} />}
+        </div>
+
+        {/* Right — LocationSwitcher + Profil. */}
+        <div className="flex shrink-0 items-center justify-end gap-1 sm:gap-2">
+          <LocationSwitcher />
+          <Link
+            to="/profile"
+            className="inline-flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Profil"
+            title="Profil"
+          >
+            <CircleUser className="size-5" aria-hidden="true" />
+            <span className="hidden lg:inline">Profil</span>
+          </Link>
+        </div>
+      </header>
+      <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
+        {actionsSlot && <div className="mb-4">{actionsSlot}</div>}
+        <Outlet />
+      </main>
 
       <AssistantButton />
     </div>

@@ -233,7 +233,7 @@ function IncomingPurchasesPanel({
         <EmptyState message="Qabul kutilayotgan sotib olish so‘rovlari yo‘q." />
       )}
       {!isLoading && !error && rows.length > 0 && (
-        <div className="overflow-x-auto">
+        <div className="scrollbar-thin overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -309,7 +309,7 @@ function ShortagesPanel({ rows }: { rows: StockRow[] }) {
       {rows.length === 0 ? (
         <EmptyState message="Min’dan past pozitsiyalar yo‘q — hammasi me’yorda." />
       ) : (
-        <div className="overflow-x-auto">
+        <div className="scrollbar-thin overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -382,7 +382,7 @@ function StockTablePanel({
         <EmptyState message="Qoldiq topilmadi." />
       )}
       {!isLoading && !error && rows.length > 0 && (
-        <div className="overflow-x-auto">
+        <div className="scrollbar-thin overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>

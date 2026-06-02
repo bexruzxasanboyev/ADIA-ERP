@@ -10,6 +10,8 @@ import { describe, it, expect } from 'vitest';
 import {
   formatCurrencyCompact,
   formatDateLong,
+  formatPlainNumber,
+  formatQty,
   getGreeting,
 } from './format';
 
@@ -42,6 +44,39 @@ describe('formatCurrencyCompact', () => {
   it('returns em-dash for non-finite', () => {
     expect(formatCurrencyCompact(Number.NaN)).toBe('—');
     expect(formatCurrencyCompact(Number.POSITIVE_INFINITY)).toBe('—');
+  });
+});
+
+describe('formatQty', () => {
+  it('groups with the uz-UZ no-break space, never a comma', () => {
+    // The defect: a qty of 10000 rendered as "10,000" (comma). uz-UZ
+    // groups with U+00A0; assert no ASCII comma ever appears.
+    const out = formatQty(10_000);
+    expect(out).not.toContain(',');
+    expect(out).toBe('10 000');
+  });
+
+  it('returns em-dash for non-finite inputs (NaN / Infinity)', () => {
+    expect(formatQty(Number.NaN)).toBe('—');
+    expect(formatQty(Number.POSITIVE_INFINITY)).toBe('—');
+    expect(formatQty(undefined as unknown as number)).toBe('—');
+  });
+});
+
+describe('formatPlainNumber', () => {
+  it('renders a grouped integer with the uz-UZ no-break space', () => {
+    expect(formatPlainNumber(10_000)).toBe('10 000');
+    expect(formatPlainNumber(1_250_000)).toBe('1 250 000');
+  });
+
+  it('rounds to whole numbers (no fractional digits)', () => {
+    expect(formatPlainNumber(1234.6)).toBe('1 235');
+  });
+
+  it('returns em-dash for non-finite / undefined inputs', () => {
+    expect(formatPlainNumber(Number.NaN)).toBe('—');
+    expect(formatPlainNumber(Number.POSITIVE_INFINITY)).toBe('—');
+    expect(formatPlainNumber(undefined as unknown as number)).toBe('—');
   });
 });
 

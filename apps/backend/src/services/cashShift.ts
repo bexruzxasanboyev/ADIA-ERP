@@ -59,9 +59,14 @@ async function loadSpotToStore(): Promise<Map<number, { id: number; name: string
   return map;
 }
 
-/** ISO-normalise a Poster "YYYY-MM-DD HH:mm:ss" timestamp. Null/empty -> null. */
+/** ISO-normalise a Poster "YYYY-MM-DD HH:mm:ss" timestamp. Null/empty/zero -> null. */
 function posterDateToIso(raw: string | null | undefined): string | null {
-  if (raw === null || raw === undefined || raw === '') return null;
+  // Poster emits the "0000-00-00 00:00:00" sentinel for an OPEN shift's
+  // `date_end` (verified live 2026-06-01). Treat it as null so the shift is
+  // correctly classified `open` rather than carrying a bogus closed date.
+  if (raw === null || raw === undefined || raw === '' || raw.startsWith('0000-00-00')) {
+    return null;
+  }
   // Poster local times have no tz; treat as UTC for a stable ISO string.
   const d = new Date(raw.replace(' ', 'T') + 'Z');
   return Number.isNaN(d.getTime()) ? null : d.toISOString();

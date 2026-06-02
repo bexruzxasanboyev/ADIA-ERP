@@ -133,6 +133,7 @@ function fakeAuth(): AuthContextValue {
     activeLocationId: null,
     login: () => {},
     logout: async () => {},
+    updateUser: () => {},
     setActiveLocation: async () => {},
   };
 }

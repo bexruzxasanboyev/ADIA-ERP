@@ -24,6 +24,7 @@ import { authorize } from '../middleware/authorize.js';
 import { createPosterClientFromConfig } from '../integrations/poster/client.js';
 import {
   runSeedSync,
+  syncCategories,
   syncSpots,
   syncStorages,
   syncIngredients,
@@ -161,6 +162,8 @@ posterIntegrationRouter.post(
         out.push(await syncStorages(client, 'manual'));
         break;
       case 'products':
+        // categories first — syncMenuProducts maps menu_category_id -> categories.id.
+        out.push(await syncCategories(client, 'manual'));
         out.push(await syncIngredients(client, 'manual'));
         out.push(await syncPrepacks(client, 'manual'));
         out.push(await syncMenuProducts(client, 'manual'));

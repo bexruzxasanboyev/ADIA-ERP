@@ -4,10 +4,14 @@ import { ProtectedRoute } from './ProtectedRoute';
 import { RoleRoute } from './RoleRoute';
 import { LoginPage } from '@/pages/LoginPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
+import { HomePage } from '@/pages/home/HomePage';
 import { LocationsPage } from '@/pages/locations/LocationsPage';
+import { LocationFlowsPage } from '@/pages/locations/LocationFlowsPage';
 import { LocationDetailPage } from '@/pages/locations/LocationDetailPage';
 import { EmployeesPage } from '@/pages/employees/EmployeesPage';
+import { ProfilePage } from '@/pages/profile/ProfilePage';
 import { ProductsPage } from '@/pages/products/ProductsPage';
+import { RecipePage } from '@/pages/products/RecipePage';
 import { StockPage } from '@/pages/stock/StockPage';
 import { ReplenishmentPage } from '@/pages/replenishment/ReplenishmentPage';
 import { ReplenishmentDetailPage } from '@/pages/replenishment/ReplenishmentDetailPage';
@@ -15,7 +19,7 @@ import { RequestsPage } from '@/pages/requests/RequestsPage';
 import { ProductionOrdersPage } from '@/pages/production-orders/ProductionOrdersPage';
 import { PurchaseOrdersPage } from '@/pages/purchase-orders/PurchaseOrdersPage';
 import { DashboardPage } from '@/pages/dashboard/DashboardPage';
-import { ExecutiveDashboardPage } from '@/pages/dashboard/executive/ExecutiveDashboardPage';
+import { DashboardHome } from '@/pages/dashboard/DashboardHome';
 import { ForecastsPage } from '@/pages/forecasts/ForecastsPage';
 import { ImportWarningsPage } from '@/pages/admin/ImportWarningsPage';
 import { RawWarehousePage } from '@/pages/chain/RawWarehousePage';
@@ -26,7 +30,6 @@ import { StoresPage } from '@/pages/chain/StoresPage';
 import { ReceiptsPage } from '@/pages/cashier/ReceiptsPage';
 import { CashShiftsPage } from '@/pages/cashier/CashShiftsPage';
 import { SafeExpensesPage } from '@/pages/cashier/SafeExpensesPage';
-import { NakladnoyPage } from '@/pages/cashier/NakladnoyPage';
 
 /**
  * Application routes (phase-1-mvp.md §2, §6).
@@ -42,6 +45,18 @@ export function AppRouter() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
 
+      {/* Home launcher (IA redesign) — authenticated but sidebar-free:
+          its own minimal shell, NOT wrapped in AppLayout. Post-login and
+          the index `/` redirect both land here. */}
+      <Route
+        path="/home"
+        element={
+          <ProtectedRoute>
+            <HomePage />
+          </ProtectedRoute>
+        }
+      />
+
       <Route
         element={
           <ProtectedRoute>
@@ -49,12 +64,13 @@ export function AppRouter() {
           </ProtectedRoute>
         }
       >
-        <Route index element={<Navigate to="/dashboard" replace />} />
+        <Route index element={<Navigate to="/home" replace />} />
 
-        {/* F4.7 — Executive (boshliq) dashboard at /dashboard; the
-            full operations view is parked at /dashboard/operations so
-            existing deep links stay live. */}
-        <Route path="/dashboard" element={<ExecutiveDashboardPage />} />
+        {/* F4.7 — role-aware dashboard at /dashboard: PM / AI get the
+            executive (boshliq, chain-wide) view; every other role gets
+            their own RBAC-scoped Boshqaruv paneli. The full operations
+            view stays at /dashboard/operations for deep links. */}
+        <Route path="/dashboard" element={<DashboardHome />} />
         <Route path="/dashboard/operations" element={<DashboardPage />} />
         {/* Ekosistema canvas → per-location detail (header + KPI + stock +
             recent movements + open requests + manager info). Backend RBAC
@@ -195,16 +211,6 @@ export function AppRouter() {
           }
         />
         <Route
-          path="/cashier/nakladnoy"
-          element={
-            <RoleRoute
-              allow={['pm', 'store_manager', 'production_manager']}
-            >
-              <NakladnoyPage />
-            </RoleRoute>
-          }
-        />
-        <Route
           path="/cashier/safe"
           element={
             <RoleRoute allow={['pm']}>
@@ -213,11 +219,32 @@ export function AppRouter() {
           }
         />
 
-        {/* M2 — products & recipes. */}
+        {/* M2 — products & recipes. The recipe (BOM) opens as a dedicated
+            page; editing is gated client- and server-side by role. */}
         <Route path="/products" element={<ProductsPage />} />
+        <Route
+          path="/products/:productId/recipe"
+          element={<RecipePage />}
+        />
 
-        {/* M1 — locations. */}
-        <Route path="/locations" element={<LocationsPage />} />
+        {/* M1 — locations. The "Oqimlar" (location_flows) editor is a
+            dedicated PM-only page; the list itself is RBAC-scoped server-side. */}
+        <Route
+          path="/locations"
+          element={
+            <RoleRoute allow={['pm']}>
+              <LocationsPage />
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/locations/flows"
+          element={
+            <RoleRoute allow={['pm']}>
+              <LocationFlowsPage />
+            </RoleRoute>
+          }
+        />
 
         {/* EPIC 3 — "Foydalanuvchilar" va "Hodimlar" bitta sahifaga
             birlashtirildi (hodim = foydalanuvchi). Eski `/users`
@@ -231,6 +258,12 @@ export function AppRouter() {
             </RoleRoute>
           }
         />
+
+        {/* EPIC 3 — self-service "Profil" page. Available to EVERY
+            authenticated role (no RoleRoute) — Telegram self-link and
+            password change live here. Reached from the clickable
+            bottom-left user block in the sidebar. */}
+        <Route path="/profile" element={<ProfilePage />} />
 
         {/* Faza-2 F2.3 — PM-only import-warnings admin panel. */}
         <Route

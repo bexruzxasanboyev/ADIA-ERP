@@ -24,7 +24,7 @@ import {
   PageHeader,
 } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
-import { formatDateTime, formatQty } from '@/lib/format';
+import { formatDateTime, formatQty, todayIso } from '@/lib/format';
 import { TERMINAL_REPLENISHMENT_STATUSES } from '@/lib/types';
 import {
   REPLENISHMENT_STATUS_LABELS,
@@ -52,7 +52,7 @@ import { cn } from '@/lib/utils';
  * widgets surface open replenishment requests originating from stores
  * and an aggregate "top sold today" table sourced from `/api/sales`.
  */
-const TODAY_ISO = () => new Date().toISOString().slice(0, 10);
+const TODAY_ISO = () => todayIso();
 
 export function StoresPage() {
   const overview = useApiQuery<ChainLayerOverview>(
@@ -360,7 +360,7 @@ function OpenStoreReplenishmentPanel({
         <EmptyState message="Hozircha ochiq so‘rovlar yo‘q." />
       )}
       {!isLoading && !error && rows.length > 0 && (
-        <div className="overflow-x-auto">
+        <div className="scrollbar-thin overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -438,7 +438,7 @@ function TopSalesPanel({
         <EmptyState message="Bugun savdo yo‘q." />
       )}
       {!isLoading && !error && top.length > 0 && (
-        <div className="overflow-x-auto">
+        <div className="scrollbar-thin overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -508,7 +508,7 @@ function StoreStockPanel({
         <EmptyState message="Qoldiq topilmadi." />
       )}
       {!isLoading && !error && rows.length > 0 && (
-        <div className="overflow-x-auto">
+        <div className="scrollbar-thin overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>

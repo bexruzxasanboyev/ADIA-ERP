@@ -334,7 +334,7 @@ curl "https://joinposter.com/api/clients.getClients\
 
 | Metod | Tavsif |
 |---|---|
-| `finance.getCashshifts` | Smenalar (kassa ochish/yopish) |
+| `finance.getCashShifts` | Smenalar (kassa ochish/yopish). DIQQAT: metod nomi katta-kichik harfga sezgir — `finance.getCashShifts` (katta S) ishlaydi; `finance.getCashshifts` (kichik s) `adia` token uchun HTTP 405 `{code:30}` qaytaradi. |
 | `finance.getReport` | Moliyaviy hisobot |
 | `finance.getTransactions` | Moliyaviy operatsiyalar |
 | `finance.getAccounts` | Hisob raqamlar |

@@ -130,6 +130,13 @@ export interface Location {
   lead_time_days: number | null;
   review_days: number | null;
   safety_factor: number | null;
+  /**
+   * Soft-archive flag (backend default `true`). Archived locations
+   * (`is_active === false`) are hidden from the list by default; PM may
+   * reveal + unarchive them. Optional so existing fixtures/payloads that
+   * predate the field are still treated as active.
+   */
+  is_active?: boolean;
 }
 
 /**
@@ -173,6 +180,22 @@ export interface Product {
   poster_ingredient_id: number | null;
   poster_product_id: number | null;
   is_active: boolean;
+  /**
+   * Real Poster POS category (Russian names, e.g. "Пирожные", "Торты").
+   * `null` when the product has no Poster category. This is the
+   * authoritative grouping dimension — distinct from the client-side
+   * `deriveCategory` heuristic in `lib/productCategory.ts`.
+   */
+  poster_category: { id: number; name: string } | null;
+  /**
+   * Whether this product has a recipe (BOM) defined in Poster. Recipes are
+   * Poster-sourced and read-only in ADIA (owner decision), so this is purely a
+   * display signal: a PRODUCED product with `has_recipe === false` is missing
+   * its Poster recipe and gets a "Retseptsiz" warn badge. Older API responses
+   * omit it (`undefined`) — treat only the EXPLICIT `false` as "no recipe" so
+   * legacy payloads don't all light up.
+   */
+  has_recipe?: boolean;
 }
 
 /**
@@ -193,6 +216,52 @@ export interface RecipeLine {
    * migration lands; defaults to `other` for display/edit.
    */
   stage?: RecipeStage | null;
+}
+
+/**
+ * EPIC — nested recipe tree node, like Poster's "Состав" view.
+ *
+ * The backend resolves a finished product's BOM recursively: every `semi`
+ * component carries its own `children` (the sub-recipe), so the UI can render
+ * an expandable tree. `raw` and `finished` leaves have an empty `children`.
+ *
+ * Cost fields (so'm) may be `null` whenever Poster has no costing for that
+ * component — the UI renders an em-dash and NEVER fakes a 0:
+ *   - `unit_cost`  — cost of one `unit` of this component.
+ *   - `line_cost`  — `qty_per_unit × unit_cost`; the contribution this line
+ *                    makes to its parent's cost.
+ *   - `total_cost` — this node's own full per-unit cost (sum of its children).
+ *
+ * `brutto` / `netto` are not stored yet (always `null` for now) — the UI
+ * shows "—" until the backend persists gross/net weights.
+ */
+export interface RecipeNode {
+  component_product_id: number;
+  name: string;
+  type: ProductType;
+  unit: Unit;
+  qty_per_unit: number;
+  brutto: number | null;
+  netto: number | null;
+  unit_cost: number | null;
+  line_cost: number | null;
+  total_cost: number | null;
+  children: RecipeNode[];
+}
+
+/**
+ * `GET /api/products/:id/recipe` envelope (RBAC pm / production_manager).
+ *
+ * Backward-compatible: the flat `recipe` array (one row per direct BOM line)
+ * is still emitted alongside the new nested `tree`. `tree` is the primary,
+ * read-only display; `total_cost` is the product's full resolved recipe cost
+ * (so'm) or `null` when unknown.
+ */
+export interface RecipeResponse {
+  product_id: number;
+  recipe: RecipeLine[];
+  tree: RecipeNode[];
+  total_cost: number | null;
 }
 
 /** Stock row for a (location, product) pair — phase-1-mvp.md §4.4. */
@@ -1104,6 +1173,8 @@ export interface DashboardSalesPoint {
   date: string;
   /** Aggregate sold quantity for the day (sum of `stock_movements.qty` where reason='sale'). */
   qty: number;
+  /** Aggregate sale revenue for the day in so'm (sum of `qty * price`). */
+  amount: number;
 }
 
 /**

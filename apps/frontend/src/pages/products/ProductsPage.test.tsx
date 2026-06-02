@@ -1,10 +1,16 @@
 /**
- * EPIC 1 — ProductsPage feature tests.
+ * ProductsPage feature tests.
  *
- *   1.1 custom filter popover (type + unit) drives the visible set;
- *   1.2 translit search (Latin query → Cyrillic product name);
- *   1.3 smart category — Г/П prefix surfaces as a "Tayyor mahsulot" item;
- *   1.4b default filter = finished (raw products hidden until cleared).
+ * The owner reversed the earlier "type tabs + category chips" layout — TYPE,
+ * CATEGORY and UNIT all now live inside the single Filter popover (rendered as
+ * tabs). The always-visible search box stays.
+ *
+ *   - Filter popover TYPE dimension narrows the visible set;
+ *   - Filter popover CATEGORY dimension narrows the visible set;
+ *   - Filter popover UNIT dimension narrows the set;
+ *   - translit search (Latin query → Cyrillic product name);
+ *   - smart category — Г/П prefix is treated as "Tayyor mahsulot";
+ *   - default = no filter (every type visible).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
@@ -23,6 +29,7 @@ function product(overrides: Partial<Product>): Product {
     poster_ingredient_id: null,
     poster_product_id: null,
     is_active: true,
+    poster_category: null,
     ...overrides,
   };
 }
@@ -51,55 +58,55 @@ function mockProducts(items: Product[]) {
   });
 }
 
-describe('ProductsPage — EPIC 1', () => {
+describe('ProductsPage — filter popover UX', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it('defaults to finished products and hides raw (EPIC 1.4b)', async () => {
+  it('defaults to no filter — shows every type', async () => {
     mockProducts([FLOUR, CHOCO_CAKE]);
     renderWithProviders(<ProductsPage />);
 
     expect(await screen.findByText('Шоколадный торт')).toBeInTheDocument();
-    expect(screen.queryByText('Un (oliy nav)')).not.toBeInTheDocument();
+    expect(screen.getByText('Un (oliy nav)')).toBeInTheDocument();
   });
 
-  it('treats a Г/П-prefixed product as finished (EPIC 1.3)', async () => {
-    mockProducts([READY_ECLAIR]);
-    renderWithProviders(<ProductsPage />);
-
-    // Despite stored type=semi, the Г/П prefix surfaces it under the default
-    // finished filter.
-    expect(await screen.findByText('Г/П Эклер')).toBeInTheDocument();
-  });
-
-  it('finds a Cyrillic product name via a Latin query (EPIC 1.2)', async () => {
+  it('TYPE/CATEGORY options live inside the Filter popover', async () => {
     const user = userEvent.setup();
-    mockProducts([CHOCO_CAKE, product({ id: 9, name: 'Наполеон' })]);
+    const torte = product({
+      id: 20,
+      name: 'Медовик',
+      type: 'finished',
+      poster_category: { id: 1, name: 'Торты' },
+    });
+    mockProducts([FLOUR, torte]);
     renderWithProviders(<ProductsPage />);
 
-    await screen.findByText('Шоколадный торт');
-    await user.type(
-      screen.getByLabelText('Mahsulot qidirish'),
-      'shokolad',
-    );
+    await screen.findByText('Медовик');
+    // No page-level type tab row, no category chip row exist anymore.
+    expect(
+      screen.queryByRole('tablist', { name: 'Mahsulot turi' }),
+    ).not.toBeInTheDocument();
 
-    await waitFor(() => {
-      expect(screen.getByText('Шоколадный торт')).toBeInTheDocument();
-      expect(screen.queryByText('Наполеон')).not.toBeInTheDocument();
-    });
+    await user.click(screen.getByRole('button', { name: 'Filtrlarni ochish' }));
+    // Tabs for all three dimensions are present inside the popover.
+    expect(screen.getByRole('tab', { name: /Tur/ })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Kategoriya/ })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Birlik/ })).toBeInTheDocument();
+    // The TYPE group (default tab) lists the three product types as options.
+    expect(
+      screen.getByRole('checkbox', { name: 'Tayyor mahsulot' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('checkbox', { name: 'Xom-ashyo' }),
+    ).toBeInTheDocument();
   });
 
-  it('filter popover can reveal raw products (EPIC 1.1)', async () => {
+  it('filter popover TYPE dimension narrows to raw products', async () => {
     const user = userEvent.setup();
     mockProducts([FLOUR, CHOCO_CAKE]);
     renderWithProviders(<ProductsPage />);
 
     await screen.findByText('Шоколадный торт');
-
     await user.click(screen.getByRole('button', { name: 'Filtrlarni ochish' }));
-    // Clear the default finished selection, pick raw, apply.
-    await user.click(
-      screen.getByRole('button', { name: 'Hammasini tozalash' }),
-    );
     await user.click(screen.getByRole('checkbox', { name: 'Xom-ashyo' }));
     await user.click(screen.getByRole('button', { name: 'Qo‘llash' }));
 
@@ -109,7 +116,97 @@ describe('ProductsPage — EPIC 1', () => {
     });
   });
 
-  it('shows a result count (EPIC 1.4)', async () => {
+  it('filter popover CATEGORY dimension narrows the set', async () => {
+    const user = userEvent.setup();
+    const torte = product({
+      id: 20,
+      name: 'Медовик',
+      type: 'finished',
+      poster_category: { id: 1, name: 'Торты' },
+    });
+    const drink = product({
+      id: 21,
+      name: 'Cola',
+      type: 'finished',
+      poster_category: { id: 2, name: 'Напитки' },
+    });
+    mockProducts([torte, drink]);
+    renderWithProviders(<ProductsPage />);
+
+    await screen.findByText('Медовик');
+    await user.click(screen.getByRole('button', { name: 'Filtrlarni ochish' }));
+    await user.click(screen.getByRole('tab', { name: /Kategoriya/ }));
+    await user.click(screen.getByRole('checkbox', { name: 'Торты' }));
+    await user.click(screen.getByRole('button', { name: 'Qo‘llash' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Медовик')).toBeInTheDocument();
+      expect(screen.queryByText('Cola')).not.toBeInTheDocument();
+    });
+  });
+
+  it('treats a Г/П-prefixed product as finished', async () => {
+    const user = userEvent.setup();
+    mockProducts([READY_ECLAIR]);
+    renderWithProviders(<ProductsPage />);
+
+    // Despite stored type=semi, the Г/П prefix surfaces it under a
+    // "Tayyor mahsulot" type filter.
+    expect(await screen.findByText('Г/П Эклер')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Filtrlarni ochish' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Tayyor mahsulot' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Qo‘llash' }));
+
+    await waitFor(() =>
+      expect(screen.getByText('Г/П Эклер')).toBeInTheDocument(),
+    );
+  });
+
+  it('finds a Cyrillic product name via a Latin query', async () => {
+    const user = userEvent.setup();
+    mockProducts([CHOCO_CAKE, product({ id: 9, name: 'Наполеон' })]);
+    renderWithProviders(<ProductsPage />);
+
+    await screen.findByText('Шоколадный торт');
+    await user.type(screen.getByLabelText('Mahsulot qidirish'), 'shokolad');
+
+    await waitFor(() => {
+      expect(screen.getByText('Шоколадный торт')).toBeInTheDocument();
+      expect(screen.queryByText('Наполеон')).not.toBeInTheDocument();
+    });
+  });
+
+  it('filter popover UNIT dimension narrows the set', async () => {
+    const user = userEvent.setup();
+    mockProducts([FLOUR, CHOCO_CAKE]); // FLOUR=kg, CHOCO_CAKE=pcs
+    renderWithProviders(<ProductsPage />);
+
+    await screen.findByText('Шоколадный торт');
+    await user.click(screen.getByRole('button', { name: 'Filtrlarni ochish' }));
+    await user.click(screen.getByRole('tab', { name: /Birlik/ }));
+    await user.click(screen.getByRole('checkbox', { name: 'kg' }));
+    await user.click(screen.getByRole('button', { name: 'Qo‘llash' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Un (oliy nav)')).toBeInTheDocument();
+      expect(screen.queryByText('Шоколадный торт')).not.toBeInTheDocument();
+    });
+  });
+
+  it('keeps the search box always visible alongside the Filter trigger', async () => {
+    mockProducts([CHOCO_CAKE]);
+    renderWithProviders(<ProductsPage />);
+
+    expect(await screen.findByText('Шоколадный торт')).toBeInTheDocument();
+    expect(screen.getByLabelText('Mahsulot qidirish')).toBeVisible();
+    expect(
+      screen.getByRole('button', { name: 'Filtrlarni ochish' }),
+    ).toBeVisible();
+  });
+
+  it('shows a result count', async () => {
     mockProducts([CHOCO_CAKE, READY_ECLAIR]);
     renderWithProviders(<ProductsPage />);
     expect(await screen.findByText('2 ta mahsulot')).toBeInTheDocument();

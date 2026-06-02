@@ -52,7 +52,7 @@ import type {
  *   - "Do'konlardan kelgan so'rovlar" — replenishment requests in
  *     `SHIP_TO_REQUESTER`; one-click "Jo'natmani bajarish" advances the
  *     state machine.
- *   - "Sex skladidan kelmoqda" — replenishment requests in
+ *   - "Ishlab chiqarish omboridan kelmoqda" — replenishment requests in
  *     `DONE_TO_WAREHOUSE` (sex storage finished, central will receive).
  *   - Stock table (filtered to central warehouse locations).
  */
@@ -128,7 +128,7 @@ export function CentralWarehousePage() {
       value: incoming.data?.length ?? 0,
       icon: Inbox,
       tone: (incoming.data?.length ?? 0) > 0 ? 'accent' : 'neutral',
-      hint: 'Sex skladidan topshiriladi',
+      hint: 'Ishlab chiqarish omboridan topshiriladi',
       href: '/replenishment?status=DONE_TO_WAREHOUSE',
     },
   ];
@@ -215,7 +215,7 @@ function ShipToStoresPanel({
       <header className="flex items-center justify-between gap-3 border-b border-border/60 p-5">
         <div className="space-y-0.5">
           <h2 className="flex items-center gap-2 text-base font-semibold">
-            <Send className="size-4 text-emerald-300" aria-hidden="true" />
+            <Send className="size-4 text-emerald-600 dark:text-emerald-300" aria-hidden="true" />
             Do‘konlarga jo‘natish kerak
           </h2>
           <p className="text-xs text-muted-foreground">
@@ -236,7 +236,7 @@ function ShipToStoresPanel({
         <EmptyState message="Hozircha jo‘natma topshiriqlari yo‘q." />
       )}
       {!isLoading && !error && rows.length > 0 && (
-        <div className="overflow-x-auto">
+        <div className="scrollbar-thin overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -313,10 +313,10 @@ function IncomingFromSupplyPanel({
         <div className="space-y-0.5">
           <h2 className="flex items-center gap-2 text-base font-semibold">
             <Inbox className="size-4 text-primary" aria-hidden="true" />
-            Sex skladidan kelmoqda
+            Ishlab chiqarish omboridan kelmoqda
           </h2>
           <p className="text-xs text-muted-foreground">
-            Sex skladi tugatgan va markaziy sklad qabul qilishi kerak
+            Ishlab chiqarish ombori tugatgan va markaziy sklad qabul qilishi kerak
             bo‘lgan so‘rovlar.
           </p>
         </div>
@@ -330,7 +330,7 @@ function IncomingFromSupplyPanel({
         <EmptyState message="Kelayotgan jo‘natmalar yo‘q." />
       )}
       {!isLoading && !error && rows.length > 0 && (
-        <div className="overflow-x-auto">
+        <div className="scrollbar-thin overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -406,7 +406,7 @@ function CentralStockPanel({
         <EmptyState message="Qoldiq topilmadi." />
       )}
       {!isLoading && !error && rows.length > 0 && (
-        <div className="overflow-x-auto">
+        <div className="scrollbar-thin overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>

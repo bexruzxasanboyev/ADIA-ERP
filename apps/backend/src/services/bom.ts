@@ -110,3 +110,156 @@ function normalize(line: BomLine): BomLine {
     qty_per_unit: Number(line.qty_per_unit),
   };
 }
+
+// -----------------------------------------------------------------------------
+// Nested recipe tree + cost (recipe-modal read — 2026-05-30).
+//
+// Owner decision: the recipe modal shows the BOM NESTED like Poster (prepacks
+// expandable) WITH Себестоимость per line + a product total. Cost is computed
+// BOTTOM-UP from `products.cost_per_unit` (raw leaf unit cost, so'm/unit):
+//
+//   * a RAW/leaf node's   unit_cost  = products.cost_per_unit (NULL if unknown);
+//   * a parent node's     unit_cost  = Σ child.line_cost  (one parent unit);
+//   * a line's            line_cost  = qty_per_unit × child.unit_cost;
+//   * the product total   total_cost = Σ top-level line_cost.
+//
+// A NULL anywhere in a sub-tree makes that node's cost NULL (we never fake a 0
+// — a missing raw cost must be visible, not silently swallowed).
+// -----------------------------------------------------------------------------
+
+/** A node in the nested recipe tree returned by `GET /:id/recipe`. */
+export type RecipeNode = {
+  readonly component_product_id: number;
+  readonly name: string;
+  readonly type: 'raw' | 'semi' | 'finished';
+  readonly unit: string;
+  /** qty of this component per ONE unit of the parent product. */
+  readonly qty_per_unit: number;
+  /** Поster brutto/netto — carried for display when available (else null). */
+  readonly brutto: number | null;
+  readonly netto: number | null;
+  /** Unit cost of ONE unit of THIS component (so'm/unit); null when unknown. */
+  readonly unit_cost: number | null;
+  /** qty_per_unit × unit_cost (so'm); null when unit_cost is null. */
+  readonly line_cost: number | null;
+  /** Себестоимость of one unit of this component = Σ child line_cost (or leaf cost). */
+  readonly total_cost: number | null;
+  readonly children: RecipeNode[];
+};
+
+export type RecipeTree = {
+  readonly product_id: number;
+  readonly nodes: RecipeNode[];
+  /** Σ top-level line_cost — the product's full recipe cost (so'm); null if any leg unknown. */
+  readonly total_cost: number | null;
+};
+
+const MAX_RECIPE_DEPTH = 12; // defensive — recipes are cycle-protected at write.
+
+function round2OrNull(n: number | null): number | null {
+  return n === null ? null : Math.round(n * 100) / 100;
+}
+
+/**
+ * Build the nested recipe tree for `productId` with bottom-up cost. Each call
+ * fetches the direct lines, then recurses per child. `visited` guards against a
+ * pathological cycle (should never happen — write-time cycle check + depth cap).
+ */
+export async function readRecipeTree(
+  runner: Runner,
+  productId: number,
+): Promise<RecipeTree> {
+  const nodes = await buildChildren(runner, productId, new Set([productId]), 0);
+  const total = sumLineCosts(nodes);
+  return { product_id: productId, nodes, total_cost: round2OrNull(total) };
+}
+
+async function buildChildren(
+  runner: Runner,
+  productId: number,
+  visited: Set<number>,
+  depth: number,
+): Promise<RecipeNode[]> {
+  if (depth >= MAX_RECIPE_DEPTH) return [];
+  const { rows } = await runner.query<{
+    component_product_id: number;
+    qty_per_unit: string | number;
+    brutto: string | number | null;
+    netto: string | number | null;
+    name: string;
+    type: 'raw' | 'semi' | 'finished';
+    unit: string;
+    cost_per_unit: string | number | null;
+  }>(
+    `SELECT r.component_product_id, r.qty_per_unit, r.brutto, r.netto,
+            p.name, p.type, p.unit, p.cost_per_unit
+       FROM recipes r
+       JOIN products p ON p.id = r.component_product_id
+      WHERE r.product_id = $1
+      ORDER BY r.id`,
+    [productId],
+  );
+
+  const out: RecipeNode[] = [];
+  for (const r of rows) {
+    const componentId = Number(r.component_product_id);
+    const qtyPerUnit = Number(r.qty_per_unit);
+    const leafCost =
+      r.cost_per_unit === null || r.cost_per_unit === undefined
+        ? null
+        : Number(r.cost_per_unit);
+
+    // Recurse — but never revisit a product already on THIS path (cycle guard).
+    const children =
+      visited.has(componentId)
+        ? []
+        : await buildChildren(
+            runner,
+            componentId,
+            new Set([...visited, componentId]),
+            depth + 1,
+          );
+
+    // unit_cost of this component: a parent (has children) is the sum of its
+    // children's line_cost; a leaf uses its own cost_per_unit.
+    const unitCost =
+      children.length > 0 ? sumLineCosts(children) : leafCost;
+    const lineCost =
+      unitCost === null || !Number.isFinite(qtyPerUnit) ? null : qtyPerUnit * unitCost;
+
+    out.push({
+      component_product_id: componentId,
+      name: r.name,
+      type: r.type,
+      unit: r.unit,
+      qty_per_unit: qtyPerUnit,
+      // Poster Brutto/Netto (recipes.brutto/netto, migration 0040) — the raw
+      // per-batch composition figures in the line's structure_unit. NULL for
+      // manually-entered or modification-linked lines.
+      brutto:
+        r.brutto === null || r.brutto === undefined ? null : Number(r.brutto),
+      netto:
+        r.netto === null || r.netto === undefined ? null : Number(r.netto),
+      unit_cost: round2OrNull(unitCost),
+      line_cost: round2OrNull(lineCost),
+      total_cost: round2OrNull(unitCost),
+      children,
+    });
+  }
+  return out;
+}
+
+/**
+ * Σ of every node's line_cost. Returns null when ANY node's line_cost is null
+ * (an unknown leg makes the whole sum unknown — never fake a 0).
+ */
+function sumLineCosts(nodes: readonly RecipeNode[]): number | null {
+  let sum = 0;
+  let known = false;
+  for (const n of nodes) {
+    if (n.line_cost === null) return null;
+    sum += n.line_cost;
+    known = true;
+  }
+  return known ? sum : null;
+}

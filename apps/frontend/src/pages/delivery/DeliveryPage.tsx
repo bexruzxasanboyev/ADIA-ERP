@@ -109,9 +109,9 @@ export function DeliveryPage() {
       <PageHeader
         title="Yetkazib berish"
         description="Kelgan so‘rovlar va yetkazib beruvchi hodimlar bilan koordinatsiya."
-        action={
+        actions={
           isReadOnly ? (
-            <Badge variant="secondary" aria-label="Faqat o‘qish rejimi">
+            <Badge variant="secondary" className="h-10 items-center px-3" aria-label="Faqat o‘qish rejimi">
               Faqat o‘qish
             </Badge>
           ) : undefined
@@ -146,7 +146,7 @@ export function DeliveryPage() {
         )}
         {!isLoading && !error && tasks.length > 0 && (
           <div
-            className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3"
+            className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5"
             data-testid="delivery-task-list"
           >
             {tasks.map((task) => {
@@ -217,7 +217,7 @@ export function DeliveryPage() {
                       'rounded-md border px-2.5 py-1.5 text-xs ' +
                       (task.assigned_user_id
                         ? 'border-primary/30 bg-primary/5 text-foreground'
-                        : 'border-amber-500/30 bg-amber-500/5 text-amber-200')
+                        : 'border-amber-500/30 bg-amber-500/5 text-amber-700 dark:text-amber-200')
                     }
                   >
                     {task.assigned_user_id ? (

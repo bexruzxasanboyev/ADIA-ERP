@@ -47,25 +47,25 @@ beforeEach(async () => {
 
 /** Seed one user. `telegramId` null -> no Telegram id on record. */
 async function makeUser(opts: {
-  email: string;
+  username: string;
   role: string;
   telegramId: number | null;
 }): Promise<number> {
-  // F4.12 — username column is NOT NULL and must match [a-z0-9._-]{3,32}.
-  // Some fixtures use very short emails (e.g. "a@b.test"); pad with the
-  // random suffix so we always meet the 3-char floor.
-  const raw = (opts.email.split('@')[0] ?? '')
+  // `username` is the sole login handle: NOT NULL UNIQUE, must match
+  // [a-z0-9._-]{2,32}. Sanitise + pad with a random suffix so very short
+  // labels (e.g. "a") still clear the 2-char floor and stay unique.
+  const raw = opts.username
     .toLowerCase()
     .replace(/[^a-z0-9._-]/g, '')
     .slice(0, 24);
   const username =
-    raw.length >= 3
+    raw.length >= 2
       ? raw
       : `${raw}_u${Math.random().toString(36).slice(2, 8)}`.slice(0, 32);
   const { rows } = await ctx.db.query<{ id: number }>(
-    `INSERT INTO users (name, email, username, password_hash, role, telegram_id)
-     VALUES ($1, $2, $3, 'x', $4, $5) RETURNING id`,
-    [opts.email, opts.email, username, opts.role, opts.telegramId],
+    `INSERT INTO users (name, username, password_hash, role, telegram_id)
+     VALUES ($1, $2, 'x', $3, $4) RETURNING id`,
+    [opts.username, username, opts.role, opts.telegramId],
   );
   return Number(rows[0]!.id);
 }
@@ -102,7 +102,7 @@ function makeStubBot(impl?: (chatId: number | string, text: string) => Promise<u
 describe('telegram outbox worker', () => {
   it('delivers a notification when the recipient has telegram_id', async () => {
     const userId = await makeUser({
-      email: 'a@test.local',
+      username: 'a-user',
       role: 'pm',
       telegramId: 12345,
     });
@@ -140,7 +140,7 @@ describe('telegram outbox worker', () => {
 
   it('marks no-telegram_id users with error_detail and does not call sendMessage', async () => {
     const userId = await makeUser({
-      email: 'b@test.local',
+      username: 'b-user',
       role: 'pm',
       telegramId: null,
     });
@@ -176,7 +176,7 @@ describe('telegram outbox worker', () => {
     // loop forever. After the fix, the FIRST cycle caps the counter and
     // the SECOND cycle picks ZERO rows.
     const userId = await makeUser({
-      email: 'cap@test.local',
+      username: 'cap-user',
       role: 'pm',
       telegramId: null,
     });
@@ -219,7 +219,7 @@ describe('telegram outbox worker', () => {
 
   it('increments telegram_send_attempts and stores error_detail on Grammy failure', async () => {
     const userId = await makeUser({
-      email: 'c@test.local',
+      username: 'c-user',
       role: 'pm',
       telegramId: 9999,
     });
@@ -247,7 +247,7 @@ describe('telegram outbox worker', () => {
 
   it('skips rows that have exhausted retries', async () => {
     const userId = await makeUser({
-      email: 'd@test.local',
+      username: 'd-user',
       role: 'pm',
       telegramId: 4242,
     });
@@ -265,9 +265,9 @@ describe('telegram outbox worker', () => {
   });
 
   it('processes a mixed batch — delivered + no-id + failed in one cycle', async () => {
-    const okUser = await makeUser({ email: 'ok@t', role: 'pm', telegramId: 1 });
-    const noIdUser = await makeUser({ email: 'noid@t', role: 'pm', telegramId: null });
-    const failUser = await makeUser({ email: 'fail@t', role: 'pm', telegramId: 2 });
+    const okUser = await makeUser({ username: 'ok-user', role: 'pm', telegramId: 1 });
+    const noIdUser = await makeUser({ username: 'noid-user', role: 'pm', telegramId: null });
+    const failUser = await makeUser({ username: 'fail-user', role: 'pm', telegramId: 2 });
     const okN = await makeNotification({ userId: okUser, title: 'A' });
     const noIdN = await makeNotification({ userId: noIdUser, title: 'B' });
     const failN = await makeNotification({ userId: failUser, title: 'C' });
@@ -302,7 +302,7 @@ describe('telegram outbox worker', () => {
   });
 
   it('overlap guard — a second runOneCycle skips while the first is in flight', async () => {
-    const userId = await makeUser({ email: 'e@t', role: 'pm', telegramId: 7 });
+    const userId = await makeUser({ username: 'e-user', role: 'pm', telegramId: 7 });
     await makeNotification({ userId });
 
     // sendMessage returns a promise we can hold open; the second `runOneCycle`

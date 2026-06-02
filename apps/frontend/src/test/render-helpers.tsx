@@ -9,8 +9,29 @@ import type { ReactElement, ReactNode } from 'react';
 import { render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '@/components/ui/toast';
+import {
+  HeaderSlotProvider,
+  useHeaderActionsContent,
+  useHeaderCenterContent,
+} from '@/components/layout/HeaderSlot';
 import { AuthContext, type AuthContextValue } from '@/hooks/auth-context';
 import type { LocationType, MeLocation, Role, User } from '@/lib/types';
+
+/**
+ * Mirrors how `AppLayout` renders the two header slots, so page tests
+ * that query for header-docked controls (Filter, view toggle, "Yangi …"
+ * buttons pushed via `useHeaderActions`) still find them in the DOM.
+ */
+function HeaderSlotOutlet() {
+  const center = useHeaderCenterContent();
+  const actions = useHeaderActionsContent();
+  return (
+    <div data-testid="test-header-slots">
+      {center}
+      {actions}
+    </div>
+  );
+}
 
 /** A test `User`; override `role`/`location_id` per scenario. */
 export function fakeUser(overrides: Partial<User> = {}): User {
@@ -38,6 +59,7 @@ function fakeAuth(
     activeLocationId,
     login: () => {},
     logout: async () => {},
+    updateUser: () => {},
     setActiveLocation: async () => {},
   };
 }
@@ -97,7 +119,12 @@ export function renderWithProviders(
     return (
       <AuthContext.Provider value={fakeAuth(user, meLocations, locationId)}>
         <ToastProvider>
-          <MemoryRouter>{children}</MemoryRouter>
+          <HeaderSlotProvider>
+            <MemoryRouter>
+              <HeaderSlotOutlet />
+              {children}
+            </MemoryRouter>
+          </HeaderSlotProvider>
         </ToastProvider>
       </AuthContext.Provider>
     );

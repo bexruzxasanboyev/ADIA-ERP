@@ -153,10 +153,10 @@ export function StockPage({
       <PageHeader
         title={title}
         description={description ?? 'Bo‘g‘inlar bo‘yicha ostatka va harakatlar.'}
-        action={
-          <div className="flex flex-wrap items-center gap-2">
+        actions={
+          <>
             {isReadOnly && (
-              <Badge variant="secondary" aria-label="Faqat o‘qish rejimi">
+              <Badge variant="secondary" className="h-10 items-center px-3" aria-label="Faqat o‘qish rejimi">
                 Faqat o‘qish
               </Badge>
             )}
@@ -175,7 +175,7 @@ export function StockPage({
                 Harakat qo‘shish
               </Button>
             )}
-          </div>
+          </>
         }
       />
 
