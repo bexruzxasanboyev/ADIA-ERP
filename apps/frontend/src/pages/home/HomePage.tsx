@@ -34,10 +34,7 @@ function TileCard({ tile, size }: { tile: HomeTile; size: 'lg' | 'md' }) {
   return (
     <Link
       to={tile.path}
-      className={cn(
-        'group block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        lg ? 'w-40 sm:w-44 lg:w-48' : 'w-36 sm:w-40 lg:w-44',
-      )}
+      className="group block w-full rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <Card
         className={cn(
@@ -67,9 +64,7 @@ export function HomePage() {
   const { user } = useAuth();
 
   const visible = (tile: HomeTile) => !user || tile.roles.includes(user.role);
-  // Top row = the 5 PRIMARY modules (bigger); bottom row = the remaining 6.
-  const primaryTiles = HOME_TILES.slice(0, 5).filter(visible);
-  const secondaryTiles = HOME_TILES.slice(5).filter(visible);
+  const tiles = HOME_TILES.filter(visible);
 
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
@@ -97,25 +92,18 @@ export function HomePage() {
           )}
         </div>
 
-        <nav aria-label="Asosiy modullar" className="space-y-3 sm:space-y-4">
-          {/* Top row — the more important modules, rendered larger. Centered
-              flex-wrap so any visible-tile count (RBAC filters per role) stays
-              balanced instead of left-clinging in a fixed-column grid. */}
-          {primaryTiles.length > 0 && (
-            <div className="flex flex-wrap justify-center gap-3 sm:gap-4">
-              {primaryTiles.map((tile) => (
-                <TileCard key={tile.path} tile={tile} size="lg" />
-              ))}
-            </div>
-          )}
-          {/* Bottom row — the remaining modules. */}
-          {secondaryTiles.length > 0 && (
-            <div className="flex flex-wrap justify-center gap-3 sm:gap-4">
-              {secondaryTiles.map((tile) => (
-                <TileCard key={tile.path} tile={tile} size="md" />
-              ))}
-            </div>
-          )}
+        {/* A single centered grid for ALL visible modules. A fixed responsive
+            column count (not a centered flex-wrap) keeps the tiles aligned in
+            tidy columns; an incomplete last row left-aligns under the grid
+            instead of leaving a lone tile floating in the centre. The grid is
+            width-capped + mx-auto so the whole block stays centred on the
+            page regardless of how many tiles a role sees. */}
+        <nav aria-label="Asosiy modullar">
+          <div className="mx-auto grid max-w-3xl grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4">
+            {tiles.map((tile) => (
+              <TileCard key={tile.path} tile={tile} size="md" />
+            ))}
+          </div>
         </nav>
       </main>
     </div>
