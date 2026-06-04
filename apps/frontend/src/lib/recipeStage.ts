@@ -42,12 +42,20 @@ function matches(haystack: string, keywords: readonly string[]): boolean {
   return keywords.some((k) => haystack.includes(k));
 }
 
+/**
+ * Whole-word terms that are too short to be safe substring matches (they would
+ * over-match inside unrelated words). "un" = Uzbek flour — a core dough
+ * ingredient — must NOT match inside "тунец"/"кунжут", so it is checked with a
+ * word boundary instead of `includes`.
+ */
+const DOUGH_WORD_RE = /\b(un|tuz|sol)\b/;
+
 /** Infer a recipe stage from a component name (case/diacritic-folded). */
 export function classifyRecipeStage(name: string): RecipeStage {
   const h = name.toLowerCase();
   if (matches(h, DECORATION_KEYWORDS)) return 'decoration';
   if (matches(h, CREAM_KEYWORDS)) return 'cream';
-  if (matches(h, DOUGH_KEYWORDS)) return 'dough';
+  if (matches(h, DOUGH_KEYWORDS) || DOUGH_WORD_RE.test(h)) return 'dough';
   return 'other';
 }
 

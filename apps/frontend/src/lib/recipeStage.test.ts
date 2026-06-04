@@ -27,6 +27,13 @@ describe('classifyRecipeStage', () => {
     expect(classifyRecipeStage('Tuxum')).toBe('dough');
   });
 
+  it('matches "un" (Uzbek flour) as a whole word, not inside other words', () => {
+    expect(classifyRecipeStage('Un (oliy nav)')).toBe('dough');
+    expect(classifyRecipeStage('Tuz')).toBe('dough');
+    // Must NOT match "un" inside an unrelated word.
+    expect(classifyRecipeStage('Тунец консервированный')).toBe('other');
+  });
+
   it('routes cream ingredients', () => {
     expect(classifyRecipeStage('Крем сливочный')).toBe('cream');
     expect(classifyRecipeStage('Sariyog')).toBe('cream');
