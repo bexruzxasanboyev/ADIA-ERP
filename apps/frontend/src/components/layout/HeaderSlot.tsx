@@ -1,6 +1,5 @@
 import {
   createContext,
-  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -26,40 +25,60 @@ import {
  * Each slot is mount-scoped: a page registers content on mount and it is
  * cleared automatically on unmount, so stale controls never leak between
  * routes.
+ *
+ * The state is split across TWO contexts on purpose:
+ *   - a VALUE context (`center` / `actions`) that the AppLayout header reads;
+ *   - an API context (`setCenter` / `setActions`) that pages write through.
+ * The setters from `useState` are referentially stable, so a page that only
+ * WRITES (via `useHeaderSlot` / `useHeaderActions`) does not re-subscribe to
+ * the value and therefore does not re-render when the slot content changes.
+ * Without this split, every `setActions(<jsx/>)` re-rendered the writer,
+ * which produced a fresh element, which re-ran the effect — an infinite
+ * "Maximum update depth exceeded" loop.
  */
-interface HeaderSlotState {
+interface HeaderSlotValue {
   center: ReactNode;
   actions: ReactNode;
+}
+
+interface HeaderSlotApi {
   setCenter: (next: ReactNode) => void;
   setActions: (next: ReactNode) => void;
 }
 
-const HeaderSlotContext = createContext<HeaderSlotState | null>(null);
+const HeaderSlotValueContext = createContext<HeaderSlotValue | null>(null);
+const HeaderSlotApiContext = createContext<HeaderSlotApi | null>(null);
 
 export function HeaderSlotProvider({ children }: { children: ReactNode }) {
   const [center, setCenter] = useState<ReactNode>(null);
   const [actions, setActions] = useState<ReactNode>(null);
-  const value = useMemo<HeaderSlotState>(
-    () => ({ center, actions, setCenter, setActions }),
+  const value = useMemo<HeaderSlotValue>(
+    () => ({ center, actions }),
     [center, actions],
   );
+  // `setCenter` / `setActions` are stable across renders, so this object
+  // never changes identity — writers never re-render on a content change.
+  const api = useMemo<HeaderSlotApi>(
+    () => ({ setCenter, setActions }),
+    [],
+  );
   return (
-    <HeaderSlotContext.Provider value={value}>
-      {children}
-    </HeaderSlotContext.Provider>
+    <HeaderSlotApiContext.Provider value={api}>
+      <HeaderSlotValueContext.Provider value={value}>
+        {children}
+      </HeaderSlotValueContext.Provider>
+    </HeaderSlotApiContext.Provider>
   );
 }
 
 /** Read the current center-slot content — used by the AppLayout header. */
 export function useHeaderCenterContent(): ReactNode {
-  const ctx = useContext(HeaderSlotContext);
-  return ctx?.center ?? null;
+  return useContext(HeaderSlotValueContext)?.center ?? null;
 }
 
 /** Read the current actions-slot content — used by the AppLayout header. */
 export function useHeaderActionsContent(): ReactNode {
-  const ctx = useContext(HeaderSlotContext);
-  return ctx?.actions ?? null;
+  return useContext(HeaderSlotValueContext)?.actions ?? null;
 }
 
 /**
@@ -68,18 +87,11 @@ export function useHeaderActionsContent(): ReactNode {
  * the global app header until the page unmounts (then it's cleared).
  */
 export function useHeaderSlot(content: ReactNode): void {
-  const ctx = useContext(HeaderSlotContext);
-  const set = ctx?.setCenter;
-  const setStable = useCallback(
-    (next: ReactNode) => {
-      set?.(next);
-    },
-    [set],
-  );
+  const set = useContext(HeaderSlotApiContext)?.setCenter;
   useEffect(() => {
-    setStable(content);
-    return () => setStable(null);
-  }, [content, setStable]);
+    set?.(content);
+    return () => set?.(null);
+  }, [content, set]);
 }
 
 /**
@@ -88,16 +100,9 @@ export function useHeaderSlot(content: ReactNode): void {
  * header's actions slot until the page unmounts.
  */
 export function useHeaderActions(content: ReactNode): void {
-  const ctx = useContext(HeaderSlotContext);
-  const set = ctx?.setActions;
-  const setStable = useCallback(
-    (next: ReactNode) => {
-      set?.(next);
-    },
-    [set],
-  );
+  const set = useContext(HeaderSlotApiContext)?.setActions;
   useEffect(() => {
-    setStable(content);
-    return () => setStable(null);
-  }, [content, setStable]);
+    set?.(content);
+    return () => set?.(null);
+  }, [content, set]);
 }

@@ -77,7 +77,12 @@ export function ReceiptsPage() {
    */
   const fetchPage = useCallback(
     async (reset: boolean) => {
-      if (isFetchingRef.current) return;
+      // A reset (mount / range change) always supersedes an in-flight load —
+      // it aborts the previous request below, so it must not be blocked by the
+      // guard. Only a "load more" is debounced against a fetch already running.
+      // (Without this, React 18 StrictMode's double-invoke aborted the first
+      // fetch while the guard turned the second into a no-op → stuck loading.)
+      if (!reset && isFetchingRef.current) return;
       isFetchingRef.current = true;
 
       // Cancel any previous in-flight request before starting a new one.
