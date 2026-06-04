@@ -28,10 +28,8 @@ import { ProductionOrdersPage } from '@/pages/production-orders/ProductionOrders
 import { PurchaseOrdersPage } from '@/pages/purchase-orders/PurchaseOrdersPage';
 import { ProductionPage } from '@/pages/chain/ProductionPage';
 import { StockPage } from '@/pages/stock/StockPage';
-import { DeliveryPage } from '@/pages/delivery/DeliveryPage';
 import type {
   ChainLayerOverview,
-  DeliveryTask,
   Location,
   ProductionOrder,
   PurchaseOrder,
@@ -200,26 +198,6 @@ const STOCK_ROWS: StockRow[] = [
   },
 ];
 
-// Delivery — one task crossing the central warehouse (target) and a
-// store (requester). The matrix verifies both sides separately.
-const DELIVERY: DeliveryTask = {
-  id: 9001,
-  replenishment_id: 9001,
-  product_id: 1,
-  product_name: PRODUCT.name,
-  product_unit: 'kg',
-  qty_needed: 20,
-  status: 'NEW',
-  requester_location_id: LOC_STORE_1.id,
-  requester_location_name: LOC_STORE_1.name,
-  target_location_id: LOC_CENTRAL.id,
-  target_location_name: LOC_CENTRAL.name,
-  assigned_user_id: null,
-  assigned_user_name: null,
-  created_at: '2026-05-24T08:00:00Z',
-  updated_at: '2026-05-24T08:00:00Z',
-};
-
 // Production chain-layer overview — minimal so the page renders, with
 // the two sub-cehs registered.
 const PRODUCTION_OVERVIEW: ChainLayerOverview = {
@@ -285,9 +263,6 @@ function installFetch(): void {
       }
       if (url.includes('/api/stock')) {
         return Promise.resolve(jsonResponse(200, STOCK_ROWS));
-      }
-      if (url.includes('/api/delivery/tasks')) {
-        return Promise.resolve(jsonResponse(200, [DELIVERY]));
       }
       return Promise.reject(new Error(`unexpected fetch: ${url}`));
     },
@@ -358,14 +333,6 @@ describe('RBAC matrix — PM (read-and-recommend on every chain layer)', () => {
     ).toBeInTheDocument();
   });
 
-  it('DeliveryPage: no Biriktirish / Bajarish / Bekor buttons', async () => {
-    installFetch();
-    renderWithProviders(<DeliveryPage />, { role: 'pm' });
-    await screen.findByText('Un');
-    expect(screen.queryByRole('button', { name: /biriktirish/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Bajarish' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Bekor' })).toBeNull();
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -505,19 +472,6 @@ describe('RBAC matrix — raw_warehouse_manager', () => {
 // ---------------------------------------------------------------------------
 
 describe('RBAC matrix — store_manager', () => {
-  it('sees Bekor (cancel) on a task whose requester is its own store', async () => {
-    installFetch();
-    renderWithProviders(<DeliveryPage />, {
-      role: 'store_manager',
-      locationId: LOC_STORE_1.id,
-      locationType: 'store',
-    });
-    await screen.findByText('Un');
-    expect(
-      screen.getAllByRole('button', { name: 'Bekor' }).length,
-    ).toBeGreaterThan(0);
-  });
-
   it('still cannot see "Harakat qo‘shish" on StockPage (unchanged §6 rule)', async () => {
     installFetch();
     renderWithProviders(<StockPage />, {
@@ -537,22 +491,6 @@ describe('RBAC matrix — store_manager', () => {
 // ---------------------------------------------------------------------------
 
 describe('RBAC matrix — central_warehouse_manager', () => {
-  it('sees Bajarish on a task whose target is its warehouse but NOT Bekor', async () => {
-    // Backend cancel rule: only requester-side may close the request.
-    // The central warehouse here is the target → no cancel button.
-    installFetch();
-    renderWithProviders(<DeliveryPage />, {
-      role: 'central_warehouse_manager',
-      locationId: LOC_CENTRAL.id,
-      locationType: 'central_warehouse',
-    });
-    await screen.findByText('Un');
-    expect(
-      screen.getAllByRole('button', { name: 'Bajarish' }).length,
-    ).toBeGreaterThan(0);
-    expect(screen.queryByRole('button', { name: 'Bekor' })).toBeNull();
-  });
-
   it('sees Harakat qo‘shish (movements) on its own warehouse', async () => {
     installFetch();
     renderWithProviders(<StockPage />, {

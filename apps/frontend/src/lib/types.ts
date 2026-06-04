@@ -1347,35 +1347,6 @@ export interface SalesResponse {
   offset: number;
 }
 
-/**
- * F4.10 — delivery task view derived from a replenishment_request.
- * `GET /api/delivery/tasks?status=` returns a bare list of these rows.
- * The backend joins the request with its requester/target locations and
- * the assigned delivery user.
- */
-export type DeliveryStatus =
-  | 'NEW'
-  | 'CHECK_STORE_SUPPLIER'
-  | 'SHIP_TO_REQUESTER';
-
-export interface DeliveryTask {
-  id: number;
-  replenishment_id: number;
-  product_id: number;
-  product_name: string;
-  product_unit: Unit;
-  qty_needed: number;
-  status: DeliveryStatus;
-  requester_location_id: number;
-  requester_location_name: string;
-  target_location_id: number | null;
-  target_location_name: string | null;
-  assigned_user_id: number | null;
-  assigned_user_name: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
 // ---------------------------------------------------------------------------
 // EPIC 8 — Kassa / chek & nakladnoy (owner feedback, changes-2026-05).
 //
