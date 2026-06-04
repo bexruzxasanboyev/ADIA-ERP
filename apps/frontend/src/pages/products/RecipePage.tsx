@@ -11,8 +11,14 @@ import {
 } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { apiRequest, ApiError } from '@/lib/api-client';
-import { PRODUCT_TYPE_LABELS } from '@/lib/labels';
+import {
+  PRODUCT_TYPE_LABELS,
+  RECIPE_STAGE_LABELS,
+  RECIPE_STAGE_ORDER,
+} from '@/lib/labels';
+import { formatSom } from '@/lib/format';
 import { effectiveType, isResaleCategory } from '@/lib/productCategory';
+import { groupRecipeByStage } from '@/lib/recipeStage';
 import type { Product, RecipeNode, RecipeResponse } from '@/lib/types';
 import { PRODUCT_TYPE_BADGE, RecipeBreakdown } from './RecipeTreeView';
 
@@ -82,6 +88,17 @@ export function RecipePage() {
   }, [validId, numericId, reloadKey]);
 
   const productType = product ? effectiveType(product) : null;
+
+  // EPIC 1.5 — split the top-level BOM into hamir / krem / bezak sections.
+  // Poster carries no usable stage, so `groupRecipeByStage` infers it from
+  // each component's name. We only switch to the grouped view when at least
+  // two distinct stages are present — a single-stage recipe (or a bare leaf
+  // list) keeps the plain breakdown so we never show a lone "Boshqa" heading.
+  const stageGroups = useMemo(
+    () => groupRecipeByStage(tree, RECIPE_STAGE_ORDER),
+    [tree],
+  );
+  const grouped = stageGroups.length >= 2;
 
   // A PRODUCED product (not a resale category, not raw) is expected to carry a
   // Poster recipe — an empty tree means it is missing and should be flagged.
@@ -168,6 +185,38 @@ export function RecipePage() {
                 </p>
               </div>
             )
+          ) : grouped ? (
+            <div className="space-y-6">
+              {/* Grand total (itogo) over all stages, shown once. */}
+              <Card className="border-primary/30 bg-primary/5 p-5">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Umumiy tannarx (itogo)
+                </p>
+                <p className="mt-1 text-3xl font-bold tabular-nums text-primary">
+                  {totalCost === null ? '—' : formatSom(totalCost)}
+                </p>
+              </Card>
+
+              {stageGroups.map((g) => (
+                <section key={g.stage} className="space-y-3">
+                  <div className="flex items-center justify-between gap-3 border-b border-border pb-1.5">
+                    <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">
+                      {RECIPE_STAGE_LABELS[g.stage]}
+                    </h2>
+                    <span className="shrink-0 text-sm font-semibold tabular-nums text-muted-foreground">
+                      {g.subtotal === null ? '—' : formatSom(g.subtotal)}
+                    </span>
+                  </div>
+                  <RecipeBreakdown
+                    tree={g.nodes}
+                    totalCost={g.subtotal}
+                    unit={product?.unit ?? null}
+                    productName={RECIPE_STAGE_LABELS[g.stage]}
+                    showSummary={false}
+                  />
+                </section>
+              ))}
+            </div>
           ) : (
             <RecipeBreakdown
               tree={tree}

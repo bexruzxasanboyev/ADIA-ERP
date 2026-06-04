@@ -197,6 +197,13 @@ interface RecipeBreakdownProps {
   /** Recipe owner's unit — drives the "1 kg / 1 dona uchun" caption. */
   unit: 'kg' | 'l' | 'pcs' | null;
   productName: string;
+  /**
+   * EPIC 1.5 — when this breakdown is one stage of a grouped recipe
+   * (hamir / krem / bezak), the page hides the grand "Jami tannarx" summary
+   * (`showSummary={false}`) and the stage heading is rendered by the page
+   * above this block. Defaults preserve the standalone full-recipe view.
+   */
+  showSummary?: boolean;
 }
 
 /**
@@ -214,6 +221,7 @@ export function RecipeBreakdown({
   totalCost,
   unit,
   productName,
+  showSummary = true,
 }: RecipeBreakdownProps) {
   const sections: { node: RecipeNode; depth: number }[] = [];
   collectSections(tree, 0, sections);
@@ -247,18 +255,22 @@ export function RecipeBreakdown({
 
   return (
     <div className="space-y-4">
-      {/* Summary header — the product's full resolved cost, prominent. */}
-      <Card className="border-primary/30 bg-primary/5 p-5">
-        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Jami tannarx · {perUnitCaption}
-        </p>
-        <p className="mt-1 text-3xl font-bold tabular-nums text-primary">
-          {costCell(totalCost)}
-        </p>
-        <p className="mt-2 text-xs text-muted-foreground">
-          {formatPlainNumber(rawCount)} ta xom-ashyo komponenti
-        </p>
-      </Card>
+      {/* Summary header — the product's full resolved cost, prominent.
+          Hidden when this block is one stage of a grouped recipe (the page
+          shows a single grand total + per-stage subtotals instead). */}
+      {showSummary && (
+        <Card className="border-primary/30 bg-primary/5 p-5">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Jami tannarx · {perUnitCaption}
+          </p>
+          <p className="mt-1 text-3xl font-bold tabular-nums text-primary">
+            {costCell(totalCost)}
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {formatPlainNumber(rawCount)} ta xom-ashyo komponenti
+          </p>
+        </Card>
+      )}
 
       {sections.map(({ node, depth }) => (
         <SectionCard
