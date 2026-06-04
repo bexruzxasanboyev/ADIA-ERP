@@ -61,12 +61,25 @@ function mockProducts(items: Product[]) {
 describe('ProductsPage — filter popover UX', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it('defaults to no filter — shows every type', async () => {
+  it('defaults to the finished type tab (EPIC 1.4) — hides raw by default', async () => {
     mockProducts([FLOUR, CHOCO_CAKE]);
     renderWithProviders(<ProductsPage />);
 
+    // The catalogue opens on "tayyor mahsulot" so a manager lands on the
+    // sellable set; the raw "Un (oliy nav)" is hidden until the user
+    // switches the type tab back to "Hammasi".
     expect(await screen.findByText('Шоколадный торт')).toBeInTheDocument();
-    expect(screen.getByText('Un (oliy nav)')).toBeInTheDocument();
+    expect(screen.queryByText('Un (oliy nav)')).not.toBeInTheDocument();
+  });
+
+  it('shows every type once the "Hammasi" tab is selected', async () => {
+    const user = userEvent.setup();
+    mockProducts([FLOUR, CHOCO_CAKE]);
+    renderWithProviders(<ProductsPage />);
+
+    await screen.findByText('Шоколадный торт');
+    await user.click(screen.getByRole('tab', { name: /Hammasi/ }));
+    expect(await screen.findByText('Un (oliy nav)')).toBeInTheDocument();
   });
 
   it('TYPE/CATEGORY options live inside the Filter popover', async () => {

@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/filter-popover';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useCanAct } from '@/hooks/useCanAct';
+import { useAuth } from '@/hooks/useAuth';
 import { cn } from '@/lib/utils';
 import { formatDateTime, formatQty } from '@/lib/format';
 import {
@@ -38,6 +39,7 @@ import type {
   PurchaseOrderStatus,
 } from '@/lib/types';
 import { PurchaseOrderFormDialog } from './PurchaseOrderFormDialog';
+import { AdminPurchaseOrderFormDialog } from './AdminPurchaseOrderFormDialog';
 import { ApprovalPanel } from './ApprovalPanel';
 
 /**
@@ -96,12 +98,18 @@ function StepPill({ label, signed }: { label: string; signed: boolean }) {
  */
 export function PurchaseOrdersPage() {
   const { isReadOnly, isOperator } = useCanAct();
+  const { user } = useAuth();
   // "Yangi sotib olish" — Stage 1 (commit da5aebe) restricts POST
   // /api/purchase-orders to supply_manager (writers only; PM is now
   // read-only). The form dialog enforces per-row scoping via the target
   // location <select>; the backend's requireLocationOperator does the
   // final check, and a 403 surfaces as a toast inside the dialog.
   const canCreate = isOperator;
+  // EPIC 6.1e — the PM (admin) is otherwise read-only, but may *initiate*
+  // a purchase order routed to the skladchi via POST
+  // /api/purchase-orders/admin (authorize('pm')). This is the only write
+  // the PM performs on this page, so it gets its own dialog + button.
+  const isPm = user?.role === 'pm';
 
   // EPIC 6.2 — status is now one dimension inside the shared
   // FilterPopover (held as a string[] keyed by 'status'). We still send a
@@ -110,6 +118,7 @@ export function PurchaseOrdersPage() {
   // stays unchanged.
   const [filter, setFilter] = useState<FilterValue>({});
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [adminDialogOpen, setAdminDialogOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
   const selectedStatuses = useMemo(
@@ -140,9 +149,12 @@ export function PurchaseOrdersPage() {
   // Products are still fetched so the quantity cell can render the unit
   // (the backend embeds `product_name` but not `product_unit` for
   // purchase orders; TODO: add it server-side and drop this fetch).
-  // Locations are only needed by the "Yangi sotib olish" dialog.
+  // Locations are needed by both the supply-manager and the admin (PM)
+  // create dialogs — fetch when either can create.
   const products = useApiQuery<Product[]>('/api/products');
-  const locations = useApiQuery<Location[]>(canCreate ? '/api/locations' : null);
+  const locations = useApiQuery<Location[]>(
+    canCreate || isPm ? '/api/locations' : null,
+  );
 
   const productById = useMemo(() => {
     const m = new Map<number, Product>();
@@ -171,10 +183,16 @@ export function PurchaseOrdersPage() {
               value={filter}
               onApply={setFilter}
             />
-            {isReadOnly && (
+            {isReadOnly && !isPm && (
               <Badge variant="secondary" className="h-10 items-center px-3" aria-label="Faqat o‘qish rejimi">
                 Faqat o‘qish
               </Badge>
+            )}
+            {isPm && (
+              <Button variant="outline" onClick={() => setAdminDialogOpen(true)}>
+                <Plus className="size-4" aria-hidden="true" />
+                Admin sotib olish so‘rovi
+              </Button>
             )}
             {canCreate && (
               <Button onClick={() => setDialogOpen(true)}>
@@ -267,6 +285,16 @@ export function PurchaseOrdersPage() {
         <PurchaseOrderFormDialog
           open={dialogOpen}
           onOpenChange={setDialogOpen}
+          products={products.data ?? []}
+          locations={locations.data ?? []}
+          onSaved={refetch}
+        />
+      )}
+
+      {isPm && (
+        <AdminPurchaseOrderFormDialog
+          open={adminDialogOpen}
+          onOpenChange={setAdminDialogOpen}
           products={products.data ?? []}
           locations={locations.data ?? []}
           onSaved={refetch}

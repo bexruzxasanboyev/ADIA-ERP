@@ -111,7 +111,10 @@ export function ProductsPage() {
     } catch {
       // ignore — private mode / unavailable storage
     }
-    return 'all';
+    // EPIC 1.4 — the owner wants the catalogue to open on the sellable
+    // "tayyor mahsulot" (finished) set by default, not the full list, so a
+    // manager lands on what the shops actually sell. Persisted choice wins.
+    return 'finished';
   });
   useEffect(() => {
     try {

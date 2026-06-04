@@ -69,6 +69,11 @@ function mockFetch() {
     if (url.includes('/api/locations')) {
       return Promise.resolve(jsonResponse(200, [RAW_LOC]));
     }
+    if (url.includes('/api/purchase-orders/admin') && method === 'POST') {
+      return Promise.resolve(
+        jsonResponse(201, { purchase_order: { ...ORDER, id: 99 } }),
+      );
+    }
     if (url.includes('/api/purchase-orders/88/approve') && method === 'POST') {
       const body = init?.body ? JSON.parse(String(init.body)) : {};
       return Promise.resolve(
@@ -162,7 +167,51 @@ describe('PurchaseOrdersPage', () => {
       screen.queryByRole('button', { name: 'Tasdiqlash (skladchi)' }),
     ).toBeNull();
     expect(screen.queryByRole('button', { name: /rad etish/i })).toBeNull();
-    expect(screen.getByText(/faqat o.qish/i)).toBeInTheDocument();
+    // EPIC 6.1e — the PM is read-only on per-row approvals, but the list
+    // now offers the admin-initiation action instead of a read-only badge.
+    expect(
+      screen.getByRole('button', { name: /admin sotib olish so.rovi/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('lets the PM initiate an admin purchase order routed to the skladchi', async () => {
+    const user = userEvent.setup();
+    mockFetch();
+    renderWithProviders(<PurchaseOrdersPage />, { role: 'pm' });
+    await screen.findByText('Un');
+    await user.click(
+      screen.getByRole('button', { name: /admin sotib olish so.rovi/i }),
+    );
+    // Dialog opens with the raw-warehouse target + raw product pre-narrowed.
+    await screen.findByRole('heading', { name: /admin sotib olish so.rovi/i });
+    await user.selectOptions(
+      screen.getByLabelText('Mahsulot'),
+      '3',
+    );
+    await user.type(screen.getByLabelText('Miqdor'), '150');
+    await user.selectOptions(
+      screen.getByLabelText('Qabul qiluvchi (skladchi)'),
+      '4',
+    );
+    await user.click(screen.getByRole('button', { name: 'Saqlash' }));
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        expect.stringContaining('/api/purchase-orders/admin'),
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('"target_location_id":4'),
+        }),
+      );
+    });
+  });
+
+  it('does not offer the admin-initiation button to a supply_manager', async () => {
+    mockFetch();
+    renderWithProviders(<PurchaseOrdersPage />, { role: 'supply_manager' });
+    await screen.findByText('Un');
+    expect(
+      screen.queryByRole('button', { name: /admin sotib olish so.rovi/i }),
+    ).toBeNull();
   });
 
   it('hides the keeper button for a raw_warehouse_manager on a foreign warehouse', async () => {
