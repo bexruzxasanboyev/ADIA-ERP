@@ -224,6 +224,54 @@ describe('runMinmaxRecalcCycle', () => {
     expect(Number(rows[0]!.min_level)).toBe(0);
   });
 
+  it('EPIC 5.5 — derives sex_storage min/max from consumption when there are no sales', async () => {
+    // sex_storage (zagatovka buffer) is never sold through Poster, so the
+    // sales path yields null. The engine must instead read how much left the
+    // store via stock_movements (transfer to production / production_input).
+    const { rows } = await ctx.db.query<{ id: string }>(
+      `INSERT INTO locations (name, type, lead_time_days, review_days, safety_factor)
+       VALUES ('Tort sex skladi', 'sex_storage', 2, 2, 1.3) RETURNING id`,
+    );
+    const sexStorageId = Number(rows[0]!.id);
+    const sinkId = await makeLocation(ctx.db, { type: 'production' });
+    const productId = await makeProduct(ctx.db, { type: 'semi', unit: 'pcs' });
+
+    // 10 zagatovka/day leave the sex_storage for 7 days → avg_daily = 10.
+    for (let i = 0; i < 7; i += 1) {
+      await ctx.db.query(
+        `INSERT INTO stock_movements (product_id, from_location_id, to_location_id, qty, reason, created_at)
+         VALUES ($1, $2, $3, 10, 'transfer', $4)`,
+        [productId, sexStorageId, sinkId, daysAgo(i).toISOString()],
+      );
+    }
+    // No sales rows at all for this product.
+    await setStock(ctx.db, { locationId: sexStorageId, productId, qty: 3, minLevel: 0, maxLevel: 0 });
+    await ctx.db.query(
+      `UPDATE stock SET minmax_mode = 'dynamic'
+        WHERE location_id = $1 AND product_id = $2`,
+      [sexStorageId, productId],
+    );
+
+    const summary = await runMinmaxRecalcCycle();
+    expect(summary.scanned).toBe(1);
+    expect(summary.updated).toBe(1);
+
+    // Same formula as the sales path: min = 10*2*1.3 = 26; max = 26 + 10*2 = 46.
+    const { rows: stockRows } = await ctx.db.query<{ min_level: string; max_level: string }>(
+      `SELECT min_level, max_level FROM stock
+        WHERE location_id = $1 AND product_id = $2`,
+      [sexStorageId, productId],
+    );
+    expect(Number(stockRows[0]!.min_level)).toBeCloseTo(26, 2);
+    expect(Number(stockRows[0]!.max_level)).toBeCloseTo(46, 2);
+
+    // Audit records the consumption source so the provenance is auditable.
+    const { rows: audits } = await ctx.db.query<{
+      payload: { formula: { source: string } };
+    }>(`SELECT payload FROM audit_log WHERE action = 'stock.minmax.recalc'`);
+    expect(audits[0]!.payload.formula.source).toBe('consumption_7d');
+  });
+
   it('doubles min/max when sales double (TZ §15 AC#3)', async () => {
     const { rows } = await ctx.db.query<{ id: string }>(
       `INSERT INTO locations (name, type, lead_time_days, review_days, safety_factor)

@@ -106,12 +106,20 @@ export async function runOneCycle(): Promise<void> {
 type DynamicStockRow = {
   location_id: number;
   product_id: number;
+  location_type: string;
   min_level: string | number;
   max_level: string | number;
   lead_time_days: string | number;
   review_days: string | number;
   safety_factor: string | number;
 };
+
+/**
+ * EPIC 5.5 — consumption window (days) used to derive a sex_storage's
+ * zagatovka velocity when Poster sales give no signal. Mirrors the 7-day
+ * preference of the sales path.
+ */
+const CONSUMPTION_WINDOW_DAYS = 7;
 
 /**
  * Recalculate every (or filtered subset of) `stock` row whose
@@ -139,7 +147,8 @@ export async function runMinmaxRecalcCycle(
     conditions.push(`s.product_id = $${params.length}`);
   }
   const { rows: rowsAll } = await query<DynamicStockRow>(
-    `SELECT s.location_id, s.product_id, s.min_level, s.max_level,
+    `SELECT s.location_id, s.product_id, l.type::text AS location_type,
+            s.min_level, s.max_level,
             l.lead_time_days, l.review_days, l.safety_factor
        FROM stock s
        JOIN locations l ON l.id = s.location_id
@@ -165,6 +174,35 @@ export async function runMinmaxRecalcCycle(
     }
   }
   return { scanned: rowsAll.length, updated, skipped, errors };
+}
+
+/**
+ * EPIC 5.5 — average daily CONSUMPTION of a product out of a location over
+ * the last `days` days, or null when there was no outflow. "Out" = rows whose
+ * `from_location_id` is this location (transfer to production, production_input
+ * for ukrasheniye, etc.). Used as the velocity signal for sex_storage rows
+ * that have no Poster sales history. Divides by the full window (not the
+ * number of active days) so a bursty consumer still yields a steady min/max.
+ */
+async function consumptionAvgDaily(
+  tx: TxClient,
+  locationId: number,
+  productId: number,
+  days: number,
+): Promise<number | null> {
+  const { rows } = await tx.query<{ total: string | null }>(
+    `SELECT SUM(qty) AS total
+       FROM stock_movements
+      WHERE from_location_id = $1
+        AND product_id = $2
+        AND created_at >= now() - ($3 || ' days')::interval`,
+    [locationId, productId, days],
+  );
+  const total = rows[0]?.total;
+  if (total === null || total === undefined) return null;
+  const sum = Number(total);
+  if (!Number.isFinite(sum) || sum <= 0) return null;
+  return sum / days;
 }
 
 type RowOutcome = 'updated' | 'skipped';
@@ -199,7 +237,7 @@ async function recalcOneRow(
 
     // avg_7d ustun (ADR-0007 §3); fallback avg_30d. Both null → no history.
     let avgDaily: number | null;
-    let source: 'avg_7d' | 'avg_30d' | null;
+    let source: 'avg_7d' | 'avg_30d' | 'consumption_7d' | null;
     if (avg7 !== null && avg7 >= EPSILON) {
       avgDaily = avg7;
       source = 'avg_7d';
@@ -209,6 +247,26 @@ async function recalcOneRow(
     } else {
       avgDaily = null;
       source = null;
+    }
+
+    // EPIC 5.5 — sex_storage (zagatovka buffer) is never sold through Poster,
+    // so `sales_stats_daily` is empty for it and the sales path above yields
+    // null. Derive the velocity from CONSUMPTION instead: how much of this
+    // product left this sex_storage (transfer to production / production_input
+    // for ukrasheniye) per day over the window. This lets the existing
+    // type-agnostic below-min scan auto-replenish zagatovka — "doim minda
+    // zagatovka turadi; olinса qaytadan to'ldiriladi".
+    if (avgDaily === null && row.location_type === 'sex_storage') {
+      const consumed = await consumptionAvgDaily(
+        tx,
+        row.location_id,
+        row.product_id,
+        CONSUMPTION_WINDOW_DAYS,
+      );
+      if (consumed !== null && consumed >= EPSILON) {
+        avgDaily = consumed;
+        source = 'consumption_7d';
+      }
     }
 
     if (avgDaily === null) {
