@@ -137,6 +137,7 @@ const PO_TORT: ProductionOrder = {
   replenishment_id: null,
   note: null,
   product_name: 'Napoleon',
+  product_unit: 'kg',
   location_name: LOC_PROD_TORT.name,
   target_location_name: null,
   created_by: 22,
@@ -151,6 +152,7 @@ const PO_PEROJ: ProductionOrder = {
   location_id: LOC_PROD_PEROJ.id,
   location_name: LOC_PROD_PEROJ.name,
   product_name: 'Pirojnoe',
+  product_unit: 'kg',
 };
 
 // Purchase order owned by user id=1 (default fakeUser), targeting the
@@ -175,6 +177,7 @@ const PURCHASE: PurchaseOrder = {
   created_at: '2026-05-22T08:00:00Z',
   updated_at: '2026-05-22T08:00:00Z',
   product_name: PRODUCT.name,
+  product_unit: 'kg',
   target_location_name: LOC_RAW.name,
   manager_approved_name: null,
   keeper_approved_name: null,

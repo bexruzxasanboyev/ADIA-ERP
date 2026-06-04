@@ -53,6 +53,7 @@ const ORDER: PurchaseOrder = {
   created_at: '2026-05-22T10:00:00.000Z',
   updated_at: '2026-05-22T10:00:00.000Z',
   product_name: 'Un',
+  product_unit: 'kg',
   target_location_name: 'Xom-ashyo ombori',
   manager_approved_name: null,
   keeper_approved_name: null,

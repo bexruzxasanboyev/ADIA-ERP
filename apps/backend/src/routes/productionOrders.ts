@@ -86,12 +86,14 @@ productionOrdersRouter.get(
     const { rows } = await query<
       ProductionOrderRow & {
         product_name: string;
+        product_unit: string;
         location_name: string | null;
         target_location_name: string | null;
       }
     >(
       `SELECT ${qualifiedCols},
               p.name AS product_name,
+              p.unit AS product_unit,
               ll.name AS location_name,
               tl.name AS target_location_name
        FROM production_orders po

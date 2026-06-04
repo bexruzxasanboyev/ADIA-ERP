@@ -143,24 +143,16 @@ export function PurchaseOrdersPage() {
     [],
   );
 
-  // The table reads `product_name`, `target_location_name`,
-  // `manager_approved_name`, `keeper_approved_name`, `supplier_name`
-  // directly from the embedded row — no client-side join on names.
-  // Products are still fetched so the quantity cell can render the unit
-  // (the backend embeds `product_name` but not `product_unit` for
-  // purchase orders; TODO: add it server-side and drop this fetch).
-  // Locations are needed by both the supply-manager and the admin (PM)
-  // create dialogs — fetch when either can create.
-  const products = useApiQuery<Product[]>('/api/products');
+  // The table reads `product_name`, `product_unit`, `target_location_name`,
+  // `manager_approved_name`, `keeper_approved_name`, `supplier_name` directly
+  // from the embedded row — no client-side join. Products + locations are
+  // only needed by the create dialogs (supply-manager + admin/PM), so fetch
+  // them lazily for those roles.
+  const canOpenDialog = canCreate || isPm;
+  const products = useApiQuery<Product[]>(canOpenDialog ? '/api/products' : null);
   const locations = useApiQuery<Location[]>(
-    canCreate || isPm ? '/api/locations' : null,
+    canOpenDialog ? '/api/locations' : null,
   );
-
-  const productById = useMemo(() => {
-    const m = new Map<number, Product>();
-    for (const p of products.data ?? []) m.set(p.id, p);
-    return m;
-  }, [products.data]);
 
   // When the backend already scoped by a single status the extra filter
   // is a no-op; for a multi-status selection we narrow client-side.
@@ -228,7 +220,7 @@ export function PurchaseOrdersPage() {
             </TableHeader>
             <TableBody>
               {rows.map((row) => {
-                const unit = productById.get(row.product_id)?.unit ?? '';
+                const unit = row.product_unit ?? '';
                 const isOpen = expandedId === row.id;
                 return (
                   <Fragment key={row.id}>

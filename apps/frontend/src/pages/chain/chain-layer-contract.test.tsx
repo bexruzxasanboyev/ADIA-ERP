@@ -95,6 +95,7 @@ const APPROVED_PURCHASE: PurchaseOrder = {
   created_at: '2026-05-22T07:30:00.000Z',
   updated_at: '2026-05-22T08:05:00.000Z',
   product_name: 'Un',
+  product_unit: 'kg',
   target_location_name: 'Asosiy xom-ashyo ombori',
   manager_approved_name: 'Ali',
   keeper_approved_name: 'Vali',
@@ -138,6 +139,7 @@ const ACTIVE_ORDER: ProductionOrder = {
   updated_at: '2026-05-22T09:00:00.000Z',
   done_at: null,
   product_name: 'Pishloqli non',
+  product_unit: 'kg',
   location_name: 'Sex 1',
   target_location_name: 'Markaziy sklad',
 };
@@ -227,6 +229,7 @@ const SHIP_REPLEN: ReplenishmentRequest = {
   id: 88,
   status: 'SHIP_TO_REQUESTER',
   product_name: 'Pishloqli non',
+  product_unit: 'kg',
   requester_location_name: 'Do‘kon #1',
   target_location_name: 'Markaziy sklad',
 };
@@ -295,6 +298,7 @@ const STORE_REPLEN: ReplenishmentRequest = {
   requester_location_id: 11,
   requester_location_name: 'Do‘kon #1 Chilonzor',
   product_name: 'Pishloqli non',
+  product_unit: 'kg',
 };
 
 // ---------------------------------------------------------------------------

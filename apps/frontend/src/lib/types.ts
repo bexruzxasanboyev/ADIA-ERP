@@ -473,6 +473,7 @@ export interface ProductionOrder {
    * column itself is optional.
    */
   product_name: string;
+  product_unit: Unit;
   location_name: string;
   target_location_name: string | null;
 }
@@ -1249,6 +1250,7 @@ export interface PurchaseOrder {
    * the referenced FK columns are themselves optional.
    */
   product_name: string;
+  product_unit: Unit;
   target_location_name: string;
   manager_approved_name: string | null;
   keeper_approved_name: string | null;

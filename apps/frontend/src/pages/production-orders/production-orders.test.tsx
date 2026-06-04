@@ -51,6 +51,7 @@ const ORDER: ProductionOrder = {
   updated_at: '2026-05-22T10:00:00.000Z',
   done_at: null,
   product_name: 'Tort tayyor',
+  product_unit: 'kg',
   location_name: 'Ishlab chiqarish',
   target_location_name: null,
 };

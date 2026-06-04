@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Plus, Loader2 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -76,21 +76,12 @@ export function ProductionOrdersPage() {
   const { data, isLoading, error, refetch } =
     useApiQuery<ProductionOrder[]>(path);
 
-  // The table reads `product_name`, `location_name`, and
-  // `target_location_name` directly from the embedded row — no
-  // client-side join on names. Products are still fetched so the
-  // quantity cell can render the unit (the backend embeds product_name
-  // but not product_unit for production orders; TODO: add it server-side
-  // and drop this fetch). Locations are only needed by the "Yangi
-  // zayafka" dialog.
-  const products = useApiQuery<Product[]>('/api/products');
+  // The table reads `product_name`, `product_unit`, `location_name`, and
+  // `target_location_name` directly from the embedded row — no client-side
+  // join. Products + locations are only needed by the "Yangi zayafka"
+  // dialog, so fetch them lazily for the roles that can create.
+  const products = useApiQuery<Product[]>(canCreate ? '/api/products' : null);
   const locations = useApiQuery<Location[]>(canCreate ? '/api/locations' : null);
-
-  const productById = useMemo(() => {
-    const m = new Map<number, Product>();
-    for (const p of products.data ?? []) m.set(p.id, p);
-    return m;
-  }, [products.data]);
 
   async function transition(
     orderId: number,
@@ -189,7 +180,7 @@ export function ProductionOrdersPage() {
           <MobileCardList
             items={rows.map((row) => {
               const isBusy = busyId === row.id;
-              const unit = productById.get(row.product_id)?.unit ?? '';
+              const unit = row.product_unit ?? '';
               return {
                 id: row.id,
                 title: `#${row.id} · ${row.product_name}`,
@@ -273,7 +264,7 @@ export function ProductionOrdersPage() {
             <TableBody>
               {rows.map((row) => {
                 const isBusy = busyId === row.id;
-                const unit = productById.get(row.product_id)?.unit ?? '';
+                const unit = row.product_unit ?? '';
                 return (
                   <TableRow key={row.id}>
                     <TableCell className="text-muted-foreground">

@@ -11,6 +11,7 @@ const PO: PurchaseOrder = {
   id: 1,
   product_id: 5,
   product_name: 'Un',
+  product_unit: 'kg',
   qty: 100,
   supplier_id: null,
   target_location_id: 7,
