@@ -7,7 +7,7 @@
  * owner called out:
  *   - 8.3: an over-sold ("noto'g'ri urilgan") receipt is flagged;
  *   - 8.4: the nakladnoy renders per-stage sections plus an ITOGO total;
- *   - graceful 404 → "tayyorlanmoqda" empty state (endpoint not wired).
+ *   - graceful backend failure → retryable error state.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { screen } from '@testing-library/react';
@@ -136,11 +136,12 @@ describe('EPIC 8 — kassa screens', () => {
     expect(screen.getByText('Fors-major')).toBeInTheDocument();
   });
 
-  it('ReceiptsPage degrades to a "tayyorlanmoqda" empty state on 404', async () => {
+  it('ReceiptsPage surfaces a retryable error state on a backend failure', async () => {
     mock404();
     renderWithProviders(<ReceiptsPage />, { role: 'pm' });
+    expect(await screen.findByText('Resurs topilmadi.')).toBeInTheDocument();
     expect(
-      await screen.findByText(/tayyorlanmoqda/i),
+      screen.getByRole('button', { name: /qayta urinish/i }),
     ).toBeInTheDocument();
   });
 

@@ -32,9 +32,9 @@ import type { SafeExpensesResponse, SafeExpense } from '@/lib/types';
  * qarori: Poster read-only, shuning uchun seyf rasxodi ADIA ichida
  * yashaydi.
  *
- * Backend: `GET /api/safe-expenses` (finance.getTransactions — gap P8/P11)
- * hali yo'q. 404 → "tayyorlanmoqda" empty-state.
- * TODO(backend): EPIC 8.7 seyf rasxodi endpoint (yaratish + ro'yxat).
+ * Backend: `GET /api/safe-expenses` (EPIC 8.7 — Poster finance.getTransactions,
+ * read-only per owner decision Q7) is live; an empty window renders the
+ * no-expenses empty-state.
  */
 export function SafeExpensesPage() {
   const { data, isLoading, error, refetch } =
@@ -43,8 +43,6 @@ export function SafeExpensesPage() {
   const [filter, setFilter] = useState<FilterValue>({});
 
   const items = useMemo(() => data?.items ?? [], [data]);
-  const notImplemented =
-    error !== null && /404|topilmadi|mavjud emas/i.test(error);
 
   const filterGroups = useMemo<FilterGroup[]>(() => {
     const categories = [...new Set(items.map((e) => e.category))].sort();
@@ -92,13 +90,7 @@ export function SafeExpensesPage() {
         </Card>
       )}
 
-      {!isLoading && error && notImplemented && (
-        <Card>
-          <EmptyState message="Seyf rasxodi moduli tayyorlanmoqda — backend kontrakti hali ulanmagan." />
-        </Card>
-      )}
-
-      {!isLoading && error && !notImplemented && (
+      {!isLoading && error && (
         <Card>
           <ErrorState message={error} onRetry={refetch} />
         </Card>

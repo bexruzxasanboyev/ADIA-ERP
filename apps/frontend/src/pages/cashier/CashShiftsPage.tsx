@@ -26,9 +26,9 @@ import type { CashShiftsResponse, CashShift, CashShiftStatus } from '@/lib/types
  * karta, rasxod, inkassatsiya va yopilish qoldig'i. Balans nomuvofiq
  * bo'lsa (kniжный ≠ факт) ogohlantirish ko'rinadi.
  *
- * Backend: `GET /api/cash-shifts` (Poster finance.getCashshifts — gap P8)
- * hali yo'q. 404 → "tayyorlanmoqda" empty-state.
- * TODO(backend): EPIC 8.5 kassa smenasi endpoint + TG topshirish.
+ * Backend: `GET /api/cash-shifts` (EPIC 8.5 — Poster finance.getCashshifts,
+ * read-only) is live; cashiers submit a shift via the Telegram bot. An
+ * empty window renders the no-shifts empty-state.
  */
 export function CashShiftsPage() {
   const { data, isLoading, error, refetch } =
@@ -37,8 +37,6 @@ export function CashShiftsPage() {
   const [filter, setFilter] = useState<FilterValue>({});
 
   const items = useMemo(() => data?.items ?? [], [data]);
-  const notImplemented =
-    error !== null && /404|topilmadi|mavjud emas/i.test(error);
 
   const filterGroups = useMemo<FilterGroup[]>(
     () => [
@@ -82,13 +80,7 @@ export function CashShiftsPage() {
         </Card>
       )}
 
-      {!isLoading && error && notImplemented && (
-        <Card>
-          <EmptyState message="Kassa smenasi moduli tayyorlanmoqda — Poster finance kontrakti hali ulanmagan." />
-        </Card>
-      )}
-
-      {!isLoading && error && !notImplemented && (
+      {!isLoading && error && (
         <Card>
           <ErrorState message={error} onRetry={refetch} />
         </Card>

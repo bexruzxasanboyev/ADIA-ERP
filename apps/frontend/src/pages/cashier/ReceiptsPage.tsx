@@ -31,9 +31,9 @@ const PAGE_SIZE = 50;
  * (8.3). Ostatka real bazada hech qachon manfiy bo'lmaydi (invariant 3) —
  * bu faqat hisobot signali.
  *
- * Backend: `GET /api/sales/receipts/stock` (P10 — chek-darajali ostatka)
- * hali yo'q. 404 bo'lsa "tayyorlanmoqda" empty-state ko'rsatiladi.
- * TODO(backend): EPIC 8.2 chek-darajali ost−sotildi−qoldi endpoint.
+ * Backend: `GET /api/sales/receipts/stock` (EPIC 8.2 — chek-darajali
+ * ost−sotildi−qoldi) is live; an empty window simply renders the
+ * no-receipts empty-state.
  */
 export function ReceiptsPage() {
   // Date-range filter — the backend `/api/sales/receipts/stock` endpoint
@@ -164,9 +164,6 @@ export function ReceiptsPage() {
 
   const refetch = useCallback(() => void fetchPage(true), [fetchPage]);
 
-  const notImplemented =
-    error !== null && /404|topilmadi|mavjud emas/i.test(error);
-
   // Fors-major count + filter operate on the ACCUMULATED loaded cheques
   // (only the pages fetched so far), not the full server-side range.
   const forceMajeureCount = useMemo(
@@ -221,13 +218,7 @@ export function ReceiptsPage() {
         </Card>
       )}
 
-      {!isLoadingFirst && error && notImplemented && (
-        <Card>
-          <EmptyState message="Chek-darajali ostatka moduli tayyorlanmoqda — backend kontrakti hali ulanmagan." />
-        </Card>
-      )}
-
-      {!isLoadingFirst && error && !notImplemented && (
+      {!isLoadingFirst && error && (
         <Card>
           <ErrorState message={error} onRetry={refetch} />
         </Card>
