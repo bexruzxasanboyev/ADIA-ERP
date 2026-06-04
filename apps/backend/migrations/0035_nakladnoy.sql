@@ -24,9 +24,17 @@
 -- (8.4 zayavka->nakladnoy); 'manual' = an operator raised it from the UI;
 -- 'voice' = a store voice message (8.6); 'cash_shift' = a closed kassa shift
 -- (8.5); 'safe_expense' = a seyf rasxod (8.7).
+-- Scope the existence check to the CURRENT schema (mirrors 0010 / 0021) so a
+-- parallel schema's enum cannot short-circuit creation in this one.
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'nakladnoy_source') THEN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_type t
+      JOIN pg_namespace n ON n.oid = t.typnamespace
+     WHERE t.typname = 'nakladnoy_source'
+       AND n.nspname = current_schema()
+  ) THEN
     CREATE TYPE nakladnoy_source AS ENUM
       ('sale', 'manual', 'voice', 'cash_shift', 'safe_expense', 'production_order');
   END IF;
@@ -38,7 +46,13 @@ END$$;
 -- total rows that aggregate one raw component across every stage.
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'nakladnoy_section') THEN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_type t
+      JOIN pg_namespace n ON n.oid = t.typnamespace
+     WHERE t.typname = 'nakladnoy_section'
+       AND n.nspname = current_schema()
+  ) THEN
     CREATE TYPE nakladnoy_section AS ENUM ('hamir', 'krem', 'bezak', 'itogo');
   END IF;
 END$$;
