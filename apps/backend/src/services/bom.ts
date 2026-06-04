@@ -181,6 +181,17 @@ async function buildChildren(
   depth: number,
 ): Promise<RecipeNode[]> {
   if (depth >= MAX_RECIPE_DEPTH) return [];
+  // TZ-3 — `recipe_yield` is how many finished units one full recipe makes.
+  // Poster gives no batch yield for finished goods, so a batch recipe (e.g.
+  // ПЕЧЕНЬЕ: 1 kg chocolate "per dona") imports inflated; dividing every line
+  // by this product's yield gives the true per-1-piece figure. Default 1 = the
+  // recipe is already per-unit (prepacks + the 146 correct finished products).
+  const { rows: yieldRows } = await runner.query<{ recipe_yield: string | number }>(
+    `SELECT recipe_yield FROM products WHERE id = $1`,
+    [productId],
+  );
+  const yld = Number(yieldRows[0]?.recipe_yield ?? 1) || 1;
+
   const { rows } = await runner.query<{
     component_product_id: number;
     qty_per_unit: string | number;
@@ -203,7 +214,7 @@ async function buildChildren(
   const out: RecipeNode[] = [];
   for (const r of rows) {
     const componentId = Number(r.component_product_id);
-    const qtyPerUnit = Number(r.qty_per_unit);
+    const qtyPerUnit = Number(r.qty_per_unit) / yld;
     const leafCost =
       r.cost_per_unit === null || r.cost_per_unit === undefined
         ? null
@@ -236,10 +247,12 @@ async function buildChildren(
       // Poster Brutto/Netto (recipes.brutto/netto, migration 0040) — the raw
       // per-batch composition figures in the line's structure_unit. NULL for
       // manually-entered or modification-linked lines.
+      // Divided by the same yield so the per-piece view stays internally
+      // consistent (a batch recipe's brutto/netto are per-batch in Poster).
       brutto:
-        r.brutto === null || r.brutto === undefined ? null : Number(r.brutto),
+        r.brutto === null || r.brutto === undefined ? null : Number(r.brutto) / yld,
       netto:
-        r.netto === null || r.netto === undefined ? null : Number(r.netto),
+        r.netto === null || r.netto === undefined ? null : Number(r.netto) / yld,
       unit_cost: round2OrNull(unitCost),
       line_cost: round2OrNull(lineCost),
       total_cost: round2OrNull(unitCost),
