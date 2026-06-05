@@ -236,7 +236,11 @@ async function buildChildren(
     cost_per_unit: string | number | null;
   }>(
     `SELECT r.component_product_id, r.qty_per_unit, r.brutto, r.netto,
-            p.name, p.type, p.unit, p.cost_per_unit
+            p.name, p.type, p.unit,
+            -- FEATURE A — a MANUAL price (manual_cost_per_unit) wins over the
+            -- Poster-synced cost_per_unit for the leaf unit cost. NULL manual
+            -- override falls back to the synced cost.
+            COALESCE(p.manual_cost_per_unit, p.cost_per_unit) AS cost_per_unit
        FROM recipes r
        JOIN products p ON p.id = r.component_product_id
       WHERE r.product_id = $1

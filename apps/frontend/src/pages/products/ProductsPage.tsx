@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertTriangle, Plus, ScrollText, Search, X } from 'lucide-react';
+import { AlertTriangle, Pencil, Plus, ScrollText, Search, X } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -28,9 +28,11 @@ import {
   effectiveType,
   isResaleCategory,
 } from '@/lib/productCategory';
+import { formatSom } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import type { Product, Unit } from '@/lib/types';
 import { ProductFormDialog } from './ProductFormDialog';
+import { ProductCostDialog } from './ProductCostDialog';
 
 /**
  * The three filter dimensions all live inside the Filter popover now
@@ -76,6 +78,26 @@ function RecipelessBadge() {
 }
 
 /**
+ * FEATURE A — small indigo pill marking a hand-entered (manual) price, so a
+ * card with a manual override reads clearly as "not from Poster".
+ */
+function ManualPriceBadge() {
+  return (
+    <span
+      className="inline-flex items-center whitespace-nowrap rounded-full border border-indigo-500/40 bg-indigo-500/10 px-2 py-0.5 text-[11px] font-medium text-indigo-700 dark:text-indigo-300"
+      title="Narx qo‘lda kiritilgan (Poster narxidan emas)"
+    >
+      qo‘lda
+    </span>
+  );
+}
+
+/** FEATURE A — effective per-unit cost: manual override wins over Poster. */
+function effectiveCost(p: Product): number | null {
+  return p.manual_cost_per_unit ?? p.cost_per_unit ?? null;
+}
+
+/**
  * M2 — products list. EPIC 1 redesign:
  *   1.1 a single multi-select filter popover carrying ALL three dimensions —
  *       Tur (type) · Kategoriya (searchable, derived) · Birlik (unit) — next
@@ -95,6 +117,12 @@ export function ProductsPage() {
   const { user } = useAuth();
   const canCreate =
     user?.role === 'pm' || user?.role === 'raw_warehouse_manager';
+  // FEATURE A — only pm / production_manager may edit the manual cost.
+  const canEditCost =
+    user?.role === 'pm' || user?.role === 'production_manager';
+
+  // The product whose cost dialog is open (null = closed).
+  const [costProduct, setCostProduct] = useState<Product | null>(null);
 
   const bp = useBreakpoint();
   const showMobileCards = bp === 'xs';
@@ -420,19 +448,48 @@ export function ProductsPage() {
                     {needsRecipeWarn(p) && <RecipelessBadge />}
                   </div>
                 ),
-                fields: [{ label: 'Birlik', value: UNIT_LABELS[p.unit] }],
-                footer:
-                  effectiveType(p) !== 'raw' ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="w-full"
-                      onClick={() => openRecipe(p)}
-                    >
-                      <ScrollText className="size-4" aria-hidden="true" />
-                      Retsept
-                    </Button>
-                  ) : undefined,
+                fields: [
+                  { label: 'Birlik', value: UNIT_LABELS[p.unit] },
+                  {
+                    label: 'Narx',
+                    value: (
+                      <span className="flex items-center gap-1.5">
+                        <span className="tabular-nums">
+                          {effectiveCost(p) != null
+                            ? formatSom(effectiveCost(p) as number)
+                            : '—'}
+                        </span>
+                        {p.manual_cost_per_unit != null && <ManualPriceBadge />}
+                      </span>
+                    ),
+                  },
+                ],
+                footer: (
+                  <div className="flex flex-col gap-2">
+                    {effectiveType(p) !== 'raw' && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full"
+                        onClick={() => openRecipe(p)}
+                      >
+                        <ScrollText className="size-4" aria-hidden="true" />
+                        Retsept
+                      </Button>
+                    )}
+                    {canEditCost && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="w-full"
+                        onClick={() => setCostProduct(p)}
+                      >
+                        <Pencil className="size-4" aria-hidden="true" />
+                        Narxni tahrirlash
+                      </Button>
+                    )}
+                  </div>
+                ),
               };
             })}
           />
@@ -494,7 +551,34 @@ export function ProductsPage() {
                               <dt className="text-muted-foreground">Birlik</dt>
                               <dd>{UNIT_LABELS[p.unit]}</dd>
                             </div>
+                            <div className="min-w-0">
+                              <dt className="text-muted-foreground">Narx</dt>
+                              <dd className="flex items-center gap-1.5">
+                                <span className="truncate tabular-nums">
+                                  {effectiveCost(p) != null
+                                    ? formatSom(effectiveCost(p) as number)
+                                    : '—'}
+                                </span>
+                                {p.manual_cost_per_unit != null && (
+                                  <ManualPriceBadge />
+                                )}
+                              </dd>
+                            </div>
                           </dl>
+                          {canEditCost && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="-mt-1 h-7 w-fit self-start px-2 text-xs text-muted-foreground hover:text-foreground"
+                              onClick={() => setCostProduct(p)}
+                            >
+                              <Pencil
+                                className="size-3.5"
+                                aria-hidden="true"
+                              />
+                              Narx
+                            </Button>
+                          )}
                           {effectiveType(p) !== 'raw' && (
                             <Button
                               variant="outline"
@@ -532,6 +616,19 @@ export function ProductsPage() {
         <ProductFormDialog
           open={createOpen}
           onOpenChange={setCreateOpen}
+          onSaved={() => {
+            refetch();
+          }}
+        />
+      )}
+
+      {canEditCost && costProduct && (
+        <ProductCostDialog
+          product={costProduct}
+          open={costProduct !== null}
+          onOpenChange={(open) => {
+            if (!open) setCostProduct(null);
+          }}
           onSaved={() => {
             refetch();
           }}

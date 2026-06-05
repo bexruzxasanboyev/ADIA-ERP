@@ -205,6 +205,11 @@ function rawUnitCostFromLine(line: {
  * raw ingredient's `poster_ingredient_id`. A no-op when no raw row matches
  * (the ingredient is not yet seeded). Idempotent — a re-run overwrites with
  * the freshest derived value.
+ *
+ * FEATURE A — when a MANUAL price is pinned (`manual_cost_per_unit IS NOT
+ * NULL`) the sync MUST NOT touch the cost: the manager's price wins and must
+ * survive re-sync. The `AND manual_cost_per_unit IS NULL` guard leaves those
+ * rows untouched (the effective cost is COALESCE(manual, synced) at read time).
  */
 async function setRawIngredientCost(
   posterIngredientId: number,
@@ -213,7 +218,8 @@ async function setRawIngredientCost(
   await query(
     `UPDATE products
         SET cost_per_unit = $2
-      WHERE poster_ingredient_id = $1 AND type = 'raw'`,
+      WHERE poster_ingredient_id = $1 AND type = 'raw'
+        AND manual_cost_per_unit IS NULL`,
     [posterIngredientId, costPerUnit],
   );
 }

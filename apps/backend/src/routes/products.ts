@@ -58,6 +58,16 @@ type ProductRow = {
   category_name: string | null;
   /** EXISTS flag — true when the product has at least one row in `recipes`. */
   has_recipe: boolean;
+  /**
+   * FEATURE A — the Poster-synced unit cost (so'm per unit), or NULL. Refreshed
+   * on every sync; overridden by `manual_cost_per_unit` when that is set.
+   */
+  cost_per_unit: string | number | null;
+  /**
+   * FEATURE A — the MANUAL unit-cost override (so'm per unit), or NULL. When
+   * non-null it WINS over `cost_per_unit` everywhere and survives re-sync.
+   */
+  manual_cost_per_unit: string | number | null;
   is_active: boolean;
   created_at: Date;
   updated_at: Date;
@@ -112,6 +122,7 @@ const PRODUCT_SELECT = `SELECT p.id, p.name, p.type, p.unit, p.sku,
     p.poster_ingredient_id, p.poster_product_id, p.category_id,
     c.name AS category_name,
     EXISTS (SELECT 1 FROM recipes r WHERE r.product_id = p.id) AS has_recipe,
+    p.cost_per_unit, p.manual_cost_per_unit,
     p.is_active, p.created_at, p.updated_at
   FROM products p
   LEFT JOIN categories c ON c.id = p.category_id`;
@@ -200,7 +211,15 @@ productsRouter.post(
     // A manually-created product is never assigned a Poster category here, so
     // category_name is always NULL — the create endpoint does not set category_id.
     // A brand-new product has no recipe rows yet, so has_recipe is always false.
-    const created: ProductRow = { ...inserted, category_name: null, has_recipe: false };
+    // A brand-new product has no cost yet (Poster sync sets cost_per_unit; the
+    // manual override is opt-in) — both cost columns start NULL.
+    const created: ProductRow = {
+      ...inserted,
+      category_name: null,
+      has_recipe: false,
+      cost_per_unit: null,
+      manual_cost_per_unit: null,
+    };
     await writeAudit(poolRunner, {
       actorUserId: principal.userId,
       action: 'product.create',
@@ -277,6 +296,69 @@ productsRouter.patch(
     res
       .status(200)
       .json({ id: productId, recipe_yield: Number(rows[0]!.recipe_yield) });
+  }),
+);
+
+// PATCH /api/products/:id/cost  — FEATURE A (editable MANUAL price).
+//
+// Pin a manual unit cost (so'm per unit) that OVERRIDES Poster's synced
+// cost_per_unit everywhere (the cost roll-up reads COALESCE(manual, synced))
+// and SURVIVES re-sync (seedSync only updates cost_per_unit when manual IS
+// NULL). Body `{ cost_per_unit: number > 0 | null }` — `null` CLEARS the
+// override, falling back to the Poster cost. pm + production_manager only.
+productsRouter.patch(
+  '/:id/cost',
+  authenticate,
+  authorize('pm', 'production_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const productId = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+
+    // `cost_per_unit` is REQUIRED in the body but may be `null` (clear the
+    // override) or a number strictly greater than zero (pin a price). A price
+    // of exactly 0 is rejected — clearing is done with `null`, not 0.
+    const raw = body.cost_per_unit;
+    let manualCost: number | null;
+    if (raw === null) {
+      manualCost = null;
+    } else if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+      manualCost = raw;
+    } else {
+      throw AppError.validation(
+        'Field "cost_per_unit" must be a number greater than zero, or null to clear the override.',
+      );
+    }
+
+    const { rows } = await query<{
+      manual_cost_per_unit: string | null;
+      cost_per_unit: string | null;
+    }>(
+      `UPDATE products
+          SET manual_cost_per_unit = $2
+        WHERE id = $1
+      RETURNING manual_cost_per_unit, cost_per_unit`,
+      [productId, manualCost],
+    );
+    if (rows.length === 0) {
+      throw AppError.notFound('Product not found.');
+    }
+    const updated = rows[0]!;
+
+    await writeAudit(poolRunner, {
+      actorUserId: principal.userId,
+      action: 'product.cost.override',
+      entity: 'products',
+      entityId: productId,
+      payload: { manual_cost_per_unit: manualCost },
+    });
+
+    res.status(200).json({
+      id: productId,
+      manual_cost_per_unit:
+        updated.manual_cost_per_unit === null ? null : Number(updated.manual_cost_per_unit),
+      cost_per_unit: updated.cost_per_unit === null ? null : Number(updated.cost_per_unit),
+    });
   }),
 );
 

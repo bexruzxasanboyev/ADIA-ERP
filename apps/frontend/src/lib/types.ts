@@ -196,6 +196,17 @@ export interface Product {
    * legacy payloads don't all light up.
    */
   has_recipe?: boolean;
+  /**
+   * FEATURE A — per-unit cost (so'm). Two layers:
+   *   - `cost_per_unit`         — Poster-sourced cost, `null` when Poster has
+   *                               no costing for the product.
+   *   - `manual_cost_per_unit`  — hand-entered override by pm /
+   *                               production_manager, `null` when not set.
+   * The EFFECTIVE cost shown on a card is `manual_cost_per_unit ?? cost_per_unit`.
+   * Optional on the wire so older payloads stay strict-type-safe.
+   */
+  cost_per_unit?: number | null;
+  manual_cost_per_unit?: number | null;
 }
 
 /**
