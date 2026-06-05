@@ -48,9 +48,12 @@ export async function readFinalBom(
   runner: Runner,
   productId: number,
 ): Promise<BomLine[]> {
+  // TZ-3 — divide by the product's recipe_yield so consumption is per ONE
+  // finished piece, not per imported batch (mirrors readRecipeTree).
   const { rows: deco } = await runner.query<BomLine>(
-    `SELECT component_product_id, qty_per_unit
-       FROM recipes WHERE product_id = $1 AND stage = 'decoration'`,
+    `SELECT r.component_product_id, r.qty_per_unit / pp.recipe_yield AS qty_per_unit
+       FROM recipes r JOIN products pp ON pp.id = r.product_id
+      WHERE r.product_id = $1 AND r.stage = 'decoration'`,
     [productId],
   );
   if (deco.length > 0) {
@@ -58,7 +61,9 @@ export async function readFinalBom(
   }
   // Legacy / all-base recipe — read every line (old single-pass behaviour).
   const { rows: all } = await runner.query<BomLine>(
-    `SELECT component_product_id, qty_per_unit FROM recipes WHERE product_id = $1`,
+    `SELECT r.component_product_id, r.qty_per_unit / pp.recipe_yield AS qty_per_unit
+       FROM recipes r JOIN products pp ON pp.id = r.product_id
+      WHERE r.product_id = $1`,
     [productId],
   );
   return all.map(normalize);
@@ -74,8 +79,9 @@ export async function readBaseBom(
   productId: number,
 ): Promise<BomLine[]> {
   const { rows } = await runner.query<BomLine>(
-    `SELECT component_product_id, qty_per_unit
-       FROM recipes WHERE product_id = $1 AND stage = 'base'`,
+    `SELECT r.component_product_id, r.qty_per_unit / pp.recipe_yield AS qty_per_unit
+       FROM recipes r JOIN products pp ON pp.id = r.product_id
+      WHERE r.product_id = $1 AND r.stage = 'base'`,
     [productId],
   );
   return rows.map(normalize);
@@ -92,9 +98,10 @@ export async function findZagatovkaComponent(
   productId: number,
 ): Promise<BomLine | null> {
   const { rows } = await runner.query<BomLine>(
-    `SELECT r.component_product_id, r.qty_per_unit
+    `SELECT r.component_product_id, r.qty_per_unit / pp.recipe_yield AS qty_per_unit
        FROM recipes r
        JOIN products p ON p.id = r.component_product_id
+       JOIN products pp ON pp.id = r.product_id
       WHERE r.product_id = $1 AND r.stage = 'decoration' AND p.type = 'semi'
       ORDER BY r.component_product_id
       LIMIT 1`,
