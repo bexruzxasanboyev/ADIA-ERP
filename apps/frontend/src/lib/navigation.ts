@@ -13,7 +13,6 @@ import {
   ShoppingCart,
   TrendingUp,
   BookOpen,
-  CircleUser,
   Wallet,
   ReceiptText,
   Banknote,
@@ -260,15 +259,10 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         icon: UserCog,
         roles: ['pm'],
       },
-      {
-        // EPIC 3 — self-service "Profil" sahifasi: har bir
-        // foydalanuvchi o'z hisobini ko'radi (Telegram self-link,
-        // parol o'zgartirish). PM-only EMAS — barcha rollar uchun.
-        path: '/profile',
-        label: 'Profil',
-        icon: CircleUser,
-        roles: ALL_ROLES,
-      },
+      // NOTE — "Profil" is intentionally NOT a reference TAB: it already has a
+      // dedicated link on the right of the global header (AppLayout), so
+      // listing it here too rendered "Profil" twice (centre tab + right link).
+      // The header link is the single entry point to /profile.
     ],
   },
 ];
