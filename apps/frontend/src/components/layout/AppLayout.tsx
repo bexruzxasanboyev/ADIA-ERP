@@ -1,4 +1,5 @@
-import { Link, Outlet, useLocation } from 'react-router-dom';
+import { useEffect } from 'react';
+import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { CakeSlice, CircleUser } from 'lucide-react';
 import { AssistantButton } from './AssistantButton';
 import { LocationSwitcher } from './LocationSwitcher';
@@ -41,6 +42,41 @@ function AppLayoutShell() {
   const centerSlot = useHeaderCenterContent();
   const actionsSlot = useHeaderActionsContent();
   const location = useLocation();
+  const navigate = useNavigate();
+
+  // ESC → Bosh sahifa (owner request). A global shortcut, but it must NOT
+  // hijack ESC when it is doing its normal job: closing an open dialog /
+  // popover / dropdown, or clearing/blurring a focused text field. We bail in
+  // those cases and only navigate from a "resting" page. Already on /home → no-op.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      // A Radix overlay (Dialog/Popover/Select/DropdownMenu/Tooltip) is open —
+      // let it consume ESC to close itself instead of navigating away.
+      if (
+        document.querySelector(
+          '[role="dialog"],[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper],[data-state="open"]',
+        )
+      ) {
+        return;
+      }
+      // Don't yank focus away from someone mid-typing.
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === 'INPUT' ||
+          t.tagName === 'TEXTAREA' ||
+          t.tagName === 'SELECT' ||
+          t.isContentEditable)
+      ) {
+        return;
+      }
+      if (location.pathname === '/home') return;
+      navigate('/home');
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [navigate, location.pathname]);
 
   // Restore the centred sub-tabs — but only for tabbed groups, and the
   // page-supplied center slot (the dashboard greeting/range) always wins
