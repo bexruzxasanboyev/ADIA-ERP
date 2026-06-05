@@ -30,6 +30,7 @@ import {
   cancelRequest,
   cancelRequestByFulfiller,
   createRequest,
+  receiveShipment,
   rejectShipment,
   REPLENISHMENT_COLUMNS,
   returnShipment,
@@ -212,13 +213,18 @@ replenishmentRouter.get(
 
 // POST /api/replenishment
 //
-// Owner-approved 2026-05-28: PM is read-and-recommend; only the central
-// warehouse manager raises manual requests (the auto-scan worker raises
-// the rest with actor=null). PM hits 403 here — no super-admin bypass.
+// Owner-approved 2026-05-28: PM is read-and-recommend; the central warehouse
+// manager and store managers raise manual requests (the auto-scan worker
+// raises the rest with actor=null). PM hits 403 here — no super-admin bypass.
+//
+// 2026-06-05: a `store_manager` may now create a request, but ONLY for their
+// OWN store — `requireLocationOperator(principal, requester_location_id)`
+// enforces that they cannot request on behalf of another location. The central
+// warehouse manager keeps the broad reach it had (any requester it owns).
 replenishmentRouter.post(
   '/',
   authenticate,
-  authorizeWrite('central_warehouse_manager'),
+  authorizeWrite('store_manager', 'central_warehouse_manager'),
   asyncHandler(async (req, res) => {
     const principal = getPrincipal(req);
     const body = asObject(req.body);
@@ -226,6 +232,14 @@ replenishmentRouter.post(
     const requesterLocationId = requireId(body, 'requester_location_id');
     const qtyNeeded = requirePositiveNumber(body, 'qty_needed');
     const note = optionalString(body, 'note') ?? null;
+
+    // Location-scoping: a store_manager may only request FOR their own store.
+    // The central warehouse manager is the fulfilment hub and keeps the broad
+    // reach it had — it may raise a request on behalf of any downstream
+    // location. PM is already 403'd by authorizeWrite above.
+    if (principal.role === 'store_manager') {
+      await requireLocationOperator(principal, requesterLocationId);
+    }
 
     const row = await createRequest({
       productId,
@@ -235,6 +249,89 @@ replenishmentRouter.post(
       note,
     });
     res.status(201).json({ request: row });
+  }),
+);
+
+// POST /api/replenishment/batch
+//
+// Batch create — one request per item, reusing createRequest. A duplicate
+// open request for a `(product, location)` (invariant 2) is reported as
+// `status: 'exists'` per item rather than aborting the whole batch; any other
+// per-item failure is `status: 'error'` with a message. Always returns 200
+// with a `results` array so the UI can render a per-row outcome.
+//
+// For a store_manager the requester is FORCED to their own store (the body's
+// `requester_location_id` is ignored). The central warehouse manager may pass
+// `requester_location_id` (validated against its owned locations).
+replenishmentRouter.post(
+  '/batch',
+  authenticate,
+  authorizeWrite('store_manager', 'central_warehouse_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const body = asObject(req.body);
+
+    const itemsRaw = body.items;
+    if (!Array.isArray(itemsRaw) || itemsRaw.length === 0) {
+      throw AppError.validation('Field "items" must be a non-empty array.');
+    }
+
+    // Resolve the requester location. store_manager => FORCED to own store
+    // (the body's requester_location_id is ignored). The central warehouse
+    // manager is the fulfilment hub and may pass any downstream location.
+    let requesterLocationId: number;
+    if (principal.role === 'store_manager') {
+      const own = principal.activeLocationId ?? principal.locationIds[0] ?? null;
+      if (own === null) {
+        throw AppError.forbidden('Your account has no assigned store to request for.');
+      }
+      requesterLocationId = own;
+    } else {
+      requesterLocationId = requireId(body, 'requester_location_id');
+    }
+
+    const note = optionalString(body, 'note') ?? null;
+
+    type BatchResult = {
+      product_id: number;
+      status: 'created' | 'exists' | 'error';
+      request_id?: number;
+      message?: string;
+    };
+    const results: BatchResult[] = [];
+
+    for (const itemRaw of itemsRaw) {
+      let productId: number | undefined;
+      try {
+        const item = asObject(itemRaw);
+        productId = requireId(item, 'product_id');
+        const qtyNeeded = requirePositiveNumber(item, 'qty_needed');
+        const row = await createRequest({
+          productId,
+          requesterLocationId,
+          qtyNeeded,
+          actorUserId: principal.userId,
+          note,
+        });
+        results.push({ product_id: productId, status: 'created', request_id: row.id });
+      } catch (err) {
+        if (err instanceof AppError && err.code === 'OPEN_REQUEST_EXISTS') {
+          results.push({
+            product_id: productId ?? 0,
+            status: 'exists',
+            message: 'An open request already exists for this product at your location.',
+          });
+        } else {
+          results.push({
+            product_id: productId ?? 0,
+            status: 'error',
+            message: err instanceof AppError ? err.message : 'Failed to create request.',
+          });
+        }
+      }
+    }
+
+    res.status(200).json({ results });
   }),
 );
 
@@ -391,6 +488,67 @@ replenishmentRouter.post(
       requestId: id,
       qtyAccepted: qtyAcceptedRaw,
       note,
+      actorUserId: principal.userId,
+    });
+    res.status(200).json({ request: updated });
+  }),
+);
+
+// POST /api/replenishment/:id/receive
+//   body: { received_qty: number>=0, brak_qty?: number>=0, brak_reason?: string }
+//
+// 0045 — the requester operator confirms physical receipt and (optionally)
+// declares a `brak` (defect) split. `received_qty` stays in the store's
+// sellable stock; `brak_qty` + any un-received remainder is counter-shipped
+// back to the target. brak is recorded and is NOT sellable.
+replenishmentRouter.post(
+  '/:id/receive',
+  authenticate,
+  authorizeWrite(
+    'raw_warehouse_manager',
+    'production_manager',
+    'supply_manager',
+    'central_warehouse_manager',
+    'store_manager',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+
+    const receivedQtyRaw = body.received_qty;
+    if (
+      typeof receivedQtyRaw !== 'number' ||
+      !Number.isFinite(receivedQtyRaw) ||
+      receivedQtyRaw < 0
+    ) {
+      throw AppError.validation('Field "received_qty" must be a number >= 0.');
+    }
+    const brakQtyRaw = body.brak_qty;
+    let brakQty = 0;
+    if (brakQtyRaw !== undefined && brakQtyRaw !== null) {
+      if (typeof brakQtyRaw !== 'number' || !Number.isFinite(brakQtyRaw) || brakQtyRaw < 0) {
+        throw AppError.validation('Field "brak_qty" must be a number >= 0.');
+      }
+      brakQty = brakQtyRaw;
+    }
+    const brakReason = optionalString(body, 'brak_reason') ?? null;
+
+    const { rows } = await query<{ requester_location_id: number }>(
+      'SELECT requester_location_id FROM replenishment_requests WHERE id = $1',
+      [id],
+    );
+    const existing = rows[0];
+    if (existing === undefined) {
+      throw AppError.notFound('Replenishment request not found.');
+    }
+    await requireLocationOperator(principal, Number(existing.requester_location_id));
+
+    const updated = await receiveShipment({
+      requestId: id,
+      receivedQty: receivedQtyRaw,
+      brakQty,
+      brakReason,
       actorUserId: principal.userId,
     });
     res.status(200).json({ request: updated });

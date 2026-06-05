@@ -110,13 +110,17 @@ export type ReplenishmentRow = {
   reject_reason: string | null;
   /** 0024 — HOW the request reached terminal. NULL while open. */
   closure_reason: ReplenishmentClosureReason | null;
+  /** 0045 — defective qty refused on receipt (NULL until receive). */
+  brak_qty: number | null;
+  /** 0045 — free-form reason for the brak (NULL when no brak). */
+  brak_reason: string | null;
 };
 
 export const REPLENISHMENT_COLUMNS = `id, product_id, requester_location_id,
   target_location_id, qty_needed, status, production_order_id, purchase_order_id,
   shipment_movement_id, note, created_by, created_at, updated_at, closed_at,
   assigned_to_user_id, qty_accepted, qty_returned, accept_note, reject_reason,
-  closure_reason`;
+  closure_reason, brak_qty, brak_reason`;
 
 /**
  * Possible outcomes of one `advance()` call. `advanced=false` means a wait
@@ -645,6 +649,147 @@ export async function returnShipment(opts: {
         qty_returned: opts.qtyReturned,
         cumulative_qty_returned: totalReturned,
         remaining_qty_accepted: newAccepted,
+      },
+    });
+    return updated;
+  });
+}
+
+/**
+ * 0045 — Receive a shipment with an optional `brak` (defect) split.
+ *
+ * Model (consistent with the existing accept flow — Variant 2):
+ *   `SHIP_TO_REQUESTER -> CLOSED` already credited the FULL shipped qty into
+ *   the requester store's stock and set status=CLOSED. `receiveShipment` is the
+ *   physical-receipt confirmation the requester operator performs:
+ *
+ *     * `received_qty`  — the GOOD qty the store keeps as sellable stock. It is
+ *                          already in the store's stock (the SHIP step put it
+ *                          there), so no movement is applied for it.
+ *     * `brak_qty`      — the DEFECTIVE qty. It must NOT remain in sellable
+ *                          stock, so it is counter-shipped back to the
+ *                          target_location_id (reason='transfer') and recorded
+ *                          in `brak_qty` / `brak_reason`.
+ *     * any remainder   — `shipped - received_qty - brak_qty` (e.g. a short
+ *                          delivery) is ALSO counter-shipped back to target so
+ *                          the store ends up holding exactly `received_qty`.
+ *
+ * The shipped qty is `qty_needed` (single-ship MVP). `received_qty + brak_qty`
+ * may not exceed it. The closure_reason is `accepted_full` when the store keeps
+ * the whole shipment with zero brak, else `accepted_partial`.
+ *
+ * Idempotent: a second call on a request that already has `closure_reason`
+ * set returns the row unchanged — a double-tap cannot double-move stock.
+ */
+export async function receiveShipment(opts: {
+  requestId: number;
+  receivedQty: number;
+  brakQty?: number;
+  brakReason?: string | null;
+  actorUserId: number | null;
+}): Promise<ReplenishmentRow> {
+  const brakQty = opts.brakQty ?? 0;
+  if (!Number.isFinite(opts.receivedQty) || opts.receivedQty < 0) {
+    throw AppError.validation('received_qty must be a number >= 0.');
+  }
+  if (!Number.isFinite(brakQty) || brakQty < 0) {
+    throw AppError.validation('brak_qty must be a number >= 0.');
+  }
+  const brakReasonClean =
+    typeof opts.brakReason === 'string' && opts.brakReason.trim() !== ''
+      ? opts.brakReason.trim()
+      : null;
+  if (brakQty > 0 && brakReasonClean === null) {
+    throw AppError.validation('brak_reason is required when brak_qty > 0.');
+  }
+  return withTransaction(async (tx) => {
+    const order = await lockRequest(tx, opts.requestId);
+    if (order.closure_reason !== null) {
+      // Already finalised — second tap is a no-op (idempotent).
+      return order;
+    }
+    if (order.status !== 'CLOSED') {
+      throw new AppError(
+        'INVALID_TRANSITION',
+        `Cannot receive a shipment for a request in status ${order.status} — wait for SHIP_TO_REQUESTER to land.`,
+      );
+    }
+    if (order.target_location_id === null) {
+      throw AppError.internal('Cannot receive — request has no target_location_id.');
+    }
+    const shippedQty = Number(order.qty_needed);
+    if (opts.receivedQty + brakQty > shippedQty) {
+      throw AppError.validation(
+        `received_qty (${opts.receivedQty}) + brak_qty (${brakQty}) cannot exceed shipped qty (${shippedQty}).`,
+      );
+    }
+    // Everything the store does NOT keep as good stock is counter-shipped back
+    // to the target: the brak AND any un-received remainder. The store's stock
+    // (credited in full by the SHIP step) thereby settles to exactly
+    // `received_qty`.
+    const returnToTarget = shippedQty - opts.receivedQty;
+    if (returnToTarget > 0) {
+      await applyMovement(
+        {
+          productId: order.product_id,
+          fromLocationId: order.requester_location_id,
+          toLocationId: order.target_location_id,
+          qty: returnToTarget,
+          reason: 'transfer',
+          actorUserId: opts.actorUserId,
+          replenishmentId: order.id,
+          note:
+            brakQty > 0
+              ? `receive: brak ${brakQty} (${brakReasonClean}); remainder ${returnToTarget - brakQty}`
+              : 'receive: un-received remainder',
+        },
+        tx,
+      );
+    }
+    const closureReason: ReplenishmentClosureReason =
+      returnToTarget === 0 ? 'accepted_full' : 'accepted_partial';
+
+    const { rows } = await tx.query<ReplenishmentRow>(
+      `UPDATE replenishment_requests
+         SET qty_accepted   = $2,
+             qty_returned   = $3,
+             brak_qty       = $4,
+             brak_reason    = $5,
+             closure_reason = $6
+       WHERE id = $1
+       RETURNING ${REPLENISHMENT_COLUMNS}`,
+      [
+        opts.requestId,
+        opts.receivedQty,
+        returnToTarget > 0 ? returnToTarget : null,
+        brakQty,
+        brakReasonClean,
+        closureReason,
+      ],
+    );
+    const updated = rows[0];
+    if (updated === undefined) {
+      throw AppError.internal('Replenishment receive returned no row.');
+    }
+    await recordTransition(
+      tx,
+      opts.requestId,
+      'CLOSED',
+      'CLOSED',
+      `receive:${closureReason} received=${opts.receivedQty} brak=${brakQty}`,
+      opts.actorUserId,
+    );
+    await writeAudit(tx, {
+      actorUserId: opts.actorUserId,
+      action: 'replenishment.receive',
+      entity: 'replenishment_requests',
+      entityId: opts.requestId,
+      payload: {
+        closure_reason: closureReason,
+        received_qty: opts.receivedQty,
+        brak_qty: brakQty,
+        brak_reason: brakReasonClean,
+        returned_to_target: returnToTarget,
       },
     });
     return updated;

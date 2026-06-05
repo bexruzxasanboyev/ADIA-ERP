@@ -171,6 +171,14 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         roles: ['pm', 'store_manager'],
       },
       {
+        // Do'kon boshlig'ining asosiy ish joyi — qoldiq + so'rovlar +
+        // qabul qilish bitta toza sahifada (eski 398-qatorli ro'yxat o'rniga).
+        path: '/store-workflow',
+        label: 'Do‘kon ish joyi',
+        icon: ClipboardList,
+        roles: ['pm', 'store_manager'],
+      },
+      {
         path: '/replenishment',
         label: 'To‘ldirish so‘rovlari',
         icon: RefreshCw,

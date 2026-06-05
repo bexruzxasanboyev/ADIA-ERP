@@ -207,7 +207,7 @@ describe('POST /api/replenishment — validation + RBAC', () => {
     expect(res.body.error?.code).toBe('FORBIDDEN');
   });
 
-  it('a store_manager cannot create a request (403 — pm + central_warehouse_manager only)', async () => {
+  it('a store_manager may create a request for their OWN store (201)', async () => {
     const store = await makeLocation(ctx.db, { type: 'store' });
     const storeMgr = await makeUser(ctx.db, { role: 'store_manager', locationId: store });
     const product = await makeProduct(ctx.db, { type: 'finished' });
@@ -215,6 +215,19 @@ describe('POST /api/replenishment — validation + RBAC', () => {
       .post('/api/replenishment')
       .set('Authorization', `Bearer ${storeMgr.token}`)
       .send({ product_id: product, requester_location_id: store, qty_needed: 5 });
+    expect(res.status).toBe(201);
+    expect(res.body.request?.status).toBe('NEW');
+  });
+
+  it('a store_manager may NOT create a request for a foreign store (403)', async () => {
+    const ownStore = await makeLocation(ctx.db, { type: 'store' });
+    const foreignStore = await makeLocation(ctx.db, { type: 'store' });
+    const storeMgr = await makeUser(ctx.db, { role: 'store_manager', locationId: ownStore });
+    const product = await makeProduct(ctx.db, { type: 'finished' });
+    const res = await request(ctx.app)
+      .post('/api/replenishment')
+      .set('Authorization', `Bearer ${storeMgr.token}`)
+      .send({ product_id: product, requester_location_id: foreignStore, qty_needed: 5 });
     expect(res.status).toBe(403);
   });
 

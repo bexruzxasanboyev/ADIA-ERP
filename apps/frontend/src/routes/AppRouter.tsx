@@ -27,6 +27,7 @@ import { ProductionPage } from '@/pages/chain/ProductionPage';
 import { SupplyPage } from '@/pages/chain/SupplyPage';
 import { CentralWarehousePage } from '@/pages/chain/CentralWarehousePage';
 import { StoresPage } from '@/pages/chain/StoresPage';
+import { StoreWorkflowPage } from '@/pages/stores/StoreWorkflowPage';
 import { ReceiptsPage } from '@/pages/cashier/ReceiptsPage';
 import { CashShiftsPage } from '@/pages/cashier/CashShiftsPage';
 import { SafeExpensesPage } from '@/pages/cashier/SafeExpensesPage';
@@ -128,6 +129,18 @@ export function AppRouter() {
               allow={['pm', 'store_manager', 'central_warehouse_manager']}
             >
               <StoresPage />
+            </RoleRoute>
+          }
+        />
+
+        {/* Do'kon ish joyi — clean, store-scoped workflow page (stock +
+            sent/incoming requests + receive). The store manager lands here;
+            PM gets a store picker. Backend RBAC-scopes every endpoint. */}
+        <Route
+          path="/store-workflow"
+          element={
+            <RoleRoute allow={['pm', 'store_manager']}>
+              <StoreWorkflowPage />
             </RoleRoute>
           }
         />
