@@ -176,9 +176,35 @@ export async function readRecipeTree(
   runner: Runner,
   productId: number,
 ): Promise<RecipeTree> {
-  const nodes = await buildChildren(runner, productId, new Set([productId]), 0);
+  const raw = await buildChildren(runner, productId, new Set([productId]), 0);
+  // Explode the per-LEVEL tree into a PER-1-FINISHED-PIECE view so a nested
+  // prepack shows how much of it goes into ONE piece, not its own per-kg
+  // basis — every qty/cost is scaled by the cumulative quantity down its path.
+  const nodes = explodePerRoot(raw, 1);
   const total = sumLineCosts(nodes);
   return { product_id: productId, nodes, total_cost: round2OrNull(total) };
+}
+
+/**
+ * TZ-3 — turn a per-level recipe tree into a per-1-root-product ("exploded")
+ * view. Each node's qty / brutto / netto / line_cost is multiplied by the
+ * cumulative quantity from the root, and `total_cost` becomes the node's own
+ * per-piece contribution so a section header agrees with the sum of its rows.
+ * `unit_cost` stays per-component-unit (a position-independent reference).
+ */
+function explodePerRoot(nodes: readonly RecipeNode[], mult: number): RecipeNode[] {
+  return nodes.map((n) => {
+    const scaledLine = n.line_cost === null ? null : round2OrNull(n.line_cost * mult);
+    return {
+      ...n,
+      qty_per_unit: n.qty_per_unit * mult,
+      brutto: n.brutto === null ? null : n.brutto * mult,
+      netto: n.netto === null ? null : n.netto * mult,
+      line_cost: scaledLine,
+      total_cost: scaledLine,
+      children: explodePerRoot(n.children, mult * n.qty_per_unit),
+    };
+  });
 }
 
 async function buildChildren(
