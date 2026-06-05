@@ -262,6 +262,12 @@ export interface RecipeResponse {
   recipe: RecipeLine[];
   tree: RecipeNode[];
   total_cost: number | null;
+  /**
+   * TZ-3 — how many finished pieces one full recipe yields. The tree + cost
+   * above are already divided by this (per-piece). Editable by pm /
+   * production_manager via PATCH /api/products/:id/recipe-yield.
+   */
+  recipe_yield: number;
 }
 
 /** Stock row for a (location, product) pair — phase-1-mvp.md §4.4. */

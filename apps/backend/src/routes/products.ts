@@ -228,9 +228,10 @@ productsRouter.get(
   authorize('pm', 'production_manager'),
   asyncHandler(async (req, res) => {
     const productId = parseIdParam(req.params.id, 'id');
-    const exists = await query<{ id: number }>('SELECT id FROM products WHERE id = $1', [
-      productId,
-    ]);
+    const exists = await query<{ recipe_yield: string | number }>(
+      'SELECT recipe_yield FROM products WHERE id = $1',
+      [productId],
+    );
     if (exists.rows.length === 0) {
       throw AppError.notFound('Product not found.');
     }
@@ -245,7 +246,37 @@ productsRouter.get(
       recipe: rows,
       tree: tree.nodes,
       total_cost: tree.total_cost,
+      // TZ-3 — how many finished pieces one full recipe yields. The cost/tree
+      // above are already per-piece (divided by this). Default 1.
+      recipe_yield: Number(exists.rows[0]!.recipe_yield),
     });
+  }),
+);
+
+// PATCH /api/products/:id/recipe-yield  — TZ-3.
+//
+// Set how many finished UNITS one full recipe produces. The cost roll-up and
+// the requisition math divide qty_per_unit by this, so it is the manager's
+// confirmation (or correction) of the AI yield estimate for a batch recipe.
+// pm + production_manager only.
+productsRouter.patch(
+  '/:id/recipe-yield',
+  authenticate,
+  authorize('pm', 'production_manager'),
+  asyncHandler(async (req, res) => {
+    const productId = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+    const yieldVal = requirePositiveNumber(body, 'recipe_yield');
+    const { rows } = await query<{ recipe_yield: string }>(
+      `UPDATE products SET recipe_yield = $2 WHERE id = $1 RETURNING recipe_yield`,
+      [productId, yieldVal],
+    );
+    if (rows.length === 0) {
+      throw AppError.notFound('Product not found.');
+    }
+    res
+      .status(200)
+      .json({ id: productId, recipe_yield: Number(rows[0]!.recipe_yield) });
   }),
 );
 

@@ -90,9 +90,12 @@ export function groupRecipeByStage(
       const nodes = byStage.get(stage) ?? [];
       let subtotal: number | null = null;
       for (const n of nodes) {
-        const cost = n.total_cost ?? n.line_cost;
-        if (cost !== null && cost !== undefined) {
-          subtotal = (subtotal ?? 0) + cost;
+        // The stage subtotal is the sum of each line's CONTRIBUTION to the
+        // recipe (line_cost = qty × unit_cost), NOT the component's per-unit
+        // cost (total_cost) — otherwise a cheap pinch of a pricey raw inflates
+        // the section to that raw's per-kg price.
+        if (n.line_cost !== null && n.line_cost !== undefined) {
+          subtotal = (subtotal ?? 0) + n.line_cost;
         }
       }
       return { stage, nodes, subtotal };
