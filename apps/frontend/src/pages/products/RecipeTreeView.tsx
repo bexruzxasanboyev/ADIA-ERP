@@ -1,9 +1,9 @@
 import { CornerDownRight } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
-import { formatPlainNumber, formatQty, formatSom } from '@/lib/format';
+import { formatPlainNumber, formatQty, formatQtyUnit, formatSom } from '@/lib/format';
 import { cn } from '@/lib/utils';
-import { PRODUCT_TYPE_LABELS, UNIT_LABELS } from '@/lib/labels';
+import { PRODUCT_TYPE_LABELS } from '@/lib/labels';
 import type { ProductType, RecipeNode } from '@/lib/types';
 
 /**
@@ -118,7 +118,7 @@ function ComponentRow({ node }: ComponentRowProps) {
         )}
       </div>
       <span className="text-right tabular-nums text-muted-foreground">
-        {formatQty(node.qty_per_unit)} {UNIT_LABELS[node.unit]}
+        {formatQtyUnit(node.qty_per_unit, node.unit)}
       </span>
       <span className="text-right tabular-nums text-muted-foreground">
         {weightCell(node.brutto)}

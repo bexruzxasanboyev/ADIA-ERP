@@ -27,6 +27,35 @@ export function formatQty(value: number): string {
   return numberFormatter.format(value);
 }
 
+const gramFormatter = new Intl.NumberFormat('uz-UZ', {
+  maximumFractionDigits: 1,
+});
+
+/**
+ * Mahsulot retsepti TZ §1 — display a quantity in GRAMS with the kg/l value
+ * in parentheses: "310 gr (0.31 kg)" / "500 ml (0.5 l)". Weight/volume are
+ * stored canonically in kg/l so we scale ×1000 for the gram/ml figure;
+ * pieces (`pcs`) have no gram equivalent and render "24 dona". This is the
+ * single helper every quantity surface should use so the "[gramm] gr
+ * ([kg] kg)" format stays identical app-wide.
+ */
+export function formatQtyUnit(value: number, unit: string): string {
+  if (!Number.isFinite(value)) return '—';
+  switch (unit) {
+    case 'kg':
+      return `${gramFormatter.format(value * 1000)} gr (${formatQty(value)} kg)`;
+    case 'l':
+      return `${gramFormatter.format(value * 1000)} ml (${formatQty(value)} l)`;
+    case 'g':
+      return `${gramFormatter.format(value)} gr (${formatQty(value / 1000)} kg)`;
+    case 'ml':
+      return `${gramFormatter.format(value)} ml (${formatQty(value / 1000)} l)`;
+    case 'pcs':
+    default:
+      return `${formatQty(value)} dona`;
+  }
+}
+
 /**
  * Format a plain number with local (uz-UZ) grouping and NO fractional
  * digits — for integer-ish counters (open POs, expected qty, below-min
