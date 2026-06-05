@@ -16,7 +16,12 @@ import { AppError } from '../errors/index.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize, authorizeWrite } from '../middleware/authorize.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
-import { getPrincipal, isSuperAdmin, requireLocationOperator } from '../lib/principal.js';
+import {
+  assertLocationAccess,
+  getPrincipal,
+  isSuperAdmin,
+  requireLocationOperator,
+} from '../lib/principal.js';
 import {
   asObject,
   optionalString,
@@ -25,11 +30,13 @@ import {
   requirePositiveNumber,
 } from '../lib/validate.js';
 import {
+  acceptByCentral,
   acceptShipment,
   advance,
   cancelRequest,
   cancelRequestByFulfiller,
   createRequest,
+  getProposalsForLocation,
   receiveShipment,
   rejectShipment,
   REPLENISHMENT_COLUMNS,
@@ -37,6 +44,7 @@ import {
   type ReplenishmentRow,
   type ReplenishmentStatus,
 } from '../services/replenishment.js';
+import { enqueuePosterReceiveWriteback } from '../services/posterWriteback.js';
 
 export const replenishmentRouter: Router = Router();
 
@@ -126,8 +134,12 @@ replenishmentRouter.get(
 );
 
 // GET /api/replenishment/:id  — embeds the transitions history.
+//
+// `:id(\\d+)` — the numeric constraint keeps this route from shadowing the
+// named GET routes (`/proposals`, `/incoming`) regardless of registration
+// order, so they resolve to their own handlers.
 replenishmentRouter.get(
-  '/:id',
+  '/:id(\\d+)',
   authenticate,
   authorize(
     'pm',
@@ -332,6 +344,286 @@ replenishmentRouter.post(
     }
 
     res.status(200).json({ results });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// AI auto-request — proposals (read) + approve (write)
+// ---------------------------------------------------------------------------
+
+// GET /api/replenishment/proposals?location_id=<store>
+//
+// Returns the AI top-up proposals for one store: every below-min product that
+// does not already have an open request. A store_manager may read only their
+// OWN store; pm sees any store (read-only).
+replenishmentRouter.get(
+  '/proposals',
+  authenticate,
+  authorize('pm', 'store_manager', 'central_warehouse_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const locationIdRaw = req.query.location_id;
+    if (typeof locationIdRaw !== 'string' || !/^\d+$/.test(locationIdRaw)) {
+      throw AppError.validation('Query "location_id" is required and must be a positive integer.');
+    }
+    const locationId = Number(locationIdRaw);
+
+    // RBAC: scoped roles may only read their own location's proposals.
+    if (!isSuperAdmin(principal)) {
+      assertLocationAccess(principal, locationId);
+    }
+
+    const proposals = await getProposalsForLocation(locationId);
+    res.status(200).json({ proposals });
+  }),
+);
+
+// POST /api/replenishment/proposals/approve
+//   body: { location_id, items: [{ product_id, qty }] }
+//
+// The boss "Hammasini tasdiqlash" — creates one request per item, reusing
+// createRequest. A duplicate open request (invariant 2) is reported per-item as
+// status:'exists' rather than aborting the batch. store_manager may approve only
+// for their OWN store; pm is 403 (read-only write guard).
+replenishmentRouter.post(
+  '/proposals/approve',
+  authenticate,
+  authorizeWrite('store_manager', 'central_warehouse_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const body = asObject(req.body);
+    const locationId = requireId(body, 'location_id');
+
+    const itemsRaw = body.items;
+    if (!Array.isArray(itemsRaw) || itemsRaw.length === 0) {
+      throw AppError.validation('Field "items" must be a non-empty array.');
+    }
+
+    // Location-scoping: the operator must own the target store.
+    await requireLocationOperator(principal, locationId);
+
+    type ApproveResult = {
+      product_id: number;
+      status: 'created' | 'exists' | 'error';
+      request_id?: number;
+      message?: string;
+    };
+    const results: ApproveResult[] = [];
+
+    for (const itemRaw of itemsRaw) {
+      let productId: number | undefined;
+      try {
+        const item = asObject(itemRaw);
+        productId = requireId(item, 'product_id');
+        const qty = requirePositiveNumber(item, 'qty');
+        const row = await createRequest({
+          productId,
+          requesterLocationId: locationId,
+          qtyNeeded: qty,
+          actorUserId: principal.userId,
+        });
+        results.push({ product_id: productId, status: 'created', request_id: row.id });
+      } catch (err) {
+        if (err instanceof AppError && err.code === 'OPEN_REQUEST_EXISTS') {
+          results.push({
+            product_id: productId ?? 0,
+            status: 'exists',
+            message: 'An open request already exists for this product at this location.',
+          });
+        } else {
+          results.push({
+            product_id: productId ?? 0,
+            status: 'error',
+            message: err instanceof AppError ? err.message : 'Failed to create request.',
+          });
+        }
+      }
+    }
+
+    res.status(200).json({ results });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Central warehouse — incoming queue + accept / reject (the connection)
+// ---------------------------------------------------------------------------
+
+// GET /api/replenishment/incoming?location_id=<central>
+//
+// Open requests whose target is this central warehouse, with the requester
+// store name. A central_warehouse_manager may read only their OWN warehouse;
+// pm sees any (read-only). A NEW request has no target yet — to keep the
+// connection visible from the moment a store raises it, we ALSO surface
+// untargeted NEW/CHECK_STORE_SUPPLIER requests raised by a store (the central
+// is the natural fulfiller). Targeted requests for OTHER warehouses are hidden.
+replenishmentRouter.get(
+  '/incoming',
+  authenticate,
+  authorize('pm', 'central_warehouse_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const locationIdRaw = req.query.location_id;
+    if (typeof locationIdRaw !== 'string' || !/^\d+$/.test(locationIdRaw)) {
+      throw AppError.validation('Query "location_id" is required and must be a positive integer.');
+    }
+    const centralId = Number(locationIdRaw);
+
+    if (!isSuperAdmin(principal)) {
+      assertLocationAccess(principal, centralId);
+    }
+
+    const { rows } = await query<{
+      id: number;
+      product_id: number;
+      product_name: string;
+      product_unit: string;
+      requester_location_id: number;
+      requester_location_name: string | null;
+      qty_needed: string;
+      status: string;
+      created_at: Date;
+    }>(
+      `SELECT r.id,
+              r.product_id,
+              p.name AS product_name,
+              p.unit AS product_unit,
+              r.requester_location_id,
+              rl.name AS requester_location_name,
+              r.qty_needed,
+              r.status,
+              r.created_at
+         FROM replenishment_requests r
+         JOIN products p ON p.id = r.product_id
+         LEFT JOIN locations rl ON rl.id = r.requester_location_id
+        WHERE r.status NOT IN ('CLOSED', 'CANCELLED')
+          AND (
+            r.target_location_id = $1
+            OR (
+              r.target_location_id IS NULL
+              AND r.status IN ('NEW', 'CHECK_STORE_SUPPLIER')
+              AND rl.type = 'store'
+            )
+          )
+        ORDER BY r.created_at ASC, r.id ASC`,
+      [centralId],
+    );
+
+    res.status(200).json({
+      items: rows.map((r) => ({
+        id: Number(r.id),
+        product_id: Number(r.product_id),
+        product_name: r.product_name,
+        unit: r.product_unit,
+        requester_location_id: Number(r.requester_location_id),
+        requester_location_name: r.requester_location_name,
+        qty_needed: Number(r.qty_needed),
+        status: r.status,
+        created_at: r.created_at,
+      })),
+    });
+  }),
+);
+
+// POST /api/replenishment/:id/accept-central
+//   body: { location_id }  (the acting central warehouse)
+//
+// The central warehouse ACCEPTS a store's request: pin the target to this
+// warehouse and ship to the store (reusing the engine). pm is 403 (write guard).
+replenishmentRouter.post(
+  '/:id/accept-central',
+  authenticate,
+  authorizeWrite('central_warehouse_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+    const centralId = requireId(body, 'location_id');
+
+    // The operator must own the acting central warehouse.
+    await requireLocationOperator(principal, centralId);
+
+    // Existence + the warehouse must actually be a central_warehouse.
+    const { rows } = await query<{ id: number; type: string }>(
+      `SELECT l.id, l.type
+         FROM replenishment_requests r
+         JOIN locations l ON l.id = $2
+        WHERE r.id = $1`,
+      [id, centralId],
+    );
+    const row = rows[0];
+    if (row === undefined) {
+      throw AppError.notFound('Replenishment request not found.');
+    }
+    if (row.type !== 'central_warehouse') {
+      throw AppError.validation('location_id must be a central_warehouse.');
+    }
+
+    const result = await acceptByCentral({
+      requestId: id,
+      centralLocationId: centralId,
+      actorUserId: principal.userId,
+    });
+    res.status(200).json({
+      request: result.request,
+      shipped: result.shipped,
+      reason: result.reason,
+    });
+  }),
+);
+
+// POST /api/replenishment/:id/reject-central
+//   body: { reason }
+//
+// The central warehouse REJECTS a store's request -> CANCELLED with reason.
+replenishmentRouter.post(
+  '/:id/reject-central',
+  authenticate,
+  authorizeWrite('central_warehouse_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+    const reason = optionalString(body, 'reason');
+    if (reason === undefined || reason.trim() === '') {
+      throw AppError.validation('Field "reason" is required for reject.');
+    }
+
+    // The acting principal must own a central warehouse that is (or would be)
+    // the fulfiller. Accept either the request's pinned target, or — for an
+    // untargeted store request — any central warehouse the operator owns.
+    const { rows } = await query<{
+      target_location_id: number | null;
+      requester_location_id: number;
+    }>(
+      `SELECT target_location_id, requester_location_id
+         FROM replenishment_requests WHERE id = $1`,
+      [id],
+    );
+    const existing = rows[0];
+    if (existing === undefined) {
+      throw AppError.notFound('Replenishment request not found.');
+    }
+    if (existing.target_location_id !== null) {
+      await requireLocationOperator(principal, Number(existing.target_location_id));
+    } else {
+      // Untargeted — the operator just needs to own a central warehouse.
+      const { rows: owned } = await query<{ id: number }>(
+        `SELECT id FROM locations
+          WHERE type = 'central_warehouse' AND id = ANY($1::bigint[])`,
+        [principal.locationIds],
+      );
+      if (owned.length === 0) {
+        throw AppError.forbidden('You do not manage a central warehouse for this request.');
+      }
+    }
+
+    const updated = await cancelRequest(
+      id,
+      principal.userId,
+      `rejected by central: ${reason.trim()}`,
+      'rejected',
+    );
+    res.status(200).json({ request: updated });
   }),
 );
 
@@ -551,6 +843,27 @@ replenishmentRouter.post(
       brakReason,
       actorUserId: principal.userId,
     });
+
+    // 0046 — Poster write-back (best-effort). The receive has already committed
+    // above; we reflect the GOOD received qty back to Poster (live when a write
+    // token is configured, otherwise queued for later). A Poster failure must
+    // NEVER roll back the local receive, so this is wrapped in try/catch and
+    // never throws out of the handler.
+    try {
+      await enqueuePosterReceiveWriteback({
+        requestId: id,
+        productId: updated.product_id,
+        locationId: updated.requester_location_id,
+        qty: receivedQtyRaw,
+        actorUserId: principal.userId,
+      });
+    } catch (err) {
+      console.error(
+        '[replenishment.receive] poster write-back failed (ignored):',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+
     res.status(200).json({ request: updated });
   }),
 );

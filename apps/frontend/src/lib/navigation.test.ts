@@ -47,7 +47,7 @@ describe('navSectionsForRole', () => {
     const paths = navSectionsForRole('store_manager').flatMap((s) =>
       s.items.map((i) => i.path),
     );
-    expect(paths).toContain('/stores');
+    expect(paths).toContain('/store-workflow');
     expect(paths).not.toContain('/raw-warehouse');
     expect(paths).not.toContain('/production');
   });
@@ -141,8 +141,17 @@ describe('resolveGroupLanding', () => {
   it('falls back to the first visible item when default is hidden', () => {
     const modules = NAV_SECTIONS.find((s) => s.key === 'modules')!;
     // store_manager cannot see /raw-warehouse — landing should be the
-    // first item they can see (Do'konlar = /stores).
-    expect(resolveGroupLanding(modules, 'store_manager')).toBe('/stores');
+    // first item they can see inside Modullar (To'ldirish so'rovlari).
+    expect(resolveGroupLanding(modules, 'store_manager')).toBe(
+      '/replenishment',
+    );
+  });
+
+  it('resolves the store group landing to the clean workflow page', () => {
+    const store = NAV_SECTIONS.find((s) => s.key === 'store')!;
+    expect(resolveGroupLanding(store, 'store_manager')).toBe(
+      '/store-workflow',
+    );
   });
 
   it('returns null when the role has no visible items in the group', () => {

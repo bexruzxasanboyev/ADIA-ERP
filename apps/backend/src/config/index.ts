@@ -50,6 +50,15 @@ export type AppConfig = {
      * constant-time compare. Empty -> the webhook endpoint refuses all calls.
      */
     readonly webhookSecret: string;
+    /**
+     * 0046 — WRITE-capable Poster credential. The default `token` is read-only
+     * (read-scope Personal Integration token); a write-back to Poster
+     * (createSupply / inventory adjustment) needs a token with write scope.
+     * Empty (the default) means write-back is DISABLED: the receive flow only
+     * enqueues the intent into `poster_writeback_queue` instead of calling
+     * Poster. Set `POSTER_WRITE_TOKEN` in `.env` to activate the live path.
+     */
+    readonly writeToken: string;
   };
   /**
    * Telegram bot identity used by the M9 outbox worker. Optional — when
@@ -230,6 +239,8 @@ export function loadConfig(): AppConfig {
       appSecret: optional('POSTER_APP_SECRET', ''),
       token: optional('POSTER_TOKEN', ''),
       webhookSecret: optional('POSTER_WEBHOOK_SECRET', ''),
+      // 0046 — write-scope token; empty -> write-back queued, not sent live.
+      writeToken: optional('POSTER_WRITE_TOKEN', ''),
     }),
     bot: Object.freeze({
       // M9 — Grammy bot token / username (see `.env` BOT_TOKEN / BOT_USERNAME).

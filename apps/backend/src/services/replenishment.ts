@@ -1608,6 +1608,174 @@ async function createPurchaseOrderRow(
 }
 
 // -----------------------------------------------------------------------------
+// Store workflow — AI proposals + central accept/reject (2026-06-05)
+// -----------------------------------------------------------------------------
+
+/** One AI top-up proposal for a below-min product at a store. */
+export type ReplenishmentProposal = {
+  product_id: number;
+  product_name: string;
+  unit: string;
+  current_qty: number;
+  min_level: number;
+  max_level: number;
+  /** The AI top-up = max_level - current_qty (always > 0). */
+  suggested_qty: number;
+};
+
+/**
+ * Build the AI auto-request proposals for one store: every below-min product
+ * (qty <= min_level, max_level > 0) that does NOT already have an open
+ * replenishment request (invariant 2 debounce). `suggested_qty` tops the store
+ * back up to `max_level`.
+ */
+export async function getProposalsForLocation(
+  locationId: number,
+): Promise<ReplenishmentProposal[]> {
+  const { rows } = await query<{
+    product_id: number;
+    product_name: string;
+    unit: string;
+    current_qty: string;
+    min_level: string;
+    max_level: string;
+  }>(
+    `SELECT s.product_id,
+            p.name AS product_name,
+            p.unit AS unit,
+            s.qty       AS current_qty,
+            s.min_level AS min_level,
+            s.max_level AS max_level
+       FROM stock s
+       JOIN products p ON p.id = s.product_id
+      WHERE s.location_id = $1
+        AND s.qty <= s.min_level
+        AND s.max_level > 0
+        AND (s.max_level - s.qty) > 0
+        -- invariant 2 debounce: skip products with an open request here.
+        AND NOT EXISTS (
+          SELECT 1 FROM replenishment_requests r
+           WHERE r.requester_location_id = s.location_id
+             AND r.product_id = s.product_id
+             AND r.status NOT IN ('CLOSED', 'CANCELLED')
+        )
+      ORDER BY (s.min_level - s.qty) DESC, p.name ASC`,
+    [locationId],
+  );
+  return rows.map((r) => {
+    const currentQty = Number(r.current_qty);
+    const maxLevel = Number(r.max_level);
+    return {
+      product_id: Number(r.product_id),
+      product_name: r.product_name,
+      unit: r.unit,
+      current_qty: currentQty,
+      min_level: Number(r.min_level),
+      max_level: maxLevel,
+      suggested_qty: maxLevel - currentQty,
+    };
+  });
+}
+
+/**
+ * Central-warehouse ACCEPT of an incoming store request.
+ *
+ * The store requests (status NEW / CHECK_STORE_SUPPLIER) are accepted by the
+ * central warehouse manager: we (a) pin the request's `target_location_id` to
+ * the acting central warehouse if it is not already set, then (b) drive the
+ * engine forward so it ships from the central warehouse to the store
+ * (SHIP_TO_REQUESTER -> CLOSED), reusing `advance()` / `applyMovement` — all
+ * invariants (atomic, audit, no negative stock) are preserved by the engine.
+ *
+ * Returns the advanced request plus a flag indicating whether the ship landed.
+ * If the central has no stock the engine holds at SHIP_TO_REQUESTER and
+ * `shipped=false` is returned (the manager can produce/restock then retry).
+ */
+export async function acceptByCentral(opts: {
+  requestId: number;
+  centralLocationId: number;
+  actorUserId: number | null;
+}): Promise<{ request: ReplenishmentRow; shipped: boolean; reason: string }> {
+  // Pin the target + advance to SHIP in ONE transaction, then ship in a second
+  // advance hop. We open the tx ourselves so the target-pin + the first hop are
+  // atomic; `advance(tx)` re-uses it.
+  return withTransaction(async (tx) => {
+    const order = await lockRequest(tx, opts.requestId);
+    if (TERMINAL_STATUSES.includes(order.status)) {
+      return { request: order, shipped: false, reason: `request already ${order.status}` };
+    }
+
+    // Pin / verify the target. If a target is already set it must be the
+    // acting central warehouse (the manager can only accept requests bound for
+    // their own warehouse — the route enforces this too).
+    if (order.target_location_id === null) {
+      const { rows } = await tx.query<ReplenishmentRow>(
+        `UPDATE replenishment_requests
+            SET target_location_id = $2
+          WHERE id = $1
+          RETURNING ${REPLENISHMENT_COLUMNS}`,
+        [opts.requestId, opts.centralLocationId],
+      );
+      const pinned = rows[0];
+      if (pinned === undefined) {
+        throw AppError.internal('Accept-by-central: target pin returned no row.');
+      }
+      Object.assign(order, pinned);
+    } else if (Number(order.target_location_id) !== opts.centralLocationId) {
+      throw AppError.forbidden(
+        'This request targets a different warehouse; you may only accept requests bound for your own.',
+      );
+    }
+
+    await writeAudit(tx, {
+      actorUserId: opts.actorUserId,
+      action: 'replenishment.accept_by_central',
+      entity: 'replenishment_requests',
+      entityId: opts.requestId,
+      payload: {
+        central_location_id: opts.centralLocationId,
+        from_status: order.status,
+      },
+    });
+
+    // Drive the engine forward inside the SAME transaction. From NEW it needs a
+    // CHECK_STORE_SUPPLIER hop first; we loop a few times so a freshly-pinned
+    // request can reach SHIP_TO_REQUESTER and then CLOSED in one accept.
+    let result: AdvanceResult = { advanced: false, request: order, reason: 'init' };
+    let safety = 6;
+    let current = order;
+    while (safety > 0 && !TERMINAL_STATUSES.includes(current.status)) {
+      safety -= 1;
+      // NEW -> CHECK_STORE_SUPPLIER walks topology to find a central warehouse;
+      // store chains here have no parent, so we bypass NEW by stepping to
+      // CHECK_STORE_SUPPLIER directly (target is already pinned).
+      if (current.status === 'NEW') {
+        current = await transitionStatus(
+          tx,
+          current,
+          'CHECK_STORE_SUPPLIER',
+          'accepted by central — target pinned',
+          opts.actorUserId,
+        );
+        continue;
+      }
+      result = await advanceOne(tx, current, opts.actorUserId);
+      if (!result.advanced) {
+        break;
+      }
+      current = result.request;
+    }
+
+    const shipped = current.status === 'CLOSED';
+    return {
+      request: current,
+      shipped,
+      reason: shipped ? 'shipped to store' : result.reason,
+    };
+  });
+}
+
+// -----------------------------------------------------------------------------
 // Scan worker
 // -----------------------------------------------------------------------------
 

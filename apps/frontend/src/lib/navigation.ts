@@ -16,6 +16,7 @@ import {
   Wallet,
   ReceiptText,
   Banknote,
+  Inbox,
   type LucideIcon,
 } from 'lucide-react';
 import type { Role } from './types';
@@ -34,6 +35,7 @@ export type NavGroupKey =
   | 'dashboard'
   | 'forecasts'
   | 'store'
+  | 'central'
   | 'modules'
   | 'cashier'
   | 'reference';
@@ -149,6 +151,23 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     ],
   },
   {
+    // Markaziy sklad — kiruvchi do'kon so'rovlarini qabul qilish / rad etish.
+    // PM (markaziy sklad tanlovchisi bilan) + central_warehouse_manager.
+    key: 'central',
+    label: 'Markaziy',
+    icon: Inbox,
+    defaultPath: '/central-inbox',
+    hasTabs: false,
+    items: [
+      {
+        path: '/central-inbox',
+        label: 'Kiruvchi so‘rovlar',
+        icon: Inbox,
+        roles: ['pm', 'central_warehouse_manager'],
+      },
+    ],
+  },
+  {
     key: 'modules',
     label: 'Modullar',
     icon: Boxes,
@@ -183,12 +202,6 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: 'Markaziy sklad',
         icon: Warehouse,
         roles: ['pm', 'central_warehouse_manager'],
-      },
-      {
-        path: '/stores',
-        label: 'Do‘konlar',
-        icon: Store,
-        roles: ['pm', 'store_manager'],
       },
       {
         path: '/replenishment',
@@ -336,7 +349,12 @@ export const HOME_TILES: readonly HomeTile[] = [
     icon: Factory,
     roles: ['pm', 'production_manager'],
   },
-  { path: '/stores', label: 'Do‘konlar', icon: Store, roles: ['pm', 'store_manager'] },
+  {
+    path: '/store-workflow',
+    label: 'Do‘konlar',
+    icon: Store,
+    roles: ['pm', 'store_manager'],
+  },
   {
     path: '/cashier/receipts',
     label: 'Kassa',

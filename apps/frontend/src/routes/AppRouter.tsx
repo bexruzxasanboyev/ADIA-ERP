@@ -26,8 +26,8 @@ import { RawWarehousePage } from '@/pages/chain/RawWarehousePage';
 import { ProductionPage } from '@/pages/chain/ProductionPage';
 import { SupplyPage } from '@/pages/chain/SupplyPage';
 import { CentralWarehousePage } from '@/pages/chain/CentralWarehousePage';
-import { StoresPage } from '@/pages/chain/StoresPage';
 import { StoreWorkflowPage } from '@/pages/stores/StoreWorkflowPage';
+import { CentralInboxPage } from '@/pages/central/CentralInboxPage';
 import { ReceiptsPage } from '@/pages/cashier/ReceiptsPage';
 import { CashShiftsPage } from '@/pages/cashier/CashShiftsPage';
 import { SafeExpensesPage } from '@/pages/cashier/SafeExpensesPage';
@@ -122,25 +122,32 @@ export function AppRouter() {
             </RoleRoute>
           }
         />
-        <Route
-          path="/stores"
-          element={
-            <RoleRoute
-              allow={['pm', 'store_manager', 'central_warehouse_manager']}
-            >
-              <StoresPage />
-            </RoleRoute>
-          }
-        />
+        {/* The old chain-summary `/stores` page is removed — the store
+            experience is now ONLY the clean `/store-workflow`. Old bookmarks
+            redirect there. */}
+        <Route path="/stores" element={<Navigate to="/store-workflow" replace />} />
 
         {/* Do'kon ish joyi — clean, store-scoped workflow page (stock +
-            sent/incoming requests + receive). The store manager lands here;
-            PM gets a store picker. Backend RBAC-scopes every endpoint. */}
+            sent/incoming requests + receive + AI takliflari). The store
+            manager does the full workflow; PM views read-only with a store
+            picker. Backend RBAC-scopes every endpoint. */}
         <Route
           path="/store-workflow"
           element={
             <RoleRoute allow={['pm', 'store_manager']}>
               <StoreWorkflowPage />
+            </RoleRoute>
+          }
+        />
+
+        {/* EPIC — Markaziy sklad kiruvchi so'rovlar (accept/reject). Central
+            warehouse manager (or PM with a central picker) reviews incoming
+            store replenishment requests. */}
+        <Route
+          path="/central-inbox"
+          element={
+            <RoleRoute allow={['pm', 'central_warehouse_manager']}>
+              <CentralInboxPage />
             </RoleRoute>
           }
         />

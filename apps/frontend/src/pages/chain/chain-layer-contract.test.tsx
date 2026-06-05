@@ -15,14 +15,12 @@ import type {
   ProductionOrder,
   PurchaseOrder,
   ReplenishmentRequest,
-  SaleRow,
   StockRow,
 } from '@/lib/types';
 import { RawWarehousePage } from './RawWarehousePage';
 import { ProductionPage } from './ProductionPage';
 import { SupplyPage } from './SupplyPage';
 import { CentralWarehousePage } from './CentralWarehousePage';
-import { StoresPage } from './StoresPage';
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -234,73 +232,6 @@ const SHIP_REPLEN: ReplenishmentRequest = {
   target_location_name: 'Markaziy sklad',
 };
 
-const STORE_OVERVIEW: ChainLayerOverview = {
-  layer_type: 'store',
-  locations: [
-    {
-      id: 11,
-      name: 'Do‘kon #1 Chilonzor',
-      type: 'store',
-      total_products: 40,
-      below_min_count: 1,
-      open_requests_count: 1,
-    },
-    {
-      id: 12,
-      name: 'Do‘kon #2 Yunusobod',
-      type: 'store',
-      total_products: 42,
-      below_min_count: 0,
-      open_requests_count: 0,
-    },
-  ],
-  totals: {
-    total_locations: 2,
-    total_products: 82,
-    below_min_count: 1,
-    open_requests_count: 1,
-    sales_today_count: 15,
-  },
-  recent_movements: [],
-};
-
-const STORE_SALES: SaleRow[] = [
-  {
-    id: 1,
-    store_id: 11,
-    store_name: 'Do‘kon #1 Chilonzor',
-    product_id: 9,
-    product_name: 'Pishloqli non',
-    product_unit: 'pcs',
-    qty: 5,
-    price: 10000,
-    sold_at: '2026-05-22T11:00:00.000Z',
-    poster_transaction_id: 1001,
-  },
-  {
-    id: 2,
-    store_id: 11,
-    store_name: 'Do‘kon #1 Chilonzor',
-    product_id: 10,
-    product_name: 'Tort',
-    product_unit: 'pcs',
-    qty: 2,
-    price: 100000,
-    sold_at: '2026-05-22T11:30:00.000Z',
-    poster_transaction_id: 1002,
-  },
-];
-
-const STORE_REPLEN: ReplenishmentRequest = {
-  ...SUPPLY_REPLEN,
-  id: 99,
-  status: 'NEW',
-  requester_location_id: 11,
-  requester_location_name: 'Do‘kon #1 Chilonzor',
-  product_name: 'Pishloqli non',
-  product_unit: 'kg',
-};
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -503,48 +434,3 @@ describe('CentralWarehousePage — contract', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// /stores
-// ---------------------------------------------------------------------------
-
-describe('StoresPage — contract', () => {
-  afterEach(() => vi.restoreAllMocks());
-
-  it('renders header, store cards, top-sales aggregation and open requests', async () => {
-    installFetch((url) => {
-      if (url.includes('/api/dashboard/chain-layer/store')) {
-        return jsonResponse(200, STORE_OVERVIEW);
-      }
-      if (url.includes('/api/sales')) {
-        return jsonResponse(200, {
-          items: STORE_SALES,
-          total: STORE_SALES.length,
-          limit: 200,
-          offset: 0,
-        });
-      }
-      if (url.includes('/api/replenishment')) {
-        return jsonResponse(200, [STORE_REPLEN]);
-      }
-      return undefined;
-    });
-
-    renderWithProviders(<StoresPage />, { role: 'pm' });
-
-    // Both store cards render with their names.
-    const storeMatches = await screen.findAllByText('Do‘kon #1 Chilonzor');
-    expect(storeMatches.length).toBeGreaterThan(0);
-    expect(
-      screen.getByRole('heading', { level: 1 }).textContent,
-    ).toMatch(/Do‘konlar/);
-    expect(screen.getAllByText('Do‘kon #2 Yunusobod').length).toBeGreaterThan(0);
-
-    // Top-sales widget aggregates by product across stores.
-    expect(screen.getByText('Bugungi top sotuv')).toBeInTheDocument();
-    expect(screen.getAllByText('Pishloqli non').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Tort').length).toBeGreaterThan(0);
-
-    // Open replenishment widget surfaces store-originated request.
-    expect(screen.getByText('To‘ldirish kerak')).toBeInTheDocument();
-  });
-});

@@ -1,5 +1,13 @@
 import { useMemo, useState } from 'react';
-import { History, Inbox, PackageCheck, Plus, Send, Store } from 'lucide-react';
+import {
+  History,
+  Inbox,
+  PackageCheck,
+  Plus,
+  Send,
+  Sparkles,
+  Store,
+} from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -39,6 +47,7 @@ import type {
 import { TERMINAL_REPLENISHMENT_STATUSES } from '@/lib/types';
 import { StoreRequestCreateDialog } from './StoreRequestCreateDialog';
 import { StoreReceiveDialog } from './StoreReceiveDialog';
+import { StoreAiProposalsDialog } from './StoreAiProposalsDialog';
 
 /**
  * Do'kon ish joyi — a clean, store-scoped workflow page (owner feedback: the
@@ -109,6 +118,11 @@ function StockStatusPill({ row }: { row: StockRow }) {
 export function StoreWorkflowPage() {
   const { user, activeLocationId } = useAuth();
   const isPm = user?.role === 'pm';
+  // RBAC split (owner feedback): the store-role user does the full workflow;
+  // a "manager" (pm) only VIEWS (read-only). Every action affordance —
+  // "+ So'rov qo'shish", "Qabul qilish", "AI takliflari" — is store_manager
+  // only; pm sees data without write controls.
+  const isStoreManager = user?.role === 'store_manager';
 
   // PM picks a store; a store_manager is pinned to their active location
   // (falling back to their primary location_id).
@@ -143,6 +157,7 @@ export function StoreWorkflowPage() {
   const [statusFilter, setStatusFilter] = useState<StockStatusKey>('all');
   const [requestTab, setRequestTab] = useState<RequestTabKey>('sent');
   const [createOpen, setCreateOpen] = useState(false);
+  const [aiProposalsOpen, setAiProposalsOpen] = useState(false);
   const [receiveTarget, setReceiveTarget] =
     useState<ReplenishmentRequest | null>(null);
 
@@ -350,11 +365,23 @@ export function StoreWorkflowPage() {
                   options={requestTabOptions}
                   ariaLabel="So‘rovlar ko‘rinishi"
                 />
-                {requestTab === 'sent' && (
-                  <Button onClick={() => setCreateOpen(true)} size="sm">
-                    <Plus className="size-4" aria-hidden="true" />
-                    So‘rov qo‘shish
-                  </Button>
+                {/* Action affordances are store_manager-only; pm views
+                    read-only (owner RBAC split). */}
+                {isStoreManager && requestTab === 'sent' && (
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setAiProposalsOpen(true)}
+                    >
+                      <Sparkles className="size-4" aria-hidden="true" />
+                      AI takliflari
+                    </Button>
+                    <Button onClick={() => setCreateOpen(true)} size="sm">
+                      <Plus className="size-4" aria-hidden="true" />
+                      So‘rov qo‘shish
+                    </Button>
+                  </>
                 )}
               </div>
             </header>
@@ -392,7 +419,7 @@ export function StoreWorkflowPage() {
                         <TableHead className="text-right">Miqdor</TableHead>
                         <TableHead>Holat</TableHead>
                         <TableHead>Yaratilgan</TableHead>
-                        {requestTab === 'incoming' && (
+                        {requestTab === 'incoming' && isStoreManager && (
                           <TableHead className="text-right">Amal</TableHead>
                         )}
                       </TableRow>
@@ -421,7 +448,7 @@ export function StoreWorkflowPage() {
                           <TableCell className="whitespace-nowrap text-muted-foreground">
                             {formatDateTime(row.created_at)}
                           </TableCell>
-                          {requestTab === 'incoming' && (
+                          {requestTab === 'incoming' && isStoreManager && (
                             <TableCell className="text-right">
                               <Button
                                 variant="outline"
@@ -503,7 +530,7 @@ export function StoreWorkflowPage() {
                 </div>
               )}
 
-            {requestTab === 'incoming' && (
+            {requestTab === 'incoming' && isStoreManager && (
               <p className="flex items-center gap-2 border-t border-border/60 px-5 py-3 text-xs text-muted-foreground">
                 <Inbox className="size-3.5" aria-hidden="true" />
                 Jo‘natilgan tovar yetib kelganda «Qabul qilish» orqali
@@ -539,6 +566,16 @@ export function StoreWorkflowPage() {
         request={receiveTarget}
         onSaved={() => {
           setReceiveTarget(null);
+          replen.refetch();
+          stock.refetch();
+        }}
+      />
+
+      <StoreAiProposalsDialog
+        open={aiProposalsOpen}
+        onOpenChange={setAiProposalsOpen}
+        storeLocationId={storeIdNum ?? 0}
+        onApproved={() => {
           replen.refetch();
           stock.refetch();
         }}
