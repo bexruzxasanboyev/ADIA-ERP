@@ -56,11 +56,14 @@ function AppLayoutShell() {
           to="/home"
           className="flex min-w-0 shrink-0 items-center gap-2 rounded-md px-1 py-1 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-label="Bosh sahifa"
-          title="Bosh sahifa"
+          title="Bosh sahifaga qaytish"
         >
           <CakeSlice className="size-5 shrink-0 text-primary" aria-hidden="true" />
-          <span className="hidden truncate text-sm font-semibold tracking-tight sm:inline">
-            ADIA ERP
+          {/* Show WHICH section the user is in (the active nav group), so the
+              header reads "where am I" — not just the brand. Falls back to the
+              brand name on pages with no group (e.g. the Home launcher). */}
+          <span className="hidden truncate text-base font-semibold tracking-tight sm:inline">
+            {group?.label ?? 'ADIA ERP'}
           </span>
         </Link>
 
