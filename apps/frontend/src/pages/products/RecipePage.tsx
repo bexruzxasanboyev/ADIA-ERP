@@ -309,6 +309,7 @@ export function RecipePage() {
                   <RecipeBreakdown
                     tree={g.nodes}
                     totalCost={g.subtotal}
+                    grandTotal={totalCost}
                     unit={product?.unit ?? null}
                     productName={RECIPE_STAGE_LABELS[g.stage]}
                     showSummary={false}

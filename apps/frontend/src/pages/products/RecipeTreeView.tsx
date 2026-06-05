@@ -1,28 +1,22 @@
 import { CornerDownRight } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
-import { formatPlainNumber, formatQty, formatQtyUnit, formatSom } from '@/lib/format';
+import { formatPlainNumber, formatQtyUnit, formatSom } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { PRODUCT_TYPE_LABELS } from '@/lib/labels';
-import type { ProductType, RecipeNode } from '@/lib/types';
+import type { ProductType, RecipeNode, Unit } from '@/lib/types';
 
 /**
- * Read-only recipe (BOM) view — the "recipe book" of section cards.
+ * Read-only recipe (BOM) view — a clean, Poster-like cost table.
  *
- * Replaces the former collapsible Poster-style "Состав" tree: instead of
- * one nested, expand/collapse outline, the recipe is flattened into a stack
- * of cards — one per recipe LEVEL (the root semi node and every nested
- * `semi` node that has children). Everything is visible at once, no
- * disclosure, scannable top-down depth-first so the reading flow matches the
- * structure (root → its semi children → their semi children …).
+ * Every quantity / cost is already exploded to a PER-1-FINISHED-PIECE basis by
+ * the backend (bom.ts), so a nested prepack shows how much of it goes into ONE
+ * piece. Each level is one card: a header (name + its per-piece subtotal) over a
+ * table — Komponent · Miqdor (grams) · Ulush (cost share, with a bar) · Tannarx.
+ * The "Ulush" column makes analysis instant: you see at a glance which component
+ * drives the cost.
  */
 
-/**
- * Product-type → <Badge> variant, mirroring `PRODUCT_CATEGORY_STYLE`
- * (lib/productCategory.ts): raw = neutral outline, semi = default chip,
- * finished = success. Reused for the small type badge on each row, and by
- * RecipePage for the product header badge.
- */
 export const PRODUCT_TYPE_BADGE: Record<
   ProductType,
   'default' | 'outline' | 'success'
@@ -32,20 +26,12 @@ export const PRODUCT_TYPE_BADGE: Record<
   finished: 'success',
 };
 
-/** Shared column template for a card's child table (header + rows). */
-// Columns: Komponent · Miqdor · Brutto · Netto · Tannarx (Poster "Состав"
-// layout). Brutto/Netto are the raw Poster grams.
+/** Komponent · Miqdor · Ulush · Tannarx. */
 const ROW_GRID =
-  'grid grid-cols-[minmax(0,1fr)_88px_72px_72px_116px] items-center gap-3';
+  'grid grid-cols-[minmax(0,1fr)_132px_120px_120px] items-center gap-3';
 
-/** Render a so'm cost cell, or an em-dash when unknown (never a fake 0). */
 function costCell(value: number | null): string {
   return value === null ? '—' : formatSom(value);
-}
-
-/** Render a brutto/netto weight cell (raw Poster grams), or "—" when unset. */
-function weightCell(value: number | null): string {
-  return value === null || value === 0 ? '—' : formatQty(value);
 }
 
 /** A node is its own section iff it is a `semi` with at least one child. */
@@ -53,13 +39,6 @@ function isSection(node: RecipeNode): boolean {
   return node.type === 'semi' && node.children.length > 0;
 }
 
-/**
- * Flatten the tree into the ordered list of section cards. Every `semi`
- * node that owns children becomes a section, surfaced depth-first so a
- * card always precedes the cards of its sub-recipes. `depth` is kept only
- * as a subtle left-accent hint — the layout stays flat (cards stacked, not
- * indented).
- */
 function collectSections(
   nodes: RecipeNode[],
   depth: number,
@@ -73,7 +52,6 @@ function collectSections(
   }
 }
 
-/** Count the distinct `raw` ingredients across the whole tree (for summary). */
 function countDistinctRaw(nodes: RecipeNode[], seen: Set<number>): void {
   for (const node of nodes) {
     if (node.type === 'raw') seen.add(node.component_product_id);
@@ -81,17 +59,43 @@ function countDistinctRaw(nodes: RecipeNode[], seen: Set<number>): void {
   }
 }
 
-interface ComponentRowProps {
-  node: RecipeNode;
+/**
+ * Cost-share cell — a thin bar + percent of the GRAND total. Lets a manager
+ * eyeball which ingredient/prepack dominates the cost (the "analiz qulay" goal).
+ */
+function ShareCell({
+  lineCost,
+  grandTotal,
+}: {
+  lineCost: number | null;
+  grandTotal: number | null;
+}) {
+  if (lineCost === null || grandTotal === null || grandTotal <= 0) {
+    return <span className="text-right text-muted-foreground">—</span>;
+  }
+  const pct = Math.min(100, (lineCost / grandTotal) * 100);
+  return (
+    <div className="flex items-center justify-end gap-2">
+      <div className="h-1.5 w-12 overflow-hidden rounded-full bg-muted">
+        <div
+          className="h-full rounded-full bg-primary/70"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span className="w-9 text-right tabular-nums text-xs text-muted-foreground">
+        {pct >= 9.95 ? pct.toFixed(0) : pct.toFixed(1)}%
+      </span>
+    </div>
+  );
 }
 
-/**
- * One direct-child row inside a section card. A `semi` child whose own
- * breakdown lives in a separate card below gets a muted "↓ alohida tarkib"
- * cue so the reader knows where to look — but it is NOT nested or
- * collapsible here.
- */
-function ComponentRow({ node }: ComponentRowProps) {
+function ComponentRow({
+  node,
+  grandTotal,
+}: {
+  node: RecipeNode;
+  grandTotal: number | null;
+}) {
   const hasOwnCard = isSection(node);
   return (
     <div
@@ -120,29 +124,23 @@ function ComponentRow({ node }: ComponentRowProps) {
       <span className="text-right tabular-nums text-muted-foreground">
         {formatQtyUnit(node.qty_per_unit, node.unit)}
       </span>
-      <span className="text-right tabular-nums text-muted-foreground">
-        {weightCell(node.brutto)}
+      <ShareCell lineCost={node.line_cost} grandTotal={grandTotal} />
+      <span className="text-right font-medium tabular-nums">
+        {costCell(node.line_cost)}
       </span>
-      <span className="text-right tabular-nums text-muted-foreground">
-        {weightCell(node.netto)}
-      </span>
-      <span className="text-right tabular-nums">{costCell(node.line_cost)}</span>
     </div>
   );
 }
 
-interface SectionCardProps {
+function SectionCard({
+  node,
+  depth,
+  grandTotal,
+}: {
   node: RecipeNode;
-  /** Nesting level — drives only the subtle left accent, not indentation. */
   depth: number;
-}
-
-/**
- * One recipe level rendered as a card: a header (node name + type badge +
- * the node's subtotal cost, right-aligned) over a clean table of its direct
- * children. Fully expanded — no collapse.
- */
-function SectionCard({ node, depth }: SectionCardProps) {
+  grandTotal: number | null;
+}) {
   return (
     <Card
       className={cn(
@@ -179,12 +177,15 @@ function SectionCard({ node, depth }: SectionCardProps) {
         >
           <span>Komponent</span>
           <span className="text-right">Miqdor</span>
-          <span className="text-right">Brutto</span>
-          <span className="text-right">Netto</span>
+          <span className="text-right">Ulush</span>
           <span className="text-right">Tannarx</span>
         </div>
         {node.children.map((child) => (
-          <ComponentRow key={child.component_product_id} node={child} />
+          <ComponentRow
+            key={child.component_product_id}
+            node={child}
+            grandTotal={grandTotal}
+          />
         ))}
       </div>
     </Card>
@@ -194,41 +195,29 @@ function SectionCard({ node, depth }: SectionCardProps) {
 interface RecipeBreakdownProps {
   tree: RecipeNode[];
   totalCost: number | null;
-  /** Recipe owner's unit — drives the "1 kg / 1 dona uchun" caption. */
-  unit: 'kg' | 'l' | 'pcs' | null;
+  unit: Unit | null;
   productName: string;
-  /**
-   * EPIC 1.5 — when this breakdown is one stage of a grouped recipe
-   * (hamir / krem / bezak), the page hides the grand "Jami tannarx" summary
-   * (`showSummary={false}`) and the stage heading is rendered by the page
-   * above this block. Defaults preserve the standalone full-recipe view.
-   */
   showSummary?: boolean;
+  /**
+   * The product's GRAND total cost, used as the denominator for every row's
+   * cost-share bar. Defaults to `totalCost`; the grouped (per-stage) view
+   * passes the real grand total so a stage's rows share the whole-product base.
+   */
+  grandTotal?: number | null;
 }
 
-/**
- * Read-only recipe view as a stack of section cards plus a prominent summary
- * header. Costs are shown exactly as the API gives them (any may be `null`
- * → "—"); the UI neither fakes nor disclaims the numbers.
- *
- * The summary highlights the product's full resolved cost; below it, one card
- * per recipe level renders in depth-first order. A flat / single-level recipe
- * (a finished product whose tree is one node, or even a bare list of leaves)
- * degrades to a single section card.
- */
 export function RecipeBreakdown({
   tree,
   totalCost,
   unit,
   productName,
   showSummary = true,
+  grandTotal,
 }: RecipeBreakdownProps) {
+  const shareBase = grandTotal ?? totalCost;
   const sections: { node: RecipeNode; depth: number }[] = [];
   collectSections(tree, 0, sections);
 
-  // Flat / no-children recipe: no `semi`-with-children node was found, yet the
-  // tree still has rows. Render those leaves as a single synthetic card so a
-  // finished product with a one-level recipe still reads as a section.
   if (sections.length === 0 && tree.length > 0) {
     const synthetic: RecipeNode = {
       component_product_id: -1,
@@ -251,13 +240,10 @@ export function RecipeBreakdown({
   const rawCount = rawSeen.size;
 
   const perUnitCaption =
-    unit === 'pcs' ? '1 dona uchun' : unit ? `1 ${unit} uchun` : '1 birlik uchun';
+    unit === 'pcs' ? '1 dona uchun' : '1 birlik uchun';
 
   return (
     <div className="space-y-4">
-      {/* Summary header — the product's full resolved cost, prominent.
-          Hidden when this block is one stage of a grouped recipe (the page
-          shows a single grand total + per-stage subtotals instead). */}
       {showSummary && (
         <Card className="border-primary/30 bg-primary/5 p-5">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -277,6 +263,7 @@ export function RecipeBreakdown({
           key={`${node.component_product_id}-${depth}`}
           node={node}
           depth={depth}
+          grandTotal={shareBase}
         />
       ))}
     </div>
