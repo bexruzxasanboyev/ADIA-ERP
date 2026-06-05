@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Inbox, PackageCheck, Plus, Send, Store } from 'lucide-react';
+import { History, Inbox, PackageCheck, Plus, Send, Store } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -24,12 +24,14 @@ import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
 import { formatDateTime, formatQtyUnit } from '@/lib/format';
 import {
+  MOVEMENT_REASON_LABELS,
   REPLENISHMENT_STATUS_LABELS,
   REPLENISHMENT_STATUS_VARIANT,
 } from '@/lib/labels';
 import { cn } from '@/lib/utils';
 import type {
   Location,
+  MovementsResponse,
   Product,
   ReplenishmentRequest,
   StockRow,
@@ -70,7 +72,7 @@ const STOCK_STATUS_TABS: { value: StockStatusKey; label: string }[] = [
   { value: 'enough', label: 'Yetarli' },
 ];
 
-type RequestTabKey = 'sent' | 'incoming';
+type RequestTabKey = 'sent' | 'incoming' | 'transactions';
 
 /**
  * "Kam" (low) heuristic: at or below 120% of min but still above min — the
@@ -130,6 +132,13 @@ export function StoreWorkflowPage() {
   // The backend RBAC-scopes the list; for a `pm` (chain-wide) we additionally
   // filter to the picked store client-side so the page stays store-scoped.
   const replen = useApiQuery<ReplenishmentRequest[]>('/api/replenishment');
+  // "Tranzaksiyalar" — every stock movement touching this store, newest
+  // first. Filtered to INCOMING receipts (to_location_id === store) below.
+  const movements = useApiQuery<MovementsResponse>(
+    storeIdNum === null
+      ? null
+      : `/api/stock/movements?location_id=${storeIdNum}&limit=50`,
+  );
 
   const [statusFilter, setStatusFilter] = useState<StockStatusKey>('all');
   const [requestTab, setRequestTab] = useState<RequestTabKey>('sent');
@@ -179,9 +188,24 @@ export function StoreWorkflowPage() {
     return { sent: sentRows, incoming: incomingRows };
   }, [replen.data, storeIdNum]);
 
+  // Tranzaksiyalar — products this store RECEIVED, newest first. The
+  // endpoint matches movements where the store is EITHER side; we keep only
+  // the incoming receipts (to_location_id === this store).
+  const incomingMovements = useMemo(() => {
+    if (storeIdNum === null) return [];
+    const rows = movements.data?.items ?? [];
+    return rows
+      .filter((m) => m.to_location_id === storeIdNum)
+      .sort(
+        (a, b) =>
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+      );
+  }, [movements.data, storeIdNum]);
+
   const requestTabOptions: { value: RequestTabKey; label: string }[] = [
     { value: 'sent', label: `So‘rov (${sent.length})` },
     { value: 'incoming', label: `Qabul qiluvchi (${incoming.length})` },
+    { value: 'transactions', label: 'Tranzaksiyalar' },
   ];
 
   const requestRows = requestTab === 'sent' ? sent : incoming;
@@ -335,20 +359,28 @@ export function StoreWorkflowPage() {
               </div>
             </header>
 
-            {replen.isLoading && <LoadingState />}
-            {!replen.isLoading && replen.error && (
-              <ErrorState message={replen.error} onRetry={replen.refetch} />
+            {requestTab !== 'transactions' && replen.isLoading && (
+              <LoadingState />
             )}
-            {!replen.isLoading && !replen.error && requestRows.length === 0 && (
-              <EmptyState
-                message={
-                  requestTab === 'sent'
-                    ? 'Hozircha yuborilgan so‘rov yo‘q.'
-                    : 'Qabul qilinadigan jo‘natma yo‘q.'
-                }
-              />
-            )}
-            {!replen.isLoading &&
+            {requestTab !== 'transactions' &&
+              !replen.isLoading &&
+              replen.error && (
+                <ErrorState message={replen.error} onRetry={replen.refetch} />
+              )}
+            {requestTab !== 'transactions' &&
+              !replen.isLoading &&
+              !replen.error &&
+              requestRows.length === 0 && (
+                <EmptyState
+                  message={
+                    requestTab === 'sent'
+                      ? 'Hozircha yuborilgan so‘rov yo‘q.'
+                      : 'Qabul qilinadigan jo‘natma yo‘q.'
+                  }
+                />
+              )}
+            {requestTab !== 'transactions' &&
+              !replen.isLoading &&
               !replen.error &&
               requestRows.length > 0 && (
                 <div className="scrollbar-thin overflow-x-auto">
@@ -410,11 +442,78 @@ export function StoreWorkflowPage() {
                   </Table>
                 </div>
               )}
+
+            {/* Tranzaksiyalar — sana bo'yicha qabul qilingan mahsulotlar. */}
+            {requestTab === 'transactions' && movements.isLoading && (
+              <LoadingState />
+            )}
+            {requestTab === 'transactions' &&
+              !movements.isLoading &&
+              movements.error && (
+                <ErrorState
+                  message={movements.error}
+                  onRetry={movements.refetch}
+                />
+              )}
+            {requestTab === 'transactions' &&
+              !movements.isLoading &&
+              !movements.error &&
+              incomingMovements.length === 0 && (
+                <EmptyState message="Hali qabul qilingan mahsulot yo‘q." />
+              )}
+            {requestTab === 'transactions' &&
+              !movements.isLoading &&
+              !movements.error &&
+              incomingMovements.length > 0 && (
+                <div className="scrollbar-thin overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Sana</TableHead>
+                        <TableHead>Mahsulot</TableHead>
+                        <TableHead className="text-right">Miqdor</TableHead>
+                        <TableHead>Manba</TableHead>
+                        <TableHead>Sabab</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {incomingMovements.map((m) => (
+                        <TableRow key={m.id}>
+                          <TableCell className="whitespace-nowrap text-muted-foreground">
+                            {formatDateTime(m.created_at)}
+                          </TableCell>
+                          <TableCell className="font-medium">
+                            {m.product_name}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {formatQtyUnit(m.qty, m.product_unit)}
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {m.from_location_name ?? '—'}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="secondary">
+                              {MOVEMENT_REASON_LABELS[m.reason]}
+                            </Badge>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+
             {requestTab === 'incoming' && (
               <p className="flex items-center gap-2 border-t border-border/60 px-5 py-3 text-xs text-muted-foreground">
                 <Inbox className="size-3.5" aria-hidden="true" />
                 Jo‘natilgan tovar yetib kelganda «Qabul qilish» orqali
                 tasdiqlang.
+              </p>
+            )}
+            {requestTab === 'transactions' && (
+              <p className="flex items-center gap-2 border-t border-border/60 px-5 py-3 text-xs text-muted-foreground">
+                <History className="size-3.5" aria-hidden="true" />
+                Do‘konga qabul qilingan mahsulotlar — eng yangisi yuqorida.
               </p>
             )}
           </Card>

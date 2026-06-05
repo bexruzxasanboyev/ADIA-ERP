@@ -33,6 +33,7 @@ import type { Role } from './types';
 export type NavGroupKey =
   | 'dashboard'
   | 'forecasts'
+  | 'store'
   | 'modules'
   | 'cashier'
   | 'reference';
@@ -129,6 +130,25 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     ],
   },
   {
+    // Do'kon boshlig'ining asosiy ish joyi — qoldiq + so'rovlar + qabul
+    // qilish + tranzaksiyalar bitta TOZA sahifada. Bu guruh PageTabs
+    // ko'rsatmaydi (hasTabs: false), shuning uchun sahifa tepasida
+    // module tab qatori chiqmaydi (egasi: "toza" sahifa).
+    key: 'store',
+    label: 'Do‘kon',
+    icon: Store,
+    defaultPath: '/store-workflow',
+    hasTabs: false,
+    items: [
+      {
+        path: '/store-workflow',
+        label: 'Do‘kon ish joyi',
+        icon: ClipboardList,
+        roles: ['pm', 'store_manager'],
+      },
+    ],
+  },
+  {
     key: 'modules',
     label: 'Modullar',
     icon: Boxes,
@@ -168,14 +188,6 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         path: '/stores',
         label: 'Do‘konlar',
         icon: Store,
-        roles: ['pm', 'store_manager'],
-      },
-      {
-        // Do'kon boshlig'ining asosiy ish joyi — qoldiq + so'rovlar +
-        // qabul qilish bitta toza sahifada (eski 398-qatorli ro'yxat o'rniga).
-        path: '/store-workflow',
-        label: 'Do‘kon ish joyi',
-        icon: ClipboardList,
         roles: ['pm', 'store_manager'],
       },
       {
