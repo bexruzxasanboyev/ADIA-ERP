@@ -58,11 +58,12 @@ function AppLayoutShell() {
           aria-label="Bosh sahifa"
           title="Bosh sahifaga qaytish"
         >
-          <CakeSlice className="size-5 shrink-0 text-primary" aria-hidden="true" />
+          <CakeSlice className="size-6 shrink-0 text-primary" aria-hidden="true" />
           {/* Show WHICH section the user is in (the active nav group), so the
-              header reads "where am I" — not just the brand. Falls back to the
-              brand name on pages with no group (e.g. the Home launcher). */}
-          <span className="hidden truncate text-base font-semibold tracking-tight sm:inline">
+              header reads "where am I" — not just the brand. The cake icon is
+              the home button; the label falls back to the brand name on pages
+              with no group (e.g. the Home launcher). */}
+          <span className="hidden truncate text-lg font-bold tracking-tight sm:inline">
             {group?.label ?? 'ADIA ERP'}
           </span>
         </Link>
