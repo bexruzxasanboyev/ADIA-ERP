@@ -1797,9 +1797,15 @@ export async function scanBelowMin(): Promise<BelowMinRow[]> {
     min_level: number;
     max_level: number;
   }>(
-    `SELECT location_id, product_id, qty, min_level, max_level
-     FROM stock
-     WHERE qty <= min_level AND max_level > 0`,
+    // STORES are EXCLUDED from auto-creation: per owner spec the store flow is
+    // AI-propose → boss-approve (GET /proposals + POST /proposals/approve), so a
+    // store never auto-raises a replenishment request. Internal layers
+    // (production sex_storage, central warehouse, raw) keep auto-replenishment.
+    `SELECT s.location_id, s.product_id, s.qty, s.min_level, s.max_level
+     FROM stock s
+     JOIN locations l ON l.id = s.location_id
+     WHERE s.qty <= s.min_level AND s.max_level > 0
+       AND l.type <> 'store'::location_type`,
   );
   return rows.map((r) => ({
     location_id: r.location_id,

@@ -83,6 +83,14 @@ const STOCK_STATUS_TABS: { value: StockStatusKey; label: string }[] = [
 
 type RequestTabKey = 'sent' | 'incoming' | 'transactions';
 
+/** Top-level page sections, surfaced as header tabs (owner feedback). */
+type PageTabKey = 'products' | 'requests';
+
+const PAGE_TABS: { value: PageTabKey; label: string }[] = [
+  { value: 'products', label: 'Mahsulotlar' },
+  { value: 'requests', label: 'So‘rovlar' },
+];
+
 /**
  * "Kam" (low) heuristic: at or below 120% of min but still above min — the
  * early-warning band before a row actually crosses min. `min_level === 0`
@@ -154,6 +162,8 @@ export function StoreWorkflowPage() {
       : `/api/stock/movements?location_id=${storeIdNum}&limit=50`,
   );
 
+  // Default to the Mahsulotlar tab on open (owner feedback).
+  const [pageTab, setPageTab] = useState<PageTabKey>('products');
   const [statusFilter, setStatusFilter] = useState<StockStatusKey>('all');
   const [requestTab, setRequestTab] = useState<RequestTabKey>('sent');
   const [createOpen, setCreateOpen] = useState(false);
@@ -263,7 +273,17 @@ export function StoreWorkflowPage() {
         </Card>
       ) : (
         <>
-          {/* PART 1 — Mahsulotlar. */}
+          {/* Top-level header tabs — split the page into two focused sections
+              (owner feedback: stacked cards felt cluttered). */}
+          <Tabs
+            value={pageTab}
+            onValueChange={setPageTab}
+            options={PAGE_TABS}
+            ariaLabel="Bo‘lim"
+          />
+
+          {/* TAB: Mahsulotlar. */}
+          {pageTab === 'products' && (
           <Card>
             <header className="flex flex-col gap-3 border-b border-border/60 p-5 sm:flex-row sm:items-center sm:justify-between">
               <div className="space-y-0.5">
@@ -345,8 +365,10 @@ export function StoreWorkflowPage() {
                 </div>
               )}
           </Card>
+          )}
 
-          {/* PART 2 — So'rovlar (So'rov / Qabul qiluvchi). */}
+          {/* TAB: So'rovlar (So'rov / Qabul qiluvchi). */}
+          {pageTab === 'requests' && (
           <Card>
             <header className="flex flex-col gap-3 border-b border-border/60 p-5 sm:flex-row sm:items-center sm:justify-between">
               <div className="space-y-0.5">
@@ -544,6 +566,7 @@ export function StoreWorkflowPage() {
               </p>
             )}
           </Card>
+          )}
         </>
       )}
 
