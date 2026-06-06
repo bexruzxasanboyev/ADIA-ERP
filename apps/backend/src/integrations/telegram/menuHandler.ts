@@ -17,6 +17,7 @@ import type { AuthPrincipal } from '../../auth/jwt.js';
 import { query } from '../../db/index.js';
 import { loadVoicePrincipal } from './voiceHandler.js';
 import { reportScopeFor, reportTypeKeyboard } from './reportsHandler.js';
+import { enterAiChatMode, AI_CHAT_PROMPT } from './aiChatHandler.js';
 
 // ---------------------------------------------------------------------------
 // Menu button labels (single source of truth — used by the keyboard + router)
@@ -30,6 +31,7 @@ export const MENU = {
   up: '⬆️ Yuqoriga so\'rov',
   status: '📊 Holat',
   reports: '📊 Hisobotlar',
+  aiChat: '🤖 AI suhbat',
 } as const;
 
 type ReplyKeyboard = {
@@ -50,7 +52,7 @@ export function buildMenuKeyboard(role: Role): ReplyKeyboard {
       rows = [
         [MENU.voice, MENU.sendRequest],
         [MENU.incoming, MENU.products],
-        [MENU.reports],
+        [MENU.reports, MENU.aiChat],
       ];
       break;
     case 'central_warehouse_manager':
@@ -60,15 +62,15 @@ export function buildMenuKeyboard(role: Role): ReplyKeyboard {
       rows = [
         [MENU.incoming, MENU.voice],
         [MENU.up],
-        [MENU.reports],
+        [MENU.reports, MENU.aiChat],
       ];
       break;
     case 'pm':
       // Read-only operational view + reports.
-      rows = [[MENU.status], [MENU.reports]];
+      rows = [[MENU.status], [MENU.reports, MENU.aiChat]];
       break;
     default:
-      rows = [[MENU.status]];
+      rows = [[MENU.status], [MENU.aiChat]];
   }
   return { keyboard: rows, resize_keyboard: true, is_persistent: true };
 }
@@ -203,6 +205,11 @@ export async function handleMenuMessage(
     case MENU.reports:
       await replyReportsMenu(ctx, principal);
       return { handled: true, action: 'reports' };
+
+    case MENU.aiChat:
+      enterAiChatMode(tgId);
+      await safeReply(ctx, AI_CHAT_PROMPT);
+      return { handled: true, action: 'ai_chat' };
 
     default:
       return { handled: false };

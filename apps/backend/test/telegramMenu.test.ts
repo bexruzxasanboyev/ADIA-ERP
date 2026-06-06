@@ -79,11 +79,25 @@ describe('buildMenuKeyboard (B2)', () => {
     expect(flat).not.toContain(MENU.sendRequest);
   });
 
-  it('pm is read-only — status + reports buttons, no operational actions', () => {
+  it('pm is read-only — status + reports + AI chat, no operational actions', () => {
     const kb = buildMenuKeyboard('pm');
     const flat = kb.keyboard.flat();
-    expect(flat).toEqual([MENU.status, MENU.reports]);
+    expect(flat).toEqual([MENU.status, MENU.reports, MENU.aiChat]);
     expect(flat).not.toContain(MENU.incoming);
+    expect(flat).not.toContain(MENU.sendRequest);
+  });
+
+  it('every role with a menu exposes the AI suhbat button', () => {
+    for (const role of [
+      'store_manager',
+      'central_warehouse_manager',
+      'production_manager',
+      'supply_manager',
+      'raw_warehouse_manager',
+      'pm',
+    ] as const) {
+      expect(buildMenuKeyboard(role).keyboard.flat()).toContain(MENU.aiChat);
+    }
   });
 
   it('every role with a menu exposes the Hisobotlar button', () => {
