@@ -16,6 +16,11 @@ out/
 *.tsbuildinfo
 
 
+# Secrets — NEVER commit (.env carries the bot token, DB creds, API keys)
+.env
+.env.*
+!.env.example
+
 # Google Cloud service account keys — NEVER commit
 *-gcp-key.json
 *service-account*.json
