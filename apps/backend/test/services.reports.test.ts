@@ -103,6 +103,99 @@ describe('getSalesReport', () => {
     expect(report.sections[0]!.rows[0]).toEqual(['Umumiy tushum', "20 so'm"]);
   });
 
+  it('is a COMBINED report: sales + payment-type + trend sections (payment stubbed)', async () => {
+    const store = await makeLocation(ctx.db, { type: 'store', name: 'Markaz' });
+    const cake = await makeProduct(ctx.db, { type: 'finished', unit: 'pcs', name: 'Napoleon' });
+    await addSale({ storeId: store, productId: cake, qty: 2, price: 100, txId: 1, lineId: 1 });
+
+    // Stub Poster so the payment-type section is built from a live-like source.
+    setPosterClientForTests(
+      new PosterClient({
+        token: 'acc:test',
+        minIntervalMs: 0,
+        fetcher: ((url: string | URL) => {
+          const u = typeof url === 'string' ? new URL(url) : url;
+          const m = u.pathname.split('/').pop();
+          if (m === 'settings.getPaymentMethods') {
+            return Promise.resolve(
+              new Response(
+                JSON.stringify({ response: [{ payment_method_id: '1', title: 'Наличные', type: '1' }] }),
+                { status: 200 },
+              ),
+            );
+          }
+          if (m === 'dash.getTransactions') {
+            const offset = Number(u.searchParams.get('offset') ?? '0');
+            const rows =
+              offset === 0
+                ? [{ transaction_id: 't1', spot_id: '1', pay_type: '1', payment_method_id: '0', payed_cash: '200000', payed_card: '0' }]
+                : [];
+            return Promise.resolve(
+              new Response(JSON.stringify({ response: rows }), { status: 200 }),
+            );
+          }
+          return Promise.resolve(
+            new Response(JSON.stringify({ error: { code: 30, message: 'NA' } }), { status: 200 }),
+          );
+        }) as unknown as typeof fetch,
+      }),
+    );
+
+    const report = await getSalesReport('bugun', { kind: 'all' });
+    const headings = report.sections.map((s) => s.heading);
+    // (a) overview, (b) per-store, (c) payment-type, (d) trend — in order.
+    expect(headings[0]).toBe('Umumiy ko’rsatkichlar');
+    expect(headings[1]).toBe("Do'konlar kesimida");
+    expect(headings).toContain("To'lov turlari");
+    expect(headings.some((h) => h.startsWith("Eng ko'p sotilgan"))).toBe(true);
+    expect(report.sections).toHaveLength(4);
+
+    // Payment section carries the stubbed Naqd row.
+    const payment = report.sections.find((s) => s.heading === "To'lov turlari")!;
+    expect(payment.rows.find((r) => r[0] === 'Naqd')?.[1]).toBe("2 000 so'm");
+
+    // Trend section carries the sold product.
+    const trend = report.sections.find((s) => s.heading.startsWith("Eng ko'p sotilgan"))!;
+    expect(trend.rows[0]?.[1]).toBe('Napoleon');
+
+    // Title + slug stay the sales report's.
+    expect(report.title).toBe('Sotuvlar hisoboti — Bugungi');
+    expect(report.slug).toBe('sales_bugun');
+  });
+
+  it('degrades gracefully: payment builder throwing still yields sales + trend', async () => {
+    const store = await makeLocation(ctx.db, { type: 'store', name: 'Markaz' });
+    const cake = await makeProduct(ctx.db, { type: 'finished', unit: 'pcs', name: 'Eclair' });
+    await addSale({ storeId: store, productId: cake, qty: 3, price: 50, txId: 1, lineId: 1 });
+
+    // Stub a Poster client whose calls reject — simulates Poster down / no token.
+    setPosterClientForTests(
+      new PosterClient({
+        token: 'acc:test',
+        minIntervalMs: 0,
+        fetcher: (() => Promise.reject(new Error('Poster unreachable'))) as unknown as typeof fetch,
+      }),
+    );
+
+    const report = await getSalesReport('bugun', { kind: 'all' });
+    const headings = report.sections.map((s) => s.heading);
+
+    // Sales sections still present.
+    expect(headings[0]).toBe('Umumiy ko’rsatkichlar');
+    expect(headings[1]).toBe("Do'konlar kesimida");
+    expect(report.sections[0]!.rows[0]).toEqual(['Umumiy tushum', "150 so'm"]);
+
+    // Payment section degraded to a one-line placeholder (not "To'lov turlari").
+    expect(headings).toContain("To'lov turi");
+    expect(headings).not.toContain("To'lov turlari");
+    const placeholder = report.sections.find((s) => s.heading === "To'lov turi")!;
+    expect(placeholder.rows[0]?.[0]).toContain('mavjud emas');
+
+    // Trend (pure DB) still works.
+    const trend = report.sections.find((s) => s.heading.startsWith("Eng ko'p sotilgan"))!;
+    expect(trend.rows[0]?.[1]).toBe('Eclair');
+  });
+
   it('excludes sales outside the period window', async () => {
     const store = await makeLocation(ctx.db, { type: 'store' });
     const cake = await makeProduct(ctx.db, { type: 'finished', unit: 'pcs' });

@@ -35,9 +35,21 @@ import { transactionsToBuckets } from '../integrations/poster/posterMoney.js';
 export const REPORT_PERIODS = ['bugun', 'hafta', 'oy'] as const;
 export type ReportPeriod = (typeof REPORT_PERIODS)[number];
 
-/** The four report types (callback verbs). */
+/**
+ * The four report types (callback verbs). `payment` and `trend` are no longer
+ * offered as standalone MENU items — they are now folded INTO the `sales`
+ * report (Umumiy + Do'konlar + To'lov turi + Trend). They remain valid types so
+ * existing `rep:`/`repdl:` callbacks keep working and the dispatch/export paths
+ * stay total.
+ */
 export const REPORT_TYPES = ['sales', 'payment', 'trend', 'belowmin'] as const;
 export type ReportType = (typeof REPORT_TYPES)[number];
+
+/**
+ * The report types the Telegram "📊 Hisobotlar" menu offers — only two now:
+ * the combined "Sotuvlar" report and the point-in-time "Min'dan past".
+ */
+export const MENU_REPORT_TYPES = ['sales', 'belowmin'] as const;
 
 /** Uzbek label for each period (UI text). */
 export const PERIOD_LABEL: Readonly<Record<ReportPeriod, string>> = {
@@ -195,6 +207,30 @@ export async function getSalesReport(
       total: ['Jami', som(totalRevenue), formatInt(totalReceipts)],
     },
   ];
+
+  // (c) To'lov turi — reuse the payment-type builder's section. This depends on
+  // LIVE Poster (token + reachable API); if it throws we MUST NOT fail the whole
+  // sales report — we degrade gracefully to a one-line placeholder section and
+  // still serve the sales + trend data.
+  try {
+    const payment = await getPaymentTypeReport(period, scope);
+    sections.push(...payment.sections);
+  } catch (err) {
+    console.error(
+      '[reports] payment-type section unavailable (Poster):',
+      (err as Error).message,
+    );
+    sections.push({
+      heading: "To'lov turi",
+      columns: ['Holat'],
+      rows: [['Hozircha mavjud emas (Poster bilan aloqa yo‘q)']],
+    });
+  }
+
+  // (d) Trend mahsulotlar — reuse the trend builder's section. Pure DB, so it
+  // is expected to always succeed; no degradation needed.
+  const trend = await getTrendProducts(period, scope);
+  sections.push(...trend.sections);
 
   return {
     type: 'sales',

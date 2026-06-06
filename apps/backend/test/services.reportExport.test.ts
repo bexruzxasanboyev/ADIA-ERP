@@ -80,6 +80,44 @@ describe('exportReport dispatch', () => {
     expect(pdf.filename.endsWith('.pdf')).toBe(true);
   });
 
+  it('exports a 4-section combined sales report cleanly in all formats', async () => {
+    const combined: Report = {
+      type: 'sales',
+      title: 'Sotuvlar hisoboti — Haftalik',
+      subtitle: 'Davr: 2026-06-01 — 2026-06-06',
+      period: 'hafta',
+      slug: 'sales_hafta',
+      sections: [
+        SAMPLE.sections[0]!,
+        SAMPLE.sections[1]!,
+        {
+          heading: "To'lov turlari",
+          columns: ["To'lov turi", 'Summa', 'Ulush'],
+          rows: [
+            ['Naqd', "800 000 so'm", '64.8%'],
+            ['Karta', "434 567 so'm", '35.2%'],
+          ],
+          total: ['Jami', "1 234 567 so'm", '100.0%'],
+        },
+        {
+          heading: "Eng ko'p sotilgan mahsulotlar (TOP 20)",
+          columns: ['#', 'Mahsulot', 'Miqdor', 'Tushum'],
+          rows: [
+            ['1', 'Napoleon', '5 pcs', "500 000 so'm"],
+            ['2', 'Eclair', '10 pcs', "300 000 so'm"],
+          ],
+          total: ['', 'Jami', '15', "800 000 so'm"],
+        },
+      ],
+    };
+    const xlsx = await toXlsx(combined);
+    const docx = await toDocx(combined);
+    const pdf = await toPdf(combined);
+    expect(xlsx.buffer.slice(0, 2).toString('latin1')).toBe('PK');
+    expect(docx.buffer.slice(0, 2).toString('latin1')).toBe('PK');
+    expect(pdf.buffer.slice(0, 5).toString('latin1')).toBe('%PDF-');
+  });
+
   it('handles a report with empty sections without throwing', async () => {
     const empty: Report = {
       type: 'belowmin',

@@ -30,10 +30,10 @@ import {
   buildReport,
   isReportPeriod,
   isReportType,
+  MENU_REPORT_TYPES,
   PERIOD_LABEL,
   REPORT_PERIODS,
   REPORT_TYPE_LABEL,
-  REPORT_TYPES,
   type Report,
   type ReportPeriod,
   type ReportScope,
@@ -115,9 +115,14 @@ export function reportScopeFor(principal: CallbackPrincipal): ReportScope | null
 // Menus
 // ---------------------------------------------------------------------------
 
-/** The 4-type top-level keyboard. */
+/**
+ * The top-level keyboard. Only the two MENU report types are offered:
+ * "Sotuvlar" (now a combined report carrying the payment-type + trend sections)
+ * and "Min'dan past mahsulotlar". The `payment` / `trend` callbacks still
+ * resolve if pressed (legacy/back-compat) but are no longer surfaced here.
+ */
 export function reportTypeKeyboard(): InlineButton[][] {
-  return REPORT_TYPES.map((t) => [
+  return MENU_REPORT_TYPES.map((t) => [
     { text: REPORT_TYPE_LABEL[t], callback_data: `rep:${t}` },
   ]);
 }
