@@ -29,6 +29,7 @@ import { handleCallbackQuery, type CallbackContext } from './callbackHandler.js'
 import { handleStartCommand, type StartContext } from './startCommand.js';
 import { wireVoiceHandler } from './voiceHandler.js';
 import { handleCashShiftMessage, type CashShiftCtxLike } from './cashShiftHandler.js';
+import { handleMenuMessage, type MenuCtxLike } from './menuHandler.js';
 
 /**
  * Minimal surface the outbox worker needs from a Grammy bot. Kept narrow
@@ -139,7 +140,9 @@ export function ensureCallbackHandlerWired(): void {
     const startCtx: StartContext = {
       fromTelegramId: fromId,
       token,
-      reply: (text) => ctx.reply(text).then(() => undefined),
+      // B2 — forward `opts` so the onboarding reply-keyboard (reply_markup)
+      // reaches Telegram.
+      reply: (text, opts) => ctx.reply(text, opts).then(() => undefined),
     };
     await handleStartCommand(startCtx);
   });
@@ -153,9 +156,14 @@ export function ensureCallbackHandlerWired(): void {
   // Grammy command'ni message:text dan oldin ushlaydi, to'qnashuv yo'q.
   bot.on('message:text', async (ctx) => {
     try {
+      // B2 — menu reply-keyboard buttons are routed FIRST. `handleMenuMessage`
+      // returns `{handled:false}` for any non-menu text, so the cash-shift
+      // handler still sees ordinary messages (no flow is broken).
+      const menu = await handleMenuMessage(ctx as unknown as MenuCtxLike);
+      if (menu.handled) return;
       await handleCashShiftMessage(ctx as unknown as CashShiftCtxLike);
     } catch (err) {
-      console.error('[telegram-cashshift] uncaught:', (err as Error).message);
+      console.error('[telegram-text] uncaught:', (err as Error).message);
     }
   });
   inboundWired = true;

@@ -15,6 +15,12 @@
  * are untouched.
  */
 import { redeemLinkToken } from '../../services/userTelegramLink.js';
+import { loadVoicePrincipal } from './voiceHandler.js';
+import {
+  buildGreeting,
+  buildMenuKeyboard,
+  loadUserMenuContext,
+} from './menuHandler.js';
 
 /** Minimal adapter the bot wire-up provides. */
 export type StartContext = {
@@ -22,8 +28,9 @@ export type StartContext = {
   readonly fromTelegramId: number;
   /** The deep-link payload after `/start ` (empty string when absent). */
   readonly token: string;
-  /** Send a plain-text reply to the chat (best-effort). */
-  reply(text: string): Promise<void>;
+  /** Send a plain-text reply to the chat (best-effort). `opts` carries the
+   *  reply-keyboard markup for the onboarding menu (B2). */
+  reply(text: string, opts?: Record<string, unknown>): Promise<void>;
 };
 
 const GREETING =
@@ -33,7 +40,12 @@ const GREETING =
 
 export async function handleStartCommand(ctx: StartContext): Promise<void> {
   if (ctx.token === '') {
-    await safeReply(ctx, GREETING);
+    // B2 — a LINKED user who opens the bot with no token lands straight on
+    // their role menu; an unknown sender gets the link greeting.
+    const shown = await showMenuForLinkedUser(ctx);
+    if (!shown) {
+      await safeReply(ctx, GREETING);
+    }
     return;
   }
 
@@ -41,11 +53,15 @@ export async function handleStartCommand(ctx: StartContext): Promise<void> {
   try {
     const outcome = await redeemLinkToken(ctx.token, ctx.fromTelegramId);
     switch (outcome.kind) {
-      case 'linked':
+      case 'linked': {
+        // B2 — right after linking, drop the user onto their bo'lim menu.
+        const shown = await showMenuForUserId(ctx, outcome.userId);
+        if (shown) return;
         message =
           `✅ Akkauntingiz ulandi: ${outcome.userName}.\n` +
           "Endi bildirishnomalar shu yerga keladi.";
         break;
+      }
       case 'expired':
         message = "⏳ Havola muddati tugagan. Iltimos, ilovadan yangi havola oling.";
         break;
@@ -71,10 +87,42 @@ export async function handleStartCommand(ctx: StartContext): Promise<void> {
   await safeReply(ctx, message);
 }
 
-/** Swallow reply failures — a network glitch here is unrecoverable. */
-async function safeReply(ctx: StartContext, text: string): Promise<void> {
+/**
+ * B2 — show the role menu for the sender IF they are a linked, active user.
+ * Returns true when the menu was sent (caller skips the link greeting).
+ */
+async function showMenuForLinkedUser(ctx: StartContext): Promise<boolean> {
+  const principal = await loadVoicePrincipal(ctx.fromTelegramId);
+  if (principal === null) return false;
+  return showMenuForUserId(ctx, principal.userId);
+}
+
+/** B2 — greet `userId` + send their role-based reply keyboard. */
+async function showMenuForUserId(
+  ctx: StartContext,
+  userId: number,
+): Promise<boolean> {
   try {
-    await ctx.reply(text);
+    const menuCtx = await loadUserMenuContext(userId);
+    if (menuCtx === null) return false;
+    await safeReply(ctx, buildGreeting(menuCtx), {
+      reply_markup: buildMenuKeyboard(menuCtx.role),
+    });
+    return true;
+  } catch (err) {
+    console.error('[telegram-start] menu render failed:', (err as Error).message);
+    return false;
+  }
+}
+
+/** Swallow reply failures — a network glitch here is unrecoverable. */
+async function safeReply(
+  ctx: StartContext,
+  text: string,
+  opts?: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await ctx.reply(text, opts);
   } catch (err) {
     console.error('[telegram-start] reply failed:', (err as Error).message);
   }
