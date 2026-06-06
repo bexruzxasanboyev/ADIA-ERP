@@ -34,11 +34,14 @@ export function ThemeToggle({ compact = false }: ThemeToggleProps) {
     );
   }
 
+  // Compact, auto-width segmented control: equal small segments with an
+  // icon + short label, left-aligned. NOT full-width (the previous layout
+  // stretched edge-to-edge and made the active segment look oversized).
   return (
     <div
       role="radiogroup"
       aria-label="Mavzu rejimi"
-      className="inline-flex w-full items-center rounded-md border border-border bg-card/40 p-0.5"
+      className="inline-flex w-auto items-center gap-0.5 rounded-lg border border-border bg-card/40 p-1"
     >
       {OPTIONS.map((opt) => {
         const active = mode === opt.id;
@@ -52,13 +55,14 @@ export function ThemeToggle({ compact = false }: ThemeToggleProps) {
             title={opt.label}
             onClick={() => setMode(opt.id)}
             className={cn(
-              'inline-flex flex-1 items-center justify-center rounded-sm py-1.5 transition-colors',
+              'inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               active
                 ? 'bg-primary text-primary-foreground shadow-sm'
                 : 'text-muted-foreground hover:bg-accent hover:text-foreground',
             )}
           >
             <opt.Icon className="size-4" aria-hidden="true" />
+            {opt.label}
           </button>
         );
       })}

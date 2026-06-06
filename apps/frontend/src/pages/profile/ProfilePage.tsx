@@ -304,7 +304,7 @@ export function ProfilePage() {
                 Telegram
               </dt>
               <dd className="mt-1">
-                <TelegramLinkButton user={user} />
+                <TelegramLinkButton user={user} directOpen />
               </dd>
             </div>
           </dl>
@@ -449,22 +449,25 @@ export function ProfilePage() {
           <p className="text-sm text-muted-foreground">
             Interfeys rejimi: yorug‘, qorong‘i yoki tizim sozlamasi.
           </p>
-          <div className="max-w-xs">
-            <ThemeToggle />
-          </div>
+          <ThemeToggle />
         </CardContent>
       </Card>
 
-      {/* IA redesign — "Chiqish" moved here from the sidebar. */}
+      {/* IA redesign — "Chiqish" moved here from the sidebar. A clear,
+          intentional destructive sign-out: red outline that fills on hover,
+          sensible auto width (not full-width, not oversized). */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Sessiya</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-muted-foreground">
+            Hisobdan chiqish va joriy sessiyani yakunlash.
+          </p>
           <Button
             type="button"
             variant="outline"
-            className="text-destructive hover:bg-destructive/10 hover:text-destructive focus-visible:ring-destructive"
+            className="w-full shrink-0 border-destructive/40 text-destructive hover:border-destructive hover:bg-destructive hover:text-destructive-foreground focus-visible:ring-destructive sm:w-auto"
             onClick={() => {
               void logout();
             }}

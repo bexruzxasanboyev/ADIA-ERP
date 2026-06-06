@@ -54,7 +54,7 @@ describe('TelegramLinkButton', () => {
     });
   });
 
-  it('renders the /start command when the token endpoint returns one (no bot username configured)', async () => {
+  it('renders the t.me deep link when the token endpoint returns a token', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
       jsonResponse(201, {
         token: 'abc123',
@@ -69,9 +69,12 @@ describe('TelegramLinkButton', () => {
     await user.click(screen.getByRole('button', { name: /Telegram ulash/i }));
 
     await waitFor(() => {
-      // VITE_TELEGRAM_BOT_USERNAME is unset in the test env → the dialog
-      // falls back to the raw /start command rather than a t.me deep link.
-      expect(screen.getByText('/start abc123')).toBeInTheDocument();
+      // VITE_TELEGRAM_BOT_USERNAME is unset in the test env, so the dialog
+      // falls back to the owner-confirmed `adiaerpbot` handle and renders a
+      // `https://t.me/adiaerpbot?start=<token>` deep link.
+      expect(
+        screen.getByText('https://t.me/adiaerpbot?start=abc123'),
+      ).toBeInTheDocument();
     });
   });
 });

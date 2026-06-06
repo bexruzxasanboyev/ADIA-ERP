@@ -118,14 +118,17 @@ function AppLayoutShell() {
         {/* Right — LocationSwitcher + Profil. */}
         <div className="flex shrink-0 items-center justify-end gap-1 sm:gap-2">
           <LocationSwitcher />
+          {/* Profil — a real header icon button (circular avatar-style
+              control): a CircleUser icon in a bordered, rounded-full button
+              with a clear hover state. Navigates to /profile; stays
+              accessible via aria-label + title. */}
           <Link
             to="/profile"
-            className="inline-flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="inline-flex size-9 items-center justify-center rounded-full border border-border bg-card/40 text-muted-foreground transition-colors hover:border-primary/40 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label="Profil"
             title="Profil"
           >
             <CircleUser className="size-5" aria-hidden="true" />
-            <span className="hidden lg:inline">Profil</span>
           </Link>
         </div>
       </header>

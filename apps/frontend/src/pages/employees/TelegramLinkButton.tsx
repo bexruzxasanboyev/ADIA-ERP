@@ -48,7 +48,19 @@ interface TelegramLinkTokenResponse {
   start_command?: string;
 }
 
-const BOT_USERNAME = import.meta.env.VITE_TELEGRAM_BOT_USERNAME ?? '';
+/**
+ * The public Telegram bot username, WITHOUT the leading `@`.
+ *
+ * Preferred source is the build-time `VITE_TELEGRAM_BOT_USERNAME`; when it
+ * is unset we fall back to the owner-confirmed handle `adiaerpbot`
+ * (https://t.me/adiaerpbot) so the `https://t.me/<bot>?start=<token>`
+ * deep link ALWAYS resolves to a real bot instead of degrading to a
+ * copy-the-command flow. No backend endpoint currently exposes the
+ * username, so this constant is the single source of truth.
+ */
+const DEFAULT_BOT_USERNAME = 'adiaerpbot';
+const BOT_USERNAME =
+  import.meta.env.VITE_TELEGRAM_BOT_USERNAME?.trim() || DEFAULT_BOT_USERNAME;
 
 interface TelegramLinkButtonProps {
   user: User;
@@ -60,16 +72,27 @@ interface TelegramLinkButtonProps {
    * since Telegram linking is self-service (the backend 403s anyway).
    */
   readOnly?: boolean;
+  /**
+   * When true (the self-service Profil page), clicking "TG ulash" mints a
+   * token and IMMEDIATELY opens the `https://t.me/<bot>?start=<token>`
+   * deep link in a new tab — no intermediate dialog. We still fall back to
+   * the dialog (copy `/start <token>`) if the endpoint is unavailable.
+   */
+  directOpen?: boolean;
 }
 
 export function TelegramLinkButton({
   user,
   size = 'sm',
   readOnly = false,
+  directOpen = false,
 }: TelegramLinkButtonProps) {
   const { notify } = useToast();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  // Direct-open flow (Profil page): true while we mint the token before
+  // popping the deep link, so the button can show a spinner.
+  const [opening, setOpening] = useState(false);
   // The https://t.me deep link — only when a bot username is configured.
   const [link, setLink] = useState<string | null>(null);
   // The raw `/start <token>` command — always available on success.
@@ -140,6 +163,41 @@ export function TelegramLinkButton({
     }
   }
 
+  /**
+   * Profil page flow: mint a one-time token, then open the
+   * `https://t.me/<bot>?start=<token>` deep link in a NEW TAB so Telegram
+   * (app or web) launches the bot pre-loaded with `/start <token>`. On
+   * success we nudge the user to press "/start". If the endpoint is
+   * unavailable / errors we fall back to the dialog so the flow never
+   * dead-ends.
+   */
+  async function handleDirectOpen() {
+    setOpening(true);
+    try {
+      const res = await apiRequest<TelegramLinkTokenResponse>(
+        `/api/users/${user.id}/telegram-link-token`,
+        { method: 'POST' },
+      );
+      const url = `https://t.me/${BOT_USERNAME}?start=${res.token}`;
+      window.open(url, '_blank', 'noopener,noreferrer');
+      notify('success', 'Telegram’da “/start” bosing.');
+    } catch (err: unknown) {
+      // Endpoint missing or any other failure → degrade to the dialog,
+      // which surfaces the copyable command / friendly placeholder.
+      if (!(err instanceof ApiError) || err.status !== 404) {
+        notify(
+          'error',
+          err instanceof ApiError
+            ? err.message
+            : 'Telegram havolasini olishda xatolik yuz berdi.',
+        );
+      }
+      handleOpenChange(true);
+    } finally {
+      setOpening(false);
+    }
+  }
+
   function handleOpenChange(next: boolean) {
     setOpen(next);
     if (next) {
@@ -167,13 +225,22 @@ export function TelegramLinkButton({
         type="button"
         variant="outline"
         size={size}
+        disabled={opening}
         onClick={(e) => {
           e.stopPropagation();
-          handleOpenChange(true);
+          if (directOpen) {
+            void handleDirectOpen();
+          } else {
+            handleOpenChange(true);
+          }
         }}
         aria-label={`${user.name} uchun Telegram ulash`}
       >
-        <Send className="size-4" aria-hidden="true" />
+        {opening ? (
+          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+        ) : (
+          <Send className="size-4" aria-hidden="true" />
+        )}
         TG ulash
       </Button>
 
