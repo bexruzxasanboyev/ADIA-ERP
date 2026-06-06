@@ -171,8 +171,11 @@ stockRouter.get(
 stockRouter.patch(
   '/minmax',
   authenticate,
+  // Manager (pm) is OPERATIONAL view-only (owner 2026-06-06): min/max is an
+  // operational setting owned by each location's own manager, not the pm. The
+  // pm oversees the chain read-only here; admin config (users, locations,
+  // prices) stays with the pm elsewhere.
   authorize(
-    'pm',
     'raw_warehouse_manager',
     'production_manager',
     'supply_manager',

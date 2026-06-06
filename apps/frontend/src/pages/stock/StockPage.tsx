@@ -85,10 +85,12 @@ export function StockPage({
   // (§6 RBAC matrix). The MovementDialog itself enforces per-pair
   // location scoping when validating the form.
   const canMove = isOperator && user?.role !== 'store_manager';
-  // Everyone with stock access (except ai) may edit min/max (§6) — and
-  // the backend exempts /api/stock/minmax from authorizeWrite, so PM
-  // keeps the configuration write.
-  const canEditMinMax = true;
+  // Owner rule (2026-06-06): the Manager (pm) is OPERATIONAL view-only.
+  // min/max is a per-location operational setting — the location's own
+  // manager edits it, not the pm. `isOperator` excludes pm and
+  // ai_assistant, mirroring the backend which now 403s pm on
+  // PATCH /api/stock/minmax.
+  const canEditMinMax = isOperator;
   // Manual recalc trigger is PM-only (phase-2.md §6 RBAC matrix and the
   // backend's configuration exemption per the Stage 6 rbac-matrix test).
   const canRecalc = user?.role === 'pm';

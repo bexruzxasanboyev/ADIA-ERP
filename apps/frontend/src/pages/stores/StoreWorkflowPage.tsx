@@ -240,6 +240,17 @@ export function StoreWorkflowPage() {
       <PageHeader
         title="Do‘kon ish joyi"
         description="Do‘kon qoldig‘i, yuborilgan so‘rovlar va qabul qilinadigan jo‘natmalar — bitta joyda."
+        actions={
+          isPm && (
+            <Badge
+              variant="secondary"
+              className="h-10 items-center px-3"
+              aria-label="Faqat ko‘rish rejimi"
+            >
+              Faqat ko‘rish
+            </Badge>
+          )
+        }
       />
 
       {isPm && (

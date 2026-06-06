@@ -126,6 +126,17 @@ export function CentralInboxPage() {
       <PageHeader
         title="Markaziy sklad — kiruvchi so‘rovlar"
         description="Do‘konlardan kelgan to‘ldirish so‘rovlarini qabul qiling yoki rad eting."
+        actions={
+          isPm && (
+            <Badge
+              variant="secondary"
+              className="h-10 items-center px-3"
+              aria-label="Faqat ko‘rish rejimi"
+            >
+              Faqat ko‘rish
+            </Badge>
+          )
+        }
       />
 
       {isPm && (
@@ -187,7 +198,9 @@ export function CentralInboxPage() {
                     <TableHead className="text-right">Miqdor</TableHead>
                     <TableHead>Holat</TableHead>
                     <TableHead>Yaratilgan</TableHead>
-                    <TableHead className="text-right">Amal</TableHead>
+                    {!isPm && (
+                      <TableHead className="text-right">Amal</TableHead>
+                    )}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -211,34 +224,36 @@ export function CentralInboxPage() {
                       <TableCell className="whitespace-nowrap text-muted-foreground">
                         {formatDateTime(row.created_at)}
                       </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          <Button
-                            size="sm"
-                            onClick={() => handleAccept(row)}
-                            disabled={busyId !== null}
-                          >
-                            {busyId === row.id ? (
-                              <Loader2
-                                className="size-4 animate-spin"
-                                aria-hidden="true"
-                              />
-                            ) : (
-                              <Check className="size-4" aria-hidden="true" />
-                            )}
-                            Qabul qil
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => setRejectTarget(row)}
-                            disabled={busyId !== null}
-                          >
-                            <X className="size-4" aria-hidden="true" />
-                            Rad et
-                          </Button>
-                        </div>
-                      </TableCell>
+                      {!isPm && (
+                        <TableCell className="text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <Button
+                              size="sm"
+                              onClick={() => handleAccept(row)}
+                              disabled={busyId !== null}
+                            >
+                              {busyId === row.id ? (
+                                <Loader2
+                                  className="size-4 animate-spin"
+                                  aria-hidden="true"
+                                />
+                              ) : (
+                                <Check className="size-4" aria-hidden="true" />
+                              )}
+                              Qabul qil
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setRejectTarget(row)}
+                              disabled={busyId !== null}
+                            >
+                              <X className="size-4" aria-hidden="true" />
+                              Rad et
+                            </Button>
+                          </div>
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))}
                 </TableBody>
