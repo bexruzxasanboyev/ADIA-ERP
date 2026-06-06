@@ -140,13 +140,13 @@ describe('Poster stockSync', () => {
     expect(moves[0]?.qty).toBeCloseTo(6, 4);
   });
 
-  it('clamps a negative Poster qty to 0 and notifies', async () => {
+  it('clamps a negative Poster qty to 0 and emits a named per-location digest', async () => {
     const { locationId } = await seedLocationAndProduct({
       posterStorageId: 3,
       posterIngredientId: 100,
       initialQty: 4,
     });
-    // Seed a PM user so notifyNegative has at least one recipient.
+    // Seed a PM user so the digest has at least one recipient.
     // `username` is the sole login handle (NOT NULL UNIQUE, 2..32 charset).
     await ctx.db.query(
       `INSERT INTO users (name, username, password_hash, role)
@@ -171,10 +171,79 @@ describe('Poster stockSync', () => {
       [locationId],
     );
     expect(stock[0]?.qty).toBeCloseTo(0, 4);
-    const { rows: notes } = await ctx.db.query<{ type: string }>(
-      `SELECT type FROM notifications WHERE type='negative_stock_detected'`,
+    const { rows: notes } = await ctx.db.query<{ title: string; body: string; dedupe_key: string | null }>(
+      `SELECT title, body, dedupe_key FROM notifications WHERE type='negative_stock_detected'`,
     );
-    expect(notes.length).toBeGreaterThan(0);
+    // One PM recipient -> exactly ONE digest (not one per product).
+    expect(notes).toHaveLength(1);
+    // Title carries the location NAME, never a raw id.
+    expect(notes[0]?.title).toContain('Test');
+    expect(notes[0]?.title).toContain('Manfiy qoldiq');
+    // Body lists the product by NAME with its Poster qty, never a raw id.
+    expect(notes[0]?.body).toContain('X');
+    expect(notes[0]?.body).toContain('-1.5');
+    expect(notes[0]?.body).not.toMatch(/product 100|location 3/);
+    // Location-level digest dedupe key: negative_stock_digest:<loc>:user:<uid>.
+    expect(notes[0]?.dedupe_key).toMatch(
+      new RegExp(`^negative_stock_digest:${locationId}:user:\\d+$`),
+    );
+  });
+
+  it('emits ONE digest per location (not N per product) when many products go negative', async () => {
+    // Two PM recipients + one location with THREE negative products.
+    await ctx.db.query(
+      `INSERT INTO users (name, username, password_hash, role)
+       VALUES ('pm','pm_multi','x','pm') ON CONFLICT (username) DO NOTHING`,
+    );
+    const { rows: l } = await ctx.db.query<{ id: number }>(
+      `INSERT INTO locations (name, type, poster_storage_id) VALUES ('Sklad-7','central_warehouse',3) RETURNING id`,
+    );
+    const locationId = l[0]!.id;
+    const names = ['Napoleon', 'Medovik', 'Tiramisu'];
+    for (let i = 0; i < names.length; i += 1) {
+      await ctx.db.query(
+        `INSERT INTO products (name, type, unit, poster_ingredient_id) VALUES ($1,'raw','kg',$2)`,
+        [names[i], 200 + i],
+      );
+    }
+    const client = clientWithLeftovers({
+      3: names.map((_n, i) => ({
+        ingredient_id: String(200 + i),
+        ingredient_name: names[i],
+        ingredient_left: String(-(i + 1)),
+        storage_ingredient_left: String(-(i + 1)),
+        ingredient_unit: 'kg',
+        ingredients_type: '1',
+      })),
+    });
+    const summary = await syncStockLeftovers(client);
+    expect(summary.negativesClamped).toBe(3);
+
+    // Recipients = PMs (pm_multi + any pm seeded by earlier tests). The
+    // invariant under test: EXACTLY ONE digest per (recipient) — i.e. one row
+    // per recipient, NOT three (one per product).
+    const { rows: perUser } = await ctx.db.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM notifications
+        WHERE type='negative_stock_detected' AND (payload->>'location_id')::int = $1
+        GROUP BY recipient_user_id`,
+      [locationId],
+    );
+    expect(perUser.length).toBeGreaterThan(0);
+    for (const r of perUser) expect(Number(r.n)).toBe(1);
+
+    // The single digest body names all three products (top-5, none collapsed).
+    const { rows: one } = await ctx.db.query<{ body: string; payload: { product_count: number } }>(
+      `SELECT body, payload FROM notifications
+        WHERE type='negative_stock_detected' AND (payload->>'location_id')::int = $1
+        LIMIT 1`,
+      [locationId],
+    );
+    expect(one[0]?.payload.product_count).toBe(3);
+    expect(one[0]?.body).toContain('Napoleon');
+    expect(one[0]?.body).toContain('Medovik');
+    expect(one[0]?.body).toContain('Tiramisu');
+    // Most-negative first: Tiramisu (-3) precedes Napoleon (-1).
+    expect(one[0]!.body.indexOf('Tiramisu')).toBeLessThan(one[0]!.body.indexOf('Napoleon'));
   });
 
   it('is idempotent — re-running with the same payload is a no-op', async () => {
@@ -203,13 +272,13 @@ describe('Poster stockSync', () => {
     expect(moves).toHaveLength(1); // still only the first
   });
 
-  it('debounces `negative_stock_detected` to one notification per (location, product) per 24h (C3)', async () => {
+  it('debounces the digest to one notification per (location, user) per window (C3)', async () => {
     const { locationId } = await seedLocationAndProduct({
       posterStorageId: 3,
       posterIngredientId: 100,
       initialQty: 4,
     });
-    // Seed a PM user so notifyNegative has at least one recipient. Use a
+    // Seed a PM user so the digest has at least one recipient. Use a
     // suite-unique username — other tests in this file seed `pm_test` and the
     // beforeEach hook does NOT wipe `users`.
     await ctx.db.query(
@@ -230,13 +299,11 @@ describe('Poster stockSync', () => {
       ],
     });
     // Two consecutive scans on the same negative leftover => still ONE
-    // notification (dedupeKey = `negative_stock_detected:<loc>:<prod>`,
-    // 24h window).
+    // digest per recipient (dedupeKey = negative_stock_digest:<loc>:user:<uid>).
     await syncStockLeftovers(client);
     await syncStockLeftovers(client);
     // Assert per-recipient count: each user (PM and/or location manager)
-    // gets exactly ONE notification for this (location, product) — the
-    // dedupe key is `negative_stock_detected:<loc>:<prod>:user:<uid>`.
+    // gets exactly ONE digest for this location across both scans.
     const { rows: perUser } = await ctx.db.query<{ n: number }>(
       `SELECT count(*)::int AS n
          FROM notifications
@@ -251,7 +318,7 @@ describe('Poster stockSync', () => {
     );
     for (const r of keys) {
       expect(r.dedupe_key).toMatch(
-        new RegExp(`^negative_stock_detected:${locationId}:\\d+:user:\\d+$`),
+        new RegExp(`^negative_stock_digest:${locationId}:user:\\d+$`),
       );
     }
   });
