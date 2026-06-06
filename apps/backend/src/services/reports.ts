@@ -13,16 +13,19 @@
  * Data sources (reuse, do not duplicate):
  *   - Sales / trend / store breakdown — the `sales` table (Poster-synced),
  *     revenue = Σ(qty·price), receipts = distinct poster_transaction_id.
- *   - Payment-type split — Poster `dash.getPaymentsReport` via the existing
- *     `paymentReportToBuckets` aggregator (the only source of method data).
+ *   - Payment-type split — the SAME detailed per-method list the web dashboard
+ *     (`GET /api/dashboard/revenue-breakdown`) shows: built from Poster
+ *     `dash.getTransactions` + `settings.getPaymentMethods` via the shared
+ *     `transactionsToBuckets` helper. It separates Payme/Click and surfaces
+ *     each NAMED custom method (e.g. "Доверительный платеж",
+ *     "Карта|Абдулқодир ака") as its own row — never lumped into "Boshqa".
  *   - Below-min — `scanBelowMin()` + the `stock` table, joined to names.
  *
  * Product + store NAMES are always used in output, never raw ids.
  */
 import { query } from '../db/index.js';
 import { parseDateRange, toPosterDate } from '../lib/dateRange.js';
-import type { PaymentMethodKey } from '../integrations/poster/paymentMethods.js';
-import { paymentReportToBuckets } from '../integrations/poster/posterMoney.js';
+import { transactionsToBuckets } from '../integrations/poster/posterMoney.js';
 
 // ---------------------------------------------------------------------------
 // Period + scope
@@ -205,15 +208,15 @@ export async function getSalesReport(
 
 // ---------------------------------------------------------------------------
 // 2. Payment-type report — sales split by payment method (Poster source)
+//
+// DETAILED — identical to the web dashboard's "TUSHUM TAQSIMOTI" card
+// (`GET /api/dashboard/revenue-breakdown`). One row PER METHOD: the 4 core
+// methods (Naqd / Karta / Payme / Click), then each NAMED custom method present
+// (amount > 0, sorted desc, verbatim Poster title — e.g. "Доверительный
+// платеж", "Карта|Абдулқодир ака"), then the unnamed "Boshqa" residual when
+// > 0. The detailed list comes from the SAME shared `transactionsToBuckets`
+// helper the dashboard route uses, so the two views never diverge.
 // ---------------------------------------------------------------------------
-
-const PAYMENT_LABEL: Readonly<Record<PaymentMethodKey, string>> = {
-  cash: 'Naqd',
-  card: 'Karta',
-  payme: 'Payme',
-  click: 'Click',
-  other: 'Boshqa',
-};
 
 export async function getPaymentTypeReport(
   period: ReportPeriod,
@@ -233,35 +236,44 @@ export async function getPaymentTypeReport(
     spotId = sid === null || sid === undefined ? undefined : Number(sid);
   }
 
-  // Poster is the only source of payment-method splits. Pull the aggregate
-  // report for the window and bucket it. Lazy-import the client so unit tests
-  // can inject a stub via setPosterClientForTests without a live token.
+  // Poster is the only source of payment-method splits. The aggregate
+  // `dash.getPaymentsReport` CANNOT separate Payme/Click (it folds both into
+  // `payed_card_sum`) and never names custom methods, so — exactly like the
+  // dashboard — we read per-transaction (`dash.getTransactions`) and resolve
+  // each method via the account's id->title map (`settings.getPaymentMethods`).
+  // `transactionsToBuckets` then yields the ordered detailed `methods` list.
+  // Lazy-import the client so unit tests can inject a stub via
+  // setPosterClientForTests without a live token.
   const { createPosterClientFromConfig } = await import(
     '../integrations/poster/client.js'
   );
   const client = createPosterClientFromConfig();
   const dateFrom = toPosterDate(from);
   const dateTo = toPosterDate(new Date(to.getTime() - 1));
-  const report = await client.getPaymentsReport(
-    spotId === undefined ? { dateFrom, dateTo } : { dateFrom, dateTo, spotId },
-  );
-  const buckets = paymentReportToBuckets(report);
 
-  const order: PaymentMethodKey[] = ['cash', 'card', 'payme', 'click', 'other'];
-  const dataRows = order
-    .filter((k) => buckets.byMethod[k] > 0 || buckets.total === 0)
-    .map((k) => {
-      const amount = buckets.byMethod[k];
-      const pct = buckets.total > 0 ? (amount / buckets.total) * 100 : 0;
-      return [PAYMENT_LABEL[k], som(amount), `${pct.toFixed(1)}%`] as const;
-    });
+  const [methods, transactions] = await Promise.all([
+    client.getPaymentMethods(),
+    client.getTransactions(
+      spotId === undefined
+        ? { dateFrom, dateTo, paginate: true }
+        : { dateFrom, dateTo, paginate: true, spotId },
+    ),
+  ]);
+
+  const breakdown = transactionsToBuckets(transactions, methods);
+  const { methods: methodRows, total } = breakdown;
+
+  const dataRows = methodRows.map((m) => {
+    const pct = total > 0 ? (m.amount / total) * 100 : 0;
+    return [m.label, som(m.amount), `${pct.toFixed(1)}%`] as const;
+  });
 
   const sections: ReportSection[] = [
     {
       heading: "To'lov turlari",
       columns: ["To'lov turi", 'Summa', 'Ulush'],
       rows: dataRows,
-      total: ['Jami', som(buckets.total), '100.0%'],
+      total: ['Jami', som(total), '100.0%'],
     },
   ];
 

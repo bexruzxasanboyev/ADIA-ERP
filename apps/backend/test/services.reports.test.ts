@@ -183,9 +183,20 @@ describe('getBelowMinReport', () => {
 });
 
 describe('getPaymentTypeReport', () => {
-  it('buckets the Poster payment report by method with percentages', async () => {
-    // Legacy per-method row array (one of the two shapes Poster emits).
-    // Sums are in TIYIN -> tiyinToSom divides by 100.
+  /**
+   * Build a stub PosterClient that serves the per-transaction revenue path the
+   * detailed report now uses (the SAME path the web dashboard's TUSHUM
+   * TAQSIMOTI card uses): `settings.getPaymentMethods` (id->title map) +
+   * `dash.getTransactions` (per-method txns). Money is TIYIN -> ÷100 to so'm.
+   *
+   * Mirrors live `adia`: 1=cash, 2=card built-in; 19=Payme, 20=Click custom;
+   * plus NAMED custom methods (a card-titled one + a free-text one) that must
+   * each surface as their OWN row, never lumped into "Karta" or "Boshqa".
+   */
+  function stubPosterWithTransactions(opts: {
+    methods: ReadonlyArray<{ payment_method_id: string; title: string; type?: string }>;
+    transactions: ReadonlyArray<Record<string, string>>;
+  }): void {
     setPosterClientForTests(
       new PosterClient({
         token: 'acc:test',
@@ -193,14 +204,19 @@ describe('getPaymentTypeReport', () => {
         fetcher: ((url: string | URL) => {
           const u = typeof url === 'string' ? new URL(url) : url;
           const m = u.pathname.split('/').pop();
-          if (m === 'dash.getPaymentsReport') {
-            const payload = {
-              response: [
-                { payment_id: 1, payment_title: 'Naqd', payment_count: 3, payment_sum: 600_000 },
-                { payment_id: 2, payment_title: 'Bank kartasi', payment_count: 2, payment_sum: 400_000 },
-              ],
-            };
-            return Promise.resolve(new Response(JSON.stringify(payload), { status: 200 }));
+          if (m === 'settings.getPaymentMethods') {
+            return Promise.resolve(
+              new Response(JSON.stringify({ response: opts.methods }), { status: 200 }),
+            );
+          }
+          if (m === 'dash.getTransactions') {
+            // Paginated reader loops on `offset`; serve everything on offset 0,
+            // then an empty page so the loop terminates.
+            const offset = Number(u.searchParams.get('offset') ?? '0');
+            const rows = offset === 0 ? opts.transactions : [];
+            return Promise.resolve(
+              new Response(JSON.stringify({ response: rows }), { status: 200 }),
+            );
           }
           return Promise.resolve(
             new Response(JSON.stringify({ error: { code: 30, message: 'NA' } }), { status: 200 }),
@@ -208,16 +224,66 @@ describe('getPaymentTypeReport', () => {
         }) as unknown as typeof fetch,
       }),
     );
+  }
+
+  it('lists ONE row per method — payme/click/named are separate, not lumped into Boshqa', async () => {
+    stubPosterWithTransactions({
+      methods: [
+        { payment_method_id: '1', title: 'Наличные', type: '1' },
+        { payment_method_id: '2', title: 'Банковская карта', type: '2' },
+        { payment_method_id: '19', title: 'Payme', type: '3' },
+        { payment_method_id: '20', title: 'Click', type: '3' },
+        { payment_method_id: '21', title: 'Доверительный платеж', type: '3' },
+        { payment_method_id: '22', title: 'Карта|Абдулқодир ака', type: '3' },
+      ],
+      // All money TIYIN. pay_type != 0 => closed/revenue.
+      transactions: [
+        // No custom method (id 0) -> split by own cash/card fields.
+        { transaction_id: 't1', spot_id: '1', pay_type: '1', payment_method_id: '0', payed_cash: '300000', payed_card: '0' },
+        { transaction_id: 't2', spot_id: '1', pay_type: '2', payment_method_id: '0', payed_cash: '0', payed_card: '100000' },
+        // Custom Payme / Click -> their own core buckets.
+        { transaction_id: 't3', spot_id: '1', pay_type: '2', payment_method_id: '19', payed_sum: '200000' },
+        { transaction_id: 't4', spot_id: '1', pay_type: '2', payment_method_id: '20', payed_sum: '150000' },
+        // Named custom methods -> their OWN named rows (verbatim title).
+        { transaction_id: 't5', spot_id: '1', pay_type: '2', payment_method_id: '21', payed_sum: '120000' },
+        { transaction_id: 't6', spot_id: '1', pay_type: '2', payment_method_id: '22', payed_sum: '130000' },
+        // Open/unpaid -> ignored.
+        { transaction_id: 't7', spot_id: '1', pay_type: '0', payment_method_id: '0', payed_cash: '999999' },
+      ],
+    });
 
     const report = await getPaymentTypeReport('bugun', { kind: 'all' });
     const sec = report.sections[0]!;
-    // 600000 tiyin = 6000 so'm cash; 400000 tiyin = 4000 so'm card; total 10000.
-    const cash = sec.rows.find((r) => r[0] === 'Naqd');
-    const card = sec.rows.find((r) => r[0] === 'Karta');
-    expect(cash?.[1]).toBe("6 000 so'm");
-    expect(cash?.[2]).toBe('60.0%');
-    expect(card?.[1]).toBe("4 000 so'm");
-    expect(card?.[2]).toBe('40.0%');
+    const find = (label: string) => sec.rows.find((r) => r[0] === label);
+
+    // som amounts (÷100): cash 3000, card 1000, payme 2000, click 1500,
+    // Доверительный 1200, Карта|Абдулқодир 1300. Total = 10000.
+    expect(find('Naqd')?.[1]).toBe("3 000 so'm");
+    expect(find('Karta')?.[1]).toBe("1 000 so'm");
+    expect(find('Payme')?.[1]).toBe("2 000 so'm");
+    expect(find('Click')?.[1]).toBe("1 500 so'm");
+
+    // The named custom methods appear as their OWN rows, verbatim, NOT folded
+    // into Karta/Boshqa.
+    expect(find('Доверительный платеж')?.[1]).toBe("1 200 so'm");
+    expect(find('Карта|Абдулқодир ака')?.[1]).toBe("1 300 so'm");
+    expect(find('Boshqa')).toBeUndefined();
+
+    // Percentages of the 10000 total.
+    expect(find('Naqd')?.[2]).toBe('30.0%');
+    expect(find('Payme')?.[2]).toBe('20.0%');
+    expect(find('Доверительный платеж')?.[2]).toBe('12.0%');
+
+    // Order: core 4 first, then named desc (Карта|… 1300 before Доверительный 1200).
+    expect(sec.rows.map((r) => r[0])).toEqual([
+      'Naqd',
+      'Karta',
+      'Payme',
+      'Click',
+      'Карта|Абдулқодир ака',
+      'Доверительный платеж',
+    ]);
+
     expect(sec.total).toEqual(['Jami', "10 000 so'm", '100.0%']);
   });
 });
