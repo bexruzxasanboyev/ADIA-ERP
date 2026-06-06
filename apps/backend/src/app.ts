@@ -33,6 +33,10 @@ export function createApp(): Express {
   const cfg = loadConfig();
 
   // --- Global middleware ----------------------------------------------------
+  // Behind nginx (prod) requests carry X-Forwarded-For from 127.0.0.1; trust
+  // the loopback proxy so express-rate-limit reads the real client IP and does
+  // not throw ERR_ERL_UNEXPECTED_X_FORWARDED_FOR. Harmless in dev (no proxy).
+  app.set('trust proxy', 'loopback');
   app.disable('x-powered-by');
   app.use(helmet({ contentSecurityPolicy: false }));
   // CORS — exact-match against the allowlist. Same-origin requests (no
