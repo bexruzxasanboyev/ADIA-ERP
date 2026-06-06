@@ -32,10 +32,11 @@ import {
   type ReportsCallbackContext,
 } from './reportsHandler.js';
 import { handleStartCommand, type StartContext } from './startCommand.js';
+import { unlinkTelegramAccount } from '../../services/userTelegramLink.js';
 import { wireVoiceHandler } from './voiceHandler.js';
 import { handleCashShiftMessage, type CashShiftCtxLike } from './cashShiftHandler.js';
 import { handleMenuMessage, type MenuCtxLike } from './menuHandler.js';
-import { handleAiChatMessage, type AiChatCtxLike } from './aiChatHandler.js';
+import { handleAiChatMessage, exitAiChatMode, type AiChatCtxLike } from './aiChatHandler.js';
 
 /**
  * Minimal surface the outbox worker needs from a Grammy bot. Kept narrow
@@ -188,6 +189,24 @@ export function ensureCallbackHandlerWired(): void {
       reply: (text, opts) => ctx.reply(text, opts).then(() => undefined),
     };
     await handleStartCommand(startCtx);
+  });
+  // /logout — detach this Telegram from its ADIA user so the same account can
+  // re-link as a different user (e.g. switch PM → central-warehouse manager).
+  bot.command('logout', async (ctx) => {
+    const fromId = ctx.from?.id;
+    if (fromId === undefined) return;
+    try {
+      const { unlinked, userName } = await unlinkTelegramAccount(fromId);
+      exitAiChatMode(fromId);
+      const msg = unlinked
+        ? `✅ Tizimdan chiqdingiz${userName ? ` (${userName})` : ''}.\n` +
+          "Boshqa akkaunt ulash uchun ilovadan yangi havola oling va /start <token> yuboring."
+        : "Siz hech qaysi akkauntga ulanmagansiz.";
+      await ctx.reply(msg, { reply_markup: { remove_keyboard: true } }).catch(() => undefined);
+    } catch (err) {
+      console.error('[telegram-logout] failed:', (err as Error).message);
+      await ctx.reply("Server xatosi. Birozdan so'ng qayta urinib ko'ring.").catch(() => undefined);
+    }
   });
   // F4.3 / ADR-0014 — message:voice handler. `wireVoiceHandler` ham idempotent
   // (Grammy bot.on additive, lekin `inboundWired` flag dublikatlarni

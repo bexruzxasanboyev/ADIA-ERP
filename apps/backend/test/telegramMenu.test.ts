@@ -82,7 +82,7 @@ describe('buildMenuKeyboard (B2)', () => {
   it('pm is read-only — status + reports + AI chat, no operational actions', () => {
     const kb = buildMenuKeyboard('pm');
     const flat = kb.keyboard.flat();
-    expect(flat).toEqual([MENU.status, MENU.reports, MENU.aiChat]);
+    expect(flat).toEqual([MENU.status, MENU.reports, MENU.aiChat, MENU.logout]);
     expect(flat).not.toContain(MENU.incoming);
     expect(flat).not.toContain(MENU.sendRequest);
   });

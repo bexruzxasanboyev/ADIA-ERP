@@ -17,7 +17,8 @@ import type { AuthPrincipal } from '../../auth/jwt.js';
 import { query } from '../../db/index.js';
 import { loadVoicePrincipal } from './voiceHandler.js';
 import { reportScopeFor, reportTypeKeyboard } from './reportsHandler.js';
-import { enterAiChatMode, AI_CHAT_PROMPT } from './aiChatHandler.js';
+import { enterAiChatMode, exitAiChatMode, AI_CHAT_PROMPT } from './aiChatHandler.js';
+import { unlinkTelegramAccount } from '../../services/userTelegramLink.js';
 
 // ---------------------------------------------------------------------------
 // Menu button labels (single source of truth — used by the keyboard + router)
@@ -32,6 +33,7 @@ export const MENU = {
   status: '📊 Holat',
   reports: '📊 Hisobotlar',
   aiChat: '🤖 AI suhbat',
+  logout: '🚪 Chiqish',
 } as const;
 
 type ReplyKeyboard = {
@@ -53,6 +55,7 @@ export function buildMenuKeyboard(role: Role): ReplyKeyboard {
         [MENU.voice, MENU.sendRequest],
         [MENU.incoming, MENU.products],
         [MENU.reports, MENU.aiChat],
+        [MENU.logout],
       ];
       break;
     case 'central_warehouse_manager':
@@ -63,14 +66,15 @@ export function buildMenuKeyboard(role: Role): ReplyKeyboard {
         [MENU.incoming, MENU.voice],
         [MENU.up],
         [MENU.reports, MENU.aiChat],
+        [MENU.logout],
       ];
       break;
     case 'pm':
       // Read-only operational view + reports.
-      rows = [[MENU.status], [MENU.reports, MENU.aiChat]];
+      rows = [[MENU.status], [MENU.reports, MENU.aiChat], [MENU.logout]];
       break;
     default:
-      rows = [[MENU.status], [MENU.aiChat]];
+      rows = [[MENU.status], [MENU.aiChat], [MENU.logout]];
   }
   return { keyboard: rows, resize_keyboard: true, is_persistent: true };
 }
@@ -210,6 +214,20 @@ export async function handleMenuMessage(
       enterAiChatMode(tgId);
       await safeReply(ctx, AI_CHAT_PROMPT);
       return { handled: true, action: 'ai_chat' };
+
+    case MENU.logout: {
+      const { unlinked, userName } = await unlinkTelegramAccount(tgId);
+      exitAiChatMode(tgId);
+      await safeReply(
+        ctx,
+        unlinked
+          ? `✅ Tizimdan chiqdingiz${userName ? ` (${userName})` : ''}.\n` +
+              'Boshqa akkaunt ulash uchun ilovadan yangi havola oling va /start <token> yuboring.'
+          : 'Siz hech qaysi akkauntga ulanmagansiz.',
+        { reply_markup: { remove_keyboard: true } },
+      );
+      return { handled: true, action: 'logout' };
+    }
 
     default:
       return { handled: false };
