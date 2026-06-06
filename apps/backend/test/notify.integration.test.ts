@@ -203,21 +203,23 @@ describe('replenishment_created', () => {
     await setStock(ctx.db, { locationId: central, productId: product, qty: 50 });
 
     // Stores no longer auto-scan, so the store request is created explicitly
-    // (fires the requester-side nudge); the cycle then advances NEW ->
-    // CHECK_STORE_SUPPLIER which fills target_location_id and fires the
-    // target-side nudge.
-    await createRequest({
+    // (fires the requester-side nudge). The cron does NOT auto-advance a store
+    // request — it advances ONLY via the central accept path — so we drive the
+    // NEW -> CHECK_STORE_SUPPLIER hop directly (the same call acceptByCentral
+    // makes); that hop fills target_location_id and fires the target-side nudge.
+    const created = await createRequest({
       productId: product,
       requesterLocationId: store,
       qtyNeeded: 9,
       actorUserId: null,
     });
-    await runEngineCycle();
+    await runEngineCycle(); // store request stays at NEW (gate)
+    await advance(created.id, null); // NEW -> CHECK_STORE_SUPPLIER (target resolved)
 
     expect(await countByType('replenishment_created', storeManagerId)).toBe(1);
     expect(await countByType('replenishment_created', centralManagerId)).toBe(1);
 
-    // Re-running the cycle MUST NOT produce a second target-side nudge —
+    // Re-advancing/re-running MUST NOT produce a second target-side nudge —
     // the dedupeKey `replenishment_created:target:<id>` makes it idempotent.
     await runEngineCycle();
     expect(await countByType('replenishment_created', centralManagerId)).toBe(1);
@@ -240,21 +242,18 @@ describe('shipment_created', () => {
     });
     await setStock(ctx.db, { locationId: central, productId: product, qty: 50 });
 
-    // Stores no longer auto-scan — create the store request explicitly, then
-    // drive through to CLOSED.
-    await createRequest({
+    // Stores no longer auto-scan — create the store request explicitly. The
+    // cron does NOT auto-advance a store request, so drive every hop via
+    // advance() (the same calls the central accept path makes).
+    const created = await createRequest({
       productId: product,
       requesterLocationId: store,
       qtyNeeded: 9,
       actorUserId: null,
     });
-    await runEngineCycle();
-    const { rows } = await ctx.db.query<{ id: number }>(
-      `SELECT id FROM replenishment_requests
-        WHERE requester_location_id = $1 AND product_id = $2`,
-      [store, product],
-    );
-    const reqId = Number(rows[0]!.id);
+    await runEngineCycle(); // store request stays at NEW (gate)
+    const reqId = created.id;
+    await advance(reqId, null); // NEW -> CHECK_STORE_SUPPLIER (target resolved)
     await advance(reqId, null); // CHECK_STORE_SUPPLIER -> SHIP_TO_REQUESTER
     await advance(reqId, null); // SHIP_TO_REQUESTER -> CLOSED
 

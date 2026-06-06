@@ -25,6 +25,7 @@ import request from 'supertest';
 import { createTestContext, type TestContext } from './helpers/context.js';
 import { makeLocation, makeProduct, makeUser, setStock, getQty } from './helpers/fixtures.js';
 import {
+  acceptByCentral,
   advance,
   cancelRequest,
   canTransition,
@@ -103,15 +104,23 @@ describe('AC4.1 — branch (a): target has enough -> direct ship to requester', 
     // The store request is raised EXPLICITLY (the boss-approve path /
     // proposals/approve calls createRequest under the hood). qty_needed mirrors
     // what the scan would have computed for a non-store: max(20) - qty(1) = 19.
-    await createRequest({
+    const created = await createRequest({
       productId: product,
       requesterLocationId: store,
       qtyNeeded: 20 - 1,
       actorUserId: null,
     });
-    // The engine then advances it exactly as before (NEW -> CHECK_STORE_SUPPLIER).
+    // The cron must NOT auto-advance a STORE request — it waits for the central
+    // manager's accept (the owner's accept/reject gate). runEngineCycle() leaves
+    // a store request at NEW; the store request is advanced ONLY via the accept
+    // path (here we drive `advance()` directly, the same call acceptByCentral makes).
     await runEngineCycle();
     let req = await loadRequest(store, product);
+    expect(req.status).toBe('NEW');
+
+    // The central manager accepts -> NEW -> CHECK_STORE_SUPPLIER.
+    await advance(created.id, null);
+    req = await loadRequestById(created.id);
     expect(req.status).toBe('CHECK_STORE_SUPPLIER');
 
     // advance: CHECK_STORE_SUPPLIER -> SHIP_TO_REQUESTER (enough at target)
@@ -141,6 +150,64 @@ describe('AC4.1 — branch (a): target has enough -> direct ship to requester', 
 });
 
 // ---------------------------------------------------------------------------
+// GATE — the central accept/reject gate actually gates shipping.
+// A STORE request must NOT be shipped by the cron alone; it ships only after
+// the central manager accepts it (acceptByCentral). This is the owner's
+// "to'g'ri connection" — store asks, central sees + accepts/rejects, then ships.
+// ---------------------------------------------------------------------------
+describe('GATE — store request: cron does not ship, acceptByCentral does', () => {
+  it('runEngineCycle leaves a store request at NEW; acceptByCentral ships it', async () => {
+    const { central, store } = await buildChain();
+    const product = await makeProduct(ctx.db, { type: 'finished' });
+
+    await setStock(ctx.db, {
+      locationId: store, productId: product, qty: 1, minLevel: 5, maxLevel: 20,
+    });
+    await setStock(ctx.db, { locationId: central, productId: product, qty: 50 });
+
+    const created = await createRequest({
+      productId: product,
+      requesterLocationId: store,
+      qtyNeeded: 19,
+      actorUserId: null,
+    });
+
+    // The cron runs — repeatedly — and must NEVER advance the store request.
+    await runEngineCycle();
+    await runEngineCycle();
+    let req = await loadRequestById(created.id);
+    expect(req.status).toBe('NEW');
+    expect(req.target_location_id).toBe(null);
+    // Nothing shipped: store + central stock untouched.
+    expect(await getQty(ctx.db, store, product)).toBe(1);
+    expect(await getQty(ctx.db, central, product)).toBe(50);
+
+    // It surfaces in the central inbox (still NEW, untargeted).
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager', locationId: central,
+    });
+    const inbox = await request(ctx.app)
+      .get(`/api/replenishment/incoming?location_id=${central}`)
+      .set('Authorization', `Bearer ${cwm.token}`);
+    expect(inbox.status).toBe(200);
+    expect(inbox.body.items.some((i: { id: number }) => i.id === created.id)).toBe(true);
+
+    // The central manager ACCEPTS -> it ships and closes.
+    const result = await acceptByCentral({
+      requestId: created.id,
+      centralLocationId: central,
+      actorUserId: cwm.id,
+    });
+    expect(result.shipped).toBe(true);
+    req = await loadRequestById(created.id);
+    expect(req.status).toBe('CLOSED');
+    expect(req.target_location_id).toBe(central);
+    expect(await getQty(ctx.db, store, product)).toBe(20);
+    expect(await getQty(ctx.db, central, product)).toBe(50 - 19);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Branch (b) — target empty, raw OK -> production order
 // ---------------------------------------------------------------------------
 describe('AC4.1 — branch (b): target empty, raw OK -> production -> ship', () => {
@@ -164,14 +231,18 @@ describe('AC4.1 — branch (b): target empty, raw OK -> production -> ship', () 
 
     // Store is not auto-scanned — raise its request explicitly (boss-approve
     // path). qty_needed = max(10) - qty(0) = 10.
-    await createRequest({
+    const created = await createRequest({
       productId: finishedProduct,
       requesterLocationId: store,
       qtyNeeded: 10,
       actorUserId: null,
     });
-    await runEngineCycle(); // advance NEW->CHECK_STORE_SUPPLIER
-    let req = await loadRequest(store, finishedProduct);
+    // Cron leaves a STORE request at NEW (accept gate); advance it via the
+    // accept path (direct advance) — NEW -> CHECK_STORE_SUPPLIER.
+    await runEngineCycle();
+    expect((await loadRequestById(created.id)).status).toBe('NEW');
+    await advance(created.id, null);
+    let req = await loadRequestById(created.id);
     expect(req.status).toBe('CHECK_STORE_SUPPLIER');
 
     // advance: target empty -> CHECK_PRODUCTION_INPUT
@@ -242,14 +313,17 @@ describe('AC4.1 — branch (c): target empty, raw short -> purchase -> productio
 
     // Store is not auto-scanned — raise its request explicitly (boss-approve
     // path). qty_needed = max(6) - qty(0) = 6.
-    await createRequest({
+    const created = await createRequest({
       productId: finishedProduct,
       requesterLocationId: store,
       qtyNeeded: 6,
       actorUserId: null,
     });
+    // Cron leaves a STORE request at NEW (accept gate); advance via accept path.
     await runEngineCycle();
-    let req = await loadRequest(store, finishedProduct);
+    expect((await loadRequestById(created.id)).status).toBe('NEW');
+    await advance(created.id, null);
+    let req = await loadRequestById(created.id);
     expect(req.status).toBe('CHECK_STORE_SUPPLIER');
 
     // -> CHECK_PRODUCTION_INPUT
@@ -434,8 +508,10 @@ describe('state machine invariants', () => {
       qtyNeeded: 5,
       actorUserId: null,
     });
-    await runEngineCycle();
+    // Store request waits at NEW for the accept gate; here we drive `advance()`
+    // directly (the accept path) from NEW all the way to CLOSED.
     let req = await loadRequest(store, product);
+    expect(req.status).toBe('NEW');
     // Drive to CLOSED.
     while (!TERMINAL_STATUSES.includes(req.status)) {
       const out = await advance(req.id, null);
@@ -479,8 +555,9 @@ describe('state machine invariants', () => {
       qtyNeeded: 4,
       actorUserId: null,
     });
-    await runEngineCycle();
+    // Store request waits at NEW (accept gate); drive `advance()` to terminal.
     let req = await loadRequest(store, product);
+    expect(req.status).toBe('NEW');
     while (!TERMINAL_STATUSES.includes(req.status)) {
       const out = await advance(req.id, null);
       if (!out.advanced) break;
@@ -520,8 +597,10 @@ describe('ADR-0001 §7 — raw transfer movement is appended on CREATE_PRODUCTIO
       qtyNeeded: 10,
       actorUserId: null,
     });
-    await runEngineCycle();
+    // Store request waits at NEW (accept gate); drive `advance()` directly.
     let req = await loadRequest(store, finishedProduct);
+    expect(req.status).toBe('NEW');
+    await advance(req.id, null); // NEW -> CHECK_STORE_SUPPLIER
     await advance(req.id, null); // -> CHECK_PRODUCTION_INPUT
     await advance(req.id, null); // -> CREATE_PRODUCTION_ORDER (transfers raw)
     req = await loadRequestById(req.id);
@@ -573,8 +652,13 @@ describe('SM-7 — skip-state chaining inside one advance()', () => {
       qtyNeeded: 4,
       actorUserId: null,
     });
+    // The cron does NOT auto-advance a STORE request (central accept/reject
+    // gate). It stays at NEW; we drive the hops directly via advance() — the
+    // same call the central accept path makes.
     await runEngineCycle();
     let req = await loadRequest(store, finishedProduct);
+    expect(req.status).toBe('NEW');
+    await advance(req.id, null); // NEW -> CHECK_STORE_SUPPLIER
     await advance(req.id, null); // -> CHECK_PRODUCTION_INPUT
     await advance(req.id, null); // -> CREATE_PRODUCTION_ORDER (transfer + PO)
     req = await loadRequestById(req.id);
@@ -655,8 +739,12 @@ describe('I3 — RBAC: production_manager advances a request linked to its produ
       qtyNeeded: 3,
       actorUserId: null,
     });
+    // The cron does NOT auto-advance a STORE request (central accept/reject
+    // gate); it stays at NEW. Drive the hops directly via advance().
     await runEngineCycle();
     let req = await loadRequest(store, finishedProduct);
+    expect(req.status).toBe('NEW');
+    await advance(req.id, null); // NEW -> CHECK_STORE_SUPPLIER
     await advance(req.id, null); // -> CHECK_PRODUCTION_INPUT
     await advance(req.id, null); // -> CREATE_PRODUCTION_ORDER (linked PO created)
     req = await loadRequestById(req.id);

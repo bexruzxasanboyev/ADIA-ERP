@@ -1775,6 +1775,118 @@ export async function acceptByCentral(opts: {
   });
 }
 
+/**
+ * Generic fulfiller ACCEPT — for a NON-central target (sex → its sklad,
+ * central → production, ...). A cross-department request's target is the
+ * requester's topology parent, which is NOT always a central warehouse.
+ * `acceptByCentral` forces the central code path (and would, on a stock-short
+ * target, cascade into the central production/purchase chain rooted at the
+ * requester — the wrong chain for a sex→sklad ask). This function instead
+ * applies the simple, target-type-agnostic semantics the owner expects from
+ * any fulfilling manager:
+ *
+ *   - pin the request's target to the accepting location;
+ *   - if that location has stock, ship from it (CHECK_STORE_SUPPLIER ->
+ *     SHIP_TO_REQUESTER -> CLOSED), reusing `advanceShipToRequester`
+ *     (atomic movement + audit + no negative stock);
+ *   - if it does NOT have enough stock, HOLD the request at
+ *     CHECK_STORE_SUPPLIER (do not auto-trigger the central production chain).
+ *     The manager restocks then re-accepts.
+ *
+ * The central-warehouse case keeps using `acceptByCentral`, which deliberately
+ * cascades into production/purchase when the central is short.
+ */
+export async function acceptByFulfiller(opts: {
+  requestId: number;
+  fulfillerLocationId: number;
+  actorUserId: number | null;
+}): Promise<{ request: ReplenishmentRow; shipped: boolean; reason: string }> {
+  return withTransaction(async (tx) => {
+    const order = await lockRequest(tx, opts.requestId);
+    if (TERMINAL_STATUSES.includes(order.status)) {
+      return { request: order, shipped: false, reason: `request already ${order.status}` };
+    }
+
+    // Pin / verify the target to the accepting (fulfiller) location.
+    let current = order;
+    if (current.target_location_id === null) {
+      const { rows } = await tx.query<ReplenishmentRow>(
+        `UPDATE replenishment_requests
+            SET target_location_id = $2
+          WHERE id = $1
+          RETURNING ${REPLENISHMENT_COLUMNS}`,
+        [opts.requestId, opts.fulfillerLocationId],
+      );
+      const pinned = rows[0];
+      if (pinned === undefined) {
+        throw AppError.internal('Accept-by-fulfiller: target pin returned no row.');
+      }
+      current = pinned;
+    } else if (Number(current.target_location_id) !== opts.fulfillerLocationId) {
+      throw AppError.forbidden(
+        'This request targets a different location; you may only accept requests bound for your own.',
+      );
+    }
+
+    await writeAudit(tx, {
+      actorUserId: opts.actorUserId,
+      action: 'replenishment.accept_by_fulfiller',
+      entity: 'replenishment_requests',
+      entityId: opts.requestId,
+      payload: {
+        fulfiller_location_id: opts.fulfillerLocationId,
+        from_status: current.status,
+      },
+    });
+
+    // NEW -> CHECK_STORE_SUPPLIER (target is pinned; bypass the topology-based
+    // central resolution in `advanceNew`).
+    if (current.status === 'NEW') {
+      current = await transitionStatus(
+        tx,
+        current,
+        'CHECK_STORE_SUPPLIER',
+        'accepted by fulfiller — target pinned',
+        opts.actorUserId,
+      );
+    }
+
+    // Ship only if the fulfiller has stock. If it does not, HOLD here — do NOT
+    // fall through to the central production/purchase chain.
+    if (current.status === 'CHECK_STORE_SUPPLIER') {
+      const qtyNeeded = Number(current.qty_needed);
+      const targetQty = await readStockQty(
+        tx,
+        opts.fulfillerLocationId,
+        current.product_id,
+      );
+      if (targetQty <= 0) {
+        return {
+          request: current,
+          shipped: false,
+          reason: 'fulfiller has no stock to ship — restock then re-accept',
+        };
+      }
+      const toShip = await transitionStatus(
+        tx,
+        current,
+        'SHIP_TO_REQUESTER',
+        `fulfiller has ${targetQty} (needed ${qtyNeeded})`,
+        opts.actorUserId,
+      );
+      const result = await advanceShipToRequester(tx, toShip, opts.actorUserId);
+      current = result.request;
+    }
+
+    const shipped = current.status === 'CLOSED';
+    return {
+      request: current,
+      shipped,
+      reason: shipped ? 'shipped to requester' : `held at ${current.status}`,
+    };
+  });
+}
+
 // -----------------------------------------------------------------------------
 // Scan worker
 // -----------------------------------------------------------------------------
@@ -1880,9 +1992,23 @@ export async function runEngineCycle(opts: { actorUserId?: number | null } = {})
   // Step every non-terminal request once. A failure on one row must not stop
   // the whole cycle — the cron pass runs every five minutes, so an isolated
   // error stays visible in the log but the rest of the queue keeps moving.
+  //
+  // CRITICAL — the central accept/reject gate (the owner's "to'g'ri connection").
+  // A request raised by a STORE must WAIT for an explicit central-manager accept
+  // (POST /:id/accept-central, bot xreq:accept -> acceptByCentral) before it
+  // ships. If the cron auto-advanced such a request it would resolve the central
+  // target, ship to the store, and CLOSE it — making the manager's accept/reject
+  // purely cosmetic. So the auto-advance LOOP skips store-requester requests
+  // entirely; they advance ONLY via the central accept path. Internal-layer
+  // requests (production / sex_storage / central / raw) keep auto-advancing.
+  // The manual `advance()` function itself is unchanged — acceptByCentral and
+  // the tests still drive store requests through it directly.
   const { rows: open } = await query<{ id: number }>(
-    `SELECT id FROM replenishment_requests
-     WHERE status NOT IN ('CLOSED','CANCELLED')`,
+    `SELECT r.id
+       FROM replenishment_requests r
+       JOIN locations rl ON rl.id = r.requester_location_id
+      WHERE r.status NOT IN ('CLOSED','CANCELLED')
+        AND rl.type <> 'store'::location_type`,
   );
   let advanced = 0;
   for (const r of open) {

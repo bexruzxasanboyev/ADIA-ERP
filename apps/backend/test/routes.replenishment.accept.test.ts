@@ -31,7 +31,6 @@ import {
   createRequest,
   rejectShipment,
   returnShipment,
-  runEngineCycle,
 } from '../src/services/replenishment.js';
 
 let ctx: TestContext;
@@ -89,15 +88,20 @@ async function makeClosedRequest(opts: {
   });
   await setStock(ctx.db, { locationId: central, productId: product, qty: opts.centralStock });
 
-  // Engine creates + transitions NEW -> CHECK_STORE_SUPPLIER -> SHIP_TO_REQUESTER
-  await runEngineCycle();
-  const { rows } = await ctx.db.query<{ id: number; status: string }>(
-    `SELECT id, status FROM replenishment_requests
-       WHERE product_id = $1 AND requester_location_id = $2`,
-    [product, store],
-  );
-  const reqId = Number(rows[0]?.id);
-  // Drive to CLOSED.
+  // STORES are not auto-scanned (owner: AI-propose -> boss-approve), and the
+  // cron does NOT auto-advance a store request (central accept/reject gate).
+  // So raise the request EXPLICITLY, then drive it to CLOSED via advance() —
+  // the same hops acceptByCentral walks. This mirrors the live flow where the
+  // central manager accepts, the engine ships, and the store then acts on the
+  // delivered shipment.
+  const created = await createRequest({
+    productId: product,
+    requesterLocationId: store,
+    qtyNeeded: opts.qtyNeeded,
+    actorUserId: null,
+  });
+  const reqId = created.id;
+  // Drive to CLOSED (NEW -> CHECK_STORE_SUPPLIER -> SHIP_TO_REQUESTER -> CLOSED).
   for (let i = 0; i < 6; i++) {
     const result = await advance(reqId, null);
     if (result.request.status === 'CLOSED' || result.request.status === 'CANCELLED') break;
@@ -423,13 +427,17 @@ describe('POST /api/replenishment/:id/cancel-by-fulfiller', () => {
       maxLevel: 10,
     });
     await setStock(ctx.db, { locationId: central, productId: product, qty: 50 });
-    await runEngineCycle(); // -> CHECK_STORE_SUPPLIER (target resolved)
-    const { rows } = await ctx.db.query<{ id: number }>(
-      `SELECT id FROM replenishment_requests
-         WHERE product_id = $1 AND requester_location_id = $2`,
-      [product, store],
-    );
-    const reqId = Number(rows[0]?.id);
+    // Store requests are raised explicitly and advanced via the accept path,
+    // not the cron. Create + walk one hop to CHECK_STORE_SUPPLIER (target
+    // resolved) — the pre-ship state cancel-by-fulfiller exercises.
+    const created = await createRequest({
+      productId: product,
+      requesterLocationId: store,
+      qtyNeeded: 10,
+      actorUserId: null,
+    });
+    const reqId = created.id;
+    await advance(reqId, null); // NEW -> CHECK_STORE_SUPPLIER (target resolved)
 
     const storeMgr = await makeUser(ctx.db, { role: 'store_manager', locationId: store });
     const res = await request(ctx.app)

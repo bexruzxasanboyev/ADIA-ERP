@@ -186,10 +186,12 @@ describe('PM_WRITE_BLOCKED — PM hits 403 on every business write', () => {
 });
 
 // ---------------------------------------------------------------------------
-// PM configuration exemption — PM keeps write access on admin / minmax
+// Manager (pm) is OPERATIONAL view-only — min/max is owned by each location's
+// own manager, not the pm. The pm oversees the chain read-only here (owner
+// 2026-06-06). minmax is gated by authorizeWrite, so pm gets 403.
 // ---------------------------------------------------------------------------
-describe('PM configuration exemption — PM may still configure', () => {
-  it('PATCH /api/stock/minmax — 200', async () => {
+describe('Manager view-only — PM may NOT set min/max', () => {
+  it('PATCH /api/stock/minmax — 403', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const loc = await makeLocation(ctx.db, { type: 'store' });
     const product = await makeProduct(ctx.db);
@@ -197,7 +199,7 @@ describe('PM configuration exemption — PM may still configure', () => {
       .patch('/api/stock/minmax')
       .set('Authorization', `Bearer ${pm.token}`)
       .send({ location_id: loc, product_id: product, min_level: 1, max_level: 5 });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(403);
   });
 });
 

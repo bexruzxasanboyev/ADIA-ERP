@@ -35,15 +35,46 @@ import {
 } from '../../src/services/purchaseOrder.js';
 
 /**
- * Mirror the production engine's "scan + create" step (runEngineCycle's create
- * half) WITHOUT the auto-advance, so the test can step the machine
- * deterministically. Returns the requests created this pass. Re-running is
- * idempotent — an OPEN_REQUEST_EXISTS is swallowed exactly like the real cycle.
+ * Mirror the "scan + create" step WITHOUT the auto-advance, so the test can
+ * step the machine deterministically. Returns the requests created this pass.
+ * Re-running is idempotent — an OPEN_REQUEST_EXISTS is swallowed exactly like
+ * the real cycle.
+ *
+ * NOTE on stores: `scanBelowMin()` deliberately EXCLUDES `type='store'` rows
+ * (owner: stores follow AI-propose -> boss-approve, not auto-scan). These E2E
+ * scenarios prove the full state machine end-to-end for a STORE requester, so
+ * this helper additionally surfaces below-min STORE rows and raises them
+ * explicitly via `createRequest` — exactly what the boss-approve path does.
+ * The request is then driven through the machine via `advance()` (the same
+ * hops the central accept path walks); the cron never auto-advances a store
+ * request, which is asserted by the GATE unit test.
  */
 async function scanForReplenishment(actorUserId: number | null): Promise<ReplenishmentRow[]> {
   const below = await scanBelowMin();
+  // Additionally surface below-min STORE rows (excluded by scanBelowMin) so the
+  // E2E can exercise the store -> central path explicitly.
+  const { rows: storeBelow } = await ctx.db.query<{
+    location_id: number; product_id: number; qty: number;
+    min_level: number; max_level: number;
+  }>(
+    `SELECT s.location_id, s.product_id, s.qty, s.min_level, s.max_level
+       FROM stock s
+       JOIN locations l ON l.id = s.location_id
+      WHERE s.qty <= s.min_level AND s.max_level > 0
+        AND l.type = 'store'::location_type`,
+  );
+  const allBelow = [
+    ...below,
+    ...storeBelow.map((r) => ({
+      location_id: Number(r.location_id),
+      product_id: Number(r.product_id),
+      qty: Number(r.qty),
+      min_level: Number(r.min_level),
+      max_level: Number(r.max_level),
+    })),
+  ];
   const created: ReplenishmentRow[] = [];
-  for (const row of below) {
+  for (const row of allBelow) {
     const qtyNeeded = row.max_level - row.qty;
     if (qtyNeeded <= 0) continue;
     try {

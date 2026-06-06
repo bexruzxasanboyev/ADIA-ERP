@@ -175,7 +175,7 @@ stockRouter.patch(
   // operational setting owned by each location's own manager, not the pm. The
   // pm oversees the chain read-only here; admin config (users, locations,
   // prices) stays with the pm elsewhere.
-  authorize(
+  authorizeWrite(
     'raw_warehouse_manager',
     'production_manager',
     'supply_manager',

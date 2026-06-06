@@ -38,6 +38,7 @@ import {
 import {
   advance,
   acceptByCentral,
+  acceptByFulfiller,
   cancelRequestByFulfiller,
 } from '../../services/replenishment.js';
 import {
@@ -844,12 +845,35 @@ async function xreqAcceptCallback(
     };
   }
 
+  // IMPORTANT-4 — branch on the target location TYPE. A cross-dept request can
+  // target a NON-central parent (sex -> its sklad, central -> production).
+  // `acceptByCentral` forces the central code path (and cascades into the
+  // central production/purchase chain on a short target), which is wrong for a
+  // non-central fulfiller. So: central_warehouse -> acceptByCentral; anything
+  // else -> the generic acceptByFulfiller (ship from the fulfiller's own stock,
+  // else hold — no central-only assumptions).
+  let targetType: string | null = null;
+  {
+    const { rows } = await query<{ type: string }>(
+      `SELECT type::text AS type FROM locations WHERE id = $1`,
+      [centralLocationId],
+    );
+    targetType = rows[0]?.type ?? null;
+  }
+
   try {
-    const result = await acceptByCentral({
-      requestId,
-      centralLocationId,
-      actorUserId: principal.userId,
-    });
+    const result =
+      targetType === 'central_warehouse'
+        ? await acceptByCentral({
+            requestId,
+            centralLocationId,
+            actorUserId: principal.userId,
+          })
+        : await acceptByFulfiller({
+            requestId,
+            fulfillerLocationId: centralLocationId,
+            actorUserId: principal.userId,
+          });
     const msg = result.shipped
       ? `So'rov #${requestId} qabul qilindi va jo'natildi`
       : `So'rov #${requestId} qabul qilindi (jo'natish kutilmoqda: ${result.reason})`;

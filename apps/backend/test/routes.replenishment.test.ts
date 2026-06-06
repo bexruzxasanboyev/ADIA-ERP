@@ -121,8 +121,11 @@ describe('GET /api/replenishment/:id — RBAC + linkage branches', () => {
     const created = await createRequest({
       productId: finished, requesterLocationId: store, qtyNeeded: 6, actorUserId: null,
     });
+    // The cron does NOT auto-advance a store request (central accept/reject
+    // gate) — it stays at NEW. Drive the hops directly via advance().
     await runEngineCycle();
     const reqId = created.id;
+    await advance(reqId, null); // NEW -> CHECK_STORE_SUPPLIER (target resolved)
     await advance(reqId, null); // -> CHECK_PRODUCTION_INPUT
     await advance(reqId, null); // -> CREATE_PURCHASE_ORDER
 
@@ -151,8 +154,10 @@ describe('GET /api/replenishment/:id — RBAC + linkage branches', () => {
     const created = await createRequest({
       productId: finished, requesterLocationId: store, qtyNeeded: 3, actorUserId: null,
     });
+    // Cron does NOT auto-advance a store request; drive the hops via advance().
     await runEngineCycle();
     const reqId = created.id;
+    await advance(reqId, null); // NEW -> CHECK_STORE_SUPPLIER (target resolved)
     await advance(reqId, null); // -> CHECK_PRODUCTION_INPUT
     await advance(reqId, null); // -> CREATE_PRODUCTION_ORDER (links a PO at `production`)
 
@@ -472,8 +477,10 @@ describe('GET /api/replenishment — production_location_name embedding', () => 
     const created = await createRequest({
       productId: finished, requesterLocationId: store, qtyNeeded: 3, actorUserId: null,
     });
+    // Cron does NOT auto-advance a store request; drive the hops via advance().
     await runEngineCycle();
     const reqId = created.id;
+    await advance(reqId, null); // NEW -> CHECK_STORE_SUPPLIER (target resolved)
     await advance(reqId, null); // -> CHECK_PRODUCTION_INPUT
     await advance(reqId, null); // -> CREATE_PRODUCTION_ORDER (links PO at `production`)
 
