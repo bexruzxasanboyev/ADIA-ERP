@@ -16,6 +16,7 @@ import type { Role } from '../../auth/roles.js';
 import type { AuthPrincipal } from '../../auth/jwt.js';
 import { query } from '../../db/index.js';
 import { loadVoicePrincipal } from './voiceHandler.js';
+import { reportScopeFor, reportTypeKeyboard } from './reportsHandler.js';
 
 // ---------------------------------------------------------------------------
 // Menu button labels (single source of truth — used by the keyboard + router)
@@ -28,6 +29,7 @@ export const MENU = {
   products: '📦 Mahsulotlar',
   up: '⬆️ Yuqoriga so\'rov',
   status: '📊 Holat',
+  reports: '📊 Hisobotlar',
 } as const;
 
 type ReplyKeyboard = {
@@ -48,6 +50,7 @@ export function buildMenuKeyboard(role: Role): ReplyKeyboard {
       rows = [
         [MENU.voice, MENU.sendRequest],
         [MENU.incoming, MENU.products],
+        [MENU.reports],
       ];
       break;
     case 'central_warehouse_manager':
@@ -57,11 +60,12 @@ export function buildMenuKeyboard(role: Role): ReplyKeyboard {
       rows = [
         [MENU.incoming, MENU.voice],
         [MENU.up],
+        [MENU.reports],
       ];
       break;
     case 'pm':
-      // Read-only operational view — no action buttons.
-      rows = [[MENU.status]];
+      // Read-only operational view + reports.
+      rows = [[MENU.status], [MENU.reports]];
       break;
     default:
       rows = [[MENU.status]];
@@ -196,6 +200,10 @@ export async function handleMenuMessage(
       await replyStatus(ctx, principal);
       return { handled: true, action: 'status' };
 
+    case MENU.reports:
+      await replyReportsMenu(ctx, principal);
+      return { handled: true, action: 'reports' };
+
     default:
       return { handled: false };
   }
@@ -320,6 +328,30 @@ async function replyStatus(
   }
   const lines = rows.map((r) => `• ${r.status}: ${Number(r.n)}`);
   await safeReply(ctx, `📊 Ochiq so'rovlar holati:\n${lines.join('\n')}`);
+}
+
+/**
+ * "📊 Hisobotlar" — open the inline keyboard of the 4 report types. RBAC: a
+ * store_manager must have a store; the dept managers + pm get the whole chain.
+ * The actual report rendering / file generation happens in the callback flow
+ * (reportsHandler.ts), reached when a button is tapped.
+ */
+async function replyReportsMenu(
+  ctx: MenuCtxLike,
+  principal: AuthPrincipal,
+): Promise<void> {
+  const scope = reportScopeFor({
+    userId: principal.userId,
+    role: principal.role,
+    locationId: principal.activeLocationId ?? principal.locationId,
+  });
+  if (scope === null) {
+    await safeReply(ctx, "Sizda hisobot ko'rish huquqi yo'q yoki bo'lim biriktirilmagan.");
+    return;
+  }
+  await safeReply(ctx, '📊 Hisobotlar — turini tanlang:', {
+    reply_markup: { inline_keyboard: reportTypeKeyboard() },
+  });
 }
 
 async function safeReply(

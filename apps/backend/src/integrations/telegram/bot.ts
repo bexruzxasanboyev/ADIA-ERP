@@ -23,9 +23,14 @@
  * later call returns the cached instance. `resetBotCache()` exists for
  * tests that mock `Bot` and need a fresh build.
  */
-import { Bot, type BotConfig } from 'grammy';
+import { Bot, InputFile, type BotConfig } from 'grammy';
 import { loadConfig } from '../../config/index.js';
 import { handleCallbackQuery, type CallbackContext } from './callbackHandler.js';
+import {
+  handleReportsCallback,
+  isReportsCallback,
+  type ReportsCallbackContext,
+} from './reportsHandler.js';
 import { handleStartCommand, type StartContext } from './startCommand.js';
 import { wireVoiceHandler } from './voiceHandler.js';
 import { handleCashShiftMessage, type CashShiftCtxLike } from './cashShiftHandler.js';
@@ -101,6 +106,43 @@ export function ensureCallbackHandlerWired(): void {
     const update = ctx.update;
     const cq = ctx.callbackQuery;
     if (cq === undefined) return;
+
+    // 📊 Hisobotlar — the reports flow uses string callback segments and
+    // sends DOCUMENTS, so it is handled by its own self-contained handler
+    // (same idempotency / RBAC / audit framework) BEFORE the generic
+    // verb:entity:id dispatcher. Everything else falls through unchanged.
+    const rawData = cq.data ?? '';
+    if (isReportsCallback(rawData)) {
+      const chatId = cq.message?.chat?.id;
+      const reportsCtx: ReportsCallbackContext = {
+        updateId: update.update_id,
+        callbackQueryId: cq.id,
+        fromTelegramId: cq.from.id,
+        data: rawData,
+        answerCallbackQuery: (text, opts) =>
+          ctx.answerCallbackQuery({ text, show_alert: opts?.showAlert ?? false }),
+        sendMessage: (text, opts) => {
+          if (chatId === undefined) return Promise.resolve();
+          return ctx.api
+            .sendMessage(chatId, text, {
+              parse_mode: 'Markdown',
+              ...(opts?.inlineKeyboard !== undefined
+                ? { reply_markup: { inline_keyboard: opts.inlineKeyboard } }
+                : {}),
+            })
+            .then(() => undefined);
+        },
+        replyWithDocument: (buffer, filename) => {
+          if (chatId === undefined) return Promise.resolve();
+          return ctx.api
+            .sendDocument(chatId, new InputFile(buffer, filename))
+            .then(() => undefined);
+        },
+      };
+      await handleReportsCallback(reportsCtx);
+      return;
+    }
+
     const ctxAdapter: CallbackContext = {
       updateId: update.update_id,
       callbackQueryId: cq.id,

@@ -79,11 +79,24 @@ describe('buildMenuKeyboard (B2)', () => {
     expect(flat).not.toContain(MENU.sendRequest);
   });
 
-  it('pm is read-only — only the status button, no actions', () => {
+  it('pm is read-only — status + reports buttons, no operational actions', () => {
     const kb = buildMenuKeyboard('pm');
     const flat = kb.keyboard.flat();
-    expect(flat).toEqual([MENU.status]);
+    expect(flat).toEqual([MENU.status, MENU.reports]);
     expect(flat).not.toContain(MENU.incoming);
+  });
+
+  it('every role with a menu exposes the Hisobotlar button', () => {
+    for (const role of [
+      'store_manager',
+      'central_warehouse_manager',
+      'production_manager',
+      'supply_manager',
+      'raw_warehouse_manager',
+      'pm',
+    ] as const) {
+      expect(buildMenuKeyboard(role).keyboard.flat()).toContain(MENU.reports);
+    }
   });
 });
 
