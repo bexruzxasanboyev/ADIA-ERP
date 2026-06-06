@@ -42,6 +42,13 @@ const MOCK: DashboardStoresDetail = {
     { date: '2026-05-24', qty: 100, revenue: 2_100_000 },
     { date: '2026-05-25', qty: 124, revenue: 2_400_000 },
   ],
+  series: {
+    granularity: 'day',
+    days: [
+      { date: '2026-05-24', qty: 100, amount: 2_100_000 },
+      { date: '2026-05-25', qty: 124, amount: 2_400_000 },
+    ],
+  },
 };
 
 describe('StoresDetailPanel', () => {

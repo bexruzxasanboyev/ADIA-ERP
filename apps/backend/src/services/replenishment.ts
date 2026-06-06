@@ -114,13 +114,15 @@ export type ReplenishmentRow = {
   brak_qty: number | null;
   /** 0045 — free-form reason for the brak (NULL when no brak). */
   brak_reason: string | null;
+  /** 0052 — basket group id; lines created in one /batch call share it. NULL = individual. */
+  batch_id: number | null;
 };
 
 export const REPLENISHMENT_COLUMNS = `id, product_id, requester_location_id,
   target_location_id, qty_needed, status, production_order_id, purchase_order_id,
   shipment_movement_id, note, created_by, created_at, updated_at, closed_at,
   assigned_to_user_id, qty_accepted, qty_returned, accept_note, reject_reason,
-  closure_reason, brak_qty, brak_reason`;
+  closure_reason, brak_qty, brak_reason, batch_id`;
 
 /**
  * Possible outcomes of one `advance()` call. `advanced=false` means a wait
@@ -175,6 +177,12 @@ export async function createRequest(opts: {
   qtyNeeded: number;
   actorUserId: number | null;
   note?: string | null;
+  /**
+   * 0052 — optional batch group id. When set, every line created in one
+   * /batch call shares it so the central warehouse can accept/reject the
+   * whole basket as one grouped order. NULL = legacy / individual request.
+   */
+  batchId?: number | null;
 }): Promise<ReplenishmentRow> {
   if (!Number.isFinite(opts.qtyNeeded) || opts.qtyNeeded <= 0) {
     throw AppError.validation('qty_needed must be a number greater than zero.');
@@ -184,8 +192,8 @@ export async function createRequest(opts: {
     return await withTransaction(async (tx) => {
       const { rows } = await tx.query<ReplenishmentRow>(
         `INSERT INTO replenishment_requests
-           (product_id, requester_location_id, qty_needed, status, note, created_by)
-         VALUES ($1, $2, $3, 'NEW', $4, $5)
+           (product_id, requester_location_id, qty_needed, status, note, created_by, batch_id)
+         VALUES ($1, $2, $3, 'NEW', $4, $5, $6)
          RETURNING ${REPLENISHMENT_COLUMNS}`,
         [
           opts.productId,
@@ -193,6 +201,7 @@ export async function createRequest(opts: {
           opts.qtyNeeded,
           opts.note ?? null,
           opts.actorUserId,
+          opts.batchId ?? null,
         ],
       );
       const row = rows[0];

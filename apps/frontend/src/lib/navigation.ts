@@ -10,13 +10,12 @@ import {
   Package,
   UserCog,
   ClipboardList,
-  ShoppingCart,
   TrendingUp,
   BookOpen,
   Wallet,
   ReceiptText,
   Banknote,
-  Inbox,
+  Target,
   type LucideIcon,
 } from 'lucide-react';
 import type { Role } from './types';
@@ -38,6 +37,7 @@ export type NavGroupKey =
   | 'central'
   | 'modules'
   | 'cashier'
+  | 'kpi'
   | 'reference';
 
 /**
@@ -151,18 +151,21 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     ],
   },
   {
-    // Markaziy sklad — kiruvchi do'kon so'rovlarini qabul qilish / rad etish.
-    // PM (markaziy sklad tanlovchisi bilan) + central_warehouse_manager.
+    // Markaziy sklad boshlig'ining asosiy ish joyi — qoldiq + kelayotgan
+    // jo'natmalar + do'konlardan kiruvchi so'rovlar bitta TOZA sahifada
+    // (Dashboard / Mahsulotlar / So'rovlar sub-tablari). Do'kon ish joyi
+    // kabi: bu guruh PageTabs ko'rsatmaydi (hasTabs: false), shuning uchun
+    // sahifa tepasida module tab qatori chiqmaydi. PM + central_warehouse_manager.
     key: 'central',
     label: 'Markaziy',
-    icon: Inbox,
-    defaultPath: '/central-inbox',
+    icon: Warehouse,
+    defaultPath: '/central-workflow',
     hasTabs: false,
     items: [
       {
-        path: '/central-inbox',
-        label: 'Kiruvchi so‘rovlar',
-        icon: Inbox,
+        path: '/central-workflow',
+        label: 'Markaziy sklad ish joyi',
+        icon: Warehouse,
         roles: ['pm', 'central_warehouse_manager'],
       },
     ],
@@ -198,37 +201,25 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         roles: ['pm', 'supply_manager'],
       },
       {
+        // PM-only chain-layer deep view. The central warehouse manager's
+        // module screen is now the unified /central-workflow workspace (see
+        // the `central` nav group), so they don't see this redundant entry.
         path: '/central-warehouse',
         label: 'Markaziy sklad',
         icon: Warehouse,
-        roles: ['pm', 'central_warehouse_manager'],
+        roles: ['pm'],
       },
       {
+        // Owner (2026-06-06): the header request pages collapse to ONE
+        // unified hub. `/replenishment` now carries "So'rovlar" +
+        // "Tranzaksiyalar" tabs, so the separate So'rovnomalar /
+        // Ishlab chiqarish zayafkalari / Sotib olish so'rovlari nav
+        // entries are redundant and removed from the header. Their ROUTES
+        // stay alive (URL-reachable) so nothing breaks and it's reversible.
         path: '/replenishment',
-        label: 'To‘ldirish so‘rovlari',
+        label: 'So‘rovlar',
         icon: RefreshCw,
         roles: ALL_ROLES,
-      },
-      {
-        // F4.14 — unified inbox/outbox/archive view of every replenishment
-        // the user touches. Visible to every role; backend RBAC-scopes
-        // the underlying list endpoint.
-        path: '/sorovnomalar',
-        label: 'So‘rovnomalar',
-        icon: ClipboardList,
-        roles: ALL_ROLES,
-      },
-      {
-        path: '/production-orders',
-        label: 'Ishlab chiqarish zayafkalari',
-        icon: ClipboardList,
-        roles: ['pm', 'production_manager', 'central_warehouse_manager'],
-      },
-      {
-        path: '/purchase-orders',
-        label: 'Sotib olish so‘rovlari',
-        icon: ShoppingCart,
-        roles: ['pm', 'supply_manager', 'raw_warehouse_manager'],
       },
     ],
   },
@@ -257,6 +248,25 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         path: '/cashier/safe',
         label: 'Seyf rasxodlari',
         icon: Wallet,
+        roles: ['pm'],
+      },
+    ],
+  },
+  {
+    // KPI — boshliq (PM) uchun alohida tepa-daraja tab: har tayyor
+    // mahsulotning to'liq tan-narxi (xom-ashyo + komunal + oylik) va
+    // sotuvga nisbatan foydasi. Sotuv narxlarini boshqarish uchun.
+    // Faqat PM ko'radi; backend ham RBAC bilan himoyalaydi.
+    key: 'kpi',
+    label: 'KPI',
+    icon: Target,
+    defaultPath: '/kpi',
+    hasTabs: false,
+    items: [
+      {
+        path: '/kpi',
+        label: 'KPI',
+        icon: Target,
         roles: ['pm'],
       },
     ],
@@ -311,60 +321,97 @@ export interface HomeTile {
   roles: readonly Role[];
 }
 
+/** A labelled group of Home launcher tiles, rendered as one titled row. */
+export interface HomeTileGroup {
+  /** Uzbek section heading shown above the group's tiles. */
+  title: string;
+  tiles: readonly HomeTile[];
+}
+
 /**
- * The 11 PRIMARY modules, shown as ONE flat ordered grid on the Home
- * launcher. The REST of the navigable pages (secondary screens such as
- * To'ldirish so'rovlari, Sotib olish so'rovlari, cashier shifts, …) are
- * NOT here — they are reached via the header sub-tabs (see PageTabs,
- * which filters each group's items to exclude these tile paths).
+ * The PRIMARY modules grouped for the Home launcher (owner-directed
+ * layout): THREE titled sections in an explicit, authoritative order —
  *
- * Order, label and route are explicit and authoritative. Each `roles`
- * set mirrors the matching NAV_SECTIONS item so the launcher and the
- * tabs apply the same RBAC filter.
+ *   Boshqaruv  — Dashboard, Mahsulotlar, Bo'g'inlar, Hodimlar
+ *   Bo'limlar  — Do'konlar, Markaziy ombor, Ishlab chiqarish,
+ *                Ishlab chiqarish ombori, Xom-ashyo ombori
+ *   Qo'shimcha — Kassa, Bashorat
+ *
+ * The REST of the navigable pages (To'ldirish so'rovlari, Sotib olish
+ * so'rovlari, cashier shifts, …) are NOT here — they are reached via the
+ * header sub-tabs (see PageTabs, which excludes these tile paths). Each
+ * `roles` set mirrors the matching NAV_SECTIONS item so the launcher and
+ * the tabs apply the same RBAC filter.
  */
-export const HOME_TILES: readonly HomeTile[] = [
-  { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ALL_ROLES },
-  { path: '/forecasts', label: 'Bashorat', icon: TrendingUp, roles: ALL_ROLES },
+export const HOME_TILE_GROUPS: readonly HomeTileGroup[] = [
   {
-    path: '/raw-warehouse',
-    label: 'Xom-ashyo ombori',
-    icon: Boxes,
-    roles: ['pm', 'raw_warehouse_manager'],
+    title: 'Boshqaruv',
+    tiles: [
+      { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ALL_ROLES },
+      { path: '/replenishment', label: 'So‘rovlar', icon: RefreshCw, roles: ALL_ROLES },
+      { path: '/products', label: 'Mahsulotlar', icon: Package, roles: MANAGER_ROLES },
+      { path: '/locations', label: 'Bo‘g‘inlar', icon: MapPin, roles: ['pm'] },
+      { path: '/employees', label: 'Hodimlar', icon: UserCog, roles: ['pm'] },
+      { path: '/kpi', label: 'KPI', icon: Target, roles: ['pm'] },
+    ],
   },
   {
-    path: '/supply',
-    label: 'Ishlab chiqarish ombori',
-    icon: Truck,
-    roles: ['pm', 'supply_manager'],
+    title: 'Bo‘limlar',
+    tiles: [
+      {
+        path: '/store-workflow',
+        label: 'Do‘konlar',
+        icon: Store,
+        roles: ['pm', 'store_manager'],
+      },
+      {
+        path: '/central-workflow',
+        label: 'Markaziy ombor',
+        icon: Warehouse,
+        roles: ['pm', 'central_warehouse_manager'],
+      },
+      {
+        path: '/production',
+        label: 'Ishlab chiqarish',
+        icon: Factory,
+        roles: ['pm', 'production_manager'],
+      },
+      {
+        path: '/supply',
+        label: 'Ishlab chiqarish ombori',
+        icon: Truck,
+        roles: ['pm', 'supply_manager'],
+      },
+      {
+        path: '/raw-warehouse',
+        label: 'Xom-ashyo ombori',
+        icon: Boxes,
+        roles: ['pm', 'raw_warehouse_manager'],
+      },
+    ],
   },
   {
-    path: '/central-warehouse',
-    label: 'Markaziy ombor',
-    icon: Warehouse,
-    roles: ['pm', 'central_warehouse_manager'],
+    title: 'Qo‘shimcha',
+    tiles: [
+      {
+        path: '/cashier/receipts',
+        label: 'Kassa',
+        icon: Wallet,
+        roles: ['pm', 'store_manager'],
+      },
+      { path: '/forecasts', label: 'Bashorat', icon: TrendingUp, roles: ALL_ROLES },
+    ],
   },
-  {
-    path: '/production',
-    label: 'Ishlab chiqarish',
-    icon: Factory,
-    roles: ['pm', 'production_manager'],
-  },
-  {
-    path: '/store-workflow',
-    label: 'Do‘konlar',
-    icon: Store,
-    roles: ['pm', 'store_manager'],
-  },
-  {
-    path: '/cashier/receipts',
-    label: 'Kassa',
-    icon: Wallet,
-    roles: ['pm', 'store_manager'],
-  },
-  { path: '/products', label: 'Mahsulotlar', icon: Package, roles: MANAGER_ROLES },
-  { path: '/locations', label: 'Bo‘g‘inlar', icon: MapPin, roles: ['pm'] },
-  { path: '/employees', label: 'Hodimlar', icon: UserCog, roles: ['pm'] },
 ];
+
+/**
+ * Flat ordered list of every Home tile — derived from `HOME_TILE_GROUPS`
+ * so the grouped layout stays the single source of truth. Used to build
+ * `HOME_TILE_PATHS` (PageTabs exclusion).
+ */
+export const HOME_TILES: readonly HomeTile[] = HOME_TILE_GROUPS.flatMap(
+  (group) => group.tiles,
+);
 
 /** Path set of the 11 home tiles — used to exclude them from PageTabs. */
 export const HOME_TILE_PATHS: ReadonlySet<string> = new Set(

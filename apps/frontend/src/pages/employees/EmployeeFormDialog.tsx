@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Loader2 } from 'lucide-react';
 import {
   Dialog,
@@ -14,30 +14,48 @@ import { Label } from '@/components/ui/label';
 import { Select } from '@/components/ui/select';
 import { useToast } from '@/components/ui/toast';
 import { apiRequest, ApiError } from '@/lib/api-client';
-import { ROLE_OPTIONS } from '@/lib/labels';
-import type { Location, LocationType, Role } from '@/lib/types';
+import { ROLE_LABELS, ROLE_OPTIONS } from '@/lib/labels';
+import type {
+  Location,
+  LocationType,
+  Role,
+  User,
+  UserLocation,
+} from '@/lib/types';
 
 /**
- * F4.1 — `pm`-only "Yangi hodim" form.
+ * F4.1 — `pm`-only "Yangi hodim" / "Hodimni tahrirlash" form.
  *
- * Differs from the legacy `UserFormDialog` in two ways:
- *   1. Multi-select bo'g'inlar (checkbox list) instead of one location.
- *   2. A primary radio next to each selected row — backed by the
- *      `(user_id, location_id) WHERE is_primary` partial unique index.
+ * Owner decision (1:1): an employee is bound to EXACTLY ONE bo'g'in. The
+ * form exposes a single location selector (no multi-checkbox, no per-row
+ * "Asosiy" radio) — the chosen location is implicitly primary.
  *
- * Submits a single `POST /api/users` with `{username, location_ids:[...],
- * primary_location_id}`. `username` is the sole login handle and is
- * REQUIRED — email was removed from the identity model (migration 0027).
- * Chain-wide roles (`pm`, `ai_assistant`) skip the location section
- * entirely — the backend rejects locations for those roles, mirroring the
- * DB CHECK.
+ * CREATE mode (no `user` prop): submits a single `POST /api/users` with
+ * `{username, password, role, location_ids:[id], primary_location_id:id}`.
+ * `username` is the sole login handle and is REQUIRED — email was removed
+ * from the identity model (migration 0027).
+ *
+ * EDIT mode (`user` prop set): submits `PATCH /api/users/:id` for
+ * `{name, username, role}` and, when the location changed, runs the same
+ * assign-first / delete-after single-location flow `EmployeeLocationsDialog`
+ * uses (POST `/locations` is_primary=true, then DELETE the others). Password
+ * is NOT edited here (a dedicated reset flow owns that). The current location
+ * is loaded on open via `GET /api/users/:id/locations`.
+ *
+ * Chain-wide roles (`pm`, `ai_assistant`) skip the location section entirely —
+ * the backend rejects locations for those roles, mirroring the DB CHECK.
  */
 interface EmployeeFormDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Locations available as `location_ids` options. */
+  /** Locations available as the `location_id` option set. */
   locations: Location[];
-  /** Called after a successful create so the parent list can refresh. */
+  /**
+   * When set the dialog is in EDIT mode and pre-fills from this user; when
+   * `undefined`/`null` it is in CREATE mode ("Yangi hodim").
+   */
+  user?: User | null;
+  /** Called after a successful create/edit so the parent list can refresh. */
   onSaved: () => void;
 }
 
@@ -46,13 +64,8 @@ interface FormState {
   username: string;
   password: string;
   role: Role;
-  /**
-   * Set of selected location ids. Insertion order is preserved by `Set`,
-   * which we rely on for the "first selected → defaults to primary" UX
-   * below.
-   */
-  selectedLocationIds: Set<number>;
-  primaryLocationId: number | null;
+  /** The single chosen location id, or `null` when none is picked yet. */
+  locationId: number | null;
 }
 
 const EMPTY_FORM: FormState = {
@@ -60,12 +73,24 @@ const EMPTY_FORM: FormState = {
   username: '',
   password: '',
   role: 'store_manager',
-  selectedLocationIds: new Set(),
-  primaryLocationId: null,
+  locationId: null,
 };
 
 /** Roles whose principals are NOT bound to a bo'g'in (chain-wide view). */
 const CHAIN_WIDE_ROLES: ReadonlySet<Role> = new Set(['pm', 'ai_assistant']);
+
+/**
+ * Roles that may NO LONGER be assigned to a NEW or edited employee.
+ *
+ * `supply_manager` ("Ishlab chiqarish ombori boshlig'i", a `sex_storage`
+ * manager) is removed at the owner's request: a production warehouse
+ * (sex_storage) is NOT staffed separately — it is managed by the production
+ * DEPARTMENT's manager (`production_manager`) via inheritance. We only drop it
+ * as a SELECTABLE option; existing `supply_manager` users still render in the
+ * roster under their group, and an employee already on that role keeps it
+ * pinned (shown read-only) in edit mode rather than being silently rewritten.
+ */
+const NON_ASSIGNABLE_ROLES: ReadonlySet<Role> = new Set<Role>(['supply_manager']);
 
 /**
  * Which `location_type`(s) each role may be assigned to. Mirrors the
@@ -98,24 +123,99 @@ export function EmployeeFormDialog({
   open,
   onOpenChange,
   locations,
+  user,
   onSaved,
 }: EmployeeFormDialogProps) {
   const { notify } = useToast();
+  const isEdit = user != null;
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * The user's current single (primary) location, loaded on open in EDIT
+   * mode so the picker pre-fills and we know which assignments to remove on
+   * save. `null` while loading or for a user with no assignment.
+   */
+  const [initialLocationId, setInitialLocationId] = useState<number | null>(
+    null,
+  );
+  /** Every previously-assigned location id (edit mode) — the delete set. */
+  const [existingLocationIds, setExistingLocationIds] = useState<number[]>([]);
 
   useEffect(() => {
-    if (open) {
-      // Re-init on every open so a previous error / partial fill never
-      // leaks into the next session.
-      setForm({
-        ...EMPTY_FORM,
-        selectedLocationIds: new Set(),
-      });
-      setError(null);
+    if (!open) return;
+    // Re-init on every open so a previous error / partial fill never leaks
+    // into the next session.
+    setError(null);
+    if (user == null) {
+      setForm(EMPTY_FORM);
+      setInitialLocationId(null);
+      setExistingLocationIds([]);
+      return;
     }
-  }, [open]);
+    // EDIT mode: seed from the user. Location is pre-filled from the user's
+    // primary id immediately, then refined by the per-user locations fetch
+    // (which also gives us the full delete set).
+    setForm({
+      name: user.name,
+      username: user.username,
+      password: '',
+      role: user.role,
+      locationId: user.location_id ?? null,
+    });
+    setInitialLocationId(user.location_id ?? null);
+    setExistingLocationIds(
+      user.location_id != null ? [user.location_id] : [],
+    );
+    if (CHAIN_WIDE_ROLES.has(user.role)) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rows = await apiRequest<UserLocation[]>(
+          `/api/users/${user.id}/locations`,
+        );
+        if (cancelled) return;
+        const primary = rows.find((r) => r.is_primary) ?? rows[0] ?? null;
+        setInitialLocationId(primary ? primary.location_id : null);
+        setExistingLocationIds(rows.map((r) => r.location_id));
+        setForm((f) => ({
+          ...f,
+          locationId: primary ? primary.location_id : f.locationId,
+        }));
+      } catch {
+        // Non-fatal: keep the primary-id seed from the list row. The save
+        // flow still works off `users.location_id`.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, user]);
+
+  /**
+   * Role picker options. We hide `supply_manager` (see NON_ASSIGNABLE_ROLES)
+   * for both create and edit. In edit mode, if the employee ALREADY holds a
+   * now-non-assignable role we re-add it (disabled) so the form shows the
+   * truth and never silently rewrites the role on save.
+   */
+  const roleOptions = useMemo<
+    { value: Role; label: string; disabled: boolean }[]
+  >(() => {
+    const base = ROLE_OPTIONS.filter(
+      (o) => !NON_ASSIGNABLE_ROLES.has(o.value),
+    ).map((o) => ({ ...o, disabled: false }));
+    if (
+      isEdit &&
+      NON_ASSIGNABLE_ROLES.has(form.role) &&
+      !base.some((o) => o.value === form.role)
+    ) {
+      return [
+        ...base,
+        { value: form.role, label: ROLE_LABELS[form.role], disabled: true },
+      ];
+    }
+    return base;
+  }, [isEdit, form.role]);
 
   const locationRequired = !CHAIN_WIDE_ROLES.has(form.role);
 
@@ -129,9 +229,9 @@ export function EmployeeFormDialog({
       : locations.filter((loc) => allowedTypes.has(loc.type));
 
   /**
-   * Switch role: re-filter the bo'g'in list and drop any selection that is
-   * no longer valid for the new role so a mismatched assignment can never
-   * be submitted.
+   * Switch role: re-filter the bo'g'in list and drop the current selection
+   * if it is no longer valid for the new role so a mismatched assignment
+   * can never be submitted.
    */
   function changeRole(nextRole: Role) {
     setForm((current) => {
@@ -139,48 +239,14 @@ export function EmployeeFormDialog({
       if (types === undefined) {
         return { ...current, role: nextRole };
       }
-      const stillValid = new Set(
-        [...current.selectedLocationIds].filter((id) =>
-          locations.some((loc) => loc.id === id && types.has(loc.type)),
-        ),
-      );
-      const primary =
-        current.primaryLocationId !== null &&
-        stillValid.has(current.primaryLocationId)
-          ? current.primaryLocationId
-          : (stillValid.values().next().value ?? null);
-      return {
-        ...current,
-        role: nextRole,
-        selectedLocationIds: stillValid,
-        primaryLocationId: primary,
-      };
-    });
-  }
-
-  function toggleLocation(locationId: number) {
-    setForm((current) => {
-      const next = new Set(current.selectedLocationIds);
-      let primary = current.primaryLocationId;
-      if (next.has(locationId)) {
-        next.delete(locationId);
-        // If we just removed the row marked as primary, demote: prefer
-        // the next remaining selection (insertion order).
-        if (primary === locationId) {
-          primary = next.size === 0 ? null : (next.values().next().value ?? null);
-        }
-      } else {
-        next.add(locationId);
-        if (primary === null) primary = locationId;
-      }
-      return { ...current, selectedLocationIds: next, primaryLocationId: primary };
-    });
-  }
-
-  function setPrimary(locationId: number) {
-    setForm((current) => {
-      if (!current.selectedLocationIds.has(locationId)) return current;
-      return { ...current, primaryLocationId: locationId };
+      const stillValid =
+        current.locationId !== null &&
+        locations.some(
+          (loc) => loc.id === current.locationId && types.has(loc.type),
+        )
+          ? current.locationId
+          : null;
+      return { ...current, role: nextRole, locationId: stillValid };
     });
   }
 
@@ -207,44 +273,27 @@ export function EmployeeFormDialog({
       );
       return;
     }
-    if (form.password.length < 8) {
+    // Password is only set at CREATE time (a dedicated reset flow owns it in
+    // edit mode), so the 8-char floor applies to create only.
+    if (!isEdit && form.password.length < 8) {
       setError('Parol kamida 8 belgidan iborat bo‘lishi kerak.');
       return;
     }
 
-    const locationIds = [...form.selectedLocationIds];
-    if (locationRequired) {
-      if (locationIds.length === 0) {
-        setError('Bu rol uchun kamida bitta bo‘g‘in tanlash shart.');
-        return;
-      }
-      if (
-        form.primaryLocationId === null ||
-        !locationIds.includes(form.primaryLocationId)
-      ) {
-        setError('Asosiy bo‘g‘in tanlanmagan.');
-        return;
-      }
-    }
-
-    // No `telegram_id` here by design: TG linking is self-service on the
-    // /profile page. Admins never set a TG ID at create time; the field is
-    // simply omitted from the payload.
-    const body: Record<string, unknown> = {
-      name,
-      username,
-      password: form.password,
-      role: form.role,
-    };
-    if (locationRequired) {
-      body['location_ids'] = locationIds;
-      body['primary_location_id'] = form.primaryLocationId;
+    if (locationRequired && form.locationId === null) {
+      setError('Bu rol uchun bo‘g‘in tanlash shart.');
+      return;
     }
 
     setIsSubmitting(true);
     try {
-      await apiRequest('/api/users', { method: 'POST', body });
-      notify('success', 'Hodim qo‘shildi.');
+      if (isEdit && user != null) {
+        await submitEdit(user, name, username);
+        notify('success', 'Hodim yangilandi.');
+      } else {
+        await submitCreate(name, username);
+        notify('success', 'Hodim qo‘shildi.');
+      }
       onOpenChange(false);
       onSaved();
     } catch (err: unknown) {
@@ -256,13 +305,66 @@ export function EmployeeFormDialog({
     }
   }
 
+  /** CREATE: one POST /api/users carrying credentials + the single bo'g'in. */
+  async function submitCreate(name: string, username: string) {
+    // No `telegram_id` here by design: TG linking is self-service on the
+    // /profile page. Admins never set a TG ID at create time; the field is
+    // simply omitted from the payload.
+    const body: Record<string, unknown> = {
+      name,
+      username,
+      password: form.password,
+      role: form.role,
+    };
+    if (locationRequired && form.locationId !== null) {
+      // One employee → one bo'g'in. Sent on the M:N path (the backend
+      // accepts a single-element `location_ids` + matching
+      // `primary_location_id`); the lone location is implicitly primary.
+      body['location_ids'] = [form.locationId];
+      body['primary_location_id'] = form.locationId;
+    }
+    await apiRequest('/api/users', { method: 'POST', body });
+  }
+
+  /**
+   * EDIT: PATCH the scalar fields, then re-point the single location with the
+   * same assign-first / delete-after flow `EmployeeLocationsDialog` uses so
+   * the user is never left with zero locations and the "can't delete primary"
+   * rule is never hit.
+   */
+  async function submitEdit(target: User, name: string, username: string) {
+    await apiRequest(`/api/users/${target.id}`, {
+      method: 'PATCH',
+      body: { name, username, role: form.role },
+    });
+
+    if (!locationRequired) return; // chain-wide role owns no location.
+    if (form.locationId === null) return; // guarded above for required roles.
+    if (form.locationId === initialLocationId) return; // unchanged.
+
+    // 1. Assign the new location as primary (mirrors users.location_id).
+    await apiRequest(`/api/users/${target.id}/locations`, {
+      method: 'POST',
+      body: { location_id: form.locationId, is_primary: true },
+    });
+    // 2. Drop every OTHER previously-assigned location → collapse to one.
+    const toRemove = existingLocationIds.filter((id) => id !== form.locationId);
+    for (const locationId of toRemove) {
+      await apiRequest(`/api/users/${target.id}/locations/${locationId}`, {
+        method: 'DELETE',
+      });
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>Yangi hodim</DialogTitle>
+          <DialogTitle>{isEdit ? 'Hodimni tahrirlash' : 'Yangi hodim'}</DialogTitle>
           <DialogDescription>
-            Hodim ma’lumotlarini va biriktiriladigan bo‘g‘inlarni kiriting.
+            {isEdit
+              ? 'Hodim ma’lumotlarini, rolini va biriktirilgan bo‘g‘inni o‘zgartiring.'
+              : 'Hodim ma’lumotlarini va biriktiriladigan bo‘g‘inni kiriting (har hodimga bitta bo‘g‘in).'}
           </DialogDescription>
         </DialogHeader>
 
@@ -313,22 +415,26 @@ export function EmployeeFormDialog({
             </p>
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="employee-password">Parol</Label>
-            <Input
-              id="employee-password"
-              name="password"
-              type="password"
-              autoComplete="new-password"
-              required
-              minLength={8}
-              value={form.password}
-              onChange={(e) => setForm({ ...form, password: e.target.value })}
-            />
-            <p className="text-xs text-muted-foreground">
-              Kamida 8 belgi.
-            </p>
-          </div>
+          {/* Password is create-only — a separate reset flow owns it in edit
+              mode, so the field is hidden when editing an existing hodim. */}
+          {!isEdit && (
+            <div className="space-y-2">
+              <Label htmlFor="employee-password">Parol</Label>
+              <Input
+                id="employee-password"
+                name="password"
+                type="password"
+                autoComplete="new-password"
+                required
+                minLength={8}
+                value={form.password}
+                onChange={(e) => setForm({ ...form, password: e.target.value })}
+              />
+              <p className="text-xs text-muted-foreground">
+                Kamida 8 belgi.
+              </p>
+            </div>
+          )}
 
           <div className="space-y-2">
             <Label htmlFor="employee-role">Rol</Label>
@@ -338,77 +444,44 @@ export function EmployeeFormDialog({
               value={form.role}
               onChange={(e) => changeRole(e.target.value as Role)}
             >
-              {ROLE_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
+              {roleOptions.map((opt) => (
+                <option key={opt.value} value={opt.value} disabled={opt.disabled}>
                   {opt.label}
                 </option>
               ))}
             </Select>
           </div>
 
-          <fieldset
-            className="space-y-2 rounded-md border border-border p-3"
-            disabled={!locationRequired}
-            aria-disabled={!locationRequired}
-          >
-            <legend className="px-1 text-sm font-medium">
-              Bo‘g‘inlar
-              {locationRequired ? (
-                <span className="text-muted-foreground"> (kamida bittasi)</span>
+          {locationRequired && (
+            <div className="space-y-2">
+              <Label htmlFor="employee-location">Bo‘g‘in</Label>
+              {visibleLocations.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  Bu rol uchun mos bo‘g‘in topilmadi.
+                </p>
               ) : (
-                <span className="text-muted-foreground"> — kerak emas</span>
+                <Select
+                  id="employee-location"
+                  name="location"
+                  value={form.locationId === null ? '' : String(form.locationId)}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      locationId:
+                        e.target.value === '' ? null : Number(e.target.value),
+                    })
+                  }
+                >
+                  <option value="">— Tanlanmagan —</option>
+                  {visibleLocations.map((loc) => (
+                    <option key={loc.id} value={loc.id}>
+                      {loc.name}
+                    </option>
+                  ))}
+                </Select>
               )}
-            </legend>
-
-            {visibleLocations.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                Bu rol uchun mos bo‘g‘in topilmadi.
-              </p>
-            ) : (
-              <ul className="space-y-1">
-                {visibleLocations.map((loc) => {
-                  const selected = form.selectedLocationIds.has(loc.id);
-                  const isPrimary = form.primaryLocationId === loc.id;
-                  return (
-                    <li
-                      key={loc.id}
-                      className="flex items-center justify-between gap-3 rounded-sm px-2 py-1 hover:bg-muted/40"
-                    >
-                      <label
-                        className="flex flex-1 items-center gap-2 text-sm"
-                        htmlFor={`employee-loc-${loc.id}`}
-                      >
-                        <input
-                          id={`employee-loc-${loc.id}`}
-                          type="checkbox"
-                          className="size-4 rounded border-border"
-                          checked={selected}
-                          onChange={() => toggleLocation(loc.id)}
-                          disabled={!locationRequired}
-                        />
-                        <span>{loc.name}</span>
-                      </label>
-                      <label
-                        className="flex items-center gap-1 text-xs text-muted-foreground"
-                        htmlFor={`employee-primary-${loc.id}`}
-                      >
-                        <input
-                          id={`employee-primary-${loc.id}`}
-                          type="radio"
-                          name="primary_location"
-                          className="size-3"
-                          checked={isPrimary}
-                          disabled={!selected || !locationRequired}
-                          onChange={() => setPrimary(loc.id)}
-                        />
-                        Asosiy
-                      </label>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </fieldset>
+            </div>
+          )}
 
           {error && (
             <p
@@ -429,7 +502,14 @@ export function EmployeeFormDialog({
           >
             Bekor qilish
           </Button>
-          <Button type="submit" form="employee-form" disabled={isSubmitting}>
+          <Button
+            type="submit"
+            form="employee-form"
+            disabled={
+              isSubmitting ||
+              (locationRequired && form.locationId === null)
+            }
+          >
             {isSubmitting && (
               <Loader2 className="size-4 animate-spin" aria-hidden="true" />
             )}

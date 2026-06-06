@@ -47,7 +47,7 @@ export function Tabs<T extends string>({
               fullWidth && 'flex-1',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               isActive
-                ? 'bg-secondary text-secondary-foreground'
+                ? 'bg-primary text-primary-foreground shadow-sm'
                 : 'text-muted-foreground hover:text-foreground',
             )}
           >

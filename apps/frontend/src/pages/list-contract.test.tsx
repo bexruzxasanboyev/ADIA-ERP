@@ -83,6 +83,8 @@ const MOVEMENTS_ENVELOPE: MovementsResponse = {
       note: null,
       created_at: '2026-05-22T09:00:00.000Z',
       created_by: 3,
+      replenishment_id: null,
+      brak_qty: null,
       product_name: 'Un',
       product_unit: 'kg',
       from_location_name: null,

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertTriangle, Pencil, Plus, ScrollText, Search, X } from 'lucide-react';
+import { AlertTriangle, Pencil, ScrollText, Search, X } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -31,7 +31,6 @@ import {
 import { formatSom } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import type { Product, Unit } from '@/lib/types';
-import { ProductFormDialog } from './ProductFormDialog';
 import { ProductCostDialog } from './ProductCostDialog';
 
 /**
@@ -115,8 +114,6 @@ function effectiveCost(p: Product): number | null {
 export function ProductsPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const canCreate =
-    user?.role === 'pm' || user?.role === 'raw_warehouse_manager';
   // FEATURE A — only pm / production_manager may edit the manual cost.
   const canEditCost =
     user?.role === 'pm' || user?.role === 'production_manager';
@@ -153,7 +150,6 @@ export function ProductsPage() {
   }, [typeTab]);
 
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  const [createOpen, setCreateOpen] = useState(false);
 
   // The recipe (BOM) opens as a dedicated, read-only page (not a modal).
   const openRecipe = (p: Product) => navigate(`/products/${p.id}/recipe`);
@@ -340,16 +336,6 @@ export function ProductsPage() {
       <PageHeader
         title="Mahsulotlar"
         description="Xom-ashyo, yarim tayyor va tayyor mahsulotlar."
-        actions={
-          <>
-            {canCreate && (
-              <Button onClick={() => setCreateOpen(true)}>
-                <Plus className="size-4" aria-hidden="true" />
-                Yangi mahsulot
-              </Button>
-            )}
-          </>
-        }
       />
 
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -565,33 +551,41 @@ export function ProductsPage() {
                               </dd>
                             </div>
                           </dl>
-                          {canEditCost && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="-mt-1 h-7 w-fit self-start px-2 text-xs text-muted-foreground hover:text-foreground"
-                              onClick={() => setCostProduct(p)}
-                            >
-                              <Pencil
-                                className="size-3.5"
-                                aria-hidden="true"
-                              />
-                              Narx
-                            </Button>
-                          )}
-                          {effectiveType(p) !== 'raw' && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="mt-auto w-full"
-                              onClick={() => openRecipe(p)}
-                            >
-                              <ScrollText
-                                className="size-4"
-                                aria-hidden="true"
-                              />
-                              Retseptni ko‘rish
-                            </Button>
+                          {/* Narx (edit) + Retsept (view) side by side at the
+                              card foot — owner feedback: "yonma-yon, aniq,
+                              chiroyli". Each renders only when allowed; a lone
+                              button simply fills the row. */}
+                          {(canEditCost || effectiveType(p) !== 'raw') && (
+                            <div className="mt-auto flex flex-wrap items-center gap-2">
+                              {canEditCost && (
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  className="h-8 flex-1"
+                                  onClick={() => setCostProduct(p)}
+                                >
+                                  <Pencil
+                                    className="size-3.5"
+                                    aria-hidden="true"
+                                  />
+                                  Narx
+                                </Button>
+                              )}
+                              {effectiveType(p) !== 'raw' && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-8 flex-1"
+                                  onClick={() => openRecipe(p)}
+                                >
+                                  <ScrollText
+                                    className="size-4"
+                                    aria-hidden="true"
+                                  />
+                                  Retseptni ko‘rish
+                                </Button>
+                              )}
+                            </div>
                           )}
                         </div>
                       );
@@ -611,16 +605,6 @@ export function ProductsPage() {
           </div>
         )}
       </Card>
-
-      {canCreate && (
-        <ProductFormDialog
-          open={createOpen}
-          onOpenChange={setCreateOpen}
-          onSaved={() => {
-            refetch();
-          }}
-        />
-      )}
 
       {canEditCost && costProduct && (
         <ProductCostDialog

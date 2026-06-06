@@ -9,7 +9,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { NumberInput } from '@/components/ui/number-input';
 import { Label } from '@/components/ui/label';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
@@ -42,7 +42,7 @@ interface FormState {
   location_id: string;
   from_location_id: string;
   to_location_id: string;
-  qty: string;
+  qty: number | null;
   note: string;
 }
 
@@ -53,7 +53,7 @@ function emptyForm(scopeLocationId: string): FormState {
     location_id: scopeLocationId,
     from_location_id: scopeLocationId,
     to_location_id: '',
-    qty: '',
+    qty: null,
     note: '',
   };
 }
@@ -91,7 +91,7 @@ export function MovementDialog({
     event.preventDefault();
     setError(null);
 
-    const qty = Number(form.qty);
+    const qty = form.qty ?? NaN;
     if (!Number.isFinite(qty) || qty <= 0) {
       setError('Miqdor 0 dan katta bo‘lishi kerak.');
       return;
@@ -281,15 +281,14 @@ export function MovementDialog({
 
           <div className="space-y-2">
             <Label htmlFor="mv-qty">Miqdor</Label>
-            <Input
+            <NumberInput
               id="mv-qty"
               name="qty"
-              type="number"
+              decimals
               min={0}
-              step="any"
               required
               value={form.qty}
-              onChange={(e) => setForm({ ...form, qty: e.target.value })}
+              onValueChange={(n) => setForm({ ...form, qty: n })}
             />
           </div>
 

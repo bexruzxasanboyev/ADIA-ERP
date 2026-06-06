@@ -273,8 +273,11 @@ replenishmentRouter.post(
 // with a `results` array so the UI can render a per-row outcome.
 //
 // For a store_manager the requester is FORCED to their own store (the body's
-// `requester_location_id` is ignored). The central warehouse manager may pass
-// `requester_location_id` (validated against its owned locations).
+// `requester_location_id` is ignored). The central warehouse manager is the
+// fulfilment HUB and may create a request for ANY downstream location, so its
+// `requester_location_id` is taken as-is — there is intentionally NO ownership
+// check here (same policy as POST /). `createRequest` still validates that the
+// location and product exist; an invalid id surfaces as a per-item 'error'.
 replenishmentRouter.post(
   '/batch',
   authenticate,
@@ -304,6 +307,16 @@ replenishmentRouter.post(
 
     const note = optionalString(body, 'note') ?? null;
 
+    // 0052 — allocate ONE batch id for the whole call so the central warehouse
+    // can later accept/reject every line of this basket as one grouped order.
+    const { rows: seqRows } = await query<{ batch_id: string }>(
+      `SELECT nextval('replenishment_batch_seq') AS batch_id`,
+    );
+    const batchId = Number(seqRows[0]?.batch_id);
+    if (!Number.isFinite(batchId)) {
+      throw AppError.internal('Failed to allocate a batch id.');
+    }
+
     type BatchResult = {
       product_id: number;
       status: 'created' | 'exists' | 'error';
@@ -324,6 +337,7 @@ replenishmentRouter.post(
           qtyNeeded,
           actorUserId: principal.userId,
           note,
+          batchId,
         });
         results.push({ product_id: productId, status: 'created', request_id: row.id });
       } catch (err) {
@@ -343,7 +357,32 @@ replenishmentRouter.post(
       }
     }
 
-    res.status(200).json({ results });
+    res.status(200).json({ batch_id: batchId, results });
+  }),
+);
+
+// GET /api/replenishment/store-targets
+//
+// The list of downstream stores the central warehouse may ship to in the
+// "savat -> do'konga yuborish" flow. The central_warehouse_manager is the
+// fulfilment HUB — just like POST /batch lets it pass ANY downstream
+// `requester_location_id`, it may target ANY store here, so we return every
+// `type = 'store'` location (name-sorted). pm sees the same (read-only).
+// Other roles are 403 via authorize().
+replenishmentRouter.get(
+  '/store-targets',
+  authenticate,
+  authorize('pm', 'central_warehouse_manager'),
+  asyncHandler(async (_req, res) => {
+    const { rows } = await query<{ id: number; name: string }>(
+      `SELECT id, name
+         FROM locations
+        WHERE type = 'store'
+        ORDER BY name ASC, id ASC`,
+    );
+    res.status(200).json({
+      stores: rows.map((r) => ({ id: Number(r.id), name: r.name })),
+    });
   }),
 );
 
@@ -481,6 +520,7 @@ replenishmentRouter.get(
       requester_location_name: string | null;
       qty_needed: string;
       status: string;
+      batch_id: string | null;
       created_at: Date;
     }>(
       `SELECT r.id,
@@ -491,6 +531,7 @@ replenishmentRouter.get(
               rl.name AS requester_location_name,
               r.qty_needed,
               r.status,
+              r.batch_id,
               r.created_at
          FROM replenishment_requests r
          JOIN products p ON p.id = r.product_id
@@ -518,6 +559,7 @@ replenishmentRouter.get(
         requester_location_name: r.requester_location_name,
         qty_needed: Number(r.qty_needed),
         status: r.status,
+        batch_id: r.batch_id === null ? null : Number(r.batch_id),
         created_at: r.created_at,
       })),
     });
@@ -624,6 +666,141 @@ replenishmentRouter.post(
       'rejected',
     );
     res.status(200).json({ request: updated });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// 0052 — Central warehouse: bulk accept / reject a whole basket (batch)
+// ---------------------------------------------------------------------------
+// A store confirms a basket of below-min products via POST /batch; every line
+// shares a `batch_id`. The central warehouse manager accepts or rejects the
+// WHOLE basket as one grouped order. RBAC mirrors the single endpoints exactly
+// (authorizeWrite('central_warehouse_manager')).
+
+// POST /api/replenishment/batch/:batch_id/accept-central
+//   body: { location_id }  (the acting central warehouse)
+//
+// Accept EVERY still-open request in the batch. Each line is accepted with the
+// existing acceptByCentral engine call; a per-line failure is collected (not
+// thrown) so one bad line does not abort the rest. Returns a summary.
+replenishmentRouter.post(
+  '/batch/:batch_id/accept-central',
+  authenticate,
+  authorizeWrite('central_warehouse_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const batchId = parseIdParam(req.params.batch_id, 'batch_id');
+    const body = asObject(req.body);
+    const centralId = requireId(body, 'location_id');
+
+    // The operator must own the acting central warehouse.
+    await requireLocationOperator(principal, centralId);
+
+    // The warehouse must actually be a central_warehouse (parity with single).
+    const { rows: locRows } = await query<{ id: number; type: string }>(
+      `SELECT id, type FROM locations WHERE id = $1`,
+      [centralId],
+    );
+    const loc = locRows[0];
+    if (loc === undefined) {
+      throw AppError.notFound('Location not found.');
+    }
+    if (loc.type !== 'central_warehouse') {
+      throw AppError.validation('location_id must be a central_warehouse.');
+    }
+
+    // Every still-open line in the batch, oldest first (stable order).
+    const { rows: openRows } = await query<{ id: number }>(
+      `SELECT id FROM replenishment_requests
+        WHERE batch_id = $1
+          AND status NOT IN ('CLOSED', 'CANCELLED')
+        ORDER BY id ASC`,
+      [batchId],
+    );
+    if (openRows.length === 0) {
+      throw AppError.notFound('No open requests found for this batch.');
+    }
+
+    let accepted = 0;
+    let shipped = 0;
+    const failed: { request_id: number; message: string }[] = [];
+
+    for (const { id } of openRows) {
+      try {
+        const result = await acceptByCentral({
+          requestId: Number(id),
+          centralLocationId: centralId,
+          actorUserId: principal.userId,
+        });
+        accepted += 1;
+        if (result.shipped) {
+          shipped += 1;
+        }
+      } catch (err) {
+        failed.push({
+          request_id: Number(id),
+          message: err instanceof AppError ? err.message : 'Failed to accept request.',
+        });
+      }
+    }
+
+    res.status(200).json({ batch_id: batchId, accepted, shipped, failed });
+  }),
+);
+
+// POST /api/replenishment/batch/:batch_id/reject-central
+//   body: { reason }
+//
+// Reject (cancel) EVERY still-open request in the batch -> CANCELLED with
+// closure_reason='rejected'. Returns the cancelled count.
+replenishmentRouter.post(
+  '/batch/:batch_id/reject-central',
+  authenticate,
+  authorizeWrite('central_warehouse_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const batchId = parseIdParam(req.params.batch_id, 'batch_id');
+    const body = asObject(req.body);
+    const reason = optionalString(body, 'reason');
+    if (reason === undefined || reason.trim() === '') {
+      throw AppError.validation('Field "reason" is required for reject.');
+    }
+
+    // The acting principal must own a central warehouse — the natural fulfiller
+    // for a store basket. (Mirrors the untargeted branch of the single
+    // reject-central guard: a batch's NEW lines have no pinned target yet.)
+    const { rows: owned } = await query<{ id: number }>(
+      `SELECT id FROM locations
+        WHERE type = 'central_warehouse' AND id = ANY($1::bigint[])`,
+      [principal.locationIds],
+    );
+    if (owned.length === 0) {
+      throw AppError.forbidden('You do not manage a central warehouse for this batch.');
+    }
+
+    const { rows: openRows } = await query<{ id: number }>(
+      `SELECT id FROM replenishment_requests
+        WHERE batch_id = $1
+          AND status NOT IN ('CLOSED', 'CANCELLED')
+        ORDER BY id ASC`,
+      [batchId],
+    );
+    if (openRows.length === 0) {
+      throw AppError.notFound('No open requests found for this batch.');
+    }
+
+    let cancelled = 0;
+    for (const { id } of openRows) {
+      await cancelRequest(
+        Number(id),
+        principal.userId,
+        `rejected by central: ${reason.trim()}`,
+        'rejected',
+      );
+      cancelled += 1;
+    }
+
+    res.status(200).json({ batch_id: batchId, cancelled });
   }),
 );
 

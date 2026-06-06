@@ -1,36 +1,30 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card } from '@/components/ui/card';
-import { ErrorState, LoadingState } from '@/components/PageState';
+import { ErrorState } from '@/components/PageState';
 import {
   dateRangeToQuery,
   type DateRangeValue,
 } from '@/components/DateRangeFilter';
-import { useApiQuery } from '@/hooks/useApiQuery';
-import { useAuth } from '@/hooks/useAuth';
+import { prefetchApiQuery, useApiQuery } from '@/hooks/useApiQuery';
 import { todayIso } from '@/lib/format';
 import type {
-  ChainSummaryNode,
   DashboardEcosystem,
   DashboardOverview,
-  LocationType,
   PurchaseOrder,
   ReplenishmentRequest,
 } from '@/lib/types';
 import { useHeaderSlot } from '@/components/layout/HeaderSlot';
 import { DashboardHeaderSlot } from './DashboardHeaderSlot';
 import { HeroStrip } from './HeroStrip';
-import { ChainHealthRow } from './ChainHealthRow';
 import { CriticalAlerts } from './CriticalAlerts';
 import { MyActionsList } from './MyActionsList';
 import { ProductionPlanSummary } from './ProductionPlanSummary';
 import { DashboardSecondaryRow } from './DashboardSecondaryRow';
-import { ChainDetailSheet } from './ChainDetailSheet';
 import { RevenueBreakdown } from './RevenueBreakdown';
-
-// Stable empty fallback so a missing `ecosystem.data` doesn't churn the
-// ChainHealthRow memo by allocating a fresh `[]` on every render.
-const EMPTY_CHAIN_SUMMARY: ChainSummaryNode[] = [];
+import { TopProducts } from './TopProducts';
+import { SalesChartsRow } from '../SalesChartsRow';
+import { ExecutiveDashboardSkeleton } from './ExecutiveDashboardSkeleton';
 
 /**
  * Executive dashboard — insight-first redesign (2026-05).
@@ -43,23 +37,19 @@ const EMPTY_CHAIN_SUMMARY: ChainSummaryNode[] = [];
  *   1. HeaderSlot         — greeting + date-range filter (layout-owned)
  *   2. HeroStrip          — 4 clickable KPI cards (revenue / receipts /
  *                           active requests / critical positions)
- *   3. ChainHealthRow     — five scannable stage cards (replaces the
- *                           canvas; scales as locations grow), click →
- *                           per-stage detail drawer
- *   4. Action row         — CriticalAlerts + MyActionsList (the approval
+ *   3. RevenueBreakdown   — revenue split donut + legend (payment methods)
+ *   4. SalesChartsRow     — today's sales count + revenue area charts
+ *   5. Action row         — CriticalAlerts + MyActionsList (the approval
  *                           queue) + today's production digest
- *   5. RevenueBreakdown   — today's revenue split
- *   6. SecondaryRowGuard  — 30-day sales chart, forecasts, full plan /
- *                           open-requests tables (below the fold)
+ *   6. SecondaryRowGuard  — forecasts, full plan / open-requests tables
+ *                           (below the fold)
  *
  * Auto-refresh: 30 s while the tab is visible. The page is the only
  * place that knows the polling cadence — every child reads the snapshot.
  */
 export function ExecutiveDashboardPage() {
-  const { user } = useAuth();
   const navigate = useNavigate();
   const [range, setRange] = useState<DateRangeValue>({ range: 'today' });
-  const [selectedChain, setSelectedChain] = useState<LocationType | null>(null);
   const rangeQuery = dateRangeToQuery(range);
 
   const overview = useApiQuery<DashboardOverview>(
@@ -118,44 +108,47 @@ export function ExecutiveDashboardPage() {
     replenishmentsRefetch,
   ]);
 
-  const userName = user?.name ?? 'Foydalanuvchi';
+  // Warm the range-driven endpoints for the three presets the boshliq
+  // toggles most (Bugun / Bu hafta / Bu oy) once on mount. With the
+  // useApiQuery stale-while-revalidate cache populated ahead of time,
+  // switching the date-range filter renders instantly with no loader.
+  // Presets map to a bare `{ range }` value, exactly as DateRangeFilter's
+  // `selectPreset` builds them. Prefetches are plain GETs that only fill
+  // the cache; `prefetchApiQuery` already swallows errors and no-ops on a
+  // fresh/in-flight entry, so warming the currently-active range too is
+  // harmless. Mount-only — the empty dep array is intentional.
+  useEffect(() => {
+    const PRESETS: DateRangeValue[] = [
+      { range: 'today' },
+      { range: 'week' },
+      { range: 'month' },
+    ];
+    for (const preset of PRESETS) {
+      const q = dateRangeToQuery(preset);
+      prefetchApiQuery(`/api/dashboard/revenue-breakdown?${q}`);
+      prefetchApiQuery(`/api/dashboard/top-products?${q}&limit=5`);
+      // Key matches SalesChartsRow's live query (default `by=product`,
+      // `limit=6`) so the warmed entry is actually a cache hit there.
+      prefetchApiQuery(`/api/dashboard/sales-breakdown?${q}&by=product&limit=6`);
+      prefetchApiQuery(`/api/dashboard/ecosystem?${q}`);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const today = useMemo(() => todayIso(), []);
 
   useHeaderSlot(
     <DashboardHeaderSlot
-      userName={userName}
       isoDate={today}
       range={range}
       onRangeChange={setRange}
     />,
   );
 
-  const handleChainSelect = useCallback((next: LocationType | null) => {
-    setSelectedChain(next);
-  }, []);
-
-  // Stabilise the chain_summary reference across 30s refetches: each
-  // refetch re-parses JSON and produces a new array even when the payload
-  // is byte-identical. Without content equality the ChainHealthRow memo
-  // invalidates on every tick. Keep the previous snapshot when its JSON
-  // serialisation matches.
-  const chainSummary = ecosystem.data?.chain_summary ?? EMPTY_CHAIN_SUMMARY;
-  const chainSummaryStableRef = useRef<ChainSummaryNode[]>(chainSummary);
-  const chainSummaryStable = useMemo(() => {
-    const prev = chainSummaryStableRef.current;
-    if (
-      prev !== chainSummary &&
-      JSON.stringify(prev) === JSON.stringify(chainSummary)
-    ) {
-      return prev;
-    }
-    chainSummaryStableRef.current = chainSummary;
-    return chainSummary;
-  }, [chainSummary]);
-
-  // Initial-load skeleton — overview is the keystone request.
+  // Initial-load skeleton — overview is the keystone request. A full-layout
+  // skeleton (not a centred spinner) so the page doesn't jump when data lands.
   if (overview.isLoading && overview.data === null) {
-    return <LoadingState />;
+    return <ExecutiveDashboardSkeleton />;
   }
 
   if (overview.error && overview.data === null) {
@@ -173,12 +166,25 @@ export function ExecutiveDashboardPage() {
         ecosystem={ecosystem.data}
         range={range}
         onNavigate={navigate}
+        ecosystemLoading={ecosystem.isLoading && ecosystem.data === null}
       />
 
-      <ChainHealthRow
-        chainSummary={chainSummaryStable}
-        selectedChain={selectedChain}
-        onSelectChain={handleChainSelect}
+      <div className="grid grid-cols-1 gap-4 sm:gap-6 xl:grid-cols-2">
+        <RevenueBreakdown
+          range={range}
+          fallbackTotal={ecosystem.data?.poster_status.sales_today_sum ?? 0}
+        />
+        <TopProducts range={range} limit={5} />
+      </div>
+
+      {/* Always render the row so each chart owns its own skeleton while the
+          ecosystem query is still loading — no late pop-in after the page
+          skeleton disappears. When data lands the series fill in smoothly. */}
+      <SalesChartsRow
+        days={ecosystem.data?.sales_chart.days ?? []}
+        granularity={ecosystem.data?.sales_chart.granularity}
+        loading={ecosystem.isLoading && ecosystem.data === null}
+        range={range}
       />
 
       <div className="grid gap-4 sm:gap-6 xl:grid-cols-12">
@@ -199,28 +205,17 @@ export function ExecutiveDashboardPage() {
         />
       </div>
 
-      <RevenueBreakdown
-        range={range}
-        fallbackTotal={ecosystem.data?.poster_status.sales_today_sum ?? 0}
-      />
-
-      <SecondaryRowGuard overview={overview.data} ecosystem={ecosystem.data} />
-
-      <ChainDetailSheet
-        type={selectedChain}
-        range={range}
-        onClose={() => setSelectedChain(null)}
-      />
+      <SecondaryRowGuard overview={overview.data} range={range} />
     </div>
   );
 }
 
 function SecondaryRowGuard({
   overview,
-  ecosystem,
+  range,
 }: {
   overview: DashboardOverview;
-  ecosystem: DashboardEcosystem | null;
+  range: DateRangeValue;
 }) {
   const isEmpty =
     overview.kpis.total_open_requests === 0 &&
@@ -236,5 +231,5 @@ function SecondaryRowGuard({
       </Card>
     );
   }
-  return <DashboardSecondaryRow overview={overview} ecosystem={ecosystem} />;
+  return <DashboardSecondaryRow overview={overview} range={range} />;
 }

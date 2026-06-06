@@ -1,10 +1,4 @@
-import {
-  Cell,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-} from 'recharts';
+import { Cell, Pie, PieChart, ResponsiveContainer } from 'recharts';
 import {
   REPLENISHMENT_STATUS_LABELS,
   REPLENISHMENT_STATUS_VARIANT,
@@ -63,11 +57,20 @@ function buildEntries(
     .sort((a, b) => b.value - a.value);
 }
 
+/** Share of total as a compact percentage (mirrors RevenueBreakdown). */
+function formatPct(part: number, total: number): string {
+  if (total <= 0 || !Number.isFinite(part)) return '0%';
+  const pct = (part / total) * 100;
+  return `${pct >= 10 ? Math.round(pct) : pct.toFixed(1)}%`;
+}
+
 /**
  * Donut chart + textual legend for the open-requests-by-status
- * aggregate. The chart is purely decorative; the legend below it lists
- * every status so screen readers and the contract test can read the
- * data without relying on the SVG.
+ * aggregate. Styled to mirror the dashboard's revenue-breakdown card: the
+ * donut sits on the LEFT with the total in its centre, and a compact
+ * legend table on the RIGHT lists every status as `label | count | share`.
+ * The legend is the accessible source of truth — the SVG is decorative — so
+ * screen readers and the contract test read the data without the chart.
  */
 export function OpenRequestsChart({
   entries,
@@ -79,9 +82,10 @@ export function OpenRequestsChart({
   const chartEntries = buildEntries(entries);
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-8 sm:flex-row sm:items-center sm:gap-10">
+      {/* LEFT — donut with the total in the centre. */}
       <div
-        className="relative mx-auto h-48 w-full max-w-[260px]"
+        className="relative mx-auto h-[220px] w-[220px] shrink-0 sm:mx-0 lg:h-[240px] lg:w-[240px]"
         aria-hidden="true"
       >
         <ResponsiveContainer width="100%" height="100%">
@@ -90,8 +94,8 @@ export function OpenRequestsChart({
               data={chartEntries}
               dataKey="value"
               nameKey="label"
-              innerRadius={56}
-              outerRadius={84}
+              innerRadius="58%"
+              outerRadius="88%"
               paddingAngle={2}
               stroke="hsl(var(--card))"
               strokeWidth={2}
@@ -101,45 +105,41 @@ export function OpenRequestsChart({
                 <Cell key={entry.status} fill={entry.colour} />
               ))}
             </Pie>
-            <Tooltip
-              cursor={{ fill: 'transparent' }}
-              contentStyle={{
-                background: 'hsl(var(--popover))',
-                border: '1px solid hsl(var(--border))',
-                borderRadius: '0.5rem',
-                fontSize: '0.75rem',
-                color: 'hsl(var(--popover-foreground))',
-              }}
-              formatter={(value: number) => [formatQty(value), 'Soni']}
-            />
           </PieChart>
         </ResponsiveContainer>
         <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-2xl font-semibold tabular-nums">
+          <span className="text-3xl font-bold leading-none tabular-nums sm:text-4xl">
             {formatQty(total)}
           </span>
-          <span className="text-xs text-muted-foreground">jami</span>
+          <span className="mt-1.5 text-xs text-muted-foreground">jami</span>
         </div>
       </div>
 
-      <ul className="space-y-1.5 text-sm" data-testid="open-requests-legend">
+      {/* RIGHT — compact legend table, one row per status. */}
+      <ul
+        className="w-full flex-1 space-y-3.5"
+        data-testid="open-requests-legend"
+      >
         {chartEntries.map((entry) => (
           <li
             key={entry.status}
-            className="flex items-center justify-between gap-3"
+            className="grid grid-cols-[1fr_auto_48px] items-baseline gap-x-4"
           >
-            <span className="flex min-w-0 items-center gap-2">
+            <span className="flex min-w-0 items-center gap-2.5">
               <span
                 aria-hidden="true"
-                className="size-2.5 shrink-0 rounded-sm"
+                className="size-3 shrink-0 translate-y-px rounded-sm"
                 style={{ background: entry.colour }}
               />
-              <span className="truncate text-muted-foreground">
+              <span className="truncate text-base text-foreground">
                 {entry.label}
               </span>
             </span>
-            <span className="tabular-nums font-medium">
+            <span className="text-right text-base font-semibold tabular-nums sm:text-lg">
               {formatQty(entry.value)}
+            </span>
+            <span className="text-right text-sm tabular-nums text-muted-foreground">
+              {formatPct(entry.value, total)}
             </span>
           </li>
         ))}

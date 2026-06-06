@@ -98,6 +98,41 @@ describe('HeroStrip', () => {
     );
   });
 
+  it('skeletons the revenue + receipts cards while ecosystem is still loading', () => {
+    render(
+      <HeroStrip overview={OVERVIEW} ecosystem={null} ecosystemLoading />,
+    );
+    // The two Poster-sourced cards show a skeleton, not a stale "0".
+    expect(
+      screen.getByTestId('hero-strip-revenue-skeleton'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('hero-strip-receipts-skeleton'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('hero-strip-revenue-value'),
+    ).not.toBeInTheDocument();
+    // The overview-sourced cards (requests / critical) keep their values.
+    expect(
+      screen.getByTestId('hero-strip-requests-value'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('hero-strip-requests-skeleton'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows values (no skeleton) once ecosystem data has arrived', () => {
+    render(
+      <HeroStrip overview={OVERVIEW} ecosystem={ECOSYSTEM} ecosystemLoading />,
+    );
+    expect(
+      screen.queryByTestId('hero-strip-revenue-skeleton'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId('hero-strip-revenue-value'),
+    ).toBeInTheDocument();
+  });
+
   it('renders the "Bugun" copy by default and when range=today', () => {
     render(<HeroStrip overview={OVERVIEW} ecosystem={ECOSYSTEM} />);
     expect(screen.getByText('Bugungi tushum')).toBeInTheDocument();

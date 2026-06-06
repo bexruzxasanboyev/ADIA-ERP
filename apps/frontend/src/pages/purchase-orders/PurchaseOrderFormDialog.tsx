@@ -9,7 +9,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { NumberInput } from '@/components/ui/number-input';
 import { Label } from '@/components/ui/label';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
@@ -27,17 +27,17 @@ interface PurchaseOrderFormDialogProps {
 
 interface FormState {
   product_id: string;
-  qty: string;
+  qty: number | null;
   target_location_id: string;
-  supplier_id: string;
+  supplier_id: number | null;
   note: string;
 }
 
 const EMPTY_FORM: FormState = {
   product_id: '',
-  qty: '',
+  qty: null,
   target_location_id: '',
-  supplier_id: '',
+  supplier_id: null,
   note: '',
 };
 
@@ -79,7 +79,7 @@ export function PurchaseOrderFormDialog({
       setError('Mahsulot va qabul qiluvchi bo‘g‘inni tanlang.');
       return;
     }
-    const qty = Number(form.qty);
+    const qty = form.qty ?? NaN;
     if (!Number.isFinite(qty) || qty <= 0) {
       setError('Miqdor 0 dan katta bo‘lishi kerak.');
       return;
@@ -93,8 +93,7 @@ export function PurchaseOrderFormDialog({
           product_id: Number(form.product_id),
           qty,
           target_location_id: Number(form.target_location_id),
-          supplier_id:
-            form.supplier_id.trim() === '' ? null : Number(form.supplier_id),
+          supplier_id: form.supplier_id,
           note: form.note.trim() === '' ? null : form.note.trim(),
         },
       });
@@ -144,15 +143,14 @@ export function PurchaseOrderFormDialog({
 
           <div className="space-y-2">
             <Label htmlFor="purch-qty">Miqdor</Label>
-            <Input
+            <NumberInput
               id="purch-qty"
               name="qty"
-              type="number"
+              decimals
               min={0}
-              step="any"
               required
               value={form.qty}
-              onChange={(e) => setForm({ ...form, qty: e.target.value })}
+              onValueChange={(n) => setForm({ ...form, qty: n })}
             />
           </div>
 
@@ -178,15 +176,12 @@ export function PurchaseOrderFormDialog({
 
           <div className="space-y-2">
             <Label htmlFor="purch-supplier">Yetkazib beruvchi ID (ixtiyoriy)</Label>
-            <Input
+            <NumberInput
               id="purch-supplier"
               name="supplier_id"
-              type="number"
               min={1}
               value={form.supplier_id}
-              onChange={(e) =>
-                setForm({ ...form, supplier_id: e.target.value })
-              }
+              onValueChange={(n) => setForm({ ...form, supplier_id: n })}
             />
           </div>
 

@@ -36,14 +36,19 @@ export function PageTabs({ group }: PageTabsProps) {
   const section = NAV_SECTIONS.find((s) => s.key === group);
   if (!section || !user) return null;
 
-  // Exclude the 11 PRIMARY modules (they live on the Home launcher) — EXCEPT
-  // for the Kassa group, where "Cheklar" (the /cashier/receipts landing) must
-  // also appear as a tab alongside Smenalar / Nakladnoylar / Seyf so the
-  // cashier can switch back to the receipts list from any cashier sub-page.
+  // Exclude the PRIMARY modules (they live on the Home launcher) — with two
+  // exceptions that must ALSO remain reachable as header tabs:
+  //   - the Kassa group keeps its "Cheklar" (/cashier/receipts) landing;
+  //   - /replenishment ("So'rovlar") is now a Boshqaruv home tile too, but it
+  //     stays the modules group's header tab so the unified requests hub is
+  //     reachable from both the launcher and the header (owner 2026-06-06).
+  const TAB_EXEMPT_HOME_PATHS = new Set(['/replenishment']);
   const items = section.items.filter(
     (item) =>
       item.roles.includes(user.role) &&
-      (group === 'cashier' || !HOME_TILE_PATHS.has(item.path)),
+      (group === 'cashier' ||
+        TAB_EXEMPT_HOME_PATHS.has(item.path) ||
+        !HOME_TILE_PATHS.has(item.path)),
   );
   if (items.length === 0) return null;
 

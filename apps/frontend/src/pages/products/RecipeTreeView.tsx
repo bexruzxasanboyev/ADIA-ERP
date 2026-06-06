@@ -218,7 +218,15 @@ export function RecipeBreakdown({
   const sections: { node: RecipeNode; depth: number }[] = [];
   collectSections(tree, 0, sections);
 
+  // Top-level components that are NOT semi-sections — i.e. direct raw / leaf
+  // ingredients of the product itself (e.g. the НАПОЛЕОН recipe's direct `ун`).
+  // These have no card of their own, so without an explicit pass they would
+  // vanish whenever the recipe ALSO has semi sections. We surface them in a
+  // single synthetic "direct components" card, rendered before the semi cards.
+  const directNodes = tree.filter((node) => !isSection(node));
+
   if (sections.length === 0 && tree.length > 0) {
+    // No semi sections at all — wrap every (leaf) top-level node in one card.
     const synthetic: RecipeNode = {
       component_product_id: -1,
       name: productName,
@@ -233,6 +241,30 @@ export function RecipeBreakdown({
       children: tree,
     };
     sections.push({ node: synthetic, depth: 0 });
+  } else if (directNodes.length > 0) {
+    // Mixed recipe: semi sections PLUS direct leaf components. Render the
+    // direct components in their own card so they read as components of the
+    // finished product alongside the semi sections (without double-counting —
+    // each semi section still lists only its own children).
+    const directSubtotal = directNodes.reduce<number | null>((sum, n) => {
+      if (n.line_cost === null || n.line_cost === undefined) return sum;
+      return (sum ?? 0) + n.line_cost;
+    }, null);
+    const directCard: RecipeNode = {
+      component_product_id: -2,
+      name: productName,
+      type: 'finished',
+      unit: unit ?? 'pcs',
+      qty_per_unit: 1,
+      brutto: null,
+      netto: null,
+      unit_cost: null,
+      line_cost: null,
+      total_cost: directSubtotal,
+      children: directNodes,
+    };
+    // Direct components first, then the semi sections.
+    sections.unshift({ node: directCard, depth: 0 });
   }
 
   const rawSeen = new Set<number>();

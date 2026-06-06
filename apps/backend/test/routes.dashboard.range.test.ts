@@ -53,6 +53,12 @@ afterAll(async () => {
  */
 const PER_DAY_SOM = 1000; // so'm of revenue stubbed for each day in the window
 const PER_DAY_CHEQUES = 2; // cheque count stubbed for each day in the window
+// F4.9-hourly — so'm of revenue the analytics stub puts in EACH of the 24
+// `data_hourly` slots (already so'm, the route applies NO ÷100).
+const PER_HOUR_SOM = 250;
+// F4.9-hourly — per-hour TRANSACTION COUNT the stub serves for the
+// `select=transactions` analytics call (the hourly qty / "Sotuv soni" source).
+const PER_HOUR_TX = 3;
 
 function installRangeAwarePoster(): void {
   setPosterClientForTests(
@@ -62,6 +68,28 @@ function installRangeAwarePoster(): void {
       fetcher: ((url: string | URL) => {
         const u = typeof url === 'string' ? new URL(url) : url;
         const m = u.pathname.split('/').pop();
+        // F4.9-hourly — the today path pulls `dash.getAnalytics.data_hourly`
+        // TWICE: `select=revenue` (24 so'm values -> amount) and
+        // `select=transactions` (24 count values -> qty). Branch on `select`
+        // and emit a flat per-hour series for each so the hourly chart
+        // assertions can reason about each point's amount AND qty.
+        if (m === 'dash.getAnalytics') {
+          const select = u.searchParams.get('select');
+          const fill = select === 'transactions' ? PER_HOUR_TX : PER_HOUR_SOM;
+          const counters =
+            select === 'transactions'
+              ? { transactions: String(PER_HOUR_TX * 24) }
+              : { revenue: String(PER_HOUR_SOM * 24) };
+          const payload = {
+            response: {
+              data_hourly: new Array<number>(24).fill(fill),
+              counters,
+            },
+          };
+          return Promise.resolve(
+            new Response(JSON.stringify(payload), { status: 200 }),
+          );
+        }
         if (m !== 'dash.getPaymentsReport') {
           return Promise.resolve(
             new Response(JSON.stringify({ error: { code: 30, message: 'NA' } }), {
@@ -267,9 +295,26 @@ describe('GET /api/dashboard/ecosystem — ?range', () => {
       .set('Authorization', `Bearer ${w.pm.token}`);
     expect(res.status).toBe(200);
     const todayCount = res.body.poster_status.sales_today_count;
-    // sales_chart — at most one stat_date row (today). The 7-day and 25-day
-    // sales_stats_daily seeds must NOT appear.
-    expect(res.body.sales_chart.days.length).toBeLessThanOrEqual(1);
+    // F4.9-hourly — `range=today` now emits HOURLY buckets (granularity
+    // 'hour'), one point per hour from 00:00 up to the current hour (never a
+    // future hour). The 7-day / 25-day daily seeds must still NOT appear.
+    expect(res.body.sales_chart.granularity).toBe('hour');
+    const hourlyDays = res.body.sales_chart.days as Array<{
+      date: string;
+      hour: number;
+      qty: number;
+      amount: number;
+    }>;
+    const nowHour = new Date().getUTCHours();
+    // One point per hour 0..nowHour inclusive.
+    expect(hourlyDays.length).toBe(nowHour + 1);
+    const todayIso = new Date().toISOString().slice(0, 10);
+    hourlyDays.forEach((d, i) => {
+      expect(d.date).toBe(todayIso); // every hour carries today's date
+      expect(d.hour).toBe(i); // hours are 0..N in order
+      expect(d.qty).toBe(PER_HOUR_TX); // counts from select=transactions data_hourly
+      expect(d.amount).toBe(PER_HOUR_SOM); // so'm from select=revenue data_hourly, no ÷100
+    });
     // Same `it` later requests with range=month, expect strictly more rows.
     const month = await request(ctx.app)
       .get('/api/dashboard/ecosystem?range=month')
@@ -291,10 +336,22 @@ describe('GET /api/dashboard/ecosystem — ?range', () => {
     expect(week.body.poster_status.sales_today_count).toBeGreaterThan(
       today.body.poster_status.sales_today_count,
     );
-    // sales_chart for week includes the 7-day-ago bucket.
-    expect(week.body.sales_chart.days.length).toBeGreaterThanOrEqual(
-      today.body.sales_chart.days.length + 1,
-    );
+    // F4.9-hourly — today is HOURLY, week is DAILY. The two series carry
+    // different granularity discriminators, and the daily week series has no
+    // `hour` field on its points.
+    expect(today.body.sales_chart.granularity).toBe('hour');
+    expect(week.body.sales_chart.granularity).toBe('day');
+    const weekDays = week.body.sales_chart.days as Array<{
+      date: string;
+      hour?: number;
+      qty: number;
+      amount: number;
+    }>;
+    // A 7-day window has multiple daily buckets, none carrying `hour`.
+    expect(weekDays.length).toBeGreaterThanOrEqual(2);
+    for (const d of weekDays) {
+      expect(d.hour).toBeUndefined();
+    }
   });
 
   it('range=month pulls the 25-day-old chart row in', async () => {

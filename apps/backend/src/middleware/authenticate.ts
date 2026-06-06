@@ -80,9 +80,12 @@ export async function authenticate(
       // Chain-wide roles may pick any active location (PM-level access);
       // scoped roles must have it in their assigned set.
       if (claims.role !== SUPER_ADMIN_ROLE && !locationIds.includes(headerNum)) {
+        // Distinct code (not FORBIDDEN) so the client can tell "stale active
+        // location" apart from a genuine permission denial and self-heal by
+        // dropping the header and retrying on the user's primary (ADR-0012).
         next(
           new AppError(
-            'FORBIDDEN',
+            'ACTIVE_LOCATION_INVALID',
             'X-Active-Location is not assigned to this user.',
           ),
         );

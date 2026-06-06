@@ -55,34 +55,31 @@ describe('PageTabs', () => {
     const list = screen.getByTestId('page-tabs');
     expect(list).toHaveAttribute('role', 'tablist');
 
-    // Secondary (non-home-tile) modules screens are present.
-    for (const key of [
-      'replenishment',
-      'sorovnomalar',
-      'production-orders',
-      'purchase-orders',
-    ]) {
-      expect(within(list).getByTestId(`page-tab-${key}`)).toBeInTheDocument();
+    // Owner 2026-06-06 — the request pages collapsed into one unified hub,
+    // so /replenishment ("So‘rovlar") is the only secondary modules tab.
+    expect(
+      within(list).getByTestId('page-tab-replenishment'),
+    ).toBeInTheDocument();
+
+    // The old separate request pages are no longer in the tab strip.
+    for (const key of ['sorovnomalar', 'production-orders', 'purchase-orders']) {
+      expect(within(list).queryByTestId(`page-tab-${key}`)).not.toBeInTheDocument();
     }
 
-    // The 11 home-tile modules are NOT in the tab strip.
-    for (const key of [
-      'raw-warehouse',
-      'production',
-      'supply',
-      'central-warehouse',
-      'stores',
-    ]) {
+    // The home-tile modules (raw-warehouse / production / supply / stores)
+    // are reached from the Home launcher, not the tab strip.
+    for (const key of ['raw-warehouse', 'production', 'supply', 'stores']) {
       expect(within(list).queryByTestId(`page-tab-${key}`)).not.toBeInTheDocument();
     }
   });
 
   it('marks the tab matching the current route as aria-selected', () => {
-    renderTabs({ group: 'modules', role: 'pm', initialPath: '/production-orders' });
-    const active = screen.getByTestId('page-tab-production-orders');
+    // Use the cashier group (multiple tabs) to exercise selected vs unselected.
+    renderTabs({ group: 'cashier', role: 'pm', initialPath: '/cashier/shifts' });
+    const active = screen.getByTestId('page-tab-cashier/shifts');
     expect(active).toHaveAttribute('aria-selected', 'true');
 
-    const other = screen.getByTestId('page-tab-replenishment');
+    const other = screen.getByTestId('page-tab-cashier/receipts');
     expect(other).toHaveAttribute('aria-selected', 'false');
   });
 
@@ -99,13 +96,14 @@ describe('PageTabs', () => {
   });
 
   it('filters tabs by RBAC — store_manager only sees their own scope', () => {
-    // store_manager sees only /replenishment + /sorovnomalar among the
-    // secondary modules screens; the home-tile modules are excluded for
-    // everyone.
+    // The unified /replenishment hub is visible to store_manager; the
+    // home-tile modules and the removed request pages are not.
     renderTabs({ group: 'modules', role: 'store_manager', initialPath: '/replenishment' });
     const list = screen.getByTestId('page-tabs');
     expect(within(list).getByTestId('page-tab-replenishment')).toBeInTheDocument();
-    expect(within(list).getByTestId('page-tab-sorovnomalar')).toBeInTheDocument();
+    expect(
+      within(list).queryByTestId('page-tab-sorovnomalar'),
+    ).not.toBeInTheDocument();
     expect(
       within(list).queryByTestId('page-tab-stores'),
     ).not.toBeInTheDocument();

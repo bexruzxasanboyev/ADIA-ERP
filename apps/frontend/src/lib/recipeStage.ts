@@ -44,11 +44,17 @@ function matches(haystack: string, keywords: readonly string[]): boolean {
 
 /**
  * Whole-word terms that are too short to be safe substring matches (they would
- * over-match inside unrelated words). "un" = Uzbek flour — a core dough
- * ingredient — must NOT match inside "тунец"/"кунжут", so it is checked with a
- * word boundary instead of `includes`.
+ * over-match inside unrelated words). "un"/"ун" = flour — a core dough
+ * ingredient — must NOT match inside "тунец"/"кунжут", so each is checked with
+ * a word boundary instead of `includes`.
+ *
+ * Both Latin (`un`, `tuz`, `sol`) and Cyrillic (`ун`, `туз`, `сол`) spellings
+ * are covered because Poster names are mostly Russian (the НАПОЛЕОН recipe's
+ * direct flour line is literally `ун`). JS `\b` is ASCII-only and does NOT see
+ * a boundary around Cyrillic letters, so we use an explicit Unicode-aware
+ * boundary: the term must be flanked by a non-letter (or the string edge).
  */
-const DOUGH_WORD_RE = /\b(un|tuz|sol)\b/;
+const DOUGH_WORD_RE = /(?:^|[^\p{L}])(un|tuz|sol|ун|туз|сол)(?=[^\p{L}]|$)/u;
 
 /** Infer a recipe stage from a component name (case/diacritic-folded). */
 export function classifyRecipeStage(name: string): RecipeStage {

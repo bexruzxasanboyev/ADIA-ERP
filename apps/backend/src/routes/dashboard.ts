@@ -38,6 +38,18 @@ export const dashboardRouter: Router = Router();
 /** How many of the most-recent stock movements the overview returns. */
 const RECENT_MOVEMENTS_LIMIT = 20;
 
+/**
+ * Business timezone for the single-company (Tashkent) Poster account.
+ *
+ * The hourly sales chart (ecosystem `sales_chart`) is fed by Poster
+ * `dash.getAnalytics.data_hourly`, whose hour index is the account's LOCAL
+ * Tashkent hour. Anything that buckets local `sales.sold_at` (a TIMESTAMPTZ,
+ * stored at +05) into an hour MUST convert to this zone first — extracting the
+ * hour in UTC lands an 08:11+05 sale in hour 3 instead of 8, mis-aligning the
+ * breakdown tooltip with the chart x-axis. Used by the sales-breakdown route.
+ */
+const BUSINESS_TZ = 'Asia/Tashkent';
+
 /** Open replenishment statuses (terminal ones never appear in `by_status`). */
 const OPEN_REPL_STATUSES = ['CLOSED', 'CANCELLED'] as const;
 
@@ -760,11 +772,24 @@ type AlertsFeedItem = {
   created_at: string;
 };
 
+/**
+ * One point on the sales chart.
+ *
+ * F4.9-hourly — the series carries a `granularity` discriminator (on the
+ * wrapper) so the chart never collapses to a single point on `range=today`.
+ * When `granularity === 'hour'` every point also carries `hour` (0..23) and
+ * `date` is today's ISO date for every point. When `granularity === 'day'`
+ * the `hour` field is absent and `date` is the bucket day (unchanged).
+ */
 type SalesChartItem = {
   date: string; // YYYY-MM-DD
+  hour?: number; // 0-23, PRESENT IFF the wrapper granularity === 'hour'
   qty: number;
-  amount: number; // so'm — sum(qty * price) for the day
+  amount: number; // so'm
 };
+
+/** Chart granularity discriminator — `hour` only on the `range=today` path. */
+type SalesChartGranularity = 'hour' | 'day';
 
 /**
  * D-0026 (2026-05-28) — explicit M:N supply-chain edge, sourced from the
@@ -801,7 +826,12 @@ type EcosystemResponse = {
    */
   chain_edges: ChainEdge[];
   alerts_feed: AlertsFeedItem[];
-  sales_chart: { days: SalesChartItem[] };
+  /**
+   * F4.9-hourly — `granularity` tells the chart whether `days` holds daily
+   * buckets (`'day'`, unchanged) or hourly buckets (`'hour'`, only on
+   * `range=today`). The field stays named `days` for back-compat.
+   */
+  sales_chart: { granularity: SalesChartGranularity; days: SalesChartItem[] };
 };
 
 dashboardRouter.get(
@@ -858,7 +888,7 @@ dashboardRouter.get(
       chain_summary: chainSummary,
       chain_edges: chainEdges,
       alerts_feed: alertsFeed,
-      sales_chart: { days: salesChart },
+      sales_chart: { granularity: salesChart.granularity, days: salesChart.days },
     };
     res.status(200).json(response);
   }),
@@ -931,13 +961,39 @@ type PosterRevenue = {
   total: number;
   count: number;
   perDay: Map<string, number>;
+  /**
+   * F4.9-hourly — per-hour revenue (so'm), index 0..23, populated ONLY when
+   * `range.preset === 'today'` (otherwise `null`). Sourced from Poster
+   * `dash.getAnalytics.data_hourly`, which is ALREADY in so'm (NOT tiyin —
+   * see `PosterAnalytics` unit note), so NO ÷100 is applied here (the daily
+   * path divides only because `getPaymentsReport` is in tiyin).
+   */
+  perHour: number[] | null;
+  /**
+   * F4.9-hourly — per-hour TRANSACTION COUNTS (cheque/sales count), index
+   * 0..23, populated ONLY when `range.preset === 'today'` (otherwise `null`).
+   * Sourced from a SECOND Poster `dash.getAnalytics` call with
+   * `select=transactions`, whose `data_hourly` returns per-hour counts. This
+   * is the hourly `qty` ("Sotuv soni") source — Poster has no other hourly
+   * unit/count series. A counts value is an integer (no ÷100). Falls back to
+   * an all-zero array if the transactions call fails (revenue still renders).
+   */
+  perHourQty: number[] | null;
 };
 
 async function fetchPosterRevenue(
   scope: Exclude<EcosystemScope, { kind: 'empty' }>,
   range: DateRange,
 ): Promise<PosterRevenue> {
-  const empty: PosterRevenue = { total: 0, count: 0, perDay: new Map() };
+  const empty: PosterRevenue = {
+    total: 0,
+    count: 0,
+    perDay: new Map(),
+    // Hourly only matters for the today path; keep it null for wider ranges
+    // and for every failure/short-circuit fallback.
+    perHour: range.preset === 'today' ? new Array<number>(24).fill(0) : null,
+    perHourQty: range.preset === 'today' ? new Array<number>(24).fill(0) : null,
+  };
   try {
     // Lazy imports — the ecosystem endpoint otherwise never touches Poster, so
     // we mirror the revenue-breakdown route and only pull the client in when a
@@ -977,9 +1033,57 @@ async function fetchPosterRevenue(
         : spotIds.map((spotId) =>
             client.getPaymentsReport({ dateFrom, dateTo, spotId }),
           );
-    const reports = await Promise.all(calls);
 
-    const out: PosterRevenue = { total: 0, count: 0, perDay: new Map() };
+    // F4.9-hourly — on the today path we ALSO pull `dash.getAnalytics`
+    // (data_hourly) so the chart renders one point per hour instead of a
+    // single daily point. We make TWO analytics fetches per scope:
+    //   - `select=revenue`      -> data_hourly = per-hour revenue (so'm).
+    //   - `select=transactions` -> data_hourly = per-hour TRANSACTION COUNTS
+    //                              (the "Sotuv soni" qty source).
+    // Both are already final-unit (revenue so'm, counts integer) — no ÷100.
+    // One call chain-wide, or one per assigned spot (summed element-wise).
+    // Each fetch is wrapped in its own try/catch so a hourly-analytics failure
+    // (either series) never drops the daily revenue figures, and a transactions
+    // failure leaves qty at 0 without breaking the revenue series.
+    const wantHourly = range.preset === 'today';
+    type Analytics = Awaited<ReturnType<typeof client.getAnalytics>>;
+    const revenueAnalyticsCalls: Array<Promise<Analytics>> = !wantHourly
+      ? []
+      : spotIds === null
+        ? [client.getAnalytics({ dateFrom, dateTo, interpolate: 'day', select: 'revenue' })]
+        : spotIds.map((spotId) =>
+            client.getAnalytics({ dateFrom, dateTo, interpolate: 'day', select: 'revenue', spotId }),
+          );
+    const txAnalyticsCalls: Array<Promise<Analytics>> = !wantHourly
+      ? []
+      : spotIds === null
+        ? [client.getAnalytics({ dateFrom, dateTo, interpolate: 'day', select: 'transactions' })]
+        : spotIds.map((spotId) =>
+            client.getAnalytics({ dateFrom, dateTo, interpolate: 'day', select: 'transactions', spotId }),
+          );
+
+    // Fire payments + both analytics series in parallel to stay within the
+    // AC4.4.6 P95 < 1000ms budget — the second analytics call adds no
+    // serial latency.
+    const [reports, revenueAnalytics, txAnalytics] = await Promise.all([
+      Promise.all(calls),
+      Promise.all(revenueAnalyticsCalls).catch((err) => {
+        console.error('[dashboard/ecosystem] Poster hourly revenue analytics failed:', err);
+        return [] as Analytics[];
+      }),
+      Promise.all(txAnalyticsCalls).catch((err) => {
+        console.error('[dashboard/ecosystem] Poster hourly transactions analytics failed:', err);
+        return [] as Analytics[];
+      }),
+    ]);
+
+    const out: PosterRevenue = {
+      total: 0,
+      count: 0,
+      perDay: new Map(),
+      perHour: wantHourly ? new Array<number>(24).fill(0) : null,
+      perHourQty: wantHourly ? new Array<number>(24).fill(0) : null,
+    };
     for (const report of reports) {
       // The legacy per-method row-array shape carries no day/total split, so
       // only the real `{days, total}` aggregate contributes here.
@@ -992,6 +1096,33 @@ async function fetchPosterRevenue(
         if (typeof day.date !== 'string') continue;
         const som = tiyinToSom(day.payed_sum_sum);
         out.perDay.set(day.date, (out.perDay.get(day.date) ?? 0) + som);
+      }
+    }
+    // Sum the per-spot revenue `data_hourly` series element-wise. Values are
+    // so'm already (NOT tiyin) — see PosterAnalytics — so no ÷100.
+    if (out.perHour !== null) {
+      const perHour = out.perHour;
+      for (const a of revenueAnalytics) {
+        const hourly = a?.data_hourly;
+        if (!Array.isArray(hourly)) continue;
+        for (let h = 0; h < 24 && h < hourly.length; h++) {
+          const v = Number(hourly[h]);
+          if (Number.isFinite(v)) perHour[h] = (perHour[h] ?? 0) + v;
+        }
+      }
+    }
+    // Sum the per-spot transactions `data_hourly` series element-wise. Values
+    // are per-hour transaction COUNTS (the hourly qty / "Sotuv soni" source) —
+    // integers, no ÷100. Aggregated exactly like the revenue path above.
+    if (out.perHourQty !== null) {
+      const perHourQty = out.perHourQty;
+      for (const a of txAnalytics) {
+        const hourly = a?.data_hourly;
+        if (!Array.isArray(hourly)) continue;
+        for (let h = 0; h < 24 && h < hourly.length; h++) {
+          const v = Number(hourly[h]);
+          if (Number.isFinite(v)) perHourQty[h] = (perHourQty[h] ?? 0) + v;
+        }
       }
     }
     // Round the aggregate total (per-day buckets are summed raw then rounded
@@ -1800,7 +1931,13 @@ async function fetchSalesChart(
   scope: Exclude<EcosystemScope, { kind: 'empty' }>,
   range: DateRange,
   poster: PosterRevenue,
-): Promise<SalesChartItem[]> {
+): Promise<{ granularity: SalesChartGranularity; days: SalesChartItem[] }> {
+  // F4.9-hourly — `range=today` would otherwise collapse to a single daily
+  // point. Emit one point per hour instead (00:00..current hour).
+  if (range.preset === 'today') {
+    return fetchSalesChartHourly(scope, range, poster);
+  }
+
   // F4.9 — chart window equals the requested range. `sales.sold_at` is a
   // TIMESTAMPTZ, so we apply the same half-open `[from, to)` window the rest
   // of the dashboard uses, then bucket by calendar day via `sold_at::date`.
@@ -1834,11 +1971,64 @@ async function fetchSalesChart(
   const dateSet = new Set<string>([...qtyByDate.keys(), ...poster.perDay.keys()]);
   const dates = [...dateSet].sort();
 
-  return dates.map((date) => ({
+  const days = dates.map<SalesChartItem>((date) => ({
     date,
     qty: qtyByDate.get(date) ?? 0,
     amount: Math.round((poster.perDay.get(date) ?? 0) * 100) / 100,
   }));
+  return { granularity: 'day', days };
+}
+
+/**
+ * F4.9-hourly — the `range=today` series, one point per hour from 00:00 up to
+ * the CURRENT hour of the business day (never a future hour). Each point:
+ *   - `hour`   : 0..N.
+ *   - `date`   : today's ISO date (same for every point).
+ *   - `amount` : Poster `dash.getAnalytics?select=revenue` `data_hourly[hour]`
+ *                (so'm — already divided by Poster, NO ÷100; see
+ *                PosterAnalytics unit note). Falls back to 0 when Poster is
+ *                unavailable.
+ *   - `qty`    : Poster `dash.getAnalytics?select=transactions`
+ *                `data_hourly[hour]` — per-hour transaction COUNTS (the
+ *                "Sotuv soni" series). Falls back to 0 when the transactions
+ *                call is unavailable (revenue series still renders).
+ *
+ * RBAC: `poster.perHour` was already scoped to the principal's store spots
+ * inside `fetchPosterRevenue` (chain-wide for PM/ai_assistant, per-spot summed
+ * for a scoped manager) — the same scoping as the daily `amount` path.
+ */
+function fetchSalesChartHourly(
+  _scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+  range: DateRange,
+  poster: PosterRevenue,
+): { granularity: SalesChartGranularity; days: SalesChartItem[] } {
+  // `range.from` is the start of the business day (UTC); `range.to` is "now".
+  // The current hour is how far the day has progressed — emit 0..currentHour
+  // inclusive so we never render a future (empty) hour past now.
+  const date = toPosterIsoDate(range.from);
+  const currentHour = range.to.getUTCHours();
+  const perHour = poster.perHour ?? new Array<number>(24).fill(0);
+  // qty now comes from `select=transactions` per-hour counts (poster.perHourQty);
+  // all-zero when the transactions analytics call was unavailable.
+  const perHourQty = poster.perHourQty ?? new Array<number>(24).fill(0);
+
+  const days: SalesChartItem[] = [];
+  for (let hour = 0; hour <= currentHour && hour < 24; hour++) {
+    const amount = perHour[hour] ?? 0;
+    const qty = perHourQty[hour] ?? 0;
+    days.push({
+      date,
+      hour,
+      qty,
+      amount: Math.round(amount * 100) / 100,
+    });
+  }
+  return { granularity: 'hour', days };
+}
+
+/** Format a UTC instant as `YYYY-MM-DD` (today's ISO date for hourly points). */
+function toPosterIsoDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
 }
 
 function emptyEcosystem(): EcosystemResponse {
@@ -1854,7 +2044,9 @@ function emptyEcosystem(): EcosystemResponse {
     chain_summary: [],
     chain_edges: [],
     alerts_feed: [],
-    sales_chart: { days: [] },
+    // An empty payload has no data to bucket — `day` keeps the contract
+    // simplest for the empty-state UI (no hour points to render).
+    sales_chart: { granularity: 'day', days: [] },
   };
 }
 
@@ -2479,13 +2671,25 @@ dashboardRouter.get(
 //       supply_manager — the same set that can read /api/sales.
 // =============================================================================
 
+type RevenueMethodRow = {
+  /** Stable key — a core key (cash/card/payme/click/other) or `pm_<id>`. */
+  key: string;
+  /** Display label — core label or the verbatim Poster method title. */
+  label: string;
+  amount: number;
+};
+
 type RevenueBreakdownResponse = {
   /** Inclusive window bounds, ISO `YYYY-MM-DD`, echoing the resolved range. */
   from: string;
   to: string;
   spot_id: number | null;
   total: number;
+  /** Number of closed receipts (transactions) in the range. */
+  count: number;
   // camelCase to match the frontend contract (DashboardRevenueBreakdown).
+  // The 4 core keys + `other` are kept for backward-compatibility; `card`
+  // now EXCLUDES named custom methods (each lands in `methods` by its name).
   byMethod: {
     cash: number;
     card: number;
@@ -2493,6 +2697,12 @@ type RevenueBreakdownResponse = {
     click: number;
     other: number;
   };
+  /**
+   * Ordered display list: the 4 core methods always appear, then each named
+   * custom method present (amount > 0, amount desc), then the unnamed `other`
+   * residual only when > 0. `sum(methods[].amount) === total`.
+   */
+  methods: RevenueMethodRow[];
 };
 
 dashboardRouter.get(
@@ -2529,13 +2739,23 @@ dashboardRouter.get(
       }
     }
 
-    // EPIC 0.3 — REAL Poster path. `dash.getPaymentsReport` is already
-    // aggregated by the POS, so we ask Poster for the day's split directly
-    // instead of synthesising a fixed ratio from the (possibly corrupted)
-    // local `sales` table. Money arrives in TIYIN and is converted to so'm by
-    // `paymentReportToBuckets` (see posterMoney.ts for the live-verified ÷100
-    // proof). The buckets always reconcile back to `total`.
-    const { paymentReportToBuckets } = await import(
+    // EPIC 0.3 + money-fix (2026-06-06) — REAL Poster path.
+    //
+    // `dash.getPaymentsReport` only exposes aggregate type buckets (cash / card
+    // / ewallet / third_party / …) and — for the `adia` account — folds Payme
+    // AND Click into `payed_card_sum` (verified live: third_party=0, ewallet=0).
+    // So that endpoint CANNOT separate Payme/Click and the breakdown showed 0.
+    //
+    // The real per-method signal lives on the TRANSACTION (`payment_method_id`).
+    // We therefore iterate `dash.getTransactions` for the window and group by
+    // method via the account's dynamic id->title map (`settings.getPaymentMethods`,
+    // cached). `transactionsToBuckets` splits payme/click/named-methods out of
+    // card; built-in cash/card txns are split by their own payed_cash/payed_card.
+    // Buckets always reconcile to `total`; we additionally cross-check against
+    // `dash.getAnalytics` revenue and log (never throw) on drift.
+    //
+    // Money is TIYIN throughout -> so'm via tiyinToSom inside the grouping fn.
+    const { transactionsToBuckets } = await import(
       '../integrations/poster/posterMoney.js'
     );
     const { createPosterClientFromConfig } = await import(
@@ -2546,19 +2766,47 @@ dashboardRouter.get(
     // Half-open [from, to) -> Poster's inclusive YYYYMMDD bounds. `to` is the
     // exclusive next-instant, so the inclusive last day is `to - 1ms`.
     const lastDay = new Date(range.to.getTime() - 1);
-    const report = await client.getPaymentsReport({
-      dateFrom: toPosterDate(range.from),
-      dateTo: toPosterDate(lastDay),
-      ...(spotIdParam !== null ? { spotId: spotIdParam } : {}),
-    });
+    const dateFrom = toPosterDate(range.from);
+    const dateTo = toPosterDate(lastDay);
 
-    const { byMethod, total } = paymentReportToBuckets(report);
+    // Analytics revenue (already so'm) is the authoritative period total — used
+    // purely as a reconciliation cross-check for the per-transaction buckets.
+    const [methods, transactions, analytics] = await Promise.all([
+      client.getPaymentMethods(),
+      client.getTransactions({
+        dateFrom,
+        dateTo,
+        paginate: true,
+        ...(spotIdParam !== null ? { spotId: spotIdParam } : {}),
+      }),
+      client
+        .getAnalytics({
+          dateFrom,
+          dateTo,
+          interpolate: 'day',
+          select: 'revenue',
+          ...(spotIdParam !== null ? { spotId: spotIdParam } : {}),
+        })
+        .catch(() => ({}) as Awaited<ReturnType<typeof client.getAnalytics>>),
+    ]);
+
+    const expectedTotal = Number(analytics.counters?.revenue);
+    const breakdown = transactionsToBuckets(
+      transactions,
+      methods,
+      Number.isFinite(expectedTotal) ? expectedTotal : undefined,
+    );
+    const { byMethod, total } = breakdown;
+    if (breakdown.reconcileWarning !== null) {
+      console.warn(`[revenue-breakdown] ${breakdown.reconcileWarning}`);
+    }
 
     const response: RevenueBreakdownResponse = {
       from: range.from.toISOString().slice(0, 10),
       to: lastDay.toISOString().slice(0, 10),
       spot_id: spotIdParam,
       total,
+      count: breakdown.closedCount,
       byMethod: {
         cash: byMethod.cash,
         card: byMethod.card,
@@ -2566,10 +2814,782 @@ dashboardRouter.get(
         click: byMethod.click,
         other: byMethod.other,
       },
+      methods: breakdown.methods.map((m) => ({
+        key: m.key,
+        label: m.label,
+        amount: m.amount,
+      })),
     };
     res.status(200).json(response);
   }),
 );
+
+// =============================================================================
+// GET /api/dashboard/sales-breakdown
+// =============================================================================
+//
+// Per-time-bucket itemised breakdown that powers the Yandex-style tooltip on
+// the hourly/daily sales charts (the `sales_chart` series from /ecosystem).
+// Bucket granularity matches that chart EXACTLY so the frontend can join the
+// breakdown onto each chart point:
+//   - range=today -> hourly buckets keyed by `hour`, bucketed in LOCAL
+//     Asia/Tashkent time (BUSINESS_TZ) so the hour index aligns with the
+//     ecosystem hourly chart's `days[].hour` (Poster `data_hourly` is local).
+//   - otherwise   -> daily buckets keyed by `date` (YYYY-MM-DD, also local
+//     Tashkent), mirroring `days[].date`.
+//
+// Two dimensions via `?by=`:
+//   - product (default): local `sales` JOIN `products`, grouped by
+//     (bucket, product). Line amount = sum(s.price): the `sales.price` column
+//     holds the LINE TOTAL (already qty-multiplied), NOT a per-unit price, so
+//     `qty * price` double-counts (~63x inflated, verified live). `qty` stays
+//     sum(s.qty) = units sold.
+//     NOTE: this local product revenue is sourced from the `sales` table and
+//     may differ slightly from the Poster-sourced `sales_chart` line amount
+//     (different source — Poster analytics vs. local lines). We do NOT try to
+//     force-reconcile the two; the tooltip is an itemised drill-down, not the
+//     authoritative money headline (that stays /revenue-breakdown).
+//   - payment: Poster `dash.getTransactions`, bucketed by LOCAL Tashkent
+//     hour/date of `date_close` (the Poster account is Tashkent) and by payment
+//     method (cash/card/payme/click + named customs), reusing the same method
+//     resolver as /revenue-breakdown.
+//
+// Query params (same range/spotId/RBAC contract as /revenue-breakdown):
+//   ?range=today|week|month|6m|custom   default today.
+//   ?from=YYYY-MM-DD&to=YYYY-MM-DD       required when range=custom.
+//   ?spotId=<int>                        optional Poster spot_id.
+//   ?by=product|payment                  default product.
+//   ?limit=<int>                         top items per bucket; default 6, 1..12.
+//
+// Each bucket returns `items` = top `limit` by amount (desc), plus a single
+// rolled-up "Boshqa" item carrying the remainder when more items exist, plus
+// `total_qty` / `total_amount` for the whole bucket (pre-rollup totals).
+//
+// Performance: hourly is <= 24 buckets. For by=payment over long ranges we
+// reuse the SAME paginated getTransactions /revenue-breakdown uses — a 6-month
+// window can be heavy (many pages); callers should prefer shorter ranges for
+// the payment dimension.
+//
+// RBAC: pm / ai_assistant / store_manager / central_warehouse_manager /
+//       supply_manager — same set as /revenue-breakdown and /api/sales.
+// =============================================================================
+
+const SALES_BREAKDOWN_DEFAULT_LIMIT = 6;
+const SALES_BREAKDOWN_MIN_LIMIT = 1;
+const SALES_BREAKDOWN_MAX_LIMIT = 12;
+/** Safety cap on daily buckets returned (a 6-month window is ~183 days). */
+const SALES_BREAKDOWN_MAX_BUCKETS = 200;
+
+type SalesBreakdownDimension = 'product' | 'payment';
+
+type SalesBreakdownItem = { name: string; qty: number; amount: number };
+
+type SalesBreakdownBucket = {
+  /** Present iff granularity === 'hour'. */
+  hour?: number;
+  /** Present iff granularity === 'day' (YYYY-MM-DD). */
+  date?: string;
+  total_qty: number;
+  total_amount: number;
+  items: SalesBreakdownItem[];
+};
+
+type SalesBreakdownResponse = {
+  from: string;
+  to: string;
+  spot_id: number | null;
+  granularity: SalesChartGranularity;
+  by: SalesBreakdownDimension;
+  buckets: SalesBreakdownBucket[];
+};
+
+/** Raw (bucket, product) aggregate row for the local `by=product` query. */
+type ProductBucketRaw = {
+  /** Hour 0..23 (hourly) — NULL on the daily path. */
+  hour: string | null;
+  /** YYYY-MM-DD (daily) — NULL on the hourly path. */
+  day: string | null;
+  product_id: string;
+  product_name: string;
+  qty: string;
+  amount: string;
+};
+
+dashboardRouter.get(
+  '/sales-breakdown',
+  authenticate,
+  authorize(
+    'pm',
+    'ai_assistant',
+    'store_manager',
+    'central_warehouse_manager',
+    'supply_manager',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const range = parseDateRange(req.query);
+    const spotIdParam = parseOptionalSpotId(req.query.spotId ?? req.query.spot_id);
+    const by = parseSalesBreakdownDimension(req.query.by);
+    const limit = parseSalesBreakdownLimit(req.query.limit);
+    const granularity: SalesChartGranularity =
+      range.preset === 'today' ? 'hour' : 'day';
+
+    // RBAC scoping for spotId — identical to /revenue-breakdown: a scoped
+    // store_manager may only target a spot mapped to one of their stores.
+    if (
+      !isSuperAdmin(principal) &&
+      principal.role !== 'ai_assistant' &&
+      principal.role !== 'central_warehouse_manager' &&
+      principal.role !== 'supply_manager' &&
+      spotIdParam !== null
+    ) {
+      const ok = await isSpotAssignedToPrincipal(principal.locationIds, spotIdParam);
+      if (!ok) {
+        throw AppError.forbidden(
+          'You may only query sales for spots in your assigned stores.',
+        );
+      }
+    }
+
+    const lastDay = new Date(range.to.getTime() - 1);
+    const fromIso = range.from.toISOString().slice(0, 10);
+    const toIso = lastDay.toISOString().slice(0, 10);
+
+    const buckets =
+      by === 'product'
+        ? await buildProductBreakdown(principal, range, granularity, limit, spotIdParam)
+        : await buildPaymentBreakdown(range, granularity, limit, spotIdParam);
+
+    const response: SalesBreakdownResponse = {
+      from: fromIso,
+      to: toIso,
+      spot_id: spotIdParam,
+      granularity,
+      by,
+      buckets,
+    };
+    res.status(200).json(response);
+  }),
+);
+
+/**
+ * by=product — local `sales` JOIN `products`, grouped by (bucket, product).
+ * Store scoping mirrors `fetchSalesChart`: a location-bound principal only
+ * sees `store_id = ANY(locationIds)`. A `spotId` further narrows to the single
+ * store mapped to that Poster spot (intersected with scope).
+ */
+async function buildProductBreakdown(
+  principal: AuthPrincipal,
+  range: DateRange,
+  granularity: SalesChartGranularity,
+  limit: number,
+  spotId: number | null,
+): Promise<SalesBreakdownBucket[]> {
+  // Resolve the store-id set this principal may read. PM / ai_assistant see
+  // every store (null = no store filter); a scoped manager is limited to their
+  // assigned locations.
+  let storeIds: number[] | null = null; // null = no store filter (chain-wide)
+  if (!isSuperAdmin(principal) && principal.role !== 'ai_assistant') {
+    if (principal.locationIds.length === 0) return [];
+    storeIds = [...principal.locationIds];
+  }
+
+  // A spotId narrows to the single store mapped to that Poster spot. We
+  // intersect it with the principal's scope so it never widens access.
+  if (spotId !== null) {
+    const mapped = await storeLocationIdForSpot(spotId);
+    if (mapped === null) return [];
+    if (storeIds !== null && !storeIds.includes(mapped)) return [];
+    storeIds = [mapped];
+  }
+
+  // Window + bucketing are done in BUSINESS_TZ (Asia/Tashkent) so the hour
+  // index aligns with the ecosystem hourly chart, which is fed by Poster
+  // `data_hourly` (local Tashkent hours). See BUSINESS_TZ.
+  const params: SqlParam[] = [];
+  const conditions: string[] = [];
+  if (granularity === 'hour') {
+    // Today path — restrict to the Tashkent CALENDAR day so all 24 hour
+    // buckets (00..23) belong to the same business day the chart shows. The
+    // half-open UTC `[range.from, range.to)` window would otherwise clip the
+    // Tashkent 00:00..05:00 hours (UTC-midnight today = Tashkent 05:00).
+    params.push(BUSINESS_TZ);
+    conditions.push(
+      `(s.sold_at AT TIME ZONE $${params.length})::date = (now() AT TIME ZONE $${params.length})::date`,
+    );
+  } else {
+    // Daily path — keep the requested half-open `[from, to)` window.
+    params.push(range.from);
+    conditions.push(`s.sold_at >= $${params.length}`);
+    params.push(range.to);
+    conditions.push(`s.sold_at < $${params.length}`);
+  }
+  if (storeIds !== null) {
+    params.push(storeIds);
+    conditions.push(`s.store_id = ANY($${params.length}::bigint[])`);
+  }
+  const where = `WHERE ${conditions.join(' AND ')}`;
+
+  // Bucket key in BUSINESS_TZ: local hour (hourly) or local calendar date as
+  // text (daily). Converting the TIMESTAMPTZ `AT TIME ZONE 'Asia/Tashkent'`
+  // gives the local wall-clock, then `extract(hour ...)` / `::date` derive the
+  // bucket — matching Poster's local-hour `data_hourly` index exactly.
+  params.push(BUSINESS_TZ);
+  const tzIdx = params.length;
+  const bucketSelect =
+    granularity === 'hour'
+      ? `extract(hour FROM s.sold_at AT TIME ZONE $${tzIdx})::int AS hour, NULL::text AS day`
+      : `NULL::int AS hour, to_char((s.sold_at AT TIME ZONE $${tzIdx})::date, 'YYYY-MM-DD') AS day`;
+  const bucketGroup =
+    granularity === 'hour'
+      ? `extract(hour FROM s.sold_at AT TIME ZONE $${tzIdx})`
+      : `(s.sold_at AT TIME ZONE $${tzIdx})::date`;
+
+  // Bucket/item revenue = sum(s.price). The `sales.price` column already holds
+  // the LINE TOTAL (qty-multiplied), NOT a per-unit price — so `qty * price`
+  // double-counts (verified live: sum(price)=18.5M ≈ day revenue, whereas
+  // sum(qty*price)=1.17B, ~63x inflated). `qty` stays sum(s.qty) = units sold.
+  const { rows } = await query<ProductBucketRaw>(
+    `SELECT ${bucketSelect},
+            s.product_id,
+            p.name              AS product_name,
+            sum(s.qty)          AS qty,
+            sum(s.price)        AS amount
+       FROM sales s
+       JOIN products p ON p.id = s.product_id
+       ${where}
+       GROUP BY ${bucketGroup}, s.product_id, p.name`,
+    params,
+  );
+
+  // Group the flat (bucket, product) rows into per-bucket item lists.
+  type Acc = {
+    key: number | string;
+    hour?: number;
+    date?: string;
+    items: SalesBreakdownItem[];
+  };
+  const byBucket = new Map<string, Acc>();
+  for (const r of rows) {
+    const isHour = granularity === 'hour';
+    const key = isHour ? Number(r.hour) : (r.day ?? '');
+    const mapKey = String(key);
+    let acc = byBucket.get(mapKey);
+    if (acc === undefined) {
+      acc = isHour
+        ? { key, hour: Number(r.hour), items: [] }
+        : { key, date: r.day ?? '', items: [] };
+      byBucket.set(mapKey, acc);
+    }
+    acc.items.push({
+      name: r.product_name,
+      qty: roundQty(Number(r.qty)),
+      amount: Math.round(Number(r.amount) * 100) / 100,
+    });
+  }
+
+  const ordered = [...byBucket.values()].sort((a, b) =>
+    granularity === 'hour'
+      ? (a.hour ?? 0) - (b.hour ?? 0)
+      : String(a.date).localeCompare(String(b.date)),
+  );
+  const capped =
+    granularity === 'day' ? ordered.slice(0, SALES_BREAKDOWN_MAX_BUCKETS) : ordered;
+
+  return capped.map((acc) =>
+    finalizeBucket(
+      granularity === 'hour' ? { hour: acc.hour ?? 0 } : { date: acc.date ?? '' },
+      acc.items,
+      limit,
+    ),
+  );
+}
+
+/**
+ * by=payment — Poster `dash.getTransactions` bucketed by hour/date of
+ * `date_close` and by payment method. Reuses the same method resolver as
+ * /revenue-breakdown so Payme/Click and named custom methods are split out of
+ * `card`. Item `qty` is the receipt COUNT for that method; `amount` is so'm.
+ */
+async function buildPaymentBreakdown(
+  range: DateRange,
+  granularity: SalesChartGranularity,
+  limit: number,
+  spotId: number | null,
+): Promise<SalesBreakdownBucket[]> {
+  const { tiyinToSom } = await import('../integrations/poster/posterMoney.js');
+  const { buildMethodResolver } = await import(
+    '../integrations/poster/paymentMethods.js'
+  );
+  const { createPosterClientFromConfig } = await import(
+    '../integrations/poster/client.js'
+  );
+
+  const client = createPosterClientFromConfig();
+  const lastDay = new Date(range.to.getTime() - 1);
+  const dateFrom = toPosterDate(range.from);
+  const dateTo = toPosterDate(lastDay);
+
+  const [methods, transactions] = await Promise.all([
+    client.getPaymentMethods(),
+    client.getTransactions({
+      dateFrom,
+      dateTo,
+      paginate: true, // 6-month windows can span many pages — see endpoint note.
+      ...(spotId !== null ? { spotId } : {}),
+    }),
+  ]);
+  const resolve = buildMethodResolver(methods);
+
+  // Fixed core labels (match /revenue-breakdown). Named customs carry their
+  // verbatim Poster title; the cash/card split of a no-custom-method txn folds
+  // into these core labels.
+  const coreLabel: Record<'cash' | 'card' | 'payme' | 'click' | 'other', string> = {
+    cash: 'Naqd',
+    card: 'Karta',
+    payme: 'Payme',
+    click: 'Click',
+    other: 'Boshqa',
+  };
+
+  // bucketKey -> (methodKey -> {label, qty(receipts), amount}).
+  type MethodAcc = { label: string; qty: number; amount: number };
+  const byBucket = new Map<
+    string,
+    { hour?: number; date?: string; methods: Map<string, MethodAcc> }
+  >();
+
+  const bump = (
+    bucketMap: Map<string, MethodAcc>,
+    key: string,
+    label: string,
+    amount: number,
+  ): void => {
+    const prev = bucketMap.get(key);
+    // One receipt counts ONCE per method it touches. A mixed-tender receipt
+    // (cash+card) increments both methods' qty — acceptable for a tooltip.
+    bucketMap.set(key, {
+      label,
+      qty: (prev?.qty ?? 0) + 1,
+      amount: (prev?.amount ?? 0) + amount,
+    });
+  };
+
+  for (const txn of transactions) {
+    const payType = Number(txn.pay_type);
+    if (Number.isFinite(payType) && payType === 0) continue; // open -> not revenue
+
+    // Bucket in BUSINESS_TZ (Asia/Tashkent) so payment hours line up with the
+    // chart x-axis and the by=product hours. `date_close` is local Tashkent
+    // (the Poster account is Tashkent) — see posterCloseLocalParts.
+    const parts = posterCloseLocalParts(txn.date_close);
+    if (parts === null) continue;
+    const bucketKey =
+      granularity === 'hour' ? String(parts.hour) : parts.date;
+
+    let bucket = byBucket.get(bucketKey);
+    if (bucket === undefined) {
+      bucket =
+        granularity === 'hour'
+          ? { hour: parts.hour, methods: new Map() }
+          : { date: parts.date, methods: new Map() };
+      byBucket.set(bucketKey, bucket);
+    }
+
+    const methodId = Number(txn.payment_method_id);
+    const resolved = resolve(Number.isFinite(methodId) ? methodId : undefined);
+    if (resolved === null) {
+      // No custom method — split by the txn's own cash/card fields.
+      const cash = tiyinToSom(txn.payed_cash);
+      const card = tiyinToSom(txn.payed_card);
+      const other =
+        tiyinToSom(txn.payed_third_party) +
+        tiyinToSom(txn.payed_ewallet) +
+        tiyinToSom(txn.payed_bonus);
+      if (cash > 0) bump(bucket.methods, 'cash', coreLabel.cash, cash);
+      if (card > 0) bump(bucket.methods, 'card', coreLabel.card, card);
+      if (other > 0) bump(bucket.methods, 'other', coreLabel.other, other);
+      // A fully-zero no-method txn still counts as a receipt under `cash`.
+      if (cash <= 0 && card <= 0 && other <= 0) {
+        bump(bucket.methods, 'cash', coreLabel.cash, 0);
+      }
+      continue;
+    }
+
+    const amount = transactionAmountSom(txn, tiyinToSom);
+    if (resolved.kind === 'core') {
+      bump(bucket.methods, resolved.key, coreLabel[resolved.key], amount);
+    } else {
+      bump(bucket.methods, resolved.key, resolved.label, amount);
+    }
+  }
+
+  const ordered = [...byBucket.values()].sort((a, b) =>
+    granularity === 'hour'
+      ? (a.hour ?? 0) - (b.hour ?? 0)
+      : String(a.date).localeCompare(String(b.date)),
+  );
+  const capped =
+    granularity === 'day' ? ordered.slice(0, SALES_BREAKDOWN_MAX_BUCKETS) : ordered;
+
+  return capped.map((b) => {
+    const items: SalesBreakdownItem[] = [...b.methods.values()].map((m) => ({
+      name: m.label,
+      qty: m.qty,
+      amount: Math.round(m.amount * 100) / 100,
+    }));
+    return finalizeBucket(
+      granularity === 'hour' ? { hour: b.hour ?? 0 } : { date: b.date ?? '' },
+      items,
+      limit,
+    );
+  });
+}
+
+/**
+ * Total so'm for one transaction: `payed_sum` if present, else the parts.
+ * Mirrors `transactionAmountSom` in posterMoney (kept local to avoid exporting
+ * an internal helper).
+ */
+function transactionAmountSom(
+  txn: { payed_sum?: string | number; payed_cash?: string | number; payed_card?: string | number; payed_third_party?: string | number; payed_ewallet?: string | number },
+  tiyinToSom: (v: string | number | undefined | null) => number,
+): number {
+  if (txn.payed_sum !== undefined && txn.payed_sum !== null && `${txn.payed_sum}` !== '') {
+    return tiyinToSom(txn.payed_sum);
+  }
+  return (
+    tiyinToSom(txn.payed_cash) +
+    tiyinToSom(txn.payed_card) +
+    tiyinToSom(txn.payed_third_party) +
+    tiyinToSom(txn.payed_ewallet)
+  );
+}
+
+/** Reusable Tashkent-local hour/date extractor for a true instant. */
+const TASHKENT_PARTS = new Intl.DateTimeFormat('en-CA', {
+  timeZone: BUSINESS_TZ,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  hourCycle: 'h23',
+});
+
+/**
+ * Parse Poster `date_close` to its LOCAL Tashkent `{ hour (0..23), date
+ * (YYYY-MM-DD) }`, or null when unparseable. `date_close` arrives either as a
+ * unix(ms|s) string OR a zoneless `"YYYY-MM-DD HH:mm:ss"`.
+ *
+ *   - The zoneless string is already in the Poster account's LOCAL Tashkent
+ *     wall-clock, so we read its hour/date verbatim (no zone math).
+ *   - A unix timestamp is a true UTC instant, so we project it into
+ *     Asia/Tashkent before reading the hour/date.
+ *
+ * Both yield the LOCAL Tashkent bucket the chart's `data_hourly` index uses.
+ */
+function posterCloseLocalParts(
+  raw: string | undefined,
+): { hour: number; date: string } | null {
+  if (raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  if (Number.isFinite(n) && n > 0) {
+    const instant = new Date(n > 1e12 ? n : n * 1000);
+    if (Number.isNaN(instant.getTime())) return null;
+    return instantToTashkentParts(instant);
+  }
+  const m = /^(\d{4}-\d{2}-\d{2}) (\d{2}):\d{2}:\d{2}$/.exec(raw);
+  if (m === null) return null;
+  return { date: m[1] as string, hour: Number(m[2]) };
+}
+
+/** Project a true UTC instant into Asia/Tashkent `{ hour, date }`. */
+function instantToTashkentParts(instant: Date): { hour: number; date: string } {
+  const parts = TASHKENT_PARTS.formatToParts(instant);
+  const get = (t: string): string => parts.find((p) => p.type === t)?.value ?? '';
+  return {
+    date: `${get('year')}-${get('month')}-${get('day')}`,
+    hour: Number(get('hour')),
+  };
+}
+
+/**
+ * Take a bucket's full item list, compute the pre-rollup totals, then return
+ * the top `limit` items by amount + a single "Boshqa" remainder when more
+ * items exist. Items are sorted amount desc (tie-break by name).
+ */
+function finalizeBucket(
+  key: { hour: number } | { date: string },
+  items: SalesBreakdownItem[],
+  limit: number,
+): SalesBreakdownBucket {
+  const totalQty = items.reduce((s, i) => s + i.qty, 0);
+  const totalAmount = items.reduce((s, i) => s + i.amount, 0);
+
+  const sorted = [...items].sort(
+    (a, b) => b.amount - a.amount || a.name.localeCompare(b.name),
+  );
+  const top = sorted.slice(0, limit);
+  const rest = sorted.slice(limit);
+  if (rest.length > 0) {
+    top.push({
+      name: 'Boshqa',
+      qty: roundQty(rest.reduce((s, i) => s + i.qty, 0)),
+      amount: Math.round(rest.reduce((s, i) => s + i.amount, 0) * 100) / 100,
+    });
+  }
+
+  const base = {
+    total_qty: roundQty(totalQty),
+    total_amount: Math.round(totalAmount * 100) / 100,
+    items: top,
+  };
+  return 'hour' in key ? { hour: key.hour, ...base } : { date: key.date, ...base };
+}
+
+/** Parse `?by=` to a dimension, defaulting to `product`. */
+function parseSalesBreakdownDimension(raw: unknown): SalesBreakdownDimension {
+  if (raw === undefined || raw === null || raw === '') return 'product';
+  if (raw === 'product' || raw === 'payment') return raw;
+  throw AppError.validation('"by" must be one of: product, payment.');
+}
+
+/** Parse `?limit=` to an int in [1, 12], defaulting to 6 when absent. */
+function parseSalesBreakdownLimit(raw: unknown): number {
+  if (raw === undefined || raw === null || raw === '') {
+    return SALES_BREAKDOWN_DEFAULT_LIMIT;
+  }
+  const n = Number(raw);
+  if (!Number.isInteger(n)) {
+    throw AppError.validation('"limit" must be an integer.');
+  }
+  return Math.min(SALES_BREAKDOWN_MAX_LIMIT, Math.max(SALES_BREAKDOWN_MIN_LIMIT, n));
+}
+
+/**
+ * Resolve a Poster `spot_id` to its mapped store `locations.id`, or null when
+ * no active store maps to it. Unlike `isSpotAssignedToPrincipal` this does NOT
+ * scope to a principal — the caller intersects with scope itself.
+ */
+async function storeLocationIdForSpot(spotId: number): Promise<number | null> {
+  const { rows } = await query<{ id: string }>(
+    `SELECT id FROM locations
+      WHERE poster_spot_id = $1 AND type = 'store' AND is_active = TRUE
+      LIMIT 1`,
+    [spotId],
+  );
+  const idRaw = rows[0]?.id;
+  return idRaw === undefined ? null : Number(idRaw);
+}
+
+// =============================================================================
+// GET /api/dashboard/top-products
+// =============================================================================
+//
+// Top-selling products for the SELECTED date range, sourced from Poster
+// `dash.getProductsSales`. Poster returns one row per product+modification, so
+// the route aggregates by `product_id` (summing qty + revenue across the
+// product's modifications), then sorts by revenue desc and takes the top N.
+//
+// Query params (same range contract as /revenue-breakdown):
+//   ?range=today|week|month|6m|custom    default = today.
+//   ?from=YYYY-MM-DD&to=YYYY-MM-DD        required when range=custom.
+//   ?spotId=<int>     optional Poster spot_id; restricts the lookup to one
+//                      store. PM/central/supply/ai may pass any spot; a scoped
+//                      store_manager may only pass a spot mapped to one of
+//                      their assigned store locations.
+//   ?limit=<int>      how many products to return. Default 5, clamped 1..200.
+//
+// Response shape:
+//   { from, to, spot_id,
+//     products: [ { product_id, name, qty, unit, revenue, share } ] }
+//   `share` = product revenue / total revenue across ALL products (0..1).
+//
+// RBAC mirrors /revenue-breakdown: pm / ai_assistant / store_manager /
+//       central_warehouse_manager / supply_manager.
+// =============================================================================
+
+const TOP_PRODUCTS_DEFAULT_LIMIT = 5;
+const TOP_PRODUCTS_MIN_LIMIT = 1;
+// Raised 20 -> 200 so the "full ranking" detail sheet can request the entire
+// product ranking. Poster `getProductsSales` returns ~200+ products; 200 caps
+// the full list without truncating it for any realistic catalogue.
+const TOP_PRODUCTS_MAX_LIMIT = 200;
+
+type TopProductItem = {
+  product_id: number;
+  name: string;
+  qty: number;
+  unit: string;
+  revenue: number;
+  share: number;
+};
+
+type TopProductsResponse = {
+  from: string;
+  to: string;
+  spot_id: number | null;
+  products: TopProductItem[];
+};
+
+/** Display unit for a weight-sold (`weight_flag=1`) product. */
+const SALES_UNIT_WEIGHT = 'kg';
+/** Display unit for a piece-sold (`weight_flag=0`) product (dona). */
+const SALES_UNIT_PIECE = 'dona';
+
+/**
+ * Normalise a Poster product-sales row's unit to a stable display unit.
+ *
+ * `weight_flag` is authoritative (live probe 2026-06-06: "1" -> sold by weight
+ * in kg, "0" -> sold by piece). When `weight_flag` is missing we fall back to
+ * the textual `unit` ("kg" -> kg, "p"/"pcs"/"dona" -> dona) and finally to
+ * pieces, since a Poster catalogue product is piece-sold by default.
+ */
+function normalizeSalesUnit(
+  weightFlag: string | number | undefined,
+  unit: string | undefined,
+): string {
+  if (weightFlag !== undefined) {
+    return Number(weightFlag) === 1 ? SALES_UNIT_WEIGHT : SALES_UNIT_PIECE;
+  }
+  const u = (unit ?? '').trim().toLowerCase();
+  if (u === 'kg' || u === 'g' || u === 'l' || u === 'ml') return SALES_UNIT_WEIGHT;
+  return SALES_UNIT_PIECE;
+}
+
+/** Round a quantity to 3 dp (kg-precision) without trailing FP noise. */
+function roundQty(n: number): number {
+  return Math.round(n * 1000) / 1000;
+}
+
+/** Round a share (0..1) to 4 dp. */
+function roundShare(n: number): number {
+  return Math.round(n * 10000) / 10000;
+}
+
+dashboardRouter.get(
+  '/top-products',
+  authenticate,
+  authorize(
+    'pm',
+    'ai_assistant',
+    'store_manager',
+    'central_warehouse_manager',
+    'supply_manager',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const range = parseDateRange(req.query);
+    const spotIdParam = parseOptionalSpotId(req.query.spotId ?? req.query.spot_id);
+    const limit = parseTopProductsLimit(req.query.limit);
+
+    // RBAC scoping for spotId — identical to /revenue-breakdown: a scoped
+    // store_manager may only target a spot mapped to one of their assigned
+    // store locations.
+    if (
+      !isSuperAdmin(principal) &&
+      principal.role !== 'ai_assistant' &&
+      principal.role !== 'central_warehouse_manager' &&
+      principal.role !== 'supply_manager' &&
+      spotIdParam !== null
+    ) {
+      const ok = await isSpotAssignedToPrincipal(principal.locationIds, spotIdParam);
+      if (!ok) {
+        throw AppError.forbidden(
+          'You may only query product sales for spots in your assigned stores.',
+        );
+      }
+    }
+
+    const { tiyinToSom } = await import('../integrations/poster/posterMoney.js');
+    const { createPosterClientFromConfig } = await import(
+      '../integrations/poster/client.js'
+    );
+
+    const client = createPosterClientFromConfig();
+    // Half-open [from, to) -> Poster's inclusive YYYYMMDD bounds.
+    const lastDay = new Date(range.to.getTime() - 1);
+    const dateFrom = toPosterDate(range.from);
+    const dateTo = toPosterDate(lastDay);
+
+    const rows = await client.getProductsSales({
+      dateFrom,
+      dateTo,
+      ...(spotIdParam !== null ? { spotId: spotIdParam } : {}),
+    });
+
+    // Aggregate by product_id: one product appears once even if it sold under
+    // several modifications. Revenue is summed in so'm; qty is summed in the
+    // product's NATIVE unit.
+    //
+    // Unit logic (live probe 2026-06-06): Poster sells a product either BY
+    // WEIGHT (`weight_flag=1`, `unit="kg"`, `count` is a decimal weight) or BY
+    // PIECE (`weight_flag=0`, `unit="p"`, `count` is an integer count). In both
+    // cases `count` is the canonical quantity field (it equals
+    // `count_converted` for the `adia` catalogue). We normalise the displayed
+    // unit from `weight_flag` so a weight product reads "kg" and a piece
+    // product reads "dona" regardless of how Poster spells `unit`. All of a
+    // product's modifications share the same sale mode, so summing `count`
+    // across them stays unit-consistent.
+    type Agg = { product_id: number; name: string; unit: string; qty: number; revenue: number };
+    const byProduct = new Map<number, Agg>();
+    let totalRevenue = 0;
+    for (const row of rows) {
+      const productId = Number(row.product_id);
+      if (!Number.isFinite(productId)) continue;
+      const qty = Number(row.count);
+      const revenue = tiyinToSom(row.payed_sum);
+      totalRevenue += revenue;
+      const unit = normalizeSalesUnit(row.weight_flag, row.unit);
+      const existing = byProduct.get(productId);
+      if (existing === undefined) {
+        byProduct.set(productId, {
+          product_id: productId,
+          name: row.product_name,
+          unit,
+          qty: Number.isFinite(qty) ? qty : 0,
+          revenue,
+        });
+      } else {
+        existing.qty += Number.isFinite(qty) ? qty : 0;
+        existing.revenue += revenue;
+      }
+    }
+
+    const products: TopProductItem[] = [...byProduct.values()]
+      .sort((a, b) => b.revenue - a.revenue || a.product_id - b.product_id)
+      .slice(0, limit)
+      .map((p) => ({
+        product_id: p.product_id,
+        name: p.name,
+        qty: roundQty(p.qty),
+        unit: p.unit,
+        revenue: Math.round(p.revenue * 100) / 100,
+        // Share against the FULL revenue (all products), not just the top N.
+        share: totalRevenue > 0 ? roundShare(p.revenue / totalRevenue) : 0,
+      }));
+
+    const response: TopProductsResponse = {
+      from: range.from.toISOString().slice(0, 10),
+      to: lastDay.toISOString().slice(0, 10),
+      spot_id: spotIdParam,
+      products,
+    };
+    res.status(200).json(response);
+  }),
+);
+
+/** Parse `?limit=` to an int in [1, 200], defaulting to 5 when absent. */
+function parseTopProductsLimit(raw: unknown): number {
+  if (raw === undefined || raw === null || raw === '') {
+    return TOP_PRODUCTS_DEFAULT_LIMIT;
+  }
+  const n = Number(raw);
+  if (!Number.isInteger(n)) {
+    throw AppError.validation('"limit" must be an integer.');
+  }
+  return Math.min(TOP_PRODUCTS_MAX_LIMIT, Math.max(TOP_PRODUCTS_MIN_LIMIT, n));
+}
 
 /** Parse `?spotId=` to a positive integer, or `null` when missing. */
 function parseOptionalSpotId(raw: unknown): number | null {
@@ -2600,4 +3620,621 @@ async function isSpotAssignedToPrincipal(
   const idRaw = rows[0]?.id;
   if (idRaw === undefined) return false;
   return locationIds.includes(Number(idRaw));
+}
+
+// =============================================================================
+// GET /api/dashboard/production-series
+// =============================================================================
+//
+// A filter-aware time-series of PRODUCTION ORDERS bucketed over the resolved
+// `[range.from, range.to)` window, MIRRORING the `sales_chart` series shape the
+// `/ecosystem` route returns (`{ granularity, days }`). The frontend renders it
+// as a line chart next to the sales series.
+//
+// Query param `?by=created|deadline` selects which timestamp drives bucketing;
+// it DEFAULTS to `deadline` when absent OR invalid (a bad value never 422s —
+// it silently falls back to `deadline`).
+//
+//   - `by=created` buckets on `production_orders.created_at` (TIMESTAMPTZ,
+//     creation instant). Granularity follows the same today->hourly /
+//     else->daily rule as `fetchSalesChart`: `range=today` emits one point per
+//     hour (0..currentHour, `granularity:'hour'`, `date` = today's ISO on every
+//     point); every other range emits one DAILY point per calendar day in the
+//     window (`granularity:'day'`, zero-filled for days with no production).
+//
+//   - `by=deadline` buckets on `production_orders.deadline` (a DATE column with
+//     NO time component). Because a DATE cannot sit on an hourly axis, this mode
+//     is ALWAYS daily (`granularity:'day'`) — even for `range=today`, which
+//     collapses to a single day bucket. Rows are bucketed by their deadline date
+//     over `deadline >= $from::date AND deadline < $to::date`; rows with
+//     `deadline IS NULL` are EXCLUDED (they have no point on the time axis). The
+//     same daily zero-fill spine and RBAC scoping as the daily `created` path
+//     are reused.
+//
+// Each point: `{ date, hour?, count, qty }` where `count` = number of
+// production orders bucketed and `qty` = SUM of their `qty`. `hour` is present
+// IFF granularity === 'hour' (i.e. only the `created`+today hourly path), same
+// contract as `SalesChartItem`.
+//
+// The window is half-open `[from, to)` via parameterized bounds.
+//
+// RBAC: pm / ai_assistant / store_manager / central_warehouse_manager /
+//       supply_manager — the same set as /revenue-breakdown. Scoping reuses the
+//       production rule from `fetchProductionPlan` / `fetchKpiExtras`: a PO is
+//       in scope when produced AT or shipped TO one of the principal's
+//       locations (`location_id` OR `target_location_id`); pm / ai_assistant
+//       see the whole chain.
+// =============================================================================
+
+/** One point of the production time-series — mirrors `SalesChartItem`. */
+type ProductionSeriesItem = {
+  date: string; // YYYY-MM-DD
+  hour?: number; // 0-23, PRESENT IFF the wrapper granularity === 'hour'
+  count: number; // number of production orders in the bucket
+  qty: number; // SUM of their qty
+};
+
+type ProductionSeriesResponse = {
+  granularity: SalesChartGranularity;
+  days: ProductionSeriesItem[];
+};
+
+dashboardRouter.get(
+  '/production-series',
+  authenticate,
+  authorize(
+    'pm',
+    'ai_assistant',
+    'store_manager',
+    'central_warehouse_manager',
+    'supply_manager',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const scope = resolveEcosystemScope(principal);
+    const range = parseDateRange(req.query);
+
+    // A scoped principal with no assigned locations has nothing to chart.
+    if (scope.kind === 'empty') {
+      // Empty payload keeps the `day` contract simplest for the empty-state UI.
+      res
+        .status(200)
+        .json({ granularity: 'day', days: [] } satisfies ProductionSeriesResponse);
+      return;
+    }
+
+    // `?by=` picks the bucketing timestamp; anything other than 'created'
+    // (including absent / garbage) falls back to 'deadline' — never a 422.
+    const by = req.query.by === 'created' ? 'created' : 'deadline';
+
+    let response: ProductionSeriesResponse;
+    if (by === 'deadline') {
+      // Deadline is a DATE — always daily, even for range=today.
+      response = await fetchProductionSeriesByDeadline(scope, range);
+    } else {
+      response =
+        range.preset === 'today'
+          ? await fetchProductionSeriesHourly(scope, range)
+          : await fetchProductionSeriesDaily(scope, range);
+    }
+    res.status(200).json(response);
+  }),
+);
+
+/**
+ * The production-scope WHERE fragment, shared by the daily and hourly builders.
+ * Mirrors `fetchProductionPlan`: a PO touches the scope when produced AT or
+ * shipped TO one of the principal's locations. `chain` scope adds no filter.
+ *
+ * Appends its bind values to `params` and returns the SQL fragment; the caller
+ * keeps numbering the range bounds that follow.
+ */
+function productionScopeClause(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+  params: SqlParam[],
+): string {
+  if (scope.kind === 'locations') {
+    params.push(scope.locationIds);
+    const idx = params.length;
+    return `(po.location_id = ANY($${idx}::bigint[]) OR po.target_location_id = ANY($${idx}::bigint[]))`;
+  }
+  return 'TRUE'; // chain — every production order is visible.
+}
+
+/**
+ * DAILY production series: one zero-filled point per calendar day in the
+ * window. `generate_series` over the half-open `[from, to)` range emits every
+ * day (UTC) even when no PO was created that day, so the line has no gaps —
+ * the same gap-free intent as the daily sales series. Days are returned as
+ * TEXT (`to_char`) straight from SQL to avoid the local-midnight timezone trap
+ * the sales builder documents.
+ */
+async function fetchProductionSeriesDaily(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+  range: DateRange,
+): Promise<ProductionSeriesResponse> {
+  const params: SqlParam[] = [];
+  const scopeSql = productionScopeClause(scope, params);
+  params.push(range.from);
+  const fromIdx = params.length;
+  params.push(range.to);
+  const toIdx = params.length;
+
+  // `generate_series` yields each day's 00:00 UTC; the last bucket is `to - 1
+  // day` so a half-open window never spills a trailing empty day. PO buckets
+  // LEFT JOIN onto the day spine, zero-filling absent days.
+  const { rows } = await query<{ day: string; count: string; qty: string }>(
+    `WITH spine AS (
+       SELECT generate_series(
+                date_trunc('day', $${fromIdx}::timestamptz),
+                date_trunc('day', $${toIdx}::timestamptz) - interval '1 day',
+                interval '1 day'
+              ) AS d
+     ),
+     buckets AS (
+       SELECT date_trunc('day', po.created_at) AS d,
+              count(*)    AS cnt,
+              sum(po.qty) AS qty
+         FROM production_orders po
+        WHERE ${scopeSql}
+          AND po.created_at >= $${fromIdx}
+          AND po.created_at <  $${toIdx}
+        GROUP BY date_trunc('day', po.created_at)
+     )
+     SELECT to_char(spine.d, 'YYYY-MM-DD') AS day,
+            COALESCE(b.cnt, 0)             AS count,
+            COALESCE(b.qty, 0)             AS qty
+       FROM spine
+       LEFT JOIN buckets b ON b.d = spine.d
+      ORDER BY spine.d`,
+    params,
+  );
+
+  const days = rows.map<ProductionSeriesItem>((r) => ({
+    date: r.day,
+    count: Number(r.count),
+    qty: Number(r.qty),
+  }));
+  return { granularity: 'day', days };
+}
+
+/**
+ * DEADLINE production series — the `by=deadline` path. ALWAYS daily because
+ * `production_orders.deadline` is a DATE (no time component); even `range=today`
+ * collapses to a single day bucket here. POs are bucketed by their deadline
+ * DATE over the half-open window `deadline >= $from::date AND deadline <
+ * $to::date`, and rows with a NULL deadline are EXCLUDED — they have no place on
+ * a time axis. The zero-fill day spine, scope clause and TEXT day output match
+ * `fetchProductionSeriesDaily` so the contract is identical.
+ */
+async function fetchProductionSeriesByDeadline(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+  range: DateRange,
+): Promise<ProductionSeriesResponse> {
+  const params: SqlParam[] = [];
+  const scopeSql = productionScopeClause(scope, params);
+  params.push(range.from);
+  const fromIdx = params.length;
+  params.push(range.to);
+  const toIdx = params.length;
+
+  // The spine is a series of plain DATEs (the bounds cast to ::date); the last
+  // bucket is `to::date - 1 day` so the half-open window never spills a trailing
+  // empty day. Deadline buckets LEFT JOIN onto the spine, zero-filling days with
+  // no PO due. NULL deadlines drop out of `buckets` naturally (they fail the
+  // range predicate and can't equal any spine day).
+  const { rows } = await query<{ day: string; count: string; qty: string }>(
+    `WITH spine AS (
+       SELECT generate_series(
+                $${fromIdx}::date,
+                $${toIdx}::date - interval '1 day',
+                interval '1 day'
+              )::date AS d
+     ),
+     buckets AS (
+       SELECT po.deadline AS d,
+              count(*)    AS cnt,
+              sum(po.qty) AS qty
+         FROM production_orders po
+        WHERE ${scopeSql}
+          AND po.deadline IS NOT NULL
+          AND po.deadline >= $${fromIdx}::date
+          AND po.deadline <  $${toIdx}::date
+        GROUP BY po.deadline
+     )
+     SELECT to_char(spine.d, 'YYYY-MM-DD') AS day,
+            COALESCE(b.cnt, 0)             AS count,
+            COALESCE(b.qty, 0)             AS qty
+       FROM spine
+       LEFT JOIN buckets b ON b.d = spine.d
+      ORDER BY spine.d`,
+    params,
+  );
+
+  const days = rows.map<ProductionSeriesItem>((r) => ({
+    date: r.day,
+    count: Number(r.count),
+    qty: Number(r.qty),
+  }));
+  return { granularity: 'day', days };
+}
+
+/**
+ * HOURLY production series — the `range=today` path. One point per hour from
+ * 00:00 up to the CURRENT hour of the business day (never a future hour),
+ * mirroring `fetchSalesChartHourly`. `date` is today's ISO on every point and
+ * `hour` is 0..currentHour. Hours with no production are zero-filled.
+ */
+async function fetchProductionSeriesHourly(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+  range: DateRange,
+): Promise<ProductionSeriesResponse> {
+  const params: SqlParam[] = [];
+  const scopeSql = productionScopeClause(scope, params);
+  params.push(range.from);
+  const fromIdx = params.length;
+  params.push(range.to);
+  const toIdx = params.length;
+
+  // Bucket by hour-of-day (UTC) within today's window. Sparse — we zero-fill
+  // the 0..currentHour spine in JS below, exactly as the hourly sales series
+  // builds its fixed-length array.
+  const { rows } = await query<{ hour: string; count: string; qty: string }>(
+    `SELECT extract(hour FROM po.created_at)::int AS hour,
+            count(*)    AS count,
+            sum(po.qty) AS qty
+       FROM production_orders po
+      WHERE ${scopeSql}
+        AND po.created_at >= $${fromIdx}
+        AND po.created_at <  $${toIdx}
+      GROUP BY extract(hour FROM po.created_at)::int
+      ORDER BY 1`,
+    params,
+  );
+
+  const countByHour = new Map<number, number>();
+  const qtyByHour = new Map<number, number>();
+  for (const r of rows) {
+    const h = Number(r.hour);
+    countByHour.set(h, Number(r.count));
+    qtyByHour.set(h, Number(r.qty));
+  }
+
+  // `range.from` is the start of the business day (UTC); `range.to` is "now".
+  // Emit 0..currentHour inclusive so we never render a future (empty) hour.
+  const date = toPosterIsoDate(range.from);
+  const currentHour = range.to.getUTCHours();
+
+  const days: ProductionSeriesItem[] = [];
+  for (let hour = 0; hour <= currentHour && hour < 24; hour++) {
+    days.push({
+      date,
+      hour,
+      count: countByHour.get(hour) ?? 0,
+      qty: qtyByHour.get(hour) ?? 0,
+    });
+  }
+  return { granularity: 'hour', days };
+}
+
+// =============================================================================
+// GET /api/dashboard/requests-series
+// =============================================================================
+//
+// A filter-aware time-series of REPLENISHMENT-REQUEST lifecycle events bucketed
+// over the resolved `[range.from, range.to)` window. It MIRRORS the shape of
+// `/production-series` (`{ granularity, days }`) so the frontend can render it
+// as a two-line chart (accepted vs shipped) next to the other dashboard series.
+//
+// Each bucket carries THREE counts. Two are derived from the state-machine
+// audit trail in `replenishment_transitions` and bucketed by the TRANSITION
+// instant (`replenishment_transitions.created_at`):
+//   - `accepted` = transitions that LEFT the NEW state (`from_status = 'NEW'`):
+//     the moment a request was accepted / began processing ("qabul qilingan").
+//   - `shipped`  = transitions that ENTERED `SHIP_TO_REQUESTER`
+//     (`to_status = 'SHIP_TO_REQUESTER'`): the moment goods were dispatched to
+//     the requester ("jo'natilgan").
+//
+// The third count comes from a DIFFERENT table/timestamp:
+//   - `open` = replenishment requests that were RAISED but NOT YET ACCEPTED —
+//     rows in `replenishment_requests` whose CURRENT `status = 'NEW'`, bucketed
+//     by the REQUEST's OWN `replenishment_requests.created_at` (these requests
+//     never left NEW, so there is no transition instant to bucket by — we use
+//     the request's birth time). Because it is sourced from a different table
+//     and timestamp than accepted/shipped, it is computed as its own per-bucket
+//     aggregate and merged onto the SAME date/hour spine so all three counts
+//     share identical buckets; a bucket with no open requests emits `open: 0`,
+//     never a gap.
+//
+// We use the TRANSITION-history path (NOT the fallback) because the
+// `replenishment_transitions` table exists in this schema (migration 0001,
+// §4.2) and is the precise, append-only record of each state change with its
+// own timestamp — far more accurate than proxying off the request row's
+// created_at/updated_at. The fallback documented in the task is only needed
+// when that history table is absent, which is not the case here.
+//
+// Granularity follows the same today->hourly / else->daily rule as
+// `/production-series` `by=created`:
+//   - `range=today` emits one point per hour (0..currentHour, `granularity:
+//     'hour'`, `date` = today's ISO on every point);
+//   - every other range emits one DAILY point per calendar day in the window
+//     (`granularity:'day'`, zero-filled day spine so the lines have no gaps).
+//
+// Each point: `{ date, hour?, accepted, shipped, open }`. `hour` is present IFF
+// granularity === 'hour'. The window is half-open `[from, to)`.
+//
+// Query params:
+//   - `range` (+ `from`/`to` for custom) via `parseDateRange` — same contract
+//     as every other dashboard series.
+//   - OPTIONAL `locationId` (number) — narrow to ONE department/location.
+//     Absent OR non-numeric/invalid is parsed LENIENTLY to "all departments the
+//     principal may see" (never a 422), mirroring `/production-series` `?by=`.
+//
+// RBAC: pm / ai_assistant / store_manager / central_warehouse_manager /
+//       supply_manager — the same set as /production-series & /revenue-breakdown.
+//       Scoping is by the REQUEST's `requester_location_id` (the requester/owner
+//       location), the same column every other replenishment dashboard read
+//       scopes by; pm / ai_assistant see the whole chain. A transition is in
+//       scope when its parent request's `requester_location_id` is one the
+//       principal may see, further narrowed to `locationId` when provided.
+// =============================================================================
+
+/** One point of the replenishment-request time-series. */
+type RequestsSeriesItem = {
+  date: string; // YYYY-MM-DD
+  hour?: number; // 0-23, PRESENT IFF the wrapper granularity === 'hour'
+  accepted: number; // transitions that left NEW (from_status = 'NEW') in the bucket
+  shipped: number; // transitions into SHIP_TO_REQUESTER in the bucket
+  open: number; // requests still at status NEW, by rr.created_at in the bucket
+};
+
+type RequestsSeriesResponse = {
+  granularity: SalesChartGranularity;
+  days: RequestsSeriesItem[];
+};
+
+dashboardRouter.get(
+  '/requests-series',
+  authenticate,
+  authorize(
+    'pm',
+    'ai_assistant',
+    'store_manager',
+    'central_warehouse_manager',
+    'supply_manager',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const scope = resolveEcosystemScope(principal);
+    const range = parseDateRange(req.query);
+
+    // A scoped principal with no assigned locations has nothing to chart.
+    if (scope.kind === 'empty') {
+      res
+        .status(200)
+        .json({ granularity: 'day', days: [] } satisfies RequestsSeriesResponse);
+      return;
+    }
+
+    // OPTIONAL `locationId` — lenient parse: a finite positive integer narrows
+    // to that one location; anything else (absent / non-numeric / garbage) is
+    // treated as ABSENT and never 422s.
+    const rawLocationId = Number(req.query.locationId);
+    const locationId =
+      Number.isInteger(rawLocationId) && rawLocationId > 0 ? rawLocationId : null;
+
+    const response =
+      range.preset === 'today'
+        ? await fetchRequestsSeriesHourly(scope, range, locationId)
+        : await fetchRequestsSeriesDaily(scope, range, locationId);
+    res.status(200).json(response);
+  }),
+);
+
+/**
+ * The replenishment-request scope WHERE fragment, shared by the daily and
+ * hourly builders. A transition is in scope when its parent request's
+ * `requester_location_id` is one the principal may see (the same column every
+ * other replenishment dashboard read scopes by); `chain` scope adds no filter.
+ * When `locationId` is provided it further narrows to that single location
+ * (still intersected with the principal's allowed set for `locations` scope, so
+ * a scoped principal can never widen their view by passing a foreign id).
+ *
+ * The fragment is written against the request alias `rr`. It appends its bind
+ * values to `params` and returns the SQL; the caller keeps numbering the range
+ * bounds that follow.
+ */
+function requestsScopeClause(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+  locationId: number | null,
+  params: SqlParam[],
+): string {
+  const clauses: string[] = [];
+  if (scope.kind === 'locations') {
+    params.push(scope.locationIds);
+    clauses.push(`rr.requester_location_id = ANY($${params.length}::bigint[])`);
+  }
+  if (locationId !== null) {
+    params.push(locationId);
+    clauses.push(`rr.requester_location_id = $${params.length}`);
+  }
+  return clauses.length > 0 ? clauses.join(' AND ') : 'TRUE';
+}
+
+/**
+ * DAILY requests series: one zero-filled point per calendar day in the window.
+ * `generate_series` over the half-open `[from, to)` range emits every day (UTC)
+ * even when no transition occurred that day, so the two lines have no gaps.
+ * `accepted`/`shipped` come from a SINGLE pass over `replenishment_transitions`
+ * joined to its parent request (for RBAC scoping), bucketed by the transition
+ * `created_at` and aggregated with `FILTER` so they share one scan. `open` is a
+ * SEPARATE per-bucket aggregate over `replenishment_requests` itself (current
+ * `status = 'NEW'`, bucketed by the request's own `created_at`), LEFT JOINed
+ * onto the SAME spine so all three counts share identical day buckets. Days are
+ * returned as TEXT (`to_char`) straight from SQL to avoid the local-midnight
+ * timezone trap the sales builder documents.
+ */
+async function fetchRequestsSeriesDaily(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+  range: DateRange,
+  locationId: number | null,
+): Promise<RequestsSeriesResponse> {
+  const params: SqlParam[] = [];
+  // Transition-sourced scope (accepted/shipped) — written against `rr` joined
+  // to the transitions table inside `buckets`.
+  const scopeSql = requestsScopeClause(scope, locationId, params);
+  params.push(range.from);
+  const fromIdx = params.length;
+  params.push(range.to);
+  const toIdx = params.length;
+  // Request-sourced scope (open) — same `rr` predicate, but its own bind values
+  // so the placeholder indices stay sequential after the range bounds above.
+  const openScopeSql = requestsScopeClause(scope, locationId, params);
+
+  const { rows } = await query<{
+    day: string;
+    accepted: string;
+    shipped: string;
+    open: string;
+  }>(
+    `WITH spine AS (
+       SELECT generate_series(
+                date_trunc('day', $${fromIdx}::timestamptz),
+                date_trunc('day', $${toIdx}::timestamptz) - interval '1 day',
+                interval '1 day'
+              ) AS d
+     ),
+     buckets AS (
+       SELECT date_trunc('day', t.created_at) AS d,
+              count(*) FILTER (WHERE t.from_status = 'NEW')               AS accepted,
+              count(*) FILTER (WHERE t.to_status = 'SHIP_TO_REQUESTER')   AS shipped
+         FROM replenishment_transitions t
+         JOIN replenishment_requests rr ON rr.id = t.replenishment_id
+        WHERE ${scopeSql}
+          AND t.created_at >= $${fromIdx}
+          AND t.created_at <  $${toIdx}
+        GROUP BY date_trunc('day', t.created_at)
+     ),
+     open_buckets AS (
+       SELECT date_trunc('day', rr.created_at) AS d,
+              count(*) AS open
+         FROM replenishment_requests rr
+        WHERE ${openScopeSql}
+          AND rr.status = 'NEW'
+          AND rr.created_at >= $${fromIdx}
+          AND rr.created_at <  $${toIdx}
+        GROUP BY date_trunc('day', rr.created_at)
+     )
+     SELECT to_char(spine.d, 'YYYY-MM-DD') AS day,
+            COALESCE(b.accepted, 0)        AS accepted,
+            COALESCE(b.shipped, 0)         AS shipped,
+            COALESCE(o.open, 0)            AS open
+       FROM spine
+       LEFT JOIN buckets b      ON b.d = spine.d
+       LEFT JOIN open_buckets o ON o.d = spine.d
+      ORDER BY spine.d`,
+    params,
+  );
+
+  const days = rows.map<RequestsSeriesItem>((r) => ({
+    date: r.day,
+    accepted: Number(r.accepted),
+    shipped: Number(r.shipped),
+    open: Number(r.open),
+  }));
+  return { granularity: 'day', days };
+}
+
+/**
+ * HOURLY requests series — the `range=today` path. One point per hour from 00:00
+ * up to the CURRENT hour of the business day (never a future hour), mirroring
+ * `fetchProductionSeriesHourly`. `date` is today's ISO on every point and `hour`
+ * is 0..currentHour. Hours with no transition are zero-filled in JS.
+ */
+async function fetchRequestsSeriesHourly(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+  range: DateRange,
+  locationId: number | null,
+): Promise<RequestsSeriesResponse> {
+  const params: SqlParam[] = [];
+  // Transition-sourced scope (accepted/shipped) for the `buckets` aggregate.
+  const scopeSql = requestsScopeClause(scope, locationId, params);
+  params.push(range.from);
+  const fromIdx = params.length;
+  params.push(range.to);
+  const toIdx = params.length;
+  // Request-sourced scope (open) — its own bind values appended after the range
+  // bounds so the placeholder indices stay sequential.
+  const openScopeSql = requestsScopeClause(scope, locationId, params);
+
+  // Bucket by hour-of-day (UTC) within today's window. Sparse — we zero-fill
+  // the 0..currentHour spine in JS below, exactly as the hourly production
+  // series builds its fixed-length array. `accepted`/`shipped` come from the
+  // transition history; `open` is a separate aggregate over the request rows
+  // themselves (current status NEW, by `rr.created_at`) merged onto the same
+  // hourly spine via a FULL OUTER JOIN on the hour key so an hour present in
+  // only one source still emits the missing counts as 0.
+  const { rows } = await query<{
+    hour: string;
+    accepted: string;
+    shipped: string;
+    open: string;
+  }>(
+    `WITH tbuckets AS (
+       SELECT extract(hour FROM t.created_at)::int                        AS hour,
+              count(*) FILTER (WHERE t.from_status = 'NEW')               AS accepted,
+              count(*) FILTER (WHERE t.to_status = 'SHIP_TO_REQUESTER')   AS shipped
+         FROM replenishment_transitions t
+         JOIN replenishment_requests rr ON rr.id = t.replenishment_id
+        WHERE ${scopeSql}
+          AND t.created_at >= $${fromIdx}
+          AND t.created_at <  $${toIdx}
+        GROUP BY extract(hour FROM t.created_at)::int
+     ),
+     obuckets AS (
+       SELECT extract(hour FROM rr.created_at)::int AS hour,
+              count(*)                              AS open
+         FROM replenishment_requests rr
+        WHERE ${openScopeSql}
+          AND rr.status = 'NEW'
+          AND rr.created_at >= $${fromIdx}
+          AND rr.created_at <  $${toIdx}
+        GROUP BY extract(hour FROM rr.created_at)::int
+     )
+     SELECT COALESCE(t.hour, o.hour)   AS hour,
+            COALESCE(t.accepted, 0)    AS accepted,
+            COALESCE(t.shipped, 0)     AS shipped,
+            COALESCE(o.open, 0)        AS open
+       FROM tbuckets t
+       FULL OUTER JOIN obuckets o ON o.hour = t.hour
+      ORDER BY 1`,
+    params,
+  );
+
+  const acceptedByHour = new Map<number, number>();
+  const shippedByHour = new Map<number, number>();
+  const openByHour = new Map<number, number>();
+  for (const r of rows) {
+    const h = Number(r.hour);
+    acceptedByHour.set(h, Number(r.accepted));
+    shippedByHour.set(h, Number(r.shipped));
+    openByHour.set(h, Number(r.open));
+  }
+
+  // `range.from` is the start of the business day (UTC); `range.to` is "now".
+  // Emit 0..currentHour inclusive so we never render a future (empty) hour.
+  const date = toPosterIsoDate(range.from);
+  const currentHour = range.to.getUTCHours();
+
+  const days: RequestsSeriesItem[] = [];
+  for (let hour = 0; hour <= currentHour && hour < 24; hour++) {
+    days.push({
+      date,
+      hour,
+      accepted: acceptedByHour.get(hour) ?? 0,
+      shipped: shippedByHour.get(hour) ?? 0,
+      open: openByHour.get(hour) ?? 0,
+    });
+  }
+  return { granularity: 'hour', days };
 }

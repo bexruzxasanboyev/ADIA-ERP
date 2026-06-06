@@ -76,6 +76,29 @@ export function formatPlainNumber(value: number): string {
 }
 
 /**
+ * Thousand-separated money input helpers (KPI tan-narx forms).
+ *
+ * The boss types whole-so'm amounts that should read "1 000 000" while
+ * editing. `formatMoneyInput` re-groups the live digits of a controlled
+ * text input; `parseMoneyInput` strips the grouping back to a number
+ * (or `null` for empty). Grouping uses a plain space (U+0020) so it is
+ * easy to match/strip and reads cleanly in a monospace input.
+ */
+export function parseMoneyInput(raw: string): number | null {
+  const digits = raw.replace(/[^\d]/g, '');
+  if (digits === '') return null;
+  const n = Number(digits);
+  return Number.isFinite(n) ? n : null;
+}
+
+export function formatMoneyInput(raw: string): string {
+  const digits = raw.replace(/[^\d]/g, '');
+  if (digits === '') return '';
+  // Group from the right in threes with a plain space separator.
+  return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+}
+
+/**
  * EPIC 8 — full money amount with local grouping and the "so'm" suffix,
  * no abbreviation. Use for kassa / nakladnoy / seyf rows where the exact
  * value matters (a smena close-out, a safe withdrawal). For at-a-glance

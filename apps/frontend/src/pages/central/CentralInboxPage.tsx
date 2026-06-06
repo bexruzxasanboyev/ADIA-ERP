@@ -15,14 +15,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import {
   EmptyState,
   ErrorState,
   LoadingState,
@@ -32,11 +24,13 @@ import { useToast } from '@/components/ui/toast';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
 import { apiRequest, ApiError } from '@/lib/api-client';
-import { formatDateTime } from '@/lib/format';
+import { formatDateTime, formatQtyUnit } from '@/lib/format';
+import { groupByBatch, type BatchGroup } from '@/lib/groupByBatch';
 import {
   REPLENISHMENT_STATUS_LABELS,
   REPLENISHMENT_STATUS_VARIANT,
 } from '@/lib/labels';
+import { cn } from '@/lib/utils';
 import type { Location, ReplenishmentStatus } from '@/lib/types';
 
 /**
@@ -46,12 +40,21 @@ import type { Location, ReplenishmentStatus } from '@/lib/types';
  * reviews replenishment requests targeted at the central warehouse and
  * either accepts (ships / fulfils) or rejects them with a reason.
  *
+ * Owner feedback: a store basket confirmed together arrives as ONE order, so
+ * the inbox GROUPS incoming lines by `(requester_location_id, batch_id)` and
+ * renders each order as a single card with whole-group accept / reject. Legacy
+ * rows (`batch_id === null`) render individually with the single-line actions.
+ *
  * Backend contracts:
- *   - List:   GET  /api/replenishment/incoming?location_id=<central>
- *               → { items: IncomingRequest[] }
- *   - Accept: POST /api/replenishment/:id/accept
- *   - Reject: POST /api/replenishment/:id/reject  body { reason }
- *   - Picker: GET  /api/locations  (filtered to type === 'central_warehouse')
+ *   - List:        GET  /api/replenishment/incoming?location_id=<central>
+ *                    → { items: IncomingRequest[] }   (each carries batch_id)
+ *   - Accept 1:    POST /api/replenishment/:id/accept-central  body { location_id }
+ *   - Reject 1:    POST /api/replenishment/:id/reject-central  body { reason }
+ *   - Accept all:  POST /api/replenishment/batch/:batch_id/accept-central
+ *                    body { location_id } → { batch_id, accepted, shipped, failed }
+ *   - Reject all:  POST /api/replenishment/batch/:batch_id/reject-central
+ *                    body { reason } → { batch_id, cancelled }
+ *   - Picker:      GET  /api/locations  (filtered to type === 'central_warehouse')
  *
  * The backend RBAC-scopes the list; a scoped central manager is pinned to
  * their location, so the picker is PM-only.
@@ -60,9 +63,14 @@ interface IncomingRequest {
   id: number;
   product_id: number;
   product_name: string;
-  requester_location_name: string;
+  /** Birlik — backend `incoming` endpoint emits the product unit as `unit`. */
+  unit: string;
+  requester_location_id: number;
+  requester_location_name: string | null;
   qty_needed: number;
   status: ReplenishmentStatus;
+  /** Order/basket grouping key; `null` for legacy / individual rows. */
+  batch_id: number | null;
   created_at: string;
 }
 
@@ -70,7 +78,25 @@ interface IncomingResponse {
   items: IncomingRequest[];
 }
 
-export function CentralInboxPage() {
+/** `POST /batch/:batch_id/accept-central` response envelope. */
+interface BatchAcceptResponse {
+  batch_id: number;
+  accepted: number;
+  shipped: number;
+  failed: { request_id: number; message: string }[];
+}
+
+export function CentralInboxPage({
+  embedded = false,
+}: {
+  /**
+   * When `true` the inbox is rendered INSIDE the So'rovlar tab
+   * (`CentralRequestsTab`), so it drops its own `PageHeader` and page-width
+   * wrapper — the tab already supplies the section header + chrome. Standalone
+   * (`embedded === false`, the routed page) keeps the full header.
+   */
+  embedded?: boolean;
+} = {}) {
   const { user, activeLocationId } = useAuth();
   const { notify } = useToast();
   const isPm = user?.role === 'pm';
@@ -95,15 +121,24 @@ export function CentralInboxPage() {
       ? null
       : `/api/replenishment/incoming?location_id=${centralIdNum}`,
   );
-  const rows = incoming.data?.items ?? [];
+  const rows = useMemo(() => incoming.data?.items ?? [], [incoming.data]);
 
-  const [busyId, setBusyId] = useState<number | null>(null);
-  const [rejectTarget, setRejectTarget] = useState<IncomingRequest | null>(
-    null,
-  );
+  // Group incoming lines into orders by (requester_location_id, batch_id).
+  // Batches → one card with whole-group actions; legacy null-batch rows →
+  // singleton groups rendered with the single-line accept / reject UI.
+  const groups = useMemo(() => groupByBatch(rows), [rows]);
 
-  async function handleAccept(row: IncomingRequest) {
-    setBusyId(row.id);
+  // A single busy key locks every action button while one request is in
+  // flight: `g<batch_id>` for a group accept, `r<id>` for a single accept.
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [rejectTarget, setRejectTarget] = useState<
+    | { kind: 'single'; request: IncomingRequest }
+    | { kind: 'group'; group: BatchGroup<IncomingRequest> }
+    | null
+  >(null);
+
+  async function handleAcceptSingle(row: IncomingRequest) {
+    setBusyKey(`r${row.id}`);
     try {
       await apiRequest(`/api/replenishment/${row.id}/accept-central`, {
         method: 'POST',
@@ -117,27 +152,54 @@ export function CentralInboxPage() {
         err instanceof ApiError ? err.message : 'Qabul qilib bo‘lmadi.',
       );
     } finally {
-      setBusyId(null);
+      setBusyKey(null);
+    }
+  }
+
+  async function handleAcceptGroup(group: BatchGroup<IncomingRequest>) {
+    if (group.batch_id === null) return;
+    setBusyKey(`g${group.batch_id}`);
+    try {
+      const res = await apiRequest<BatchAcceptResponse>(
+        `/api/replenishment/batch/${group.batch_id}/accept-central`,
+        { method: 'POST', body: { location_id: centralIdNum } },
+      );
+      const failedCount = res.failed?.length ?? 0;
+      const base = `${res.accepted} ta qabul qilindi, ${res.shipped} tasi jo‘natildi`;
+      notify(
+        failedCount > 0 ? 'error' : 'success',
+        failedCount > 0 ? `${base}, ${failedCount} tasida xato.` : `${base}.`,
+      );
+      incoming.refetch();
+    } catch (err: unknown) {
+      notify(
+        'error',
+        err instanceof ApiError ? err.message : 'Qabul qilib bo‘lmadi.',
+      );
+    } finally {
+      setBusyKey(null);
     }
   }
 
   return (
-    <div className="mx-auto w-full max-w-5xl space-y-6">
-      <PageHeader
-        title="Markaziy sklad — kiruvchi so‘rovlar"
-        description="Do‘konlardan kelgan to‘ldirish so‘rovlarini qabul qiling yoki rad eting."
-        actions={
-          isPm && (
-            <Badge
-              variant="secondary"
-              className="h-10 items-center px-3"
-              aria-label="Faqat ko‘rish rejimi"
-            >
-              Faqat ko‘rish
-            </Badge>
-          )
-        }
-      />
+    <div className={cn(!embedded && 'mx-auto w-full max-w-5xl', 'space-y-6')}>
+      {!embedded && (
+        <PageHeader
+          title="Markaziy sklad — kiruvchi so‘rovlar"
+          description="Do‘konlardan kelgan to‘ldirish so‘rovlarini buyurtma bo‘yicha qabul qiling yoki rad eting."
+          actions={
+            isPm && (
+              <Badge
+                variant="secondary"
+                className="h-10 items-center px-3"
+                aria-label="Faqat ko‘rish rejimi"
+              >
+                Faqat ko‘rish
+              </Badge>
+            )
+          }
+        />
+      )}
 
       {isPm && (
         <div className="space-y-1">
@@ -173,9 +235,9 @@ export function CentralInboxPage() {
           <header className="flex items-center gap-2 border-b border-border/60 p-5">
             <Warehouse className="size-4 text-primary" aria-hidden="true" />
             <div className="space-y-0.5">
-              <h2 className="text-base font-semibold">Kiruvchi so‘rovlar</h2>
+              <h2 className="text-base font-semibold">Kiruvchi buyurtmalar</h2>
               <p className="text-xs text-muted-foreground">
-                Tasdiqlangan so‘rov jo‘natma uchun navbatga qo‘shiladi.
+                Har bir buyurtma — bitta do‘kon birga yuborgan so‘rovlar to‘plami.
               </p>
             </div>
           </header>
@@ -184,87 +246,34 @@ export function CentralInboxPage() {
           {!incoming.isLoading && incoming.error && (
             <ErrorState message={incoming.error} onRetry={incoming.refetch} />
           )}
-          {!incoming.isLoading && !incoming.error && rows.length === 0 && (
+          {!incoming.isLoading && !incoming.error && groups.length === 0 && (
             <EmptyState message="Hozircha kiruvchi so‘rov yo‘q." />
           )}
-          {!incoming.isLoading && !incoming.error && rows.length > 0 && (
-            <div className="scrollbar-thin overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>#</TableHead>
-                    <TableHead>So‘rovchi bo‘g‘in</TableHead>
-                    <TableHead>Mahsulot</TableHead>
-                    <TableHead className="text-right">Miqdor</TableHead>
-                    <TableHead>Holat</TableHead>
-                    <TableHead>Yaratilgan</TableHead>
-                    {!isPm && (
-                      <TableHead className="text-right">Amal</TableHead>
-                    )}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {rows.map((row) => (
-                    <TableRow key={row.id}>
-                      <TableCell className="text-muted-foreground">
-                        #{row.id}
-                      </TableCell>
-                      <TableCell>{row.requester_location_name}</TableCell>
-                      <TableCell className="font-medium">
-                        {row.product_name}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {row.qty_needed}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={REPLENISHMENT_STATUS_VARIANT[row.status]}>
-                          {REPLENISHMENT_STATUS_LABELS[row.status]}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap text-muted-foreground">
-                        {formatDateTime(row.created_at)}
-                      </TableCell>
-                      {!isPm && (
-                        <TableCell className="text-right">
-                          <div className="flex items-center justify-end gap-2">
-                            <Button
-                              size="sm"
-                              onClick={() => handleAccept(row)}
-                              disabled={busyId !== null}
-                            >
-                              {busyId === row.id ? (
-                                <Loader2
-                                  className="size-4 animate-spin"
-                                  aria-hidden="true"
-                                />
-                              ) : (
-                                <Check className="size-4" aria-hidden="true" />
-                              )}
-                              Qabul qil
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => setRejectTarget(row)}
-                              disabled={busyId !== null}
-                            >
-                              <X className="size-4" aria-hidden="true" />
-                              Rad et
-                            </Button>
-                          </div>
-                        </TableCell>
-                      )}
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+          {!incoming.isLoading && !incoming.error && groups.length > 0 && (
+            <div className="space-y-4 p-5">
+              {groups.map((group) => (
+                <OrderCard
+                  key={group.key}
+                  group={group}
+                  isPm={isPm}
+                  busyKey={busyKey}
+                  onAcceptGroup={() => handleAcceptGroup(group)}
+                  onRejectGroup={() =>
+                    setRejectTarget({ kind: 'group', group })
+                  }
+                  onAcceptSingle={handleAcceptSingle}
+                  onRejectSingle={(request) =>
+                    setRejectTarget({ kind: 'single', request })
+                  }
+                />
+              ))}
             </div>
           )}
         </Card>
       )}
 
       <RejectDialog
-        request={rejectTarget}
+        target={rejectTarget}
         onOpenChange={(open) => {
           if (!open) setRejectTarget(null);
         }}
@@ -278,15 +287,153 @@ export function CentralInboxPage() {
 }
 
 // ---------------------------------------------------------------------------
-// Reject (rad etish) dialog — captures a required reason.
+// OrderCard — one grouped store order (batch) or a single legacy line.
+// ---------------------------------------------------------------------------
+
+function OrderCard({
+  group,
+  isPm,
+  busyKey,
+  onAcceptGroup,
+  onRejectGroup,
+  onAcceptSingle,
+  onRejectSingle,
+}: {
+  group: BatchGroup<IncomingRequest>;
+  isPm: boolean;
+  busyKey: string | null;
+  onAcceptGroup: () => void;
+  onRejectGroup: () => void;
+  onAcceptSingle: (row: IncomingRequest) => void;
+  onRejectSingle: (row: IncomingRequest) => void;
+}) {
+  const storeName = group.lines[0]?.requester_location_name ?? 'Noma‘lum';
+  const isGroup = group.batch_id !== null;
+  const groupBusy = busyKey === `g${group.batch_id}`;
+  const anyBusy = busyKey !== null;
+
+  return (
+    <section
+      className="rounded-lg border border-border/60 bg-card/40"
+      aria-label={`${storeName} — ${group.lines.length} mahsulot`}
+    >
+      <header className="flex flex-col gap-3 border-b border-border/60 p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="space-y-0.5">
+          <h3 className="flex flex-wrap items-center gap-2 text-sm font-semibold">
+            {storeName}
+            <Badge variant="outline" className="tabular-nums">
+              {group.lines.length} mahsulot
+            </Badge>
+            {!isGroup && (
+              <Badge variant="secondary">Yakka so‘rov</Badge>
+            )}
+          </h3>
+          <p className="text-xs text-muted-foreground">
+            {formatDateTime(group.created_at)}
+          </p>
+        </div>
+
+        {/* Group-level actions (batches only). pm is read-only. */}
+        {isGroup && !isPm && (
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={onAcceptGroup}
+              disabled={anyBusy}
+            >
+              {groupBusy ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Check className="size-4" aria-hidden="true" />
+              )}
+              Hammasini qabul qilish
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onRejectGroup}
+              disabled={anyBusy}
+            >
+              <X className="size-4" aria-hidden="true" />
+              Hammasini rad etish
+            </Button>
+          </div>
+        )}
+      </header>
+
+      <ul className="divide-y divide-border/40">
+        {group.lines.map((line) => {
+          const lineBusy = busyKey === `r${line.id}`;
+          return (
+            <li
+              key={line.id}
+              className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="text-xs text-muted-foreground">
+                  #{line.id}
+                </span>
+                <span className="font-medium">{line.product_name}</span>
+                <span className="tabular-nums text-muted-foreground">
+                  {formatQtyUnit(line.qty_needed, line.unit)}
+                </span>
+                <Badge variant={REPLENISHMENT_STATUS_VARIANT[line.status]}>
+                  {REPLENISHMENT_STATUS_LABELS[line.status]}
+                </Badge>
+              </div>
+
+              {/* Per-line actions only for ungrouped (legacy) singles. */}
+              {!isGroup && !isPm && (
+                <div className="flex items-center gap-2 sm:justify-end">
+                  <Button
+                    size="sm"
+                    onClick={() => onAcceptSingle(line)}
+                    disabled={anyBusy}
+                  >
+                    {lineBusy ? (
+                      <Loader2
+                        className="size-4 animate-spin"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <Check className="size-4" aria-hidden="true" />
+                    )}
+                    Qabul qil
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onRejectSingle(line)}
+                    disabled={anyBusy}
+                  >
+                    <X className="size-4" aria-hidden="true" />
+                    Rad et
+                  </Button>
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Reject (rad etish) dialog — captures a required reason. Works for both a
+// single legacy line (`/:id/reject-central`) and a whole batch
+// (`/batch/:batch_id/reject-central`).
 // ---------------------------------------------------------------------------
 
 function RejectDialog({
-  request,
+  target,
   onOpenChange,
   onRejected,
 }: {
-  request: IncomingRequest | null;
+  target:
+    | { kind: 'single'; request: IncomingRequest }
+    | { kind: 'group'; group: BatchGroup<IncomingRequest> }
+    | null;
   onOpenChange: (open: boolean) => void;
   onRejected: () => void;
 }) {
@@ -295,11 +442,20 @@ function RejectDialog({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const open = request !== null;
+  // Reject endpoints derive the acting central scope server-side from the
+  // request row, so no location_id is needed here.
+  const open = target !== null;
+
+  const summary =
+    target === null
+      ? ''
+      : target.kind === 'single'
+        ? `#${target.request.id} · ${target.request.product_name} — ${target.request.requester_location_name ?? ''}`
+        : `${target.group.lines[0]?.requester_location_name ?? ''} — ${target.group.lines.length} mahsulot`;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (request === null) return;
+    if (target === null) return;
     const trimmed = reason.trim();
     if (trimmed === '') {
       setError('Rad etish sababini kiriting.');
@@ -308,17 +464,23 @@ function RejectDialog({
     setError(null);
     setIsSubmitting(true);
     try {
-      await apiRequest(`/api/replenishment/${request.id}/reject-central`, {
-        method: 'POST',
-        body: { reason: trimmed },
-      });
-      notify('success', `#${request.id} rad etildi.`);
+      if (target.kind === 'single') {
+        await apiRequest(
+          `/api/replenishment/${target.request.id}/reject-central`,
+          { method: 'POST', body: { reason: trimmed } },
+        );
+        notify('success', `#${target.request.id} rad etildi.`);
+      } else {
+        const res = await apiRequest<{ batch_id: number; cancelled: number }>(
+          `/api/replenishment/batch/${target.group.batch_id}/reject-central`,
+          { method: 'POST', body: { reason: trimmed } },
+        );
+        notify('success', `${res.cancelled} ta so‘rov rad etildi.`);
+      }
       setReason('');
       onRejected();
     } catch (err: unknown) {
-      setError(
-        err instanceof ApiError ? err.message : 'Rad etib bo‘lmadi.',
-      );
+      setError(err instanceof ApiError ? err.message : 'Rad etib bo‘lmadi.');
     } finally {
       setIsSubmitting(false);
     }
@@ -337,12 +499,12 @@ function RejectDialog({
     >
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>So‘rovni rad etish</DialogTitle>
-          <DialogDescription>
-            {request
-              ? `#${request.id} · ${request.product_name} — ${request.requester_location_name}`
-              : ''}
-          </DialogDescription>
+          <DialogTitle>
+            {target?.kind === 'group'
+              ? 'Buyurtmani rad etish'
+              : 'So‘rovni rad etish'}
+          </DialogTitle>
+          <DialogDescription>{summary}</DialogDescription>
         </DialogHeader>
 
         <form id="reject-form" className="space-y-4" onSubmit={handleSubmit}>

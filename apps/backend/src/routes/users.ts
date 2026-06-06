@@ -20,7 +20,7 @@ import { ROLES } from '../auth/roles.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
-import { writeAudit } from '../lib/audit.js';
+import { writeAudit, poolRunner } from '../lib/audit.js';
 import { getPrincipal } from '../lib/principal.js';
 import {
   getLinkStatus,
@@ -135,10 +135,32 @@ usersRouter.get(
   authenticate,
   authorize('pm'),
   asyncHandler(async (_req, res) => {
-    const { rows } = await query<PublicUserRow>(
-      `SELECT ${PUBLIC_COLUMNS} FROM users ORDER BY id`,
+    // `monthly_salary` is the labor input for the KPI screen's salary dialog, so
+    // the list must expose current values (numeric → number|null, not a string).
+    // `is_production` flags employees of a PRODUCTION department (sex) — the KPI
+    // salary rule only counts those (owner rule 2026-06-06). A user is production
+    // if any assigned location (primary or M:N) is of type 'production'.
+    const { rows } = await query<
+      PublicUserRow & { monthly_salary: string | null; is_production: boolean }
+    >(
+      `SELECT ${PUBLIC_COLUMNS}, u.monthly_salary,
+              EXISTS (
+                SELECT 1 FROM locations l
+                 WHERE l.type = 'production'
+                   AND (l.id = u.location_id
+                        OR l.id IN (SELECT ul.location_id FROM user_locations ul
+                                     WHERE ul.user_id = u.id))
+              ) AS is_production
+         FROM users u
+        ORDER BY u.id`,
     );
-    res.status(200).json(rows);
+    res.status(200).json(
+      rows.map((row) => ({
+        ...row,
+        monthly_salary:
+          row.monthly_salary === null ? null : Number(row.monthly_salary),
+      })),
+    );
   }),
 );
 
@@ -266,47 +288,106 @@ usersRouter.post(
 );
 
 // ---------------------------------------------------------------------------
-// PATCH /api/users/:id — pm only (F4.12)
+// PATCH /api/users/:id — self (name/username) or pm (also role/is_active)
 // ---------------------------------------------------------------------------
-// Partial update — currently supports `username` and `name`. Other fields
-// (role/location/password) remain owned by their dedicated endpoints or are
-// intentionally not exposed for ad-hoc updates.
+// Partial update. A user may rename their own `name`/`username`. PM may, in
+// addition, change `role` and toggle `is_active` (reactivation lives here too).
+// Location membership stays on the dedicated /:id/locations endpoints; password
+// has its own flow. Changing `role` to a chain-wide role (pm/ai_assistant) is
+// always valid; changing to an operational role does NOT auto-assign a location
+// here — the caller wires that up via /locations.
 usersRouter.patch(
   '/:id',
   authenticate,
   asyncHandler(async (req, res) => {
     const principal = getPrincipal(req);
     const userId = parseIdParam(req.params['id'], 'id');
+    const isPm = principal.role === 'pm';
     // Self-service profile edit: a user may rename their own name/username;
-    // PM may edit anyone. (Role/location/password stay on dedicated, PM-gated
-    // endpoints — this handler only touches name + username.)
-    if (principal.role !== 'pm' && principal.userId !== userId) {
+    // PM may edit anyone (and may also change role / is_active below).
+    if (!isPm && principal.userId !== userId) {
       throw AppError.forbidden('You may only edit your own profile.');
     }
     const body = asObject(req.body);
 
     const usernameRaw = optionalString(body, 'username');
     const nameRaw = optionalString(body, 'name');
-    if (usernameRaw === undefined && nameRaw === undefined) {
-      throw AppError.validation('At least one of "username" or "name" must be provided.');
-    }
     const newUsername = usernameRaw !== undefined ? validateUsername(usernameRaw) : undefined;
+
+    // `role` and `is_active` are PM-only. A non-PM supplying them is a 403 —
+    // it is an authorization failure, not a silent ignore.
+    const roleProvided = 'role' in body;
+    const isActiveProvided = 'is_active' in body;
+    if (!isPm && (roleProvided || isActiveProvided)) {
+      throw AppError.forbidden('Only a PM may change "role" or "is_active".');
+    }
+
+    const newRole =
+      roleProvided ? requireEnum(body, 'role', ROLES) : undefined;
+    let newIsActive: boolean | undefined;
+    if (isActiveProvided) {
+      const raw = body['is_active'];
+      if (typeof raw !== 'boolean') {
+        throw AppError.validation('Field "is_active" must be a boolean.');
+      }
+      newIsActive = raw;
+    }
+
+    if (
+      newUsername === undefined &&
+      nameRaw === undefined &&
+      newRole === undefined &&
+      newIsActive === undefined
+    ) {
+      throw AppError.validation(
+        'At least one of "username", "name", "role" or "is_active" must be provided.',
+      );
+    }
 
     // Existence check — a missing id is 404 (so the caller sees a different
     // status from "validation failed on the body").
-    const { rows: existing } = await query<{ id: string }>(
-      `SELECT id FROM users WHERE id = $1`,
+    const { rows: existing } = await query<{ role: string; location_id: string | null }>(
+      `SELECT role, location_id FROM users WHERE id = $1`,
       [userId],
     );
-    if (existing[0] === undefined) {
+    const current = existing[0];
+    if (current === undefined) {
       throw AppError.notFound('User not found.');
+    }
+
+    // chk_users_location_required: an operational role MUST have a location.
+    // We do not auto-assign here (that lives on /locations), so reject a
+    // chain-wide → operational role change when no location is attached, with
+    // a clean 422 instead of a raw 23514 CHECK violation.
+    if (
+      newRole !== undefined &&
+      !CHAIN_WIDE_ROLES.has(newRole) &&
+      current.location_id === null
+    ) {
+      throw AppError.validation(
+        `Role "${newRole}" requires a location — assign one via /api/users/${userId}/locations first.`,
+      );
+    }
+
+    // Guard the last-active-pm invariant: do not let PM deactivate the final
+    // active pm, nor demote it out of the pm role, locking everyone out.
+    const wouldDeactivate = newIsActive === false;
+    const wouldDemoteFromPm =
+      current.role === 'pm' && newRole !== undefined && newRole !== 'pm';
+    if (current.role === 'pm' && (wouldDeactivate || wouldDemoteFromPm)) {
+      const { rows: activePms } = await query<{ n: string }>(
+        `SELECT count(*) AS n FROM users WHERE role = 'pm' AND is_active = TRUE`,
+      );
+      if (Number(activePms[0]?.n ?? 0) <= 1) {
+        throw AppError.conflict('Oxirgi faol PM ni o‘chirib yoki rolini o‘zgartirib bo‘lmaydi.');
+      }
     }
 
     const updated = await withTransaction(async (tx) => {
       // Build SET clause dynamically. The parameter-index discipline matches
       // the rest of the codebase — no string-concat of user input.
       const sets: string[] = [];
-      const params: (string | number)[] = [];
+      const params: (string | number | boolean)[] = [];
       if (newUsername !== undefined) {
         params.push(newUsername);
         sets.push(`username = $${params.length}`);
@@ -314,6 +395,14 @@ usersRouter.patch(
       if (nameRaw !== undefined) {
         params.push(nameRaw);
         sets.push(`name = $${params.length}`);
+      }
+      if (newRole !== undefined) {
+        params.push(newRole);
+        sets.push(`role = $${params.length}`);
+      }
+      if (newIsActive !== undefined) {
+        params.push(newIsActive);
+        sets.push(`is_active = $${params.length}`);
       }
       sets.push('updated_at = now()');
       params.push(userId);
@@ -343,11 +432,133 @@ usersRouter.patch(
         payload: {
           username: newUsername ?? undefined,
           name: nameRaw ?? undefined,
+          role: newRole ?? undefined,
+          is_active: newIsActive ?? undefined,
         },
       });
       return row;
     });
     res.status(200).json({ user: updated });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// DELETE /api/users/:id — pm only. SOFT delete (deactivate).
+// ---------------------------------------------------------------------------
+// Sets `is_active = false` instead of removing the row — audit-log and sales
+// rows reference users via ON DELETE SET NULL and a hard delete would orphan
+// history. Reactivation is PATCH /:id { is_active: true }. Guards:
+//   - a PM cannot deactivate themselves (lock-out / accident);
+//   - cannot deactivate the LAST active pm (chain has no super-admin left).
+usersRouter.delete(
+  '/:id',
+  authenticate,
+  authorize('pm'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const userId = parseIdParam(req.params['id'], 'id');
+
+    if (principal.userId === userId) {
+      throw AppError.conflict('O‘zingizni o‘chira olmaysiz.');
+    }
+
+    const { rows: existing } = await query<{ role: string; is_active: boolean }>(
+      `SELECT role, is_active FROM users WHERE id = $1`,
+      [userId],
+    );
+    const current = existing[0];
+    if (current === undefined) {
+      throw AppError.notFound('User not found.');
+    }
+
+    // Last-active-pm guard — if this is a pm, ensure another active pm remains.
+    if (current.role === 'pm' && current.is_active) {
+      const { rows: activePms } = await query<{ n: string }>(
+        `SELECT count(*) AS n FROM users WHERE role = 'pm' AND is_active = TRUE`,
+      );
+      if (Number(activePms[0]?.n ?? 0) <= 1) {
+        throw AppError.conflict('Oxirgi faol PM ni o‘chirib bo‘lmaydi.');
+      }
+    }
+
+    const updated = await withTransaction(async (tx) => {
+      const result = await tx.query<PublicUserRow>(
+        `UPDATE users SET is_active = FALSE, updated_at = now()
+          WHERE id = $1
+          RETURNING ${PUBLIC_COLUMNS}`,
+        [userId],
+      );
+      const row = result.rows[0];
+      if (row === undefined) {
+        throw AppError.notFound('User not found.');
+      }
+      await writeAudit(tx, {
+        actorUserId: principal.userId,
+        action: 'user.deactivate',
+        entity: 'users',
+        entityId: userId,
+        payload: null,
+      });
+      return row;
+    });
+    res.status(200).json({ user: updated });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// PATCH /api/users/:id/salary — pm only (KPI production-costing).
+// ---------------------------------------------------------------------------
+// Pin (or clear) an employee's gross MONTHLY salary in so'm. This feeds the
+// labor leg of the KPI costing screen: salary_per_unit = Σ monthly_salary of
+// ACTIVE users / units produced this month (GET /api/kpi/products).
+//
+// Body `{ monthly_salary: number >= 0 | null }` — `null` CLEARS the salary
+// (the user then contributes nothing to the labor SUM). pm only — payroll is a
+// PM-scoped figure, mirroring how cost edits are gated.
+usersRouter.patch(
+  '/:id/salary',
+  authenticate,
+  authorize('pm'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const userId = parseIdParam(req.params['id'], 'id');
+    const body = asObject(req.body);
+
+    // `monthly_salary` is REQUIRED in the body but may be `null` (clear) or a
+    // finite number >= 0 (a price of exactly 0 is allowed). Anything else 422s.
+    const raw = body['monthly_salary'];
+    let salary: number | null;
+    if (raw === null) {
+      salary = null;
+    } else if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
+      salary = raw;
+    } else {
+      throw AppError.validation(
+        'Field "monthly_salary" must be a number >= 0, or null to clear it.',
+      );
+    }
+
+    const { rows } = await query<{ monthly_salary: string | null }>(
+      `UPDATE users SET monthly_salary = $2, updated_at = now()
+        WHERE id = $1
+      RETURNING monthly_salary`,
+      [userId, salary],
+    );
+    if (rows[0] === undefined) {
+      throw AppError.notFound('User not found.');
+    }
+    await writeAudit(poolRunner, {
+      actorUserId: principal.userId,
+      action: 'user.salary.set',
+      entity: 'users',
+      entityId: userId,
+      payload: { monthly_salary: salary },
+    });
+    res.status(200).json({
+      id: userId,
+      monthly_salary:
+        rows[0].monthly_salary === null ? null : Number(rows[0].monthly_salary),
+    });
   }),
 );
 

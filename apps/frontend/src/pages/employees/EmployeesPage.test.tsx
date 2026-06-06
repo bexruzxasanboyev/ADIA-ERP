@@ -90,6 +90,104 @@ describe('EmployeesPage', () => {
     expect(screen.getByText('Tsex')).toBeTruthy();
   });
 
+  it('soft-deactivates a user via the trash → confirm → DELETE flow', async () => {
+    const fetchSpy = mockFetch((url) => {
+      if (url.endsWith('/api/users')) {
+        return jsonResponse(200, [
+          {
+            id: 1,
+            name: 'Anvar Karimov',
+            username: 'anvar.k',
+            role: 'store_manager',
+            location_id: 10,
+            is_active: true,
+          },
+        ]);
+      }
+      if (url.endsWith('/api/locations')) return jsonResponse(200, []);
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    renderWithProviders(<EmployeesPage />);
+    const user = userEvent.setup();
+
+    await screen.findByText('Anvar Karimov');
+
+    // Trash → reveals inline confirm; DELETE has not fired yet.
+    await user.click(
+      screen.getByRole('button', { name: /Anvar Karimov ni o‘chirish/i }),
+    );
+    expect(screen.getByText('Faolsizlantirilsinmi?')).toBeInTheDocument();
+    expect(
+      fetchSpy.mock.calls.some(
+        (c) => (c[1] as RequestInit | undefined)?.method === 'DELETE',
+      ),
+    ).toBe(false);
+
+    // Confirm → DELETE /api/users/1.
+    await user.click(screen.getByRole('button', { name: 'O‘chirish' }));
+    await waitFor(() => {
+      const del = fetchSpy.mock.calls.find((c) => {
+        const url = typeof c[0] === 'string' ? c[0] : c[0]!.toString();
+        return (
+          url.endsWith('/api/users/1') &&
+          (c[1] as RequestInit | undefined)?.method === 'DELETE'
+        );
+      });
+      expect(del).toBeDefined();
+    });
+  });
+
+  it('shows a deactivated user distinctly and offers reactivation (PATCH is_active=true)', async () => {
+    const fetchSpy = mockFetch((url) => {
+      if (url.endsWith('/api/users')) {
+        return jsonResponse(200, [
+          {
+            id: 2,
+            name: 'Nodira Rustamova',
+            username: 'nodira.r',
+            role: 'store_manager',
+            location_id: 10,
+            is_active: false,
+          },
+        ]);
+      }
+      if (url.endsWith('/api/locations')) return jsonResponse(200, []);
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    renderWithProviders(<EmployeesPage />);
+    const user = userEvent.setup();
+
+    await screen.findByText('Nodira Rustamova');
+    // Distinct "Faol emas" badge.
+    expect(screen.getByText('Faol emas')).toBeInTheDocument();
+
+    // Reactivate → PATCH is_active=true.
+    await user.click(
+      screen.getByRole('button', { name: /Nodira Rustamova ni faollashtirish/i }),
+    );
+    await waitFor(() => {
+      const patch = fetchSpy.mock.calls.find((c) => {
+        const url = typeof c[0] === 'string' ? c[0] : c[0]!.toString();
+        return (
+          url.endsWith('/api/users/2') &&
+          (c[1] as RequestInit | undefined)?.method === 'PATCH'
+        );
+      });
+      expect(patch).toBeDefined();
+    });
+    const patch = fetchSpy.mock.calls.find((c) => {
+      const url = typeof c[0] === 'string' ? c[0] : c[0]!.toString();
+      return (
+        url.endsWith('/api/users/2') &&
+        (c[1] as RequestInit | undefined)?.method === 'PATCH'
+      );
+    })!;
+    const body = JSON.parse((patch[1] as RequestInit).body as string);
+    expect(body.is_active).toBe(true);
+  });
+
   it('opens the create dialog when "Yangi hodim" is clicked', async () => {
     mockFetch((url) => {
       if (url.endsWith('/api/users')) return jsonResponse(200, []);

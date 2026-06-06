@@ -9,7 +9,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { NumberInput } from '@/components/ui/number-input';
 import { Label } from '@/components/ui/label';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
@@ -28,14 +28,14 @@ interface ReplenishmentFormDialogProps {
 interface FormState {
   product_id: string;
   requester_location_id: string;
-  qty_needed: string;
+  qty_needed: number | null;
   note: string;
 }
 
 const EMPTY_FORM: FormState = {
   product_id: '',
   requester_location_id: '',
-  qty_needed: '',
+  qty_needed: null,
   note: '',
 };
 
@@ -75,7 +75,7 @@ export function ReplenishmentFormDialog({
       setError('Mahsulot va bo‘g‘inni tanlang.');
       return;
     }
-    const qty = Number(form.qty_needed);
+    const qty = form.qty_needed ?? NaN;
     if (!Number.isFinite(qty) || qty <= 0) {
       setError('Miqdor 0 dan katta bo‘lishi kerak.');
       return;
@@ -165,15 +165,14 @@ export function ReplenishmentFormDialog({
 
           <div className="space-y-2">
             <Label htmlFor="repl-qty">Kerakli miqdor</Label>
-            <Input
+            <NumberInput
               id="repl-qty"
               name="qty_needed"
-              type="number"
+              decimals
               min={0}
-              step="any"
               required
               value={form.qty_needed}
-              onChange={(e) => setForm({ ...form, qty_needed: e.target.value })}
+              onValueChange={(n) => setForm({ ...form, qty_needed: n })}
             />
           </div>
 

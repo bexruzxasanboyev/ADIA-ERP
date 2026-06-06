@@ -39,6 +39,7 @@ import {
   type ProductType,
 } from '../lib/productCategory.js';
 import { readRecipeTree } from '../services/bom.js';
+import { enqueueProductUnitWriteback } from '../services/posterWriteback.js';
 
 export const productsRouter: Router = Router();
 
@@ -358,6 +359,206 @@ productsRouter.patch(
       manual_cost_per_unit:
         updated.manual_cost_per_unit === null ? null : Number(updated.manual_cost_per_unit),
       cost_per_unit: updated.cost_per_unit === null ? null : Number(updated.cost_per_unit),
+    });
+  }),
+);
+
+// PATCH /api/products/:id/unit  — edit a product's unit of measure.
+//
+// Owner requirement (2026-06-06): the boss edits a product's unit (kg / l /
+// pcs). The change lands in the ERP DB immediately AND a Poster write-back
+// intent is enqueued (the live Poster token is read-only — see
+// services/posterWriteback.ts; a future worker flushes the queue via
+// menu.updateProduct).
+//
+// Same write-capable roles that manage products (mirror POST /): pm +
+// raw_warehouse_manager. Body `{ unit: 'kg' | 'l' | 'pcs' }`.
+//
+// Behaviour:
+//   - 404 when the product is missing;
+//   - no-op (200, unchanged product, NO write-back) when unit is unchanged;
+//   - otherwise UPDATE + audit in ONE transaction, then best-effort enqueue
+//     the Poster write-back AFTER commit (a Poster failure must never break the
+//     local update — invariant 1 of the outbox pattern).
+productsRouter.patch(
+  '/:id/unit',
+  authenticate,
+  authorize('pm', 'raw_warehouse_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const productId = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+    const unit = requireEnum(body, 'unit', UNIT_TYPES);
+
+    // Load the current product (full enriched shape, so the no-op path and the
+    // success path both return the same Product the frontend expects).
+    const current = await query<ProductRow>(`${PRODUCT_SELECT} WHERE p.id = $1`, [productId]);
+    const existing = current.rows[0];
+    if (existing === undefined) {
+      throw AppError.notFound('Product not found.');
+    }
+
+    // No-op — unit unchanged. Return the product as-is, NO write-back enqueued.
+    if (existing.unit === unit) {
+      res.status(200).json({ product: enrich(existing) });
+      return;
+    }
+
+    const previousUnit = existing.unit;
+
+    // UPDATE + audit in ONE transaction (all-or-nothing).
+    await withTransaction(async (tx) => {
+      await tx.query('UPDATE products SET unit = $2, updated_at = now() WHERE id = $1', [
+        productId,
+        unit,
+      ]);
+      await writeAudit(tx, {
+        actorUserId: principal.userId,
+        action: 'product.unit.update',
+        entity: 'products',
+        entityId: productId,
+        payload: {
+          from: previousUnit,
+          to: unit,
+          actor: principal.userId,
+          // Note when there is no Poster mapping (no write-back possible).
+          poster_writeback: existing.poster_product_id !== null ? 'enqueued' : 'skipped',
+        },
+      });
+    });
+
+    // Best-effort Poster write-back AFTER commit — a failure here must NOT break
+    // the local update, so swallow + log. Skipped automatically when the product
+    // has no poster_product_id (nothing to push to the POS).
+    try {
+      await enqueueProductUnitWriteback({
+        productId,
+        posterProductId: existing.poster_product_id,
+        field: 'unit',
+        oldValue: previousUnit,
+        newValue: unit,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[products] unit write-back enqueue failed (swallowed):', message);
+    }
+
+    // Re-read the full enriched product so the frontend gets a complete Product.
+    const updated = await query<ProductRow>(`${PRODUCT_SELECT} WHERE p.id = $1`, [productId]);
+    const row = updated.rows[0];
+    if (row === undefined) {
+      throw AppError.internal('Product disappeared after unit update.');
+    }
+    res.status(200).json({ product: enrich(row) });
+  }),
+);
+
+// PATCH /api/products/:id/kpi-target  — KPI production-costing.
+//
+// Pin (or clear) the boss's MONTHLY SALES TARGET (so'm) for this product. The
+// KPI screen compares actual revenue against it. Body
+// `{ kpi_target: number >= 0 | null }` — `null` CLEARS the target. Gated the
+// same way as the cost edit above: pm + production_manager.
+productsRouter.patch(
+  '/:id/kpi-target',
+  authenticate,
+  authorize('pm', 'production_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const productId = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+
+    // `kpi_target` is REQUIRED but may be `null` (clear) or a finite number
+    // >= 0 (a target of 0 is allowed; clearing is done with `null`).
+    const raw = body.kpi_target;
+    let target: number | null;
+    if (raw === null) {
+      target = null;
+    } else if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
+      target = raw;
+    } else {
+      throw AppError.validation(
+        'Field "kpi_target" must be a number >= 0, or null to clear the target.',
+      );
+    }
+
+    const { rows } = await query<{ kpi_target: string | null }>(
+      `UPDATE products SET kpi_target = $2, updated_at = now()
+        WHERE id = $1
+      RETURNING kpi_target`,
+      [productId, target],
+    );
+    if (rows.length === 0) {
+      throw AppError.notFound('Product not found.');
+    }
+
+    await writeAudit(poolRunner, {
+      actorUserId: principal.userId,
+      action: 'product.kpi_target.set',
+      entity: 'products',
+      entityId: productId,
+      payload: { kpi_target: target },
+    });
+
+    res.status(200).json({
+      id: productId,
+      kpi_target: rows[0]!.kpi_target === null ? null : Number(rows[0]!.kpi_target),
+    });
+  }),
+);
+
+// PATCH /api/products/:id/komunal  — KPI production-costing.
+//
+// Owner decision (2026-06-06): utilities ("komunal") are a PER-PRODUCT manual
+// per-unit cost, NOT a shared monthly pool. Pin (or clear) the boss's per-unit
+// utility cost (so'm per finished unit) for this product. The KPI screen folds
+// it into full_cost. Body `{ komunal_per_unit: number >= 0 | null }` — `null`
+// CLEARS it. Gated the same way as cost / kpi-target: pm + production_manager.
+productsRouter.patch(
+  '/:id/komunal',
+  authenticate,
+  authorize('pm', 'production_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const productId = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+
+    // `komunal_per_unit` is REQUIRED but may be `null` (clear) or a finite
+    // number >= 0 (a value of 0 is allowed; clearing is done with `null`).
+    const raw = body.komunal_per_unit;
+    let komunal: number | null;
+    if (raw === null) {
+      komunal = null;
+    } else if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
+      komunal = raw;
+    } else {
+      throw AppError.validation(
+        'Field "komunal_per_unit" must be a number >= 0, or null to clear it.',
+      );
+    }
+
+    const { rows } = await query<{ komunal_per_unit: string | null }>(
+      `UPDATE products SET komunal_per_unit = $2, updated_at = now()
+        WHERE id = $1
+      RETURNING komunal_per_unit`,
+      [productId, komunal],
+    );
+    if (rows.length === 0) {
+      throw AppError.notFound('Product not found.');
+    }
+
+    await writeAudit(poolRunner, {
+      actorUserId: principal.userId,
+      action: 'product.komunal.set',
+      entity: 'products',
+      entityId: productId,
+      payload: { komunal_per_unit: komunal },
+    });
+
+    res.status(200).json({
+      id: productId,
+      komunal_per_unit:
+        rows[0]!.komunal_per_unit === null ? null : Number(rows[0]!.komunal_per_unit),
     });
   }),
 );

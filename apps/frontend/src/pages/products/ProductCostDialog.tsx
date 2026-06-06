@@ -8,7 +8,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { NumberInput } from '@/components/ui/number-input';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/components/ui/toast';
 import { apiRequest, ApiError } from '@/lib/api-client';
@@ -42,14 +42,14 @@ export function ProductCostDialog({
   const effective = product.manual_cost_per_unit ?? product.cost_per_unit ?? null;
   const posterCost = product.cost_per_unit ?? null;
 
-  const [draft, setDraft] = useState('');
+  const [draft, setDraft] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
 
   // Re-seed the input each time the dialog opens for a (possibly different)
   // product so a stale draft never bleeds across cards.
   useEffect(() => {
     if (open) {
-      setDraft(effective != null ? String(effective) : '');
+      setDraft(effective != null ? effective : null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, product.id]);
@@ -75,7 +75,7 @@ export function ProductCostDialog({
   }
 
   function save() {
-    const n = Number(draft);
+    const n = draft ?? NaN;
     if (!Number.isFinite(n) || n <= 0) {
       notify('error', 'Narx 0 dan katta son bo‘lishi kerak.');
       return;
@@ -94,14 +94,11 @@ export function ProductCostDialog({
         <div className="space-y-3">
           <div className="space-y-2">
             <Label htmlFor="product-cost">Narx (1 birlik uchun, so‘m)</Label>
-            <Input
+            <NumberInput
               id="product-cost"
-              type="number"
-              min={0}
-              step="any"
-              inputMode="decimal"
+              decimals
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              onValueChange={setDraft}
               placeholder={posterCost != null ? String(posterCost) : '0'}
               autoFocus
             />

@@ -9,7 +9,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { NumberInput } from '@/components/ui/number-input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -21,41 +21,16 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
-import { apiRequest, ApiError } from '@/lib/api-client';
+import { ApiError } from '@/lib/api-client';
 import { UNIT_LABELS } from '@/lib/labels';
 import type { Product } from '@/lib/types';
 import { ProductMultiSelect } from './ProductMultiSelect';
-
-/**
- * `POST /api/replenishment/batch` request body (per the team-lead contract).
- * Each item raises one replenishment_request for `(product, requester store)`;
- * the backend dedupes against invariant 2 (one open request per pair) and
- * reports back how many were created vs already-open.
- *
- * ASSUMPTION (frontend): the requester location is the active store, taken
- * from `requester_location_id` in the body. If the backend instead infers
- * the store from the caller's RBAC scope, the extra field is harmless.
- */
-interface BatchRequestItem {
-  product_id: number;
-  qty_needed: number;
-}
-
-interface BatchRequestBody {
-  requester_location_id: number;
-  items: BatchRequestItem[];
-  note?: string;
-}
-
-/**
- * `POST /api/replenishment/batch` response (per contract). `created` is the
- * number of new requests opened; `exists` the number skipped because an open
- * request already existed for that pair. Both optional on the wire so the
- * toast degrades to a generic success if the backend omits the counters.
- */
-interface BatchRequestResponse {
-  results?: { product_id: number; status: 'created' | 'exists' | 'error' }[];
-}
+import {
+  batchSuccessMessage,
+  submitStoreRequestBatch,
+  type BatchRequestBody,
+  type BatchRequestItem,
+} from './storeRequestSubmit';
 
 interface StoreRequestCreateDialogProps {
   open: boolean;
@@ -84,7 +59,7 @@ export function StoreRequestCreateDialog({
 }: StoreRequestCreateDialogProps) {
   const { notify } = useToast();
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
-  const [qtyById, setQtyById] = useState<Record<number, string>>({});
+  const [qtyById, setQtyById] = useState<Record<number, number | null>>({});
   const [note, setNote] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -140,8 +115,7 @@ export function StoreRequestCreateDialog({
 
     const items: BatchRequestItem[] = [];
     for (const p of picked) {
-      const raw = (qtyById[p.id] ?? '').replace(',', '.');
-      const qty = Number(raw);
+      const qty = qtyById[p.id] ?? NaN;
       if (!Number.isFinite(qty) || qty <= 0) {
         setError(`«${p.name}» uchun soni 0 dan katta bo‘lishi kerak.`);
         return;
@@ -158,19 +132,8 @@ export function StoreRequestCreateDialog({
 
     setIsSubmitting(true);
     try {
-      const res = await apiRequest<BatchRequestResponse>(
-        '/api/replenishment/batch',
-        { method: 'POST', body },
-      );
-      const rows = res.results ?? [];
-      const created = rows.filter((r) => r.status === 'created').length || items.length;
-      const exists = rows.filter((r) => r.status === 'exists').length;
-      notify(
-        'success',
-        exists > 0
-          ? `${created} ta so‘rov yaratildi, ${exists} tasi allaqachon ochiq edi.`
-          : `${created} ta so‘rov yaratildi.`,
-      );
+      const res = await submitStoreRequestBatch(body);
+      notify('success', batchSuccessMessage(res, items.length));
       onOpenChange(false);
       onSaved();
     } catch (err: unknown) {
@@ -226,16 +189,14 @@ export function StoreRequestCreateDialog({
                       <TableCell className="font-medium">{p.name}</TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">
-                          <Input
-                            type="number"
-                            inputMode="decimal"
-                            min="0"
-                            step="any"
-                            value={qtyById[p.id] ?? ''}
-                            onChange={(e) =>
+                          <NumberInput
+                            decimals
+                            min={0}
+                            value={qtyById[p.id] ?? null}
+                            onValueChange={(n) =>
                               setQtyById((prev) => ({
                                 ...prev,
-                                [p.id]: e.target.value,
+                                [p.id]: n,
                               }))
                             }
                             placeholder="0"

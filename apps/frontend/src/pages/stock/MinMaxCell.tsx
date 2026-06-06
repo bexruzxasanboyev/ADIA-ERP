@@ -8,7 +8,7 @@ import {
   Hand,
   ChevronDown,
 } from 'lucide-react';
-import { Input } from '@/components/ui/input';
+import { NumberInput } from '@/components/ui/number-input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -56,8 +56,8 @@ interface MinMaxCellProps {
 export function MinMaxCell({ row, canEdit, onSaved }: MinMaxCellProps) {
   const { notify } = useToast();
   const [editing, setEditing] = useState(false);
-  const [min, setMin] = useState(String(row.min_level));
-  const [max, setMax] = useState(String(row.max_level));
+  const [min, setMin] = useState<number | null>(row.min_level);
+  const [max, setMax] = useState<number | null>(row.max_level);
   const [isSaving, setIsSaving] = useState(false);
 
   // Mode toggle (Faza-2 F2.1). The confirm dialog opens when the user
@@ -75,14 +75,14 @@ export function MinMaxCell({ row, canEdit, onSaved }: MinMaxCellProps) {
       // any future call sites honest.
       return;
     }
-    setMin(String(row.min_level));
-    setMax(String(row.max_level));
+    setMin(row.min_level);
+    setMax(row.max_level);
     setEditing(true);
   }
 
   async function save() {
-    const minNum = Number(min);
-    const maxNum = Number(max);
+    const minNum = min ?? NaN;
+    const maxNum = max ?? NaN;
     if (
       !Number.isFinite(minNum) ||
       !Number.isFinite(maxNum) ||
@@ -264,23 +264,21 @@ export function MinMaxCell({ row, canEdit, onSaved }: MinMaxCellProps) {
 
   return (
     <div className="flex items-center gap-1.5">
-      <Input
+      <NumberInput
         className="h-8 w-20"
-        type="number"
+        decimals
         min={0}
-        step="any"
         value={min}
-        onChange={(e) => setMin(e.target.value)}
+        onValueChange={setMin}
         aria-label="Minimal daraja"
       />
       <span className="text-muted-foreground">/</span>
-      <Input
+      <NumberInput
         className="h-8 w-20"
-        type="number"
+        decimals
         min={0}
-        step="any"
         value={max}
-        onChange={(e) => setMax(e.target.value)}
+        onValueChange={setMax}
         aria-label="Maksimal daraja"
       />
       <Button

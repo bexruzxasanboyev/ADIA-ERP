@@ -12,6 +12,9 @@ import {
   DEFAULT_STORAGE_TYPE,
   classifyStorage,
   isStoreBackingStorage,
+  normaliseLocationName,
+  matchSexStorageToDept,
+  type DeptCandidate,
 } from '../src/integrations/poster/storageClassification.js';
 
 describe('storageClassification — STORAGE_TYPE_BY_ID', () => {
@@ -71,5 +74,55 @@ describe('storageClassification — helpers', () => {
     expect(isStoreBackingStorage(5)).toBe(true);
     expect(isStoreBackingStorage(8)).toBe(false);
     expect(isStoreBackingStorage(999)).toBe(false);
+  });
+});
+
+describe('normaliseLocationName', () => {
+  it('transliterates Cyrillic and strips the generic qualifier words', () => {
+    expect(normaliseLocationName('Склад Тортов')).toBe('tortov');
+    expect(normaliseLocationName('Tort sexi')).toBe('tort');
+    expect(normaliseLocationName('Perojniy skladi')).toBe('perojniy');
+    expect(normaliseLocationName('Производственный Цех')).toBe('proizvodstvennyy');
+  });
+
+  it('lower-cases and collapses whitespace', () => {
+    expect(normaliseLocationName('  YARIM   FABRIKA  sexi ')).toBe('yarim fabrika');
+  });
+});
+
+describe('matchSexStorageToDept — conservative name match', () => {
+  const depts: DeptCandidate[] = [
+    { id: 2, name: 'Ishlab chiqarish sexi' },
+    { id: 36, name: 'Tort sexi' },
+    { id: 37, name: 'Perojniy sexi' },
+    { id: 41, name: 'Yarim Fabrika sexi' },
+  ];
+
+  it('matches "Склад Тортов" to the Tort department (translit substring)', () => {
+    const m = matchSexStorageToDept('Склад Тортов', depts);
+    expect(m?.deptId).toBe(36);
+    expect(m?.matchedToken).toBe('tort');
+  });
+
+  it('matches the native "Perojniy skladi" to the Perojniy department', () => {
+    expect(matchSexStorageToDept('Perojniy skladi', depts)?.deptId).toBe(37);
+  });
+
+  it('leaves an unrelated product-type storage UNMATCHED (never guesses)', () => {
+    expect(matchSexStorageToDept('Склад Наполеон', depts)).toBeNull();
+    expect(matchSexStorageToDept('Склад Песочный', depts)).toBeNull();
+    expect(matchSexStorageToDept('Склад Самсы', depts)).toBeNull();
+    // "Тартов" must NOT match "Tort" — different stem, ambiguous.
+    expect(matchSexStorageToDept('Склад Тартов', depts)).toBeNull();
+  });
+
+  it('returns null when there are no department candidates', () => {
+    expect(matchSexStorageToDept('Склад Тортов', [])).toBeNull();
+  });
+
+  it('prefers the longest matched token when several depts match', () => {
+    const m = matchSexStorageToDept('Yarim Fabrika skladi', depts);
+    expect(m?.deptId).toBe(41);
+    expect(m?.matchedToken).toBe('fabrika');
   });
 });

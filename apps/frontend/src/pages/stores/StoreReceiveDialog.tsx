@@ -9,7 +9,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { NumberInput } from '@/components/ui/number-input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/components/ui/toast';
@@ -52,8 +52,8 @@ export function StoreReceiveDialog({
   onSaved,
 }: StoreReceiveDialogProps) {
   const { notify } = useToast();
-  const [receivedQty, setReceivedQty] = useState('');
-  const [brakQty, setBrakQty] = useState('');
+  const [receivedQty, setReceivedQty] = useState<number | null>(null);
+  const [brakQty, setBrakQty] = useState<number | null>(null);
   const [brakReason, setBrakReason] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -62,8 +62,8 @@ export function StoreReceiveDialog({
   // case is the full shipment arrives; the cashier only edits on a shortfall.
   useEffect(() => {
     if (open && request) {
-      setReceivedQty(String(request.qty_needed));
-      setBrakQty('');
+      setReceivedQty(request.qty_needed);
+      setBrakQty(null);
       setBrakReason('');
       setError(null);
     }
@@ -72,20 +72,20 @@ export function StoreReceiveDialog({
   if (request === null) return null;
 
   const unit = UNIT_LABELS[request.product_unit];
-  const brakValue = Number(brakQty.replace(',', '.'));
-  const showBrakReason = Number.isFinite(brakValue) && brakValue > 0;
+  const brakValue = brakQty ?? 0;
+  const showBrakReason = brakValue > 0;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (request === null) return;
     setError(null);
 
-    const received = Number(receivedQty.replace(',', '.'));
+    const received = receivedQty ?? NaN;
     if (!Number.isFinite(received) || received < 0) {
       setError('Qabul qilingan soni 0 yoki undan katta bo‘lishi kerak.');
       return;
     }
-    const brak = brakQty.trim() === '' ? 0 : Number(brakQty.replace(',', '.'));
+    const brak = brakQty ?? 0;
     if (!Number.isFinite(brak) || brak < 0) {
       setError('Brak soni 0 yoki undan katta bo‘lishi kerak.');
       return;
@@ -148,14 +148,12 @@ export function StoreReceiveDialog({
           <div className="space-y-2">
             <Label htmlFor="receive-qty">Qabul qilingan soni</Label>
             <div className="flex items-center gap-2">
-              <Input
+              <NumberInput
                 id="receive-qty"
-                type="number"
-                inputMode="decimal"
-                min="0"
-                step="any"
+                decimals
+                min={0}
                 value={receivedQty}
-                onChange={(e) => setReceivedQty(e.target.value)}
+                onValueChange={setReceivedQty}
                 disabled={isSubmitting}
                 required
               />
@@ -166,14 +164,12 @@ export function StoreReceiveDialog({
           <div className="space-y-2">
             <Label htmlFor="receive-brak">Brak (yaroqsiz) soni</Label>
             <div className="flex items-center gap-2">
-              <Input
+              <NumberInput
                 id="receive-brak"
-                type="number"
-                inputMode="decimal"
-                min="0"
-                step="any"
+                decimals
+                min={0}
                 value={brakQty}
-                onChange={(e) => setBrakQty(e.target.value)}
+                onValueChange={setBrakQty}
                 placeholder="0"
                 disabled={isSubmitting}
               />

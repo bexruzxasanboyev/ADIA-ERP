@@ -12,6 +12,13 @@ import { ErrorState } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { dateRangeToQuery, type DateRangeValue } from '@/components/DateRangeFilter';
 import { formatCurrencyCompact, formatQty } from '@/lib/format';
+import { chartBucketLabel } from '@/lib/chartTime';
+import {
+  CHART_ANIMATION_DURATION,
+  CHART_ANIMATION_EASING,
+  chartSeriesKey,
+} from '@/lib/chartAnimation';
+import { usePrefersReducedMotion } from '@/hooks/usePrefersReducedMotion';
 import type { DashboardStoresDetail } from '@/lib/types';
 import { PanelSection, PanelSkeleton, SubKpiGrid } from './detailShared';
 
@@ -44,9 +51,15 @@ export function StoresDetailPanelView({
       data.daily_sales.map((p) => ({
         date: p.date,
         revenue: p.revenue,
-        label: shortDate(p.date),
+        label: chartBucketLabel(p, data.daily_granularity),
       })),
-    [data.daily_sales],
+    [data.daily_sales, data.daily_granularity],
+  );
+
+  const reducedMotion = usePrefersReducedMotion();
+  const seriesKey = useMemo(
+    () => chartSeriesKey(data.daily_granularity, chartData),
+    [data.daily_granularity, chartData],
   );
 
   return (
@@ -180,12 +193,15 @@ export function StoresDetailPanelView({
                   ]}
                 />
                 <Area
+                  key={seriesKey}
                   type="monotone"
                   dataKey="revenue"
                   stroke="hsl(var(--chain-store))"
                   strokeWidth={2}
                   fill="url(#stores-area)"
-                  isAnimationActive={false}
+                  isAnimationActive={!reducedMotion}
+                  animationDuration={CHART_ANIMATION_DURATION}
+                  animationEasing={CHART_ANIMATION_EASING}
                 />
               </AreaChart>
             </ResponsiveContainer>
@@ -235,9 +251,3 @@ const tooltipStyle = {
   fontSize: '0.75rem',
   color: 'hsl(var(--popover-foreground))',
 };
-
-function shortDate(iso: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
-  if (m === null) return iso;
-  return `${m[3]}.${m[2]}`;
-}

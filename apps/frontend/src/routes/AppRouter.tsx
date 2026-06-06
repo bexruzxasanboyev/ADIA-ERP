@@ -5,6 +5,7 @@ import { RoleRoute } from './RoleRoute';
 import { LoginPage } from '@/pages/LoginPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
 import { HomePage } from '@/pages/home/HomePage';
+import { useAuth } from '@/hooks/useAuth';
 import { LocationsPage } from '@/pages/locations/LocationsPage';
 import { LocationFlowsPage } from '@/pages/locations/LocationFlowsPage';
 import { LocationDetailPage } from '@/pages/locations/LocationDetailPage';
@@ -28,9 +29,11 @@ import { SupplyPage } from '@/pages/chain/SupplyPage';
 import { CentralWarehousePage } from '@/pages/chain/CentralWarehousePage';
 import { StoreWorkflowPage } from '@/pages/stores/StoreWorkflowPage';
 import { CentralInboxPage } from '@/pages/central/CentralInboxPage';
+import { CentralWorkflowPage } from '@/pages/central/CentralWorkflowPage';
 import { ReceiptsPage } from '@/pages/cashier/ReceiptsPage';
 import { CashShiftsPage } from '@/pages/cashier/CashShiftsPage';
 import { SafeExpensesPage } from '@/pages/cashier/SafeExpensesPage';
+import { KpiPage } from '@/pages/kpi/KpiPage';
 
 /**
  * Application routes (phase-1-mvp.md §2, §6).
@@ -41,6 +44,29 @@ import { SafeExpensesPage } from '@/pages/cashier/SafeExpensesPage';
  * own location. Dashboard, production, supply and replenishment remain
  * placeholders until their sprints.
  */
+/**
+ * Home route element — the /home module launcher, EXCEPT for the
+ * `store_manager` role. The owner directed that store managers never see the
+ * launcher: they land directly on their store workspace (/store-workflow) and
+ * navigate via the fixed three-tab header (Do'kon / Kassa / Bashorat). Every
+ * other role keeps the launcher. The redirect lives here (and the index `/`
+ * route below sends everyone to /home first), so both `/` and `/home` honour
+ * it.
+ */
+function HomeRoute() {
+  const { user } = useAuth();
+  if (user?.role === 'store_manager') {
+    return <Navigate to="/store-workflow" replace />;
+  }
+  // Owner feedback: the central warehouse manager lands directly on their
+  // unified workspace (/central-workflow), never on the /home launcher —
+  // exactly like the store manager → /store-workflow.
+  if (user?.role === 'central_warehouse_manager') {
+    return <Navigate to="/central-workflow" replace />;
+  }
+  return <HomePage />;
+}
+
 export function AppRouter() {
   return (
     <Routes>
@@ -53,7 +79,7 @@ export function AppRouter() {
         path="/home"
         element={
           <ProtectedRoute>
-            <HomePage />
+            <HomeRoute />
           </ProtectedRoute>
         }
       />
@@ -140,9 +166,24 @@ export function AppRouter() {
           }
         />
 
+        {/* Markaziy sklad ish joyi — clean, central-scoped unified workspace
+            (Dashboard + Mahsulotlar (finished-only) + So'rovlar), mirroring
+            the store workflow page. The central warehouse manager lands here
+            directly (no /home launcher). PM can deep-link too. Backend
+            RBAC-scopes every endpoint. */}
+        <Route
+          path="/central-workflow"
+          element={
+            <RoleRoute allow={['pm', 'central_warehouse_manager']}>
+              <CentralWorkflowPage />
+            </RoleRoute>
+          }
+        />
+
         {/* EPIC — Markaziy sklad kiruvchi so'rovlar (accept/reject). Central
             warehouse manager (or PM with a central picker) reviews incoming
-            store replenishment requests. */}
+            store replenishment requests. Kept for PM deep-links; the central
+            manager now reaches this via the /central-workflow So'rovlar tab. */}
         <Route
           path="/central-inbox"
           element={
@@ -235,6 +276,18 @@ export function AppRouter() {
           element={
             <RoleRoute allow={['pm']}>
               <SafeExpensesPage />
+            </RoleRoute>
+          }
+        />
+
+        {/* KPI — boshliq (PM) uchun per-mahsulot to'liq tan-narx
+            (xom-ashyo + komunal + oylik) va foyda/sotuv tahlili. Sotuv
+            narxlarini boshqarish uchun. Faqat PM; backend ham himoyalaydi. */}
+        <Route
+          path="/kpi"
+          element={
+            <RoleRoute allow={['pm']}>
+              <KpiPage />
             </RoleRoute>
           }
         />

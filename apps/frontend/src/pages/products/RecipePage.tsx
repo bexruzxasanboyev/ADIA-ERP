@@ -4,7 +4,7 @@ import { AlertTriangle, ArrowLeft, Inbox } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
+import { NumberInput } from '@/components/ui/number-input';
 import {
   EmptyState,
   ErrorState,
@@ -57,12 +57,12 @@ function RecipeYieldEditor({
   const { notify } = useToast();
   const canEdit =
     user?.role === 'pm' || user?.role === 'production_manager';
-  const [draft, setDraft] = useState(String(value));
+  const [draft, setDraft] = useState<number | null>(value);
   const [saving, setSaving] = useState(false);
-  useEffect(() => setDraft(String(value)), [value]);
+  useEffect(() => setDraft(value), [value]);
 
   async function save() {
-    const n = Number(draft);
+    const n = draft ?? NaN;
     if (!Number.isFinite(n) || n <= 0) {
       notify('error', 'Hajm 0 dan katta son bo‘lishi kerak.');
       return;
@@ -96,12 +96,11 @@ function RecipeYieldEditor({
       </div>
       {canEdit ? (
         <div className="flex items-center gap-2">
-          <Input
-            type="number"
+          <NumberInput
+            decimals
             min={1}
-            step="any"
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onValueChange={setDraft}
             className="w-24"
             aria-label="Retsept hajmi (dona)"
           />
@@ -109,7 +108,7 @@ function RecipeYieldEditor({
           <Button
             size="sm"
             onClick={save}
-            disabled={saving || draft === String(value)}
+            disabled={saving || draft === value}
           >
             Saqlash
           </Button>

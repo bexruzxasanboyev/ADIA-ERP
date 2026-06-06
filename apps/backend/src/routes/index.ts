@@ -32,6 +32,7 @@ import { salesRouter } from './sales.js';
 import { nakladnoyRouter } from './nakladnoy.js';
 import { cashShiftsRouter } from './cashShifts.js';
 import { safeExpensesRouter } from './safeExpenses.js';
+import { kpiRouter } from './kpi.js';
 
 export const apiRouter: Router = Router();
 
@@ -61,6 +62,10 @@ apiRouter.use('/nakladnoy', nakladnoyRouter);
 apiRouter.use('/cash-shifts', cashShiftsRouter);
 // EPIC 8.7 — seyf rasxodlari (safe expenses), read-only from Poster finance.
 apiRouter.use('/safe-expenses', safeExpensesRouter);
+// KPI production-costing (2026-06-06) — the per-product full cost / profit
+// report. pm only. (The old /overhead pool API was removed once utilities
+// became a per-product manual value — see migration 0051.)
+apiRouter.use('/kpi', kpiRouter);
 // EPIC 4.3 (2026-05-29) — the "Yetkazib berish" / delivery module was removed.
 // Departments now ship directly and the receiver accepts on arrival; there is
 // no separate courier-assignment surface. The replenishment state machine

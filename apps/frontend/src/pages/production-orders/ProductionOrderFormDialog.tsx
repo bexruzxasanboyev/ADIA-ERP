@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { NumberInput } from '@/components/ui/number-input';
 import { Label } from '@/components/ui/label';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
@@ -28,7 +29,7 @@ interface ProductionOrderFormDialogProps {
 
 interface FormState {
   product_id: string;
-  qty: string;
+  qty: number | null;
   location_id: string;
   target_location_id: string;
   deadline: string;
@@ -37,7 +38,7 @@ interface FormState {
 
 const EMPTY_FORM: FormState = {
   product_id: '',
-  qty: '',
+  qty: null,
   location_id: '',
   target_location_id: '',
   deadline: '',
@@ -114,7 +115,7 @@ export function ProductionOrderFormDialog({
       setError('Mahsulot va ishlab chiqarish bo‘g‘inini tanlang.');
       return;
     }
-    const qty = Number(form.qty);
+    const qty = form.qty ?? NaN;
     if (!Number.isFinite(qty) || qty <= 0) {
       setError('Miqdor 0 dan katta bo‘lishi kerak.');
       return;
@@ -183,15 +184,14 @@ export function ProductionOrderFormDialog({
 
           <div className="space-y-2">
             <Label htmlFor="po-qty">Miqdor</Label>
-            <Input
+            <NumberInput
               id="po-qty"
               name="qty"
-              type="number"
+              decimals
               min={0}
-              step="any"
               required
               value={form.qty}
-              onChange={(e) => setForm({ ...form, qty: e.target.value })}
+              onValueChange={(n) => setForm({ ...form, qty: n })}
             />
           </div>
 

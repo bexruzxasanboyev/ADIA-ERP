@@ -23,9 +23,15 @@
 import {
   classifyPosterPayment,
   emptyPaymentBuckets,
+  buildMethodResolver,
   type PaymentMethodKey,
+  type PaymentMethodLike,
 } from './paymentMethods.js';
-import type { PosterAnalytics, PosterPaymentReport } from './client.js';
+import type {
+  PosterAnalytics,
+  PosterPaymentReport,
+  PosterTransactionSummary,
+} from './client.js';
 
 /** 1 so'm = 100 tiyin. getPaymentsReport sums are in tiyin (see file header). */
 export const TIYIN_PER_SOM = 100;
@@ -132,6 +138,170 @@ export function paymentReportToBuckets(
 
 function sumBuckets(b: Record<PaymentMethodKey, number>): number {
   return b.cash + b.card + b.payme + b.click + b.other;
+}
+
+/**
+ * Revenue-breakdown — group CLOSED `dash.getTransactions` rows into so'm buckets
+ * that separate Payme/Click (which `dash.getPaymentsReport` cannot — it folds
+ * them into `payed_card_sum`; verified live against `adia` 2026-06-06).
+ *
+ * APPROACH (documented per the task brief): we iterate per-transaction because
+ * only the transaction carries `payment_method_id`. For each CLOSED txn
+ * (`pay_type != 0`) we decide ONE method via `buildMethodResolver`:
+ *   - id 0 (no custom method) -> split the txn by its own `payed_cash` -> cash
+ *     and `payed_card` -> card, folding `payed_third_party` + `payed_ewallet` +
+ *     `payed_bonus` -> the unnamed `other` bucket;
+ *   - a `core` resolution (built-in 1=cash / 2=card, or a Payme/Click custom
+ *     method matched by title) -> the WHOLE txn amount to that core bucket;
+ *   - a `named` resolution (EVERY OTHER custom method, id >= 3) -> the whole txn
+ *     amount to its OWN bucket keyed `pm_<id>`, labelled with the verbatim
+ *     Poster title. This is the money-fix: a card-titled custom method like
+ *     "Карта|Абдулқодир ака" no longer disappears into `card`.
+ *
+ * The transaction amount used for a resolved method is `payed_sum` when present,
+ * else `payed_cash + payed_card + payed_third_party + payed_ewallet`. All Poster
+ * money here is TIYIN -> converted to so'm via `tiyinToSom`.
+ *
+ * OUTPUT: `byMethod` keeps the legacy 5 core keys (cash/card/payme/click/other)
+ * for backward compatibility — `card` now EXCLUDES named custom methods. The
+ * `methods` list is the ordered display contract: the 4 core methods always
+ * appear (even at 0), then each named custom method present with amount > 0
+ * sorted by amount desc, then an unnamed `other` row only when its residual > 0.
+ * `sum(methods[].amount) === total` (reconciliation).
+ *
+ * Reconciliation: the returned `total` is the sum of all buckets. The caller may
+ * cross-check it against `dash.getPaymentsReport` / `dash.getAnalytics`; see
+ * `reconcileWarning`, which is set (non-null) when the per-method buckets drift
+ * from a supplied expected total beyond a 1-so'm tolerance.
+ */
+
+/** One row of the ordered `methods` display list. */
+export type MethodRow = {
+  /** Stable bucket key — a core key or `pm_<id>` for a named custom method. */
+  key: string;
+  /** UI label — a fixed core label or the verbatim Poster title. */
+  label: string;
+  /** Amount in so'm. */
+  amount: number;
+};
+
+export type TransactionBreakdown = PaymentBreakdown & {
+  /** Number of closed transactions folded into the buckets. */
+  closedCount: number;
+  /** Ordered display list: core 4 (always) + named customs + residual other. */
+  methods: MethodRow[];
+  /** Non-null when buckets drift from `expectedTotal` (still returns buckets). */
+  reconcileWarning: string | null;
+};
+
+/** Fixed labels for the four core methods (always shown). */
+const CORE_LABELS: Readonly<Record<'cash' | 'card' | 'payme' | 'click', string>> = {
+  cash: 'Naqd',
+  card: 'Karta',
+  payme: 'Payme',
+  click: 'Click',
+};
+
+export function transactionsToBuckets(
+  transactions: ReadonlyArray<PosterTransactionSummary>,
+  methods: ReadonlyArray<PaymentMethodLike>,
+  expectedTotal?: number,
+): TransactionBreakdown {
+  const byMethod = emptyPaymentBuckets();
+  const resolve = buildMethodResolver(methods);
+  // Named custom-method buckets, keyed `pm_<id>` -> {label, amount}.
+  const named = new Map<string, { label: string; amount: number }>();
+  let closedCount = 0;
+
+  for (const txn of transactions) {
+    const payType = toInt(txn.pay_type);
+    if (payType === 0) continue; // open / unpaid — not yet revenue
+    closedCount += 1;
+
+    const methodId = toInt(txn.payment_method_id);
+    const resolved = resolve(methodId);
+
+    if (resolved === null) {
+      // No custom method (id 0) — split by the txn's own cash/card fields.
+      byMethod.cash += tiyinToSom(txn.payed_cash);
+      byMethod.card += tiyinToSom(txn.payed_card);
+      byMethod.other +=
+        tiyinToSom(txn.payed_third_party) +
+        tiyinToSom(txn.payed_ewallet) +
+        tiyinToSom(txn.payed_bonus);
+      continue;
+    }
+
+    const amount = transactionAmountSom(txn);
+    if (resolved.kind === 'core') {
+      byMethod[resolved.key] += amount;
+    } else {
+      const prev = named.get(resolved.key);
+      named.set(resolved.key, {
+        label: resolved.label,
+        amount: (prev?.amount ?? 0) + amount,
+      });
+    }
+  }
+
+  byMethod.cash = round2(byMethod.cash);
+  byMethod.card = round2(byMethod.card);
+  byMethod.payme = round2(byMethod.payme);
+  byMethod.click = round2(byMethod.click);
+  byMethod.other = round2(byMethod.other);
+  for (const [k, v] of named) named.set(k, { ...v, amount: round2(v.amount) });
+
+  // Total = core 5 buckets + every named custom bucket.
+  let namedSum = 0;
+  for (const v of named.values()) namedSum += v.amount;
+  const total = round2(sumBuckets(byMethod) + namedSum);
+
+  // Ordered display list: core 4 always, then named customs (amount desc),
+  // then the unnamed `other` residual only when > 0.
+  const methodRows: MethodRow[] = [
+    { key: 'cash', label: CORE_LABELS.cash, amount: byMethod.cash },
+    { key: 'card', label: CORE_LABELS.card, amount: byMethod.card },
+    { key: 'payme', label: CORE_LABELS.payme, amount: byMethod.payme },
+    { key: 'click', label: CORE_LABELS.click, amount: byMethod.click },
+  ];
+  const namedRows: MethodRow[] = [...named.entries()]
+    .map(([key, v]) => ({ key, label: v.label, amount: v.amount }))
+    .filter((r) => r.amount > 0)
+    .sort((a, b) => b.amount - a.amount || a.key.localeCompare(b.key));
+  methodRows.push(...namedRows);
+  if (byMethod.other > 0) {
+    methodRows.push({ key: 'other', label: 'Boshqa', amount: byMethod.other });
+  }
+
+  let reconcileWarning: string | null = null;
+  if (expectedTotal !== undefined && Number.isFinite(expectedTotal)) {
+    const drift = round2(total - expectedTotal);
+    if (Math.abs(drift) > 1) {
+      reconcileWarning = `revenue-breakdown reconcile drift: buckets=${total} expected=${round2(expectedTotal)} drift=${drift}`;
+    }
+  }
+
+  return { byMethod, total, closedCount, methods: methodRows, reconcileWarning };
+}
+
+/** Total so'm for one transaction: `payed_sum` if present, else the parts. */
+function transactionAmountSom(txn: PosterTransactionSummary): number {
+  if (txn.payed_sum !== undefined && txn.payed_sum !== null && `${txn.payed_sum}` !== '') {
+    return tiyinToSom(txn.payed_sum);
+  }
+  return (
+    tiyinToSom(txn.payed_cash) +
+    tiyinToSom(txn.payed_card) +
+    tiyinToSom(txn.payed_third_party) +
+    tiyinToSom(txn.payed_ewallet)
+  );
+}
+
+/** Parse a Poster string/number to an int, or `undefined` when not finite. */
+function toInt(v: string | number | undefined | null): number | undefined {
+  if (v === undefined || v === null) return undefined;
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : undefined;
 }
 
 export type DailyRevenue = { date: string; revenue: number };

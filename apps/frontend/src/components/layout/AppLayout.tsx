@@ -4,7 +4,9 @@ import { CakeSlice, CircleUser } from 'lucide-react';
 import { AssistantButton } from './AssistantButton';
 import { LocationSwitcher } from './LocationSwitcher';
 import { PageTabs } from './PageTabs';
+import { StoreManagerTabs } from './StoreManagerTabs';
 import { findGroupForPath } from '@/lib/navigation';
+import { useAuth } from '@/hooks/useAuth';
 import {
   HeaderSlotProvider,
   useHeaderActionsContent,
@@ -43,6 +45,8 @@ function AppLayoutShell() {
   const actionsSlot = useHeaderActionsContent();
   const location = useLocation();
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const isStoreManager = user?.role === 'store_manager';
 
   // ESC → Bosh sahifa (owner request). A global shortcut, but it must NOT
   // hijack ESC when it is doing its normal job: closing an open dialog /
@@ -71,25 +75,33 @@ function AppLayoutShell() {
       ) {
         return;
       }
-      if (location.pathname === '/home') return;
-      navigate('/home');
+      // store_manager has no /home launcher — their "home" is the store
+      // workspace. Every other role goes to /home.
+      const home = isStoreManager ? '/store-workflow' : '/home';
+      if (location.pathname === home) return;
+      navigate(home);
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [navigate, location.pathname]);
+  }, [navigate, location.pathname, isStoreManager]);
 
   // Restore the centred sub-tabs — but only for tabbed groups, and the
   // page-supplied center slot (the dashboard greeting/range) always wins
   // when present. PageTabs itself returns null if the group has no
   // secondary (non-home-tile) screens for this role.
   const group = findGroupForPath(location.pathname);
-  const showTabs = !centerSlot && group?.hasTabs === true;
+  // For non-store_manager roles the centred sub-tabs follow the active group.
+  const showTabs = !isStoreManager && !centerSlot && group?.hasTabs === true;
+  // store_manager gets a FIXED three-tab top nav (Do'kon / Kassa / Bashorat)
+  // as their PRIMARY navigation — they never see the /home launcher. The
+  // page-supplied center slot (e.g. the dashboard greeting) still wins.
+  const showStoreManagerTabs = isStoreManager && !centerSlot;
 
   return (
     <div className="flex h-screen w-full flex-col overflow-hidden bg-background">
       <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-3 sm:px-6 lg:px-8">
         <Link
-          to="/home"
+          to={isStoreManager ? '/store-workflow' : '/home'}
           className="flex min-w-0 shrink-0 items-center gap-2 rounded-md px-1 py-1 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-label="Bosh sahifa"
           title="Bosh sahifaga qaytish"
@@ -112,6 +124,7 @@ function AppLayoutShell() {
             controls off-screen. */}
         <div className="flex min-w-0 flex-1 items-center justify-center overflow-x-auto">
           {centerSlot}
+          {showStoreManagerTabs && <StoreManagerTabs />}
           {showTabs && group && <PageTabs group={group.key} />}
         </div>
 

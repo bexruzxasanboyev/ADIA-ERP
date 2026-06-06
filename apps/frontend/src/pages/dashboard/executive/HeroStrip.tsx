@@ -55,6 +55,15 @@ export interface HeroStripProps {
    * navigation in the parent lets HeroStrip render router-free in tests.
    */
   onNavigate?: (href: string) => void;
+  /**
+   * The revenue + receipts cards are sourced from `ecosystem`
+   * (Poster-backed, slower than `overview`). While that request is still
+   * in flight and no data has arrived yet, those two cards render a
+   * skeleton instead of a misleading "0" (owner feedback). The requests /
+   * critical cards read from `overview`, which has already resolved by the
+   * time HeroStrip renders, so they never skeleton.
+   */
+  ecosystemLoading?: boolean;
   className?: string;
 }
 
@@ -90,8 +99,6 @@ interface HeroKpi {
    * undefined the card stays static (no affordance, no handler).
    */
   href?: string;
-  /** Short Uzbek hint shown to invite the click ("Batafsil →"). */
-  detailHint?: string;
   /**
    * "Better when it goes up" (sales, receipts) vs. "better when it goes
    * down" (open requests, critical positions). Drives the colour of the
@@ -102,6 +109,12 @@ interface HeroKpi {
   deltaPct: number | null;
   /** Absolute prior value, formatted — shown in the delta caption. */
   prevLabel?: string;
+  /**
+   * When true the card shows a skeleton in place of its value / caption /
+   * delta — the underlying datum hasn't arrived yet. Label + icon stay so
+   * the card keeps its identity while loading.
+   */
+  loading?: boolean;
 }
 
 const VALUE_TONE: Record<Tone, string> = {
@@ -114,6 +127,15 @@ const ICON_TONE: Record<Tone, string> = {
   default: 'text-muted-foreground',
   warning: 'text-warning',
   danger: 'text-destructive',
+};
+
+// Side gradient revealed on hover — a soft tone-coloured wash from the left
+// edge that fades to transparent, so the card "lights up" without a hard
+// background swap. Tone-matched so the danger card glows red, etc.
+const HOVER_GRADIENT_TONE: Record<Tone, string> = {
+  default: 'from-primary/20 via-primary/[0.06] to-transparent',
+  warning: 'from-warning/20 via-warning/[0.06] to-transparent',
+  danger: 'from-destructive/20 via-destructive/[0.06] to-transparent',
 };
 
 // Hero KPI cards always render the FULL grouped number ("2 400 000"),
@@ -134,9 +156,13 @@ export function HeroStrip({
   ecosystem,
   range,
   onNavigate,
+  ecosystemLoading,
   className,
 }: HeroStripProps) {
   const copy = rangeCopy(range?.range ?? 'today');
+  // Revenue + receipts come from `ecosystem`; show a skeleton while it's
+  // still loading and no data has landed yet, rather than a stale "0".
+  const metricsLoading = Boolean(ecosystemLoading) && ecosystem === null;
   const salesToday = ecosystem?.poster_status.sales_today_sum ?? 0;
   const receiptsToday = ecosystem?.poster_status.sales_today_count ?? 0;
   const activeRequests =
@@ -168,9 +194,9 @@ export function HeroStrip({
       direction: 'up-good',
       deltaPct: revenueDelta,
       prevLabel: copy.comparisonLabel,
+      loading: metricsLoading,
       // Full sales charts + payment breakdown live on the operations view.
       href: '/dashboard/operations',
-      detailHint: "Sotuv tafsilotlari",
     },
     {
       testId: 'hero-strip-receipts',
@@ -182,8 +208,8 @@ export function HeroStrip({
       direction: 'up-good',
       deltaPct: receiptsDelta,
       prevLabel: copy.comparisonLabel,
+      loading: metricsLoading,
       href: '/dashboard/operations',
-      detailHint: "Cheklar tafsilotlari",
     },
     {
       testId: 'hero-strip-requests',
@@ -196,7 +222,6 @@ export function HeroStrip({
       deltaPct: null,
       // Open replenishment + production + supply requests inbox.
       href: '/sorovnomalar',
-      detailHint: "So'rovlarni ko'rish",
     },
     {
       testId: 'hero-strip-critical',
@@ -209,7 +234,6 @@ export function HeroStrip({
       deltaPct: null,
       // Below-min positions across the chain — the stock screen lists them.
       href: '/stock',
-      detailHint: belowMin > 0 ? "Kritik qoldiqlar" : "Qoldiqni ko'rish",
     },
   ];
 
@@ -249,48 +273,66 @@ function HeroKpiCard({
         </p>
         <Icon
           aria-hidden="true"
-          className={cn('size-4 shrink-0', ICON_TONE[kpi.tone])}
+          className={cn('size-6 shrink-0 sm:size-7', ICON_TONE[kpi.tone])}
         />
       </div>
 
-      <div className="flex flex-col gap-1.5">
-        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-          <span
-            className={cn(
-              'text-3xl font-bold leading-none tabular-nums xl:text-4xl',
-              VALUE_TONE[kpi.tone],
-            )}
-            data-testid={`${kpi.testId}-value`}
-          >
-            {kpi.value}
-          </span>
-          {kpi.caption !== undefined && (
-            <span className="text-xs text-muted-foreground">
-              {kpi.caption}
-            </span>
-          )}
-        </div>
-        <DeltaPill kpi={kpi} />
-      </div>
-
-      {isClickable && kpi.detailHint !== undefined && (
-        <span
-          className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+      {kpi.loading ? (
+        <div
+          className="flex flex-col gap-3"
+          data-testid={`${kpi.testId}-skeleton`}
           aria-hidden="true"
         >
-          {kpi.detailHint}
-          <ArrowRight className="size-3" />
-        </span>
+          {/* large number bar + delta bar — matches the dashboard skeleton
+              shade (`bg-foreground/10` + `animate-pulse`). */}
+          <div className="h-10 w-36 animate-pulse rounded bg-foreground/10 sm:h-12" />
+          <div className="h-3 w-20 animate-pulse rounded bg-foreground/10" />
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1.5">
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+            <span
+              className={cn(
+                'text-4xl font-bold leading-none tabular-nums sm:text-5xl',
+                VALUE_TONE[kpi.tone],
+              )}
+              data-testid={`${kpi.testId}-value`}
+            >
+              {kpi.value}
+            </span>
+            {kpi.caption !== undefined && (
+              <span className="text-sm text-muted-foreground">
+                {kpi.caption}
+              </span>
+            )}
+          </div>
+          <DeltaPill kpi={kpi} />
+        </div>
       )}
     </>
   );
 
   // Shared visual: matches the shadcn Card surface so the clickable
-  // button is pixel-identical to the static region.
+  // button is pixel-identical to the static region. `group` + `isolate`
+  // let the hover gradient overlay fade in beneath the content.
   const surfaceClass = cn(
+    'group relative isolate overflow-hidden',
     'rounded-lg border border-border bg-card text-card-foreground shadow-sm',
     'flex min-h-[140px] flex-col justify-between gap-3 p-5 sm:p-6',
     'border-border/60 transition-colors hover:border-border',
+  );
+
+  // Tone-matched side gradient, hidden until hover. `-z-10` keeps it above
+  // the card background but below the number/label content (the card is an
+  // isolated stacking context, so the negative z is scoped here).
+  const gradientOverlay = (
+    <span
+      aria-hidden="true"
+      className={cn(
+        'pointer-events-none absolute inset-0 -z-10 bg-gradient-to-r opacity-0 transition-opacity duration-300 group-hover:opacity-100',
+        HOVER_GRADIENT_TONE[kpi.tone],
+      )}
+    />
   );
 
   if (isClickable) {
@@ -303,10 +345,11 @@ function HeroKpiCard({
         onClick={() => onNavigate?.(kpi.href as string)}
         className={cn(
           surfaceClass,
-          'group w-full text-left cursor-pointer hover:bg-muted/30',
+          'w-full text-left cursor-pointer',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
         )}
       >
+        {gradientOverlay}
         {body}
       </button>
     );
@@ -323,6 +366,7 @@ function HeroKpiCard({
         'focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background',
       )}
     >
+      {gradientOverlay}
       {body}
     </Card>
   );

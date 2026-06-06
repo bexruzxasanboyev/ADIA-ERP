@@ -34,6 +34,16 @@ describe('classifyRecipeStage', () => {
     expect(classifyRecipeStage('Тунец консервированный')).toBe('other');
   });
 
+  it('matches CYRILLIC flour/salt whole words (ун / туз / сол)', () => {
+    // The НАПОЛЕОН recipe carries flour as a bare Cyrillic `ун`.
+    expect(classifyRecipeStage('ун')).toBe('dough');
+    expect(classifyRecipeStage('ун 310')).toBe('dough');
+    expect(classifyRecipeStage('туз')).toBe('dough');
+    // Must NOT match `ун` inside an unrelated Cyrillic word.
+    expect(classifyRecipeStage('кунжут')).toBe('other');
+    expect(classifyRecipeStage('кукуруза')).toBe('other');
+  });
+
   it('routes cream ingredients', () => {
     expect(classifyRecipeStage('Крем сливочный')).toBe('cream');
     expect(classifyRecipeStage('Sariyog')).toBe('cream');

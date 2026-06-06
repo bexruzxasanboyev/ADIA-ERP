@@ -14,6 +14,7 @@ import {
   X,
   Archive,
   ArchiveRestore,
+  Trash2,
   Loader2,
 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
@@ -258,6 +259,9 @@ export function LocationsPage() {
   // id of the location whose archive/unarchive PATCH is in flight.
   const [archivingId, setArchivingId] = useState<number | null>(null);
 
+  // id of the location whose hard-delete DELETE is in flight.
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+
   const allLocations = useMemo(() => data ?? [], [data]);
 
   // id → user. Empty until the users list resolves; consumers fall back to "—".
@@ -321,6 +325,43 @@ export function LocationsPage() {
       );
     } finally {
       setArchivingId(null);
+    }
+  }
+
+  /**
+   * Hard-delete a location via DELETE /api/locations/:id (pm only). The backend
+   * guards the operation: if the location has dependents (child locations,
+   * assigned users, stock, sales, requests) it returns a 4xx (409/422) with a
+   * human-readable message — we surface that text and steer the owner toward
+   * the archive action instead. A clean location is removed and the list
+   * refetched.
+   */
+  async function handleDelete(location: Location) {
+    const ok = window.confirm(
+      `“${location.name}” bo‘g‘ini butunlay o‘chiriladi. Bu amalni ortga qaytarib bo‘lmaydi. Davom etilsinmi?`,
+    );
+    if (!ok) return;
+    setDeletingId(location.id);
+    try {
+      await apiRequest(`/api/locations/${location.id}`, { method: 'DELETE' });
+      notify('success', 'Bo‘g‘in o‘chirildi.');
+      refetch();
+    } catch (err: unknown) {
+      if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+        // Guard rejection (e.g. has dependents) — show the backend's message
+        // and suggest archiving instead.
+        notify(
+          'error',
+          `${err.message} Buning o‘rniga bo‘g‘inni arxivlashingiz mumkin.`,
+        );
+      } else {
+        notify(
+          'error',
+          err instanceof ApiError ? err.message : 'Bo‘g‘inni o‘chirishda xatolik.',
+        );
+      }
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -503,6 +544,7 @@ export function LocationsPage() {
                         LOCATION_TYPE_ICON[location.type] ?? MapPin;
                       const archived = isArchived(location);
                       const busy = archivingId === location.id;
+                      const deleting = deletingId === location.id;
                       return (
                         <div
                           key={location.id}
@@ -537,19 +579,21 @@ export function LocationsPage() {
                               )}
                             </div>
                             {isPm && (
-                              <div className="flex shrink-0 items-center">
+                              <div className="flex shrink-0 items-center gap-0.5">
                                 <Button
                                   variant="ghost"
                                   size="icon"
+                                  disabled={deleting}
                                   onClick={() => openEdit(location)}
                                   aria-label={`${location.name} ni tahrirlash`}
+                                  title="Tahrirlash"
                                 >
                                   <Pencil className="size-4" />
                                 </Button>
                                 <Button
                                   variant="ghost"
                                   size="icon"
-                                  disabled={busy}
+                                  disabled={busy || deleting}
                                   onClick={() => handleToggleArchive(location)}
                                   aria-label={
                                     archived
@@ -566,6 +610,21 @@ export function LocationsPage() {
                                     <ArchiveRestore className="size-4" />
                                   ) : (
                                     <Archive className="size-4" />
+                                  )}
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  disabled={busy || deleting}
+                                  onClick={() => handleDelete(location)}
+                                  aria-label={`${location.name} ni o‘chirish`}
+                                  title="O‘chirish"
+                                  className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                                >
+                                  {deleting ? (
+                                    <Loader2 className="size-4 animate-spin" />
+                                  ) : (
+                                    <Trash2 className="size-4" />
                                   )}
                                 </Button>
                               </div>

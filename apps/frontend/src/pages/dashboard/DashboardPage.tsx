@@ -159,7 +159,10 @@ export function DashboardPage() {
           </div>
 
           {ecosystem.data !== null && (
-            <SalesChartsRow days={ecosystem.data.sales_chart.days} />
+            <SalesChartsRow
+              days={ecosystem.data.sales_chart.days}
+              granularity={ecosystem.data.sales_chart.granularity}
+            />
           )}
 
           <ForecastsPanel />

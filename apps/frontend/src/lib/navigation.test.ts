@@ -19,7 +19,7 @@ describe('navSectionsForRole', () => {
     expect(paths).toContain('/raw-warehouse');
   });
 
-  it('exposes the unified So‘rovnomalar inbox to every role', () => {
+  it('exposes the unified So‘rovlar hub (/replenishment) to every role', () => {
     for (const role of [
       'pm',
       'store_manager',
@@ -32,7 +32,30 @@ describe('navSectionsForRole', () => {
       const paths = navSectionsForRole(role).flatMap((s) =>
         s.items.map((i) => i.path),
       );
-      expect(paths).toContain('/sorovnomalar');
+      expect(paths).toContain('/replenishment');
+    }
+  });
+
+  it('drops the redundant request pages from the header nav (owner 2026-06-06)', () => {
+    // The separate So‘rovnomalar / production-orders / purchase-orders nav
+    // entries collapsed into the unified /replenishment hub (So‘rovlar +
+    // Tranzaksiyalar tabs). Their routes stay URL-reachable, but they are
+    // no longer surfaced in the header for any role.
+    for (const role of [
+      'pm',
+      'store_manager',
+      'production_manager',
+      'supply_manager',
+      'central_warehouse_manager',
+      'raw_warehouse_manager',
+      'ai_assistant',
+    ] as const) {
+      const paths = navSectionsForRole(role).flatMap((s) =>
+        s.items.map((i) => i.path),
+      );
+      expect(paths).not.toContain('/sorovnomalar');
+      expect(paths).not.toContain('/production-orders');
+      expect(paths).not.toContain('/purchase-orders');
     }
   });
 
@@ -50,42 +73,6 @@ describe('navSectionsForRole', () => {
     expect(paths).toContain('/store-workflow');
     expect(paths).not.toContain('/raw-warehouse');
     expect(paths).not.toContain('/production');
-  });
-
-  it('exposes production-orders to production / central-warehouse / pm', () => {
-    expect(
-      navSectionsForRole('production_manager').flatMap((s) =>
-        s.items.map((i) => i.path),
-      ),
-    ).toContain('/production-orders');
-    expect(
-      navSectionsForRole('central_warehouse_manager').flatMap((s) =>
-        s.items.map((i) => i.path),
-      ),
-    ).toContain('/production-orders');
-    expect(
-      navSectionsForRole('store_manager').flatMap((s) =>
-        s.items.map((i) => i.path),
-      ),
-    ).not.toContain('/production-orders');
-  });
-
-  it('exposes purchase-orders to supply / raw-warehouse / pm', () => {
-    expect(
-      navSectionsForRole('supply_manager').flatMap((s) =>
-        s.items.map((i) => i.path),
-      ),
-    ).toContain('/purchase-orders');
-    expect(
-      navSectionsForRole('raw_warehouse_manager').flatMap((s) =>
-        s.items.map((i) => i.path),
-      ),
-    ).toContain('/purchase-orders');
-    expect(
-      navSectionsForRole('store_manager').flatMap((s) =>
-        s.items.map((i) => i.path),
-      ),
-    ).not.toContain('/purchase-orders');
   });
 
   it('drops empty sections', () => {

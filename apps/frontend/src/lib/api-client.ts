@@ -5,6 +5,7 @@ import {
   setTokens,
   clearTokens,
   getActiveLocation,
+  setActiveLocation,
 } from './auth-storage';
 import type { ApiErrorBody } from './types';
 
@@ -68,13 +69,19 @@ export async function apiRequest<T>(
   path: string,
   options: RequestOptions = {},
 ): Promise<T> {
-  return executeRequest<T>(path, options, /* allowRefresh */ true);
+  return executeRequest<T>(
+    path,
+    options,
+    /* allowRefresh */ true,
+    /* allowActiveLocationHeal */ true,
+  );
 }
 
 async function executeRequest<T>(
   path: string,
   options: RequestOptions,
   allowRefresh: boolean,
+  allowActiveLocationHeal: boolean,
 ): Promise<T> {
   const { method = 'GET', body, headers = {}, signal } = options;
 
@@ -96,8 +103,14 @@ async function executeRequest<T>(
   // has been made (the server then falls back to the user's primary).
   // Explicit per-call overrides in `headers` always win.
   const activeLocation = getActiveLocation();
+  // Track whether WE attached the header from storage (vs. an explicit
+  // per-call override). Only the storage-derived case is safe to self-heal
+  // on an ACTIVE_LOCATION_INVALID below — an explicit override (e.g. the
+  // active-location PATCH) carries the user's deliberate choice.
+  let attachedActiveFromStorage = false;
   if (activeLocation !== null && finalHeaders['X-Active-Location'] === undefined) {
     finalHeaders['X-Active-Location'] = String(activeLocation);
+    attachedActiveFromStorage = true;
   }
 
   let response: Response;
@@ -131,13 +144,38 @@ async function executeRequest<T>(
       const refreshed = await ensureRefresh();
       if (refreshed) {
         // Retry once with the new access token (set inside ensureRefresh).
-        return executeRequest<T>(path, options, /* allowRefresh */ false);
+        return executeRequest<T>(
+          path,
+          options,
+          /* allowRefresh */ false,
+          allowActiveLocationHeal,
+        );
       }
       // Refresh failed — fall through to the standard 401 handler.
     }
 
     if (response.status === 401) {
       handleUnauthenticated();
+    }
+
+    // 403 ACTIVE_LOCATION_INVALID → the stored active location is stale (the
+    // bo'g'in was deleted, or the user was reassigned). Drop the dead choice
+    // and retry once with no header so the backend falls back to the user's
+    // primary — instead of hard-failing every screen until a manual reload
+    // (ADR-0012). Guarded to the storage-derived header and a single retry.
+    if (
+      response.status === 403 &&
+      code === 'ACTIVE_LOCATION_INVALID' &&
+      allowActiveLocationHeal &&
+      attachedActiveFromStorage
+    ) {
+      setActiveLocation(null);
+      return executeRequest<T>(
+        path,
+        options,
+        allowRefresh,
+        /* allowActiveLocationHeal */ false,
+      );
     }
 
     if (isApiErrorBody(payload)) {

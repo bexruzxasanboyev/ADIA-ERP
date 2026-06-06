@@ -12,6 +12,11 @@
 export const ErrorCode = {
   UNAUTHENTICATED: 'UNAUTHENTICATED',
   FORBIDDEN: 'FORBIDDEN',
+  // ADR-0012 — the X-Active-Location header names a location the user is not
+  // assigned to (e.g. a stale localStorage value after the location was
+  // deleted or the user was reassigned). Distinct from FORBIDDEN so the client
+  // can recover automatically: drop the stale header and retry on the primary.
+  ACTIVE_LOCATION_INVALID: 'ACTIVE_LOCATION_INVALID',
   NOT_FOUND: 'NOT_FOUND',
   VALIDATION_ERROR: 'VALIDATION_ERROR',
   INSUFFICIENT_STOCK: 'INSUFFICIENT_STOCK',
@@ -36,6 +41,7 @@ export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
 const STATUS_BY_CODE: Record<ErrorCode, number> = {
   UNAUTHENTICATED: 401,
   FORBIDDEN: 403,
+  ACTIVE_LOCATION_INVALID: 403,
   NOT_FOUND: 404,
   VALIDATION_ERROR: 422,
   INSUFFICIENT_STOCK: 409,

@@ -141,6 +141,64 @@ async function insertQueueRow(opts: {
   return Number(existing.rows[0]?.id ?? 0);
 }
 
+/**
+ * Result of a product-master write-back enqueue.
+ */
+export type ProductWritebackResult = {
+  /** 'queued' when a row was written; 'skipped' when there was nothing to push. */
+  readonly mode: 'queued' | 'skipped';
+  /** The `poster_product_writeback` row id when one was written. */
+  readonly queueId: number | null;
+  /** Human-readable note for the log / report. */
+  readonly note: string;
+};
+
+/**
+ * Enqueue a PRODUCT-MASTER field change (e.g. unit) for write-back to Poster.
+ *
+ * Best-effort outbox only — the live PosterClient is read-only, so this NEVER
+ * calls Poster now; it just appends a `pending` row to `poster_product_writeback`
+ * (migration 0050). A future worker flushes the queue via `menu.updateProduct`
+ * once a write-capable credential exists.
+ *
+ * No-op (mode='skipped', no row) when `posterProductId` is null — a product with
+ * no Poster mapping has nothing to push to the POS. The caller still updates the
+ * ERP DB; only the write-back is skipped.
+ *
+ * Invariant: this runs AFTER the local update has committed, so an enqueue error
+ * must be caught/swallowed by the caller — a Poster failure cannot break the
+ * local edit.
+ */
+export async function enqueueProductUnitWriteback(opts: {
+  productId: number;
+  posterProductId: number | null;
+  field: string;
+  oldValue: string | null;
+  newValue: string | null;
+}): Promise<ProductWritebackResult> {
+  if (opts.posterProductId === null) {
+    return {
+      mode: 'skipped',
+      queueId: null,
+      note: 'no poster_product_id — nothing to push to Poster',
+    };
+  }
+
+  const { rows } = await query<{ id: number }>(
+    `INSERT INTO poster_product_writeback
+       (product_id, poster_product_id, field, old_value, new_value, status)
+     VALUES ($1, $2, $3, $4, $5, 'pending')
+     RETURNING id`,
+    [opts.productId, opts.posterProductId, opts.field, opts.oldValue, opts.newValue],
+  );
+  const queueId = rows[0] !== undefined ? Number(rows[0].id) : null;
+  console.info(
+    `[poster-product-writeback] queued (no write token): product=${opts.productId} ` +
+      `field=${opts.field} ${opts.oldValue ?? '∅'}→${opts.newValue ?? '∅'}`,
+  );
+  return { mode: 'queued', queueId, note: 'queued (no Poster write token configured)' };
+}
+
 /** Best-effort audit — a logging failure must not break the receive flow. */
 async function safeAudit(
   opts: { requestId: number; productId: number; locationId: number; qty: number; actorUserId: number | null },

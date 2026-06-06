@@ -13,7 +13,6 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { renderWithProviders, jsonResponse } from '@/test/render-helpers';
 import { ExecutiveDashboardPage } from './ExecutiveDashboardPage';
 import type {
@@ -223,6 +222,7 @@ const STORES_DETAIL: DashboardStoresDetail = {
   top_products_today: [],
   hourly_heatmap: [],
   daily_sales: [],
+  series: { granularity: 'day', days: [] },
 };
 
 const PURCHASE_ORDERS: PurchaseOrder[] = [
@@ -320,32 +320,6 @@ describe('ExecutiveDashboardPage — Variant B', () => {
     expect(value.textContent?.replace(/\s+/g, '')).toBe('2400000');
   });
 
-  it('renders the chain-health row with one card per supply-chain stage', async () => {
-    mockAll();
-    renderWithProviders(<ExecutiveDashboardPage />, { role: 'pm' });
-
-    expect(await screen.findByTestId('chain-health-row')).toBeInTheDocument();
-    expect(screen.getByTestId('chain-node-raw_warehouse')).toBeInTheDocument();
-    expect(screen.getByTestId('chain-node-production')).toBeInTheDocument();
-    expect(screen.getByTestId('chain-node-supply')).toBeInTheDocument();
-    expect(
-      screen.getByTestId('chain-node-central_warehouse'),
-    ).toBeInTheDocument();
-    expect(screen.getByTestId('chain-node-store')).toBeInTheDocument();
-  });
-
-  it('opens the per-stage detail drawer when a chain card is clicked', async () => {
-    mockAll();
-    const user = userEvent.setup();
-    renderWithProviders(<ExecutiveDashboardPage />, { role: 'pm' });
-
-    const storeCard = await screen.findByTestId('chain-node-store');
-    await user.click(storeCard);
-    expect(
-      await screen.findByTestId('chain-detail-header-store'),
-    ).toBeInTheDocument();
-  });
-
   it('renders the production-plan summary above the fold', async () => {
     mockAll();
     renderWithProviders(<ExecutiveDashboardPage />, { role: 'pm' });
@@ -362,9 +336,11 @@ describe('ExecutiveDashboardPage — Variant B', () => {
     mockAll();
     renderWithProviders(<ExecutiveDashboardPage />, { role: 'pm' });
 
-    await screen.findByTestId('chain-health-row');
+    await screen.findByTestId('hero-strip');
     expect(screen.queryByTestId('canvas-flow')).not.toBeInTheDocument();
     expect(screen.queryByTestId('ecosystem-canvas')).not.toBeInTheDocument();
+    // ZANJIR SALOMATLIGI (chain-health row) was removed per owner request.
+    expect(screen.queryByTestId('chain-health-row')).not.toBeInTheDocument();
   });
 
   it('lists the critical zero-stock item at the top of CriticalAlerts', async () => {

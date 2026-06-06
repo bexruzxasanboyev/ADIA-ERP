@@ -207,6 +207,96 @@ describe('PosterClient', () => {
     expect(attempts).toBe(1);
   });
 
+  it('getTransactions paginates on offset until a short page (revenue-breakdown)', async () => {
+    const urls: string[] = [];
+    // 3 rows total, page size 2 -> pages [0,2) and [2,4); the 2nd page has 1
+    // row (< num) so the loop stops. Two HTTP calls expected.
+    const all = [
+      { transaction_id: '1', spot_id: '1' },
+      { transaction_id: '2', spot_id: '1' },
+      { transaction_id: '3', spot_id: '1' },
+    ];
+    const client = new PosterClient({
+      token: 'acc:xxx',
+      minIntervalMs: 0,
+      fetcher: ((url: string | URL) => {
+        const u = typeof url === 'string' ? new URL(url) : url;
+        urls.push(u.toString());
+        const offset = Number(u.searchParams.get('offset') ?? '0');
+        const num = Number(u.searchParams.get('num') ?? '1000');
+        const page = all.slice(offset, offset + num);
+        return Promise.resolve(
+          new Response(JSON.stringify({ response: page }), { status: 200 }),
+        );
+      }) as unknown as typeof fetch,
+    });
+    const rows = await client.getTransactions({
+      dateFrom: '2026-06-06',
+      dateTo: '2026-06-06',
+      num: 2,
+      paginate: true,
+    });
+    expect(rows).toHaveLength(3);
+    expect(urls).toHaveLength(2);
+    expect(urls[0]).toContain('offset=0');
+    expect(urls[1]).toContain('offset=2');
+  });
+
+  it('getPaymentMethods caches within the TTL and refetches after it expires', async () => {
+    let calls = 0;
+    const methods = [{ payment_method_id: '19', title: 'Payme' }];
+    const client = new PosterClient({
+      token: 'acc:xxx',
+      minIntervalMs: 0,
+      paymentMethodsTtlMs: 1000,
+      fetcher: ((_url: unknown) => {
+        calls += 1;
+        return Promise.resolve(
+          new Response(JSON.stringify({ response: methods }), { status: 200 }),
+        );
+      }) as unknown as typeof fetch,
+    });
+    const a = await client.getPaymentMethods();
+    const b = await client.getPaymentMethods();
+    expect(calls).toBe(1); // second hit served from cache
+    expect(a).toEqual(b);
+    expect(a[0]?.title).toBe('Payme');
+
+    // A zero-TTL client must always refetch.
+    let calls2 = 0;
+    const fresh = new PosterClient({
+      token: 'acc:xxx',
+      minIntervalMs: 0,
+      paymentMethodsTtlMs: 0,
+      fetcher: ((_url: unknown) => {
+        calls2 += 1;
+        return Promise.resolve(
+          new Response(JSON.stringify({ response: methods }), { status: 200 }),
+        );
+      }) as unknown as typeof fetch,
+    });
+    await fresh.getPaymentMethods();
+    await fresh.getPaymentMethods();
+    expect(calls2).toBe(2);
+  });
+
+  it('getPaymentMethods normalises an id-keyed object response into an array', async () => {
+    const client = new PosterClient({
+      token: 'acc:xxx',
+      minIntervalMs: 0,
+      paymentMethodsTtlMs: 0,
+      fetcher: jsonResponder({
+        response: {
+          '19': { payment_method_id: '19', title: 'Payme' },
+          '20': { payment_method_id: '20', title: 'Click' },
+        },
+      }),
+    });
+    const methods = await client.getPaymentMethods();
+    expect(methods).toHaveLength(2);
+    expect(methods.map((m) => m.title).sort()).toEqual(['Click', 'Payme']);
+  });
+
   it('default timeout is 20s (Sprint 3 audit P2 — Poster cold-start headroom)', () => {
     // Construct without explicit `timeoutMs` and verify the default has
     // been bumped from 10_000 to 20_000. We probe via behaviour: a fetch

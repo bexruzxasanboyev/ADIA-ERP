@@ -1,18 +1,18 @@
 /**
- * Sub-task #7 — GET /api/dashboard/revenue-breakdown integration tests.
+ * Money-fix (2026-06-06) — GET /api/dashboard/revenue-breakdown integration.
  *
- * DEMO PATH (working tree): the endpoint derives the breakdown from the LOCAL
- * `sales` table (Poster is slow / not aligned with seeded local data) and
- * splits the day's revenue across payment methods with a fixed bakery ratio
- * (~40 cash / 35 card / 15 payme / 10 click). It does NOT call Poster.
+ * The endpoint now derives the breakdown from per-transaction Poster data
+ * (`dash.getTransactions` + `settings.getPaymentMethods`) so Payme and Click
+ * are separated out of `card` — `dash.getPaymentsReport` folds them into
+ * `payed_card_sum` and CANNOT split them (verified live against `adia`).
+ * `dash.getAnalytics` revenue is fetched only as a reconciliation cross-check.
  *
  * Coverage:
- *   - PM gets a chain-wide aggregate for the requested date from local sales.
- *   - the bucket split is internally consistent (buckets sum to total).
- *   - a date with no local sales yields a zero breakdown.
+ *   - PM gets a chain-wide aggregate with payme/click carved out of card.
+ *   - buckets sum back to total (internal consistency).
+ *   - a window with no transactions yields a zero breakdown.
  *   - 422 on a malformed date.
- *   - 403 when a store_manager asks for a spot outside their assigned
- *     stores.
+ *   - 403 when a store_manager asks for a spot outside their assigned stores.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
@@ -20,6 +20,8 @@ import {
   PosterClient,
   setPosterClientForTests,
   resetPosterClientCache,
+  type PosterTransactionSummary,
+  type PosterPaymentMethod,
 } from '../src/integrations/poster/client.js';
 import { createTestContext, type TestContext } from './helpers/context.js';
 import { makeLocation, makeUser } from './helpers/fixtures.js';
@@ -40,30 +42,60 @@ beforeEach(() => {
   setPosterClientForTests(undefined);
 });
 
+/** The `adia` payment-method map (Payme=19, Click=20; verified live). */
+const ADIA_METHODS: PosterPaymentMethod[] = [
+  { payment_method_id: '1', title: 'Наличные' },
+  { payment_method_id: '2', title: 'Карта' },
+  { payment_method_id: '14', title: 'Доверительный платеж' },
+  { payment_method_id: '17', title: 'Карта|Абдулқодир ака' },
+  { payment_method_id: '19', title: 'Payme' },
+  { payment_method_id: '20', title: 'Click' },
+];
+
 /**
- * Install a stub Poster client whose `dash.getPaymentsReport` returns the
- * given rows and remembers the last URL it was called with (for assertion).
+ * Install a stub Poster client that serves the three endpoints the route now
+ * uses: `settings.getPaymentMethods`, `dash.getTransactions` (offset paged) and
+ * `dash.getAnalytics`. Records the transaction URLs hit (for assertion).
  */
-function stubPosterPayments(
-  rows: Array<{
-    payment_id: number | string;
-    payment_title: string;
-    payment_sum: number | string;
-    payment_count?: number | string;
-  }>,
-): { lastUrl: () => string | undefined } {
-  let lastUrl: string | undefined;
+function stubPoster(opts: {
+  methods?: PosterPaymentMethod[];
+  transactions?: PosterTransactionSummary[];
+  analyticsRevenue?: number;
+}): { txUrls: () => string[] } {
+  const methods = opts.methods ?? ADIA_METHODS;
+  const transactions = opts.transactions ?? [];
+  const txUrls: string[] = [];
   setPosterClientForTests(
     new PosterClient({
       token: 'acc:test',
       minIntervalMs: 0,
+      paymentMethodsTtlMs: 0, // no caching between tests
       fetcher: ((url: string | URL) => {
         const u = typeof url === 'string' ? new URL(url) : url;
         const m = u.pathname.split('/').pop();
-        lastUrl = u.toString();
-        if (m === 'dash.getPaymentsReport') {
+        if (m === 'settings.getPaymentMethods') {
           return Promise.resolve(
-            new Response(JSON.stringify({ response: rows }), { status: 200 }),
+            new Response(JSON.stringify({ response: methods }), { status: 200 }),
+          );
+        }
+        if (m === 'dash.getTransactions') {
+          txUrls.push(u.toString());
+          // Honour pagination: slice by offset/num so the loop terminates.
+          const offset = Number(u.searchParams.get('offset') ?? '0');
+          const num = Number(u.searchParams.get('num') ?? '1000');
+          const page = transactions.slice(offset, offset + num);
+          return Promise.resolve(
+            new Response(JSON.stringify({ response: page }), { status: 200 }),
+          );
+        }
+        if (m === 'dash.getAnalytics') {
+          const revenue = opts.analyticsRevenue;
+          const counters =
+            revenue === undefined ? {} : { revenue: String(revenue) };
+          return Promise.resolve(
+            new Response(JSON.stringify({ response: { data: [], counters } }), {
+              status: 200,
+            }),
           );
         }
         return Promise.resolve(
@@ -76,108 +108,90 @@ function stubPosterPayments(
   );
   // The route checks config.poster.token != ''; set a non-empty value.
   process.env.POSTER_TOKEN = 'acc:test';
-  return { lastUrl: () => lastUrl };
+  return { txUrls: () => txUrls };
+}
+
+/** Closed transaction factory (tiyin strings, as Poster emits). */
+function txn(over: Partial<PosterTransactionSummary>): PosterTransactionSummary {
+  return {
+    transaction_id: '1',
+    spot_id: '1',
+    pay_type: '1',
+    payment_method_id: '0',
+    payed_cash: '0',
+    payed_card: '0',
+    payed_third_party: '0',
+    payed_ewallet: '0',
+    payed_bonus: '0',
+    payed_sum: '0',
+    ...over,
+  };
 }
 
 describe('GET /api/dashboard/revenue-breakdown', () => {
-  it('reads the real Poster getPaymentsReport (tiyin) and reports so\'m (PM scope)', async () => {
+  it('shows every named method by name and carves payme/click out of card (PM scope)', async () => {
     const { resetConfigCache } = await import('../src/config/index.js');
     resetConfigCache();
 
-    // EPIC 0.3 — the route now calls Poster directly. Stub the real
-    // `{days, total}` aggregate shape in TIYIN; the route must ÷100 to so'm.
-    setPosterClientForTests(
-      new PosterClient({
-        token: 'acc:test',
-        minIntervalMs: 0,
-        fetcher: ((url: string | URL) => {
-          const u = typeof url === 'string' ? new URL(url) : url;
-          const m = u.pathname.split('/').pop();
-          if (m === 'dash.getPaymentsReport') {
-            return Promise.resolve(
-              new Response(
-                JSON.stringify({
-                  response: {
-                    days: [],
-                    total: {
-                      payed_cash_sum: 870_577_000, // 8_705_770 so'm
-                      payed_card_sum: 1_084_753_000, // 10_847_530 so'm
-                      payed_sum_sum: 1_955_330_000, // 19_553_300 so'm
-                      transactions_count: 84,
-                    },
-                  },
-                }),
-                { status: 200 },
-              ),
-            );
-          }
-          return Promise.resolve(
-            new Response(JSON.stringify({ error: { code: 30, message: 'NA' } }), {
-              status: 200,
-            }),
-          );
-        }) as unknown as typeof fetch,
-      }),
-    );
-    process.env.POSTER_TOKEN = 'acc:test';
+    // 2026-06-06 live shape: cash + card defaults, Payme(19), Click(20), plus
+    // two named custom methods: id 14 "Доверительный платеж" and id 17
+    // "Карта|Абдулқодир ака" — the latter must NOT fold into `card`.
+    const transactions: PosterTransactionSummary[] = [
+      txn({ pay_type: '1', payment_method_id: '0', payed_cash: '1077369100', payed_sum: '1077369100' }),
+      txn({ pay_type: '2', payment_method_id: '0', payed_card: '733211000', payed_sum: '733211000' }),
+      txn({ pay_type: '2', payment_method_id: '19', payed_card: '122350000', payed_sum: '122350000' }),
+      txn({ pay_type: '2', payment_method_id: '20', payed_card: '91350000', payed_sum: '91350000' }),
+      txn({ pay_type: '2', payment_method_id: '14', payed_card: '198383600', payed_sum: '198383600' }),
+      txn({ pay_type: '2', payment_method_id: '17', payed_card: '31640000', payed_sum: '31640000' }),
+      // open -> excluded
+      txn({ pay_type: '0', payment_method_id: '0', payed_sum: '5000000000' }),
+    ];
+    const expectedTotal =
+      10_773_691 + 7_332_110 + 1_223_500 + 913_500 + 1_983_836 + 316_400;
+    stubPoster({ transactions, analyticsRevenue: expectedTotal });
 
     const pm = await makeUser(ctx.db, { role: 'pm', locationId: null });
     const res = await request(ctx.app)
-      .get('/api/dashboard/revenue-breakdown?range=custom&from=2026-05-29&to=2026-05-29')
+      .get('/api/dashboard/revenue-breakdown?range=custom&from=2026-06-06&to=2026-06-06')
       .set('Authorization', `Bearer ${pm.token}`);
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
-      from: '2026-05-29',
-      to: '2026-05-29',
+      from: '2026-06-06',
+      to: '2026-06-06',
       spot_id: null,
-      total: 19_553_300,
+      total: expectedTotal,
+      count: 6,
       byMethod: {
-        cash: 8_705_770,
-        card: 10_847_530,
-        payme: 0,
-        click: 0,
+        cash: 10_773_691,
+        // card EXCLUDES id 17 -> only the genuine default-split card.
+        card: 7_332_110,
+        payme: 1_223_500,
+        click: 913_500,
         other: 0,
       },
+      methods: [
+        { key: 'cash', label: 'Naqd', amount: 10_773_691 },
+        { key: 'card', label: 'Karta', amount: 7_332_110 },
+        { key: 'payme', label: 'Payme', amount: 1_223_500 },
+        { key: 'click', label: 'Click', amount: 913_500 },
+        // Named customs follow, amount desc.
+        { key: 'pm_14', label: 'Доверительный платеж', amount: 1_983_836 },
+        { key: 'pm_17', label: 'Карта|Абдулқодир ака', amount: 316_400 },
+      ],
     });
-    // Internal consistency: the buckets sum back to the reported total.
-    const sumOfBuckets =
-      res.body.byMethod.cash +
-      res.body.byMethod.card +
-      res.body.byMethod.payme +
-      res.body.byMethod.click +
-      res.body.byMethod.other;
-    expect(sumOfBuckets).toBe(res.body.total);
+    // Reconciliation: methods sum back to the reported total.
+    const sumOfMethods = (res.body.methods as { amount: number }[]).reduce(
+      (s, m) => s + m.amount,
+      0,
+    );
+    expect(sumOfMethods).toBe(res.body.total);
   });
 
-  it('returns a zero breakdown when Poster reports no sales for the day', async () => {
+  it('returns a zero breakdown when Poster reports no transactions', async () => {
     const { resetConfigCache } = await import('../src/config/index.js');
     resetConfigCache();
-    // Poster returns an empty aggregate (total all-zero).
-    setPosterClientForTests(
-      new PosterClient({
-        token: 'acc:test',
-        minIntervalMs: 0,
-        fetcher: ((url: string | URL) => {
-          const u = typeof url === 'string' ? new URL(url) : url;
-          const m = u.pathname.split('/').pop();
-          if (m === 'dash.getPaymentsReport') {
-            return Promise.resolve(
-              new Response(
-                JSON.stringify({ response: { days: [], total: { payed_sum_sum: 0 } } }),
-                { status: 200 },
-              ),
-            );
-          }
-          return Promise.resolve(
-            new Response(JSON.stringify({ error: { code: 30, message: 'NA' } }), {
-              status: 200,
-            }),
-          );
-        }) as unknown as typeof fetch,
-      }),
-    );
-    process.env.POSTER_TOKEN = 'acc:test';
+    stubPoster({ transactions: [], analyticsRevenue: 0 });
     const pm = await makeUser(ctx.db, { role: 'pm', locationId: null });
 
     const res = await request(ctx.app)
@@ -190,7 +204,15 @@ describe('GET /api/dashboard/revenue-breakdown', () => {
       to: '2019-01-15',
       spot_id: null,
       total: 0,
+      count: 0,
       byMethod: { cash: 0, card: 0, payme: 0, click: 0, other: 0 },
+      // Core 4 always present even at zero; no `other` row when residual is 0.
+      methods: [
+        { key: 'cash', label: 'Naqd', amount: 0 },
+        { key: 'card', label: 'Karta', amount: 0 },
+        { key: 'payme', label: 'Payme', amount: 0 },
+        { key: 'click', label: 'Click', amount: 0 },
+      ],
     });
   });
 
@@ -203,108 +225,10 @@ describe('GET /api/dashboard/revenue-breakdown', () => {
     expect(res.status).toBe(422);
   });
 
-  // ---------------------------------------------------------------------------
-  // QA Prove-It (2026-05-28) — production was returning HTTP 500 on this
-  // endpoint because the route iterates the Poster response as if it were
-  // an array of `{payment_id, payment_title, payment_sum}` rows, but the
-  // real `dash.getPaymentsReport` returns a single aggregate object:
-  //   { days: [{date, payed_cash_sum, payed_card_sum, …}],
-  //     total: {payed_cash_sum, payed_card_sum, payed_ewallet_sum, …,
-  //             payed_sum_sum, transactions_count} }
-  // The existing tests stub a synthetic row-array shape Poster never emits,
-  // so they passed while production failed. This test pins the real shape
-  // and will stay red until the route is fixed to read `total.payed_*_sum`.
-  // ---------------------------------------------------------------------------
-  it('parses the real Poster aggregate shape (days + total)', async () => {
-    const { resetConfigCache } = await import('../src/config/index.js');
-    resetConfigCache();
-
-    // Override the stub: respond with the SHAPE Poster actually returns.
-    setPosterClientForTests(
-      new PosterClient({
-        token: 'acc:test',
-        minIntervalMs: 0,
-        fetcher: ((url: string | URL) => {
-          const u = typeof url === 'string' ? new URL(url) : url;
-          const m = u.pathname.split('/').pop();
-          if (m === 'dash.getPaymentsReport') {
-            // Real Poster payload (verified against production account
-            // `adia` on 2026-05-28). Money is in tiyin (1 so'm = 100).
-            const realPayload = {
-              response: {
-                days: [
-                  {
-                    date: '2026-05-28',
-                    payed_cash_sum: '1174545000',
-                    payed_card_sum: '966402500',
-                    payed_cert_in_sum: '0',
-                    payed_cert_out_sum: '0',
-                    payed_bonus_sum: '0',
-                    payed_sum_sum: '2140947500',
-                    round_sum: '0',
-                  },
-                ],
-                total: {
-                  payed_cash_sum: 1_174_545_000,
-                  payed_card_sum: 966_402_500,
-                  payed_third_party_sum: 0,
-                  payed_cert_in_sum: 0,
-                  payed_cert_out_sum: 0,
-                  payed_ewallet_sum: 0,
-                  payed_bonus_sum: 0,
-                  payed_sum_sum: 2_140_947_500,
-                  transactions_count: 80,
-                },
-              },
-            };
-            return Promise.resolve(
-              new Response(JSON.stringify(realPayload), { status: 200 }),
-            );
-          }
-          return Promise.resolve(
-            new Response(JSON.stringify({ error: { code: 30, message: 'NA' } }), {
-              status: 200,
-            }),
-          );
-        }) as unknown as typeof fetch,
-      }),
-    );
-    process.env.POSTER_TOKEN = 'acc:test';
-
-    const pm = await makeUser(ctx.db, { role: 'pm', locationId: null });
-    const res = await request(ctx.app)
-      .get('/api/dashboard/revenue-breakdown?range=custom&from=2026-05-28&to=2026-05-28')
-      .set('Authorization', `Bearer ${pm.token}`);
-
-    // Must NOT crash with 500 — the route has to handle Poster's real shape.
-    expect(res.status).toBe(200);
-    expect(res.body).not.toBeNull();
-    expect(res.body).toMatchObject({
-      from: '2026-05-28',
-      to: '2026-05-28',
-      spot_id: null,
-    });
-    // Total must equal `payed_sum_sum`. The route may divide by 100 to turn
-    // tiyin into so'm — accept either convention as long as everything stays
-    // internally consistent (sum of byMethod buckets == total).
-    expect(typeof res.body.total).toBe('number');
-    expect(res.body.total).toBeGreaterThan(0);
-    const sumOfBuckets =
-      res.body.byMethod.cash +
-      res.body.byMethod.card +
-      res.body.byMethod.payme +
-      res.body.byMethod.click +
-      res.body.byMethod.other;
-    expect(sumOfBuckets).toBeCloseTo(res.body.total, 0);
-    // The two largest Poster buckets must show up under cash + card.
-    expect(res.body.byMethod.cash).toBeGreaterThan(0);
-    expect(res.body.byMethod.card).toBeGreaterThan(0);
-  });
-
   it('rejects a store_manager asking for a spot outside their stores', async () => {
     const { resetConfigCache } = await import('../src/config/index.js');
     resetConfigCache();
-    stubPosterPayments([]);
+    stubPoster({ transactions: [] });
 
     // Two stores; the manager only owns store A. Spot id 999 maps to neither.
     const storeA = await makeLocation(ctx.db, { type: 'store', name: 'A' });

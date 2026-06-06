@@ -9,7 +9,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { NumberInput } from '@/components/ui/number-input';
 import {
   Table,
   TableBody,
@@ -82,7 +82,9 @@ export function StoreAiProposalsDialog({
 }: StoreAiProposalsDialogProps) {
   const { notify } = useToast();
   const [proposals, setProposals] = useState<AiProposal[]>([]);
-  const [qtyByProduct, setQtyByProduct] = useState<Record<number, string>>({});
+  const [qtyByProduct, setQtyByProduct] = useState<
+    Record<number, number | null>
+  >({});
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -100,8 +102,8 @@ export function StoreAiProposalsDialog({
         if (cancelled) return;
         const rows = res.proposals ?? [];
         setProposals(rows);
-        const seed: Record<number, string> = {};
-        for (const p of rows) seed[p.product_id] = String(p.suggested_qty);
+        const seed: Record<number, number | null> = {};
+        for (const p of rows) seed[p.product_id] = p.suggested_qty;
         setQtyByProduct(seed);
       })
       .catch((err: unknown) => {
@@ -124,8 +126,7 @@ export function StoreAiProposalsDialog({
   const approvableItems = useMemo(() => {
     const items: { product_id: number; qty: number }[] = [];
     for (const p of proposals) {
-      const raw = qtyByProduct[p.product_id] ?? '';
-      const qty = Number(String(raw).replace(',', '.'));
+      const qty = qtyByProduct[p.product_id] ?? NaN;
       if (Number.isFinite(qty) && qty > 0) {
         items.push({ product_id: p.product_id, qty });
       }
@@ -197,8 +198,8 @@ export function StoreAiProposalsDialog({
                 .then((res) => {
                   const rows = res.proposals ?? [];
                   setProposals(rows);
-                  const seed: Record<number, string> = {};
-                  for (const p of rows) seed[p.product_id] = String(p.suggested_qty);
+                  const seed: Record<number, number | null> = {};
+                  for (const p of rows) seed[p.product_id] = p.suggested_qty;
                   setQtyByProduct(seed);
                 })
                 .catch((err: unknown) =>
@@ -238,18 +239,16 @@ export function StoreAiProposalsDialog({
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-2">
-                        <Input
-                          type="number"
-                          inputMode="decimal"
-                          min="0"
-                          step="any"
+                        <NumberInput
+                          decimals
+                          min={0}
                           aria-label={`${p.product_name} uchun taklif qilingan soni`}
                           className="w-24 text-right tabular-nums"
-                          value={qtyByProduct[p.product_id] ?? ''}
-                          onChange={(e) =>
+                          value={qtyByProduct[p.product_id] ?? null}
+                          onValueChange={(n) =>
                             setQtyByProduct((prev) => ({
                               ...prev,
-                              [p.product_id]: e.target.value,
+                              [p.product_id]: n,
                             }))
                           }
                           disabled={isSubmitting}

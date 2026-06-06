@@ -3,21 +3,24 @@ import { CakeSlice, CircleUser } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { ThemeToggle } from '@/components/layout/ThemeToggle';
 import { useAuth } from '@/hooks/useAuth';
+import { getGreeting } from '@/lib/format';
 import { cn } from '@/lib/utils';
-import { HOME_TILES, type HomeTile } from '@/lib/navigation';
+import { HOME_TILE_GROUPS, type HomeTile } from '@/lib/navigation';
 
 /**
  * Home launcher (IA redesign) — the PRIMARY navigation hub.
  *
- * Renders the 11 PRIMARY modules (`HOME_TILES`) as TWO rows so nothing
- * spills onto a lonely third row:
- *   - top row    — the 5 most important modules, rendered LARGER;
- *   - bottom row — the remaining 6, slightly smaller.
- * No per-section headings; secondary screens are reached from the header
- * sub-tabs (PageTabs) within their group, not from here.
+ * Renders the PRIMARY modules as THREE titled sections in an explicit
+ * owner-directed order (`HOME_TILE_GROUPS`):
+ *   - Boshqaruv  — Dashboard, Mahsulotlar, Bo'g'inlar, Hodimlar;
+ *   - Bo'limlar  — the five supply-chain links;
+ *   - Qo'shimcha — Kassa, Bashorat.
+ * Secondary screens are reached from the header sub-tabs (PageTabs)
+ * within their group, not from here.
  *
  * Tiles are RBAC-filtered by the current user's role with the same
- * `roles.includes(user.role)` rule the nav uses. When there is no
+ * `roles.includes(user.role)` rule the nav uses; a group with no visible
+ * tiles is dropped entirely (no orphan heading). When there is no
  * authenticated user yet, show everything (the route guard still gates
  * actual access).
  *
@@ -25,12 +28,42 @@ import { HOME_TILES, type HomeTile } from '@/lib/navigation';
  */
 
 /**
- * Tile card. `size="lg"` is used for the 5 PRIMARY modules in the top
- * row (taller, larger icon); `size="md"` for the 6 secondary tiles below.
+ * Per-group accent palette so each section is colour-coded for clarity:
+ *   Boshqaruv → ko'k, Bo'limlar → yashil, Qo'shimcha → sarg'ish.
+ * Class strings are full literals (not interpolated) so Tailwind keeps
+ * them. Keyed by the exact group title from `HOME_TILE_GROUPS`.
  */
-function TileCard({ tile, size }: { tile: HomeTile; size: 'lg' | 'md' }) {
+interface GroupAccent {
+  heading: string;
+  icon: string;
+  card: string;
+}
+const GROUP_ACCENTS: Record<string, GroupAccent> = {
+  Boshqaruv: {
+    heading: 'text-blue-400/80',
+    icon: 'bg-blue-500/10 text-blue-400 group-hover:bg-blue-500/20',
+    card: 'hover:border-blue-500/60 hover:bg-blue-500/5 group-focus-visible:border-blue-500/60',
+  },
+  'Bo‘limlar': {
+    heading: 'text-emerald-400/80',
+    icon: 'bg-emerald-500/10 text-emerald-400 group-hover:bg-emerald-500/20',
+    card: 'hover:border-emerald-500/60 hover:bg-emerald-500/5 group-focus-visible:border-emerald-500/60',
+  },
+  'Qo‘shimcha': {
+    heading: 'text-amber-400/80',
+    icon: 'bg-amber-500/10 text-amber-400 group-hover:bg-amber-500/20',
+    card: 'hover:border-amber-500/60 hover:bg-amber-500/5 group-focus-visible:border-amber-500/60',
+  },
+};
+const DEFAULT_ACCENT: GroupAccent = {
+  heading: 'text-muted-foreground',
+  icon: 'bg-primary/10 text-primary group-hover:bg-primary/15',
+  card: 'hover:border-primary/50 hover:bg-accent/40 group-focus-visible:border-primary/50',
+};
+
+/** Tile card — a single launcher module, tinted by its group accent. */
+function TileCard({ tile, accent }: { tile: HomeTile; accent: GroupAccent }) {
   const Icon = tile.icon;
-  const lg = size === 'lg';
   return (
     <Link
       to={tile.path}
@@ -38,23 +71,19 @@ function TileCard({ tile, size }: { tile: HomeTile; size: 'lg' | 'md' }) {
     >
       <Card
         className={cn(
-          'flex h-full flex-col items-center justify-center gap-3 p-4 text-center transition-all hover:border-primary/50 hover:bg-accent/40 hover:shadow-lg group-focus-visible:border-primary/50',
-          lg ? 'min-h-[8.5rem]' : 'min-h-[7rem]',
+          'flex h-full min-h-[7rem] flex-col items-center justify-center gap-3 p-4 text-center transition-all hover:shadow-lg',
+          accent.card,
         )}
       >
         <span
           className={cn(
-            'flex items-center justify-center rounded-lg bg-primary/10 text-primary transition-colors group-hover:bg-primary/15',
-            lg ? 'size-14' : 'size-11',
+            'flex size-11 items-center justify-center rounded-lg transition-colors',
+            accent.icon,
           )}
         >
-          <Icon className={lg ? 'size-7' : 'size-5'} aria-hidden="true" />
+          <Icon className="size-5" aria-hidden="true" />
         </span>
-        <span
-          className={cn('font-medium leading-tight', lg ? 'text-base' : 'text-sm')}
-        >
-          {tile.label}
-        </span>
+        <span className="text-sm font-medium leading-tight">{tile.label}</span>
       </Card>
     </Link>
   );
@@ -64,7 +93,10 @@ export function HomePage() {
   const { user } = useAuth();
 
   const visible = (tile: HomeTile) => !user || tile.roles.includes(user.role);
-  const tiles = HOME_TILES.filter(visible);
+  const groups = HOME_TILE_GROUPS.map((group) => ({
+    ...group,
+    tiles: group.tiles.filter(visible),
+  })).filter((group) => group.tiles.length > 0);
 
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
@@ -87,23 +119,39 @@ export function HomePage() {
           </h1>
           {user && (
             <p className="text-sm text-muted-foreground">
-              {user.name}, sahifani tanlang.
+              <span className="font-medium text-foreground">
+                {getGreeting()}, {user.name}
+              </span>{' '}
+              — sahifani tanlang.
             </p>
           )}
         </div>
 
-        {/* A single centered grid for ALL visible modules. A fixed responsive
-            column count (not a centered flex-wrap) keeps the tiles aligned in
-            tidy columns; an incomplete last row left-aligns under the grid
-            instead of leaving a lone tile floating in the centre. The grid is
-            width-capped + mx-auto so the whole block stays centred on the
-            page regardless of how many tiles a role sees. */}
-        <nav aria-label="Asosiy modullar">
-          <div className="mx-auto grid max-w-3xl grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4">
-            {tiles.map((tile) => (
-              <TileCard key={tile.path} tile={tile} size="md" />
-            ))}
-          </div>
+        {/* THREE titled sections in owner-directed order. Each section is a
+            width-capped + mx-auto grid with a fixed responsive column count,
+            so an incomplete last row left-aligns under the heading instead of
+            leaving a lone tile floating in the centre. */}
+        <nav aria-label="Asosiy modullar" className="mx-auto w-full max-w-3xl space-y-8">
+          {groups.map((group) => {
+            const accent = GROUP_ACCENTS[group.title] ?? DEFAULT_ACCENT;
+            return (
+              <section key={group.title} aria-label={group.title}>
+                <h2
+                  className={cn(
+                    'mb-3 text-xs font-semibold uppercase tracking-wider',
+                    accent.heading,
+                  )}
+                >
+                  {group.title}
+                </h2>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4">
+                  {group.tiles.map((tile) => (
+                    <TileCard key={tile.path} tile={tile} accent={accent} />
+                  ))}
+                </div>
+              </section>
+            );
+          })}
         </nav>
       </main>
     </div>

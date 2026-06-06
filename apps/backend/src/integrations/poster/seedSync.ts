@@ -28,6 +28,8 @@ import {
   STORAGE_TYPE_BY_ID,
   STORE_BACKING_STORAGE,
   DEFAULT_STORAGE_TYPE,
+  matchSexStorageToDept,
+  type DeptCandidate,
 } from './storageClassification.js';
 import {
   finishSyncRun,
@@ -324,6 +326,163 @@ async function mergeStorageIntoSpot(storageId: number, spotId: number): Promise<
         )`,
     [storageId, spotId],
   );
+}
+
+// -----------------------------------------------------------------------------
+// sex_storage -> production-department attach (conservative, reversible).
+// -----------------------------------------------------------------------------
+
+/** One row of the proposed/applied sex_storage -> department attach plan. */
+export type AttachPlanRow = {
+  readonly storageId: number;
+  readonly storageName: string;
+  readonly currentParentId: number | null;
+  /** The matched department id, or null when no confident match exists. */
+  readonly matchedDeptId: number | null;
+  readonly matchedDeptName: string | null;
+  /** The normalised token that produced the match (audit trail). */
+  readonly matchedToken: string | null;
+  /** What the run did with this row. */
+  readonly action: 'set' | 'already' | 'unmatched' | 'skipped-has-parent';
+};
+
+export type AttachResult = {
+  readonly applied: number;
+  readonly rows: readonly AttachPlanRow[];
+};
+
+/**
+ * Attach each `sex_storage` location to its matching `production` department by
+ * a CONSERVATIVE name heuristic (`matchSexStorageToDept`).
+ *
+ * Conservative + reversible by design:
+ *   - only the `parent_id` column is touched — never `type`, never
+ *     `manager_user_id`, never the row itself (no delete/recreate);
+ *   - a sex_storage that ALREADY has a parent is left untouched UNLESS
+ *     `reparentExisting` is true (default false) — we never silently override a
+ *     parent a human set;
+ *   - an unmatched sex_storage is left unparented and reported, never guessed;
+ *   - idempotent: a re-run that finds the parent already correct is a no-op
+ *     (`action: 'already'`).
+ *
+ * The whole attach runs in ONE transaction with a single audit-log entry so a
+ * partial attach is never visible. When `dryRun` is true the plan is built and
+ * returned but nothing is written (used by the diagnostic / report path).
+ */
+export async function attachSexStoragesToDepts(
+  opts: { dryRun?: boolean; reparentExisting?: boolean } = {},
+): Promise<AttachResult> {
+  const dryRun = opts.dryRun ?? false;
+  const reparentExisting = opts.reparentExisting ?? false;
+
+  // Load the production departments (match candidates) and the sex_storage rows.
+  const { rows: depts } = await query<{ id: number; name: string }>(
+    `SELECT id, name FROM locations WHERE type = 'production' ORDER BY id`,
+  );
+  const deptCandidates: DeptCandidate[] = depts.map((d) => ({ id: d.id, name: d.name }));
+
+  const { rows: storages } = await query<{
+    id: number;
+    name: string;
+    parent_id: number | null;
+  }>(
+    `SELECT id, name, parent_id FROM locations WHERE type = 'sex_storage' ORDER BY id`,
+  );
+
+  const validDeptIds = new Set(deptCandidates.map((d) => d.id));
+
+  const plan: AttachPlanRow[] = storages.map((s) => {
+    const match = matchSexStorageToDept(s.name, deptCandidates);
+    if (match === null) {
+      return {
+        storageId: s.id,
+        storageName: s.name,
+        currentParentId: s.parent_id,
+        matchedDeptId: null,
+        matchedDeptName: null,
+        matchedToken: null,
+        action: 'unmatched',
+      };
+    }
+    // A self-parent would violate the chain hierarchy — guard it (cannot happen
+    // here since depts and sex_storages are distinct types, but be defensive).
+    if (match.deptId === s.id || !validDeptIds.has(match.deptId)) {
+      return {
+        storageId: s.id,
+        storageName: s.name,
+        currentParentId: s.parent_id,
+        matchedDeptId: null,
+        matchedDeptName: null,
+        matchedToken: null,
+        action: 'unmatched',
+      };
+    }
+    if (s.parent_id === match.deptId) {
+      return {
+        storageId: s.id,
+        storageName: s.name,
+        currentParentId: s.parent_id,
+        matchedDeptId: match.deptId,
+        matchedDeptName: match.deptName,
+        matchedToken: match.matchedToken,
+        action: 'already',
+      };
+    }
+    if (s.parent_id !== null && !reparentExisting) {
+      return {
+        storageId: s.id,
+        storageName: s.name,
+        currentParentId: s.parent_id,
+        matchedDeptId: match.deptId,
+        matchedDeptName: match.deptName,
+        matchedToken: match.matchedToken,
+        action: 'skipped-has-parent',
+      };
+    }
+    return {
+      storageId: s.id,
+      storageName: s.name,
+      currentParentId: s.parent_id,
+      matchedDeptId: match.deptId,
+      matchedDeptName: match.deptName,
+      matchedToken: match.matchedToken,
+      action: 'set',
+    };
+  });
+
+  const toSet = plan.filter((p) => p.action === 'set');
+  if (dryRun || toSet.length === 0) {
+    return { applied: 0, rows: plan };
+  }
+
+  await withTransaction(async (tx) => {
+    for (const row of toSet) {
+      // parent_id only — type and manager_user_id are NOT touched.
+      await tx.query(
+        `UPDATE locations SET parent_id = $2, updated_at = now()
+          WHERE id = $1 AND type = 'sex_storage'`,
+        [row.storageId, row.matchedDeptId],
+      );
+    }
+    await writeAudit(tx, {
+      actorUserId: null,
+      action: 'poster.sex_storage.attach',
+      entity: 'locations',
+      entityId: null,
+      payload: {
+        attached: toSet.map((r) => ({
+          storage_id: r.storageId,
+          storage_name: r.storageName,
+          previous_parent_id: r.currentParentId,
+          new_parent_id: r.matchedDeptId,
+          matched_dept_name: r.matchedDeptName,
+          matched_token: r.matchedToken,
+        })),
+      },
+    });
+  });
+
+  return { applied: toSet.length, rows: plan };
 }
 
 /**

@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { NumberInput } from '@/components/ui/number-input';
 import { Label } from '@/components/ui/label';
 import { Select } from '@/components/ui/select';
 import { useToast } from '@/components/ui/toast';
@@ -32,14 +33,14 @@ interface FormState {
   name: string;
   type: LocationType;
   parent_id: string;
-  lead_time_days: string;
+  lead_time_days: number | null;
 }
 
 const EMPTY_FORM: FormState = {
   name: '',
   type: 'store',
   parent_id: '',
-  lead_time_days: '',
+  lead_time_days: null,
 };
 
 /**
@@ -72,10 +73,7 @@ export function LocationFormDialog({
             type: location.type,
             parent_id:
               location.parent_id == null ? '' : String(location.parent_id),
-            lead_time_days:
-              location.lead_time_days === null
-                ? ''
-                : String(location.lead_time_days),
+            lead_time_days: location.lead_time_days,
           }
         : EMPTY_FORM,
     );
@@ -90,8 +88,7 @@ export function LocationFormDialog({
       name: form.name.trim(),
       type: form.type,
       parent_id: form.parent_id === '' ? null : Number(form.parent_id),
-      lead_time_days:
-        form.lead_time_days === '' ? null : Number(form.lead_time_days),
+      lead_time_days: form.lead_time_days,
     };
 
     try {
@@ -180,14 +177,13 @@ export function LocationFormDialog({
 
           <div className="space-y-2">
             <Label htmlFor="loc-lead">Yetkazib berish muddati (kun)</Label>
-            <Input
+            <NumberInput
               id="loc-lead"
               name="lead_time_days"
-              type="number"
               min={0}
               value={form.lead_time_days}
-              onChange={(e) =>
-                setForm({ ...form, lead_time_days: e.target.value })
+              onValueChange={(n) =>
+                setForm({ ...form, lead_time_days: n })
               }
             />
           </div>

@@ -156,6 +156,107 @@ describe('RecipePage — read-only recipe view', () => {
     expect(screen.getByText(/Un \(oliy nav\)/)).toBeTruthy();
   });
 
+  it('renders a top-level RAW component alongside semi sections in a MIXED tree (НАПОЛЕОН regression)', async () => {
+    // Г/П НАПОЛЕОН (ЦЕЛЫЙ)-style recipe: a DIRECT raw leaf (`ун`) plus two
+    // semi-with-children sections. The direct raw used to be dropped from the
+    // render whenever semi sections were present — assert it now shows.
+    mockFetch(
+      {
+        product_id: 5,
+        recipe: [],
+        tree: [
+          {
+            component_product_id: 1,
+            name: 'ун',
+            type: 'raw',
+            unit: 'kg',
+            qty_per_unit: 0.31,
+            brutto: null,
+            netto: null,
+            unit_cost: 5000,
+            line_cost: 1550,
+            total_cost: 5000,
+            children: [],
+          },
+          {
+            component_product_id: 20,
+            name: 'крем наполеон',
+            type: 'semi',
+            unit: 'kg',
+            qty_per_unit: 0.4,
+            brutto: null,
+            netto: null,
+            unit_cost: null,
+            line_cost: 8000,
+            total_cost: 8000,
+            children: [
+              {
+                component_product_id: 21,
+                name: 'масло',
+                type: 'raw',
+                unit: 'kg',
+                qty_per_unit: 0.2,
+                brutto: null,
+                netto: null,
+                unit_cost: 40000,
+                line_cost: 8000,
+                total_cost: 40000,
+                children: [],
+              },
+            ],
+          },
+          {
+            // Classifies as `dough` (тесто) — lands in the SAME stage group as
+            // the direct raw `ун`, so this is the exact MIXED case (a direct
+            // leaf + a semi-section inside one RecipeBreakdown call) that the
+            // bug dropped the leaf from.
+            component_product_id: 30,
+            name: 'зувала наполеон тесто',
+            type: 'semi',
+            unit: 'kg',
+            qty_per_unit: 0.5,
+            brutto: null,
+            netto: null,
+            unit_cost: null,
+            line_cost: 6000,
+            total_cost: 6000,
+            children: [
+              {
+                component_product_id: 31,
+                name: 'сахар',
+                type: 'raw',
+                unit: 'kg',
+                qty_per_unit: 0.3,
+                brutto: null,
+                netto: null,
+                unit_cost: 20000,
+                line_cost: 6000,
+                total_cost: 6000,
+                children: [],
+              },
+            ],
+          },
+        ],
+        total_cost: 15550,
+      },
+      [FLOUR, CAKE],
+    );
+
+    await act(async () => {
+      renderRecipePage(5);
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Retseptni yuklab bo/i)).toBeNull();
+    });
+
+    // The DIRECT raw component must be visible (the bug hid it entirely).
+    expect(screen.getByText('ун')).toBeTruthy();
+    // BOTH semi sections must still render.
+    expect(screen.getByText('крем наполеон')).toBeTruthy();
+    expect(screen.getByText('зувала наполеон тесто')).toBeTruthy();
+  });
+
   it('shows an amber WARNING empty state for a PRODUCED product with no recipe', async () => {
     mockFetch(
       { product_id: 5, recipe: [], tree: [], total_cost: null },

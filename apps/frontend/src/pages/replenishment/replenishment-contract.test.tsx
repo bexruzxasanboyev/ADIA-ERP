@@ -53,8 +53,10 @@ const REQUEST: ReplenishmentRequest = {
   shipment_movement_id: null,
   note: null,
   created_by: 1,
-  created_at: '2026-05-22T10:00:00.000Z',
-  updated_at: '2026-05-22T10:00:00.000Z',
+  // Use "now" so the list page's default Sana filter (current month) always
+  // includes this row — the redesign filters requests by `created_at`.
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
   closed_at: null,
   product_name: 'Un',
   product_unit: 'kg',
@@ -143,7 +145,7 @@ describe('Replenishment screens', () => {
     expect(screen.getByText('Un')).toBeInTheDocument();
     expect(screen.getByText('Markaziy sklad')).toBeInTheDocument();
     // The status pill is rendered inside the table row — at least one
-    // "Yangi" label is present (the others belong to the filter select).
+    // "Yangi" label is present (status is now a tab strip, not a select).
     expect(screen.getAllByText('Yangi').length).toBeGreaterThan(0);
   });
 

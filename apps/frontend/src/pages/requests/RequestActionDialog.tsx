@@ -10,7 +10,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
-import { Input } from '@/components/ui/input';
+import { NumberInput } from '@/components/ui/number-input';
 import { Textarea } from '@/components/ui/textarea';
 import { formatQty } from '@/lib/format';
 import type { ReplenishmentRequest } from '@/lib/types';
@@ -133,7 +133,7 @@ export function RequestActionDialog({
   isSubmitting = false,
 }: RequestActionDialogProps) {
   const copy = modeCopy(mode);
-  const [qty, setQty] = useState<string>('');
+  const [qty, setQty] = useState<number | null>(null);
   const [note, setNote] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
 
@@ -141,7 +141,7 @@ export function RequestActionDialog({
   // does not bleed into the next action attempt.
   useEffect(() => {
     if (open) {
-      setQty('');
+      setQty(null);
       setNote('');
       setError(null);
     }
@@ -161,7 +161,7 @@ export function RequestActionDialog({
     // Quantity guard for partial / return.
     let qtyValue: number | undefined;
     if (copy.showQtyInput) {
-      const parsed = Number(qty.replace(',', '.'));
+      const parsed = qty ?? NaN;
       if (!Number.isFinite(parsed) || parsed <= 0) {
         setError("Miqdorni musbat raqam qilib kiriting.");
         return;
@@ -220,14 +220,12 @@ export function RequestActionDialog({
           {copy.showQtyInput && (
             <div className="space-y-1">
               <Label htmlFor="action-qty">{copy.qtyLabel}</Label>
-              <Input
+              <NumberInput
                 id="action-qty"
-                type="number"
-                inputMode="decimal"
-                min="0"
-                step="any"
+                decimals
+                min={0}
                 value={qty}
-                onChange={(event) => setQty(event.target.value)}
+                onValueChange={setQty}
                 placeholder={`Max: ${formatQty(request.qty_needed)}`}
                 disabled={isSubmitting}
                 required

@@ -72,6 +72,8 @@ const MOVEMENTS: MovementsResponse = {
       note: null,
       created_at: '2026-05-26T07:30:00.000Z',
       created_by: 1,
+      replenishment_id: null,
+      brak_qty: null,
       product_name: 'Un',
       product_unit: 'kg',
       from_location_name: null,

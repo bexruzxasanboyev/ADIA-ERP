@@ -83,8 +83,20 @@ function stubPosterUnavailable(): void {
  * Poster does). The route divides back to so'm via `tiyinToSom`. `spot_id` is
  * ignored by the stub — single-spot scoped tests get the same payload.
  */
+/**
+ * F4.9-hourly — so'm of revenue the analytics stub puts in EACH of the 24
+ * `data_hourly` slots when `hourlyPerSlot` is given. data_hourly is already in
+ * so'm (the route applies NO ÷100).
+ *
+ * `hourlyTxPerSlot` is the per-hour TRANSACTION COUNT the stub serves for the
+ * `select=transactions` `getAnalytics` call (the hourly qty source). The stub
+ * branches on the request's `select` query param so the revenue and
+ * transactions series are distinct, exactly as Poster behaves.
+ */
 function stubPosterRevenue(
   byDate: Record<string, { amount: number; count: number }>,
+  hourlyPerSlot?: number,
+  hourlyTxPerSlot?: number,
 ): void {
   const days = Object.entries(byDate).map(([date, v]) => ({
     date,
@@ -101,6 +113,18 @@ function stubPosterRevenue(
       },
     },
   };
+  const revenueAnalyticsPayload = {
+    response: {
+      data_hourly: new Array<number>(24).fill(hourlyPerSlot ?? 0),
+      counters: { revenue: String((hourlyPerSlot ?? 0) * 24) },
+    },
+  };
+  const txAnalyticsPayload = {
+    response: {
+      data_hourly: new Array<number>(24).fill(hourlyTxPerSlot ?? 0),
+      counters: { transactions: String((hourlyTxPerSlot ?? 0) * 24) },
+    },
+  };
   setPosterClientForTests(
     new PosterClient({
       token: 'acc:test',
@@ -111,6 +135,16 @@ function stubPosterRevenue(
         if (m === 'dash.getPaymentsReport') {
           return Promise.resolve(
             new Response(JSON.stringify(payload), { status: 200 }),
+          );
+        }
+        if (m === 'dash.getAnalytics') {
+          // Branch on `select` so the revenue series (amount) and the
+          // transactions series (hourly qty) are distinct, like Poster.
+          const select = u.searchParams.get('select');
+          const body =
+            select === 'transactions' ? txAnalyticsPayload : revenueAnalyticsPayload;
+          return Promise.resolve(
+            new Response(JSON.stringify(body), { status: 200 }),
           );
         }
         return Promise.resolve(
@@ -572,6 +606,42 @@ describe('GET /api/dashboard/ecosystem', () => {
     expect(totalQty).toBe(35);
     const totalAmount = days.reduce((acc, d) => acc + Number(d.amount), 0);
     expect(totalAmount).toBe(35_000);
+  });
+
+  it('range=today emits an HOURLY sales_chart (granularity=hour)', async () => {
+    const w = await seedWorld();
+    const PER_HOUR_SOM = 1234;
+    const PER_HOUR_TX = 7;
+    stubPosterRevenue({}, PER_HOUR_SOM, PER_HOUR_TX);
+
+    const res = await request(ctx.app)
+      .get('/api/dashboard/ecosystem?range=today')
+      .set('Authorization', `Bearer ${w.pm.token}`);
+    expect(res.status).toBe(200);
+
+    // Wrapper carries the granularity discriminator.
+    expect(res.body.sales_chart.granularity).toBe('hour');
+    const days = res.body.sales_chart.days as Array<{
+      date: string;
+      hour: number;
+      qty: number;
+      amount: number;
+    }>;
+    const nowHour = new Date().getUTCHours();
+    // One point per hour from 00:00 up to the current hour (never the future).
+    expect(days.length).toBe(nowHour + 1);
+    const todayIso = new Date().toISOString().slice(0, 10);
+    days.forEach((d, i) => {
+      expect(d.date).toBe(todayIso);
+      expect(d.hour).toBe(i);
+      // qty now comes from `select=transactions` data_hourly[hour] (counts).
+      expect(d.qty).toBe(PER_HOUR_TX);
+      // amount comes straight from `select=revenue` data_hourly[hour] (so'm).
+      expect(d.amount).toBe(PER_HOUR_SOM);
+    });
+    // And the qty series is genuinely non-zero (regression guard for the old
+    // hard-coded `qty: 0` hourly flat line).
+    expect(days.some((d) => d.qty > 0)).toBe(true);
   });
 
   it('returns an empty alerts feed when no notifications exist', async () => {

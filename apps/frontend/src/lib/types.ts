@@ -85,6 +85,25 @@ export interface User {
   location_ids?: number[];
   /** Optional Telegram numeric id, when provisioned by the PM. */
   telegram_id?: number | null;
+  /**
+   * Soft-deactivation flag (backend default `true`). `DELETE /api/users/:id`
+   * sets this to `false` instead of hard-deleting; reactivation is a
+   * `PATCH /api/users/:id { is_active: true }`. Optional so older list
+   * payloads that predate the column are treated as active.
+   */
+  is_active?: boolean;
+  /**
+   * KPI — oylik maosh (so'm). Used by the labour-cost share on the KPI
+   * page. `null`/absent when no salary is recorded. Editable PM-only via
+   * `PATCH /api/users/:id/salary`.
+   */
+  monthly_salary?: number | null;
+  /**
+   * KPI — true when the employee belongs to a PRODUCTION department (sex).
+   * Only these count toward the KPI labour-cost pool (owner rule 2026-06-06),
+   * so the salary dialog lists only production staff. Computed by the backend.
+   */
+  is_production?: boolean;
 }
 
 /**
@@ -307,6 +326,14 @@ export interface StockMovement {
   note: string | null;
   created_at: string;
   created_by: number | null;
+  /** Originating replenishment request, when this movement came from one. */
+  replenishment_id: number | null;
+  /**
+   * Defective ("brak"/yaroqsiz) qty refused on receipt — joined from the
+   * originating `replenishment_requests` row; `null` for movements with no
+   * replenishment link or no recorded brak.
+   */
+  brak_qty: number | null;
   /** Embedded by the backend for display — always present on list responses. */
   product_name: string;
   product_unit: Unit;
@@ -412,6 +439,15 @@ export interface ReplenishmentRequest {
   created_at: string;
   updated_at: string;
   closed_at: string | null;
+  /**
+   * Order/basket grouping key. A store basket confirmed together (one
+   * `POST /api/replenishment/batch` call) shares a single `batch_id`, so the
+   * central inbox and the store's sent list can render the lines as ONE order.
+   * `null` for legacy / individually-raised rows — those render individually.
+   * Optional on the wire so older payloads / fixtures that predate the column
+   * stay strict-type-safe; absent (`undefined`) is treated exactly like `null`.
+   */
+  batch_id?: number | null;
   /**
    * Embedded by the backend for display — `GET /api/replenishment` and
    * `GET /api/replenishment/:id` always send these (JOIN products /
@@ -567,6 +603,8 @@ export interface DashboardRecentMovementItem {
  */
 export interface DashboardRevenueBreakdown {
   total: number;
+  /** Number of receipts/checks in the selected range (for "O'rtacha chek"). */
+  count: number;
   byMethod: {
     cash: number;
     card: number;
@@ -574,6 +612,42 @@ export interface DashboardRevenueBreakdown {
     click: number;
     other?: number;
   };
+  /**
+   * Pre-ordered display list — USE THIS for rendering (not `byMethod`).
+   * Order: cash, card, payme, click always first (even at 0), then named
+   * custom Poster methods (key `pm_<id>`, e.g. {key:'pm_14', label:'Доверительный платеж'})
+   * sorted by amount desc, then optionally {key:'other', label:'Boshqa'}.
+   */
+  methods: { key: string; label: string; amount: number }[];
+}
+
+/**
+ * One row of the "Eng ko'p sotilgan mahsulotlar" (top-selling products)
+ * panel. `qty` is the units sold in the selected range, `unit` is the raw
+ * Poster unit code ('p' → dona, 'kg' → kg, …), `revenue` is the so'm total
+ * for that product, and `share` is its 0..1 fraction of total revenue.
+ */
+export interface DashboardTopProductRow {
+  product_id: number;
+  name: string;
+  qty: number;
+  unit: string;
+  revenue: number;
+  share: number;
+}
+
+/**
+ * `GET /api/dashboard/top-products?range=…&spotId=&limit=5` envelope.
+ *
+ * `products` is pre-sorted by revenue desc and capped at `limit`. Mirrors
+ * the date-range mechanism used by the revenue breakdown widget so the
+ * panel responds to today/week/month/6m/custom.
+ */
+export interface DashboardTopProducts {
+  from: string;
+  to: string;
+  spot_id: number | null;
+  products: DashboardTopProductRow[];
 }
 
 /**
@@ -622,7 +696,17 @@ export interface DashboardRawDetail {
     location_id: number;
     location_name: string;
   }>;
-  daily_movements: Array<{ date: string; received: number; issued: number }>;
+  /**
+   * Date-bucketed (or, for range=today, hour-bucketed) received/issued series.
+   * `hour` is present only on hourly buckets; `granularity` discriminates.
+   */
+  daily_movements: Array<{
+    date: string;
+    hour?: number;
+    received: number;
+    issued: number;
+  }>;
+  daily_granularity?: DashboardChartGranularity;
   pending_purchase_orders: Array<{
     id: number;
     product_id: number;
@@ -657,7 +741,9 @@ export interface DashboardProductionDetail {
     product_name: string;
     qty: number;
   }>;
-  daily_io: Array<{ date: string; input: number; output: number }>;
+  /** Date- (or, range=today, hour-) bucketed input/output series. */
+  daily_io: Array<{ date: string; hour?: number; input: number; output: number }>;
+  daily_granularity?: DashboardChartGranularity;
   sex_load: Array<{
     location_id: number;
     location_name: string;
@@ -674,7 +760,14 @@ export interface DashboardSupplyDetail {
     shipped_today: number;
     received_today: number;
   };
-  daily_flow: Array<{ date: string; received: number; shipped: number }>;
+  /** Date- (or, range=today, hour-) bucketed received/shipped series. */
+  daily_flow: Array<{
+    date: string;
+    hour?: number;
+    received: number;
+    shipped: number;
+  }>;
+  daily_granularity?: DashboardChartGranularity;
   top_destinations_today: Array<{
     location_id: number;
     location_name: string;
@@ -719,12 +812,15 @@ export interface DashboardCentralDetail {
     records_applied: number;
     error_detail: string | null;
   }>;
+  /** Date- (or, range=today, hour-) bucketed sync-run outcome series. */
   daily_sync_runs: Array<{
     date: string;
+    hour?: number;
     ok: number;
     partial: number;
     failed: number;
   }>;
+  daily_granularity?: DashboardChartGranularity;
 }
 
 /** `GET /api/dashboard/stores` — Do'konlar drawer. */
@@ -752,7 +848,18 @@ export interface DashboardStoresDetail {
   }>;
   /** 7 days x 24 hours; day_offset 0 = today, up to 6 = 6 days ago. */
   hourly_heatmap: Array<{ day_offset: number; hour: number; qty: number }>;
-  daily_sales: Array<{ date: string; qty: number; revenue: number }>;
+  /** Date- (or, range=today, hour-) bucketed qty/revenue series. */
+  daily_sales: Array<{ date: string; hour?: number; qty: number; revenue: number }>;
+  daily_granularity?: DashboardChartGranularity;
+  /**
+   * Store-scoped, zero-filled & continuous qty/amount series — same shape the
+   * dashboard's `sales_chart` uses. `granularity` is `'hour'` for range=today,
+   * `'day'` otherwise. Feeds `SalesChartsRow` directly.
+   */
+  series: {
+    granularity: DashboardChartGranularity;
+    days: DashboardSalesPoint[];
+  };
 }
 
 /**
@@ -1185,14 +1292,138 @@ export interface DashboardAlert {
   created_at: string;
 }
 
-/** One point in the 30-day sales chart. */
+/**
+ * Granularity discriminator carried on every date-bucketed dashboard
+ * time-series response. `'day'` is the default (week/month/6m/custom →
+ * `DD.MM` day buckets); `'hour'` is emitted only when the DateRangeFilter
+ * is "Bugun" (range=today), in which case each point also carries an `hour`
+ * (0-23) and the chart renders `HH:00` labels. Optional on the wire so older
+ * payloads (and any series the backend has not yet upgraded) keep behaving as
+ * day-granularity. See `lib/chartTime.ts`.
+ */
+export type DashboardChartGranularity = 'hour' | 'day';
+
+/** One point in the sales chart — a day bucket, or (range=today) an hour bucket. */
 export interface DashboardSalesPoint {
   /** ISO `YYYY-MM-DD`. */
   date: string;
-  /** Aggregate sold quantity for the day (sum of `stock_movements.qty` where reason='sale'). */
+  /**
+   * 0-23 — present IFF the series granularity is `'hour'` (range=today). When
+   * present the chart labels this point `HH:00` instead of `DD.MM`.
+   */
+  hour?: number;
+  /** Aggregate sold quantity for the bucket (sum of `stock_movements.qty` where reason='sale'). */
   qty: number;
-  /** Aggregate sale revenue for the day in so'm (sum of `qty * price`). */
+  /** Aggregate sale revenue for the bucket in so'm (sum of `qty * price`). */
   amount: number;
+}
+
+/**
+ * One point in the production time-series — a day bucket, or (range=today)
+ * an hour bucket. `count` is the number of production orders created in the
+ * bucket; `qty` is the summed produced quantity. Mirrors the sales series'
+ * granularity contract.
+ */
+export interface DashboardProductionPoint {
+  /** ISO `YYYY-MM-DD`. */
+  date: string;
+  /** 0-23 — present IFF the series granularity is `'hour'` (range=today). */
+  hour?: number;
+  /** Number of production orders created in the bucket. */
+  count: number;
+  /** Sum of the bucket's production-order quantities. */
+  qty: number;
+}
+
+/**
+ * `GET /api/dashboard/production-series?range=…` envelope. Same granularity
+ * contract as `sales_chart` so the chart switches hourly↔daily with the
+ * dashboard date-range filter.
+ */
+export interface DashboardProductionSeries {
+  granularity: DashboardChartGranularity;
+  days: DashboardProductionPoint[];
+}
+
+/**
+ * One point in the replenishment-requests time-series. `accepted` is the
+ * number of requests that left `NEW` (qabul qilingan) in the bucket;
+ * `shipped` is the number that transitioned into `SHIP_TO_REQUESTER`
+ * (jo'natilgan). Same granularity contract as the sales/production series.
+ */
+export interface DashboardRequestsPoint {
+  /** ISO `YYYY-MM-DD`. */
+  date: string;
+  /** 0-23 — present IFF the series granularity is `'hour'` (range=today). */
+  hour?: number;
+  /** Requests accepted (left NEW) in the bucket. */
+  accepted: number;
+  /** Requests shipped to the requester in the bucket. */
+  shipped: number;
+  /**
+   * Requests raised but NOT yet accepted — current status `NEW`, bucketed by
+   * the request's own `created_at` (so'rov bo'lgan, lekin qabul qilinmagan).
+   */
+  open: number;
+}
+
+/**
+ * `GET /api/dashboard/requests-series?range=…&locationId=…` envelope. Two
+ * series (accepted / shipped) per bucket, optionally scoped to one location.
+ */
+export interface DashboardRequestsSeries {
+  granularity: DashboardChartGranularity;
+  days: DashboardRequestsPoint[];
+}
+
+/**
+ * One contributing line inside a sales-breakdown bucket — a single product
+ * (by name) or a single payment method, with its sold quantity and revenue.
+ * The backend sorts a bucket's `items` by `amount` descending.
+ */
+export interface DashboardSalesBreakdownItem {
+  /** Product name or payment-method label (already display-ready). */
+  name: string;
+  /** Sold quantity attributed to this item within the bucket. */
+  qty: number;
+  /** Sale revenue (so'm) attributed to this item within the bucket. */
+  amount: number;
+}
+
+/**
+ * One bucket of the itemized sales breakdown — an hour bucket (range=today,
+ * `hour` present) or a day bucket (`date` present). `items` is the per-line
+ * contribution that powers the Yandex-style tooltip; `total_*` are the bucket
+ * aggregates shown in the tooltip's "Jami" row.
+ */
+export interface DashboardSalesBreakdownBucket {
+  /** 0-23 — present IFF the breakdown granularity is `'hour'`. */
+  hour?: number;
+  /** ISO `YYYY-MM-DD` — present IFF the breakdown granularity is `'day'`. */
+  date?: string;
+  /** Sum of `items[].qty` for the bucket. */
+  total_qty: number;
+  /** Sum of `items[].amount` for the bucket (so'm). */
+  total_amount: number;
+  /** Contributing lines, sorted by `amount` descending. */
+  items: DashboardSalesBreakdownItem[];
+}
+
+/** Dimension the sales breakdown is sliced by. */
+export type DashboardSalesBreakdownBy = 'product' | 'payment';
+
+/**
+ * `GET /api/dashboard/sales-breakdown?range=…&by=product|payment&spotId=&limit=`
+ * envelope. Mirrors `sales_chart` granularity so the chart tooltip can match a
+ * hovered point to its bucket (by `hour` when hourly, by `date` when daily).
+ */
+export interface DashboardSalesBreakdown {
+  from: string;
+  to: string;
+  spot_id: number | null;
+  granularity: DashboardChartGranularity;
+  by: DashboardSalesBreakdownBy;
+  buckets: DashboardSalesBreakdownBucket[];
 }
 
 /**
@@ -1240,6 +1471,11 @@ export interface DashboardEcosystem {
   chain_edges?: DashboardChainEdge[];
   alerts_feed: DashboardAlert[];
   sales_chart: {
+    /**
+     * `'day'` for week/month/6m/custom; `'hour'` for range=today (each point
+     * then carries `hour`). Optional so older payloads default to day buckets.
+     */
+    granularity?: DashboardChartGranularity;
     days: DashboardSalesPoint[];
   };
 }
@@ -1543,4 +1779,52 @@ export interface Nakladnoy {
 /** `GET /api/nakladnoy` envelope (EPIC 8.4). */
 export interface NakladnoyListResponse {
   items: Nakladnoy[];
+}
+
+/**
+ * KPI / tan-narx (cost & profit) — PM-only. The boss reviews the full
+ * per-product cost (raw material + utilities + labour) against monthly
+ * sales to set selling prices. Mirrors `GET /api/kpi/products?month=`.
+ */
+
+/** Roll-up totals for the selected month (one company, no tenant). */
+export interface KpiTotals {
+  /** Oylik oylik (maosh) jami — sum of active employees' monthly salary. */
+  salary: number;
+  /** Oyda ishlab chiqarilgan jami dona (across all products). */
+  units_produced: number;
+  /** 1 donaga to'g'ri keladigan oylik ulush (salary / units), or null. */
+  salary_per_unit: number | null;
+}
+
+/** One finished-product cost/profit row for the month. */
+export interface KpiProductRow {
+  product_id: number;
+  name: string;
+  /** Xom-ashyo (1 dona) — null when the recipe/cost is unknown. */
+  material_cost: number | null;
+  /**
+   * Komunal (1 dona) — per-product manual value entered by the boss, or null.
+   * Editable inline via `PATCH /api/products/:id/komunal`.
+   */
+  komunal_per_unit: number | null;
+  /** Oylik ulush (1 dona). */
+  salary_per_unit: number | null;
+  /** To'liq tan-narx (1 dona) = material + komunal + salary. */
+  full_cost: number | null;
+  units_produced: number;
+  units_sold: number;
+  /** Sotuv summasi (oy). */
+  revenue: number;
+  /** Foyda (oy) — null when full_cost is unknown. */
+  profit: number | null;
+  /** Boshliq belgilagan KPI maqsad (foyda maqsadi), or null. */
+  kpi_target: number | null;
+}
+
+/** `GET /api/kpi/products?month=YYYY-MM` envelope. */
+export interface KpiProductsResponse {
+  month: string;
+  totals: KpiTotals;
+  products: KpiProductRow[];
 }
