@@ -127,40 +127,37 @@ async function countByType(type: string, recipientUserId?: number): Promise<numb
 // ---------------------------------------------------------------------------
 describe('stock_below_min', () => {
   it('notifies the requester location manager when stock falls below min', async () => {
-    const { store, storeManagerId, central } = await buildChainWithManagers();
+    const { central, centralManagerId } = await buildChainWithManagers();
     const product = await makeProduct(ctx.db, { type: 'finished' });
 
-    // Below min at the store; central has plenty so the engine immediately
-    // creates and starts a request — the scan still queues a
-    // `stock_below_min` nudge for the manager.
+    // STORES opt out of auto-scan now (propose→approve), so the scan nudge is
+    // asserted on a NON-store internal layer — the central warehouse.
     await setStock(ctx.db, {
-      locationId: store,
+      locationId: central,
       productId: product,
       qty: 1,
       minLevel: 5,
       maxLevel: 10,
     });
-    await setStock(ctx.db, { locationId: central, productId: product, qty: 50 });
 
     await runEngineCycle();
-    expect(await countByType('stock_below_min', storeManagerId)).toBe(1);
+    expect(await countByType('stock_below_min', centralManagerId)).toBe(1);
   });
 
   it('is debounced — running the scan twice produces only one notification per 24h', async () => {
-    const { store, storeManagerId, central } = await buildChainWithManagers();
+    const { central, centralManagerId } = await buildChainWithManagers();
     const product = await makeProduct(ctx.db, { type: 'finished' });
     await setStock(ctx.db, {
-      locationId: store,
+      locationId: central,
       productId: product,
       qty: 1,
       minLevel: 5,
       maxLevel: 10,
     });
-    await setStock(ctx.db, { locationId: central, productId: product, qty: 50 });
 
     await runEngineCycle();
     await runEngineCycle();
-    expect(await countByType('stock_below_min', storeManagerId)).toBe(1);
+    expect(await countByType('stock_below_min', centralManagerId)).toBe(1);
   });
 });
 
@@ -205,9 +202,16 @@ describe('replenishment_created', () => {
     });
     await setStock(ctx.db, { locationId: central, productId: product, qty: 50 });
 
-    // Driving runEngineCycle creates the request, then advances NEW ->
+    // Stores no longer auto-scan, so the store request is created explicitly
+    // (fires the requester-side nudge); the cycle then advances NEW ->
     // CHECK_STORE_SUPPLIER which fills target_location_id and fires the
     // target-side nudge.
+    await createRequest({
+      productId: product,
+      requesterLocationId: store,
+      qtyNeeded: 9,
+      actorUserId: null,
+    });
     await runEngineCycle();
 
     expect(await countByType('replenishment_created', storeManagerId)).toBe(1);
@@ -236,7 +240,14 @@ describe('shipment_created', () => {
     });
     await setStock(ctx.db, { locationId: central, productId: product, qty: 50 });
 
-    // Drive through to CLOSED.
+    // Stores no longer auto-scan — create the store request explicitly, then
+    // drive through to CLOSED.
+    await createRequest({
+      productId: product,
+      requesterLocationId: store,
+      qtyNeeded: 9,
+      actorUserId: null,
+    });
     await runEngineCycle();
     const { rows } = await ctx.db.query<{ id: number }>(
       `SELECT id FROM replenishment_requests
