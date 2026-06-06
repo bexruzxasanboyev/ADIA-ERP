@@ -50,20 +50,31 @@ afterAll(async () => {
   await ctx.dispose();
 });
 
-/** Build the full chain topology: store -> central -> supply -> production -> raw. */
+/**
+ * Build the full chain topology: store -> central -> supply -> production -> raw.
+ *
+ * Also exposes a `sexStorage` buffer hanging off the production sex
+ * (`sex_storage.parent_id = production`). Per the owner spec the store flow is
+ * AI-propose -> boss-approve, so `scanBelowMin()` EXCLUDES `type='store'`
+ * locations; the internal `sex_storage` here is a NON-store node that the scan
+ * still auto-picks-up, used by the engine-driving tests below to create a
+ * request EXPLICITLY (stores) or to exercise the auto-scan path (non-stores).
+ */
 async function buildChain(): Promise<{
   rawWh: number;
   production: number;
+  sexStorage: number;
   supply: number;
   central: number;
   store: number;
 }> {
   const rawWh = await makeLocation(ctx.db, { type: 'raw_warehouse' });
   const production = await makeLocation(ctx.db, { type: 'production', parentId: rawWh });
+  const sexStorage = await makeLocation(ctx.db, { type: 'sex_storage', parentId: production });
   const supply = await makeLocation(ctx.db, { type: 'supply', parentId: production });
   const central = await makeLocation(ctx.db, { type: 'central_warehouse', parentId: supply });
   const store = await makeLocation(ctx.db, { type: 'store', parentId: central });
-  return { rawWh, production, supply, central, store };
+  return { rawWh, production, sexStorage, supply, central, store };
 }
 
 beforeEach(async () => {
@@ -84,11 +95,22 @@ describe('AC4.1 — branch (a): target has enough -> direct ship to requester', 
     });
     await setStock(ctx.db, { locationId: central, productId: product, qty: 50 });
 
+    // Owner spec: STORES are no longer auto-scanned (AI-propose -> boss-approve).
+    // The below-min scan must therefore NOT surface this store.
     const below = await scanBelowMin();
-    expect(below.length).toBe(1);
-    expect(below[0]?.location_id).toBe(store);
+    expect(below.some((r) => r.location_id === store)).toBe(false);
 
-    await runEngineCycle(); // create + advance once
+    // The store request is raised EXPLICITLY (the boss-approve path /
+    // proposals/approve calls createRequest under the hood). qty_needed mirrors
+    // what the scan would have computed for a non-store: max(20) - qty(1) = 19.
+    await createRequest({
+      productId: product,
+      requesterLocationId: store,
+      qtyNeeded: 20 - 1,
+      actorUserId: null,
+    });
+    // The engine then advances it exactly as before (NEW -> CHECK_STORE_SUPPLIER).
+    await runEngineCycle();
     let req = await loadRequest(store, product);
     expect(req.status).toBe('CHECK_STORE_SUPPLIER');
 
@@ -140,7 +162,15 @@ describe('AC4.1 — branch (b): target empty, raw OK -> production -> ship', () 
     // CHECK_PRODUCTION_INPUT -> CREATE_PRODUCTION_ORDER action (ADR-0001 §7).
     await setStock(ctx.db, { locationId: rawWh, productId: rawA, qty: 100 });
 
-    await runEngineCycle(); // create + advance NEW->CHECK_STORE_SUPPLIER
+    // Store is not auto-scanned — raise its request explicitly (boss-approve
+    // path). qty_needed = max(10) - qty(0) = 10.
+    await createRequest({
+      productId: finishedProduct,
+      requesterLocationId: store,
+      qtyNeeded: 10,
+      actorUserId: null,
+    });
+    await runEngineCycle(); // advance NEW->CHECK_STORE_SUPPLIER
     let req = await loadRequest(store, finishedProduct);
     expect(req.status).toBe('CHECK_STORE_SUPPLIER');
 
@@ -210,6 +240,14 @@ describe('AC4.1 — branch (c): target empty, raw short -> purchase -> productio
     // Central is empty. Raw warehouse has 5 (need 12). Production has 0.
     await setStock(ctx.db, { locationId: rawWh, productId: rawA, qty: 5 });
 
+    // Store is not auto-scanned — raise its request explicitly (boss-approve
+    // path). qty_needed = max(6) - qty(0) = 6.
+    await createRequest({
+      productId: finishedProduct,
+      requesterLocationId: store,
+      qtyNeeded: 6,
+      actorUserId: null,
+    });
     await runEngineCycle();
     let req = await loadRequest(store, finishedProduct);
     expect(req.status).toBe('CHECK_STORE_SUPPLIER');
@@ -308,10 +346,13 @@ describe('AC4.2 — debounce (no duplicate open request)', () => {
   });
 
   it('engine cycle is idempotent — repeated scans do not duplicate', async () => {
-    const { store } = await buildChain();
+    // Uses a NON-store (sex_storage) location so the auto-scan still applies —
+    // stores are excluded from scanBelowMin() per the owner spec, so the
+    // duplicate-suppression invariant is exercised on an internal layer.
+    const { sexStorage } = await buildChain();
     const product = await makeProduct(ctx.db, { type: 'finished' });
     await setStock(ctx.db, {
-      locationId: store, productId: product, qty: 0, minLevel: 5, maxLevel: 10,
+      locationId: sexStorage, productId: product, qty: 0, minLevel: 5, maxLevel: 10,
     });
 
     await runEngineCycle();
@@ -319,9 +360,52 @@ describe('AC4.2 — debounce (no duplicate open request)', () => {
     const { rows } = await ctx.db.query<{ n: string }>(
       `SELECT count(*) AS n FROM replenishment_requests
        WHERE product_id = $1 AND requester_location_id = $2`,
-      [product, store],
+      [product, sexStorage],
     );
     expect(Number(rows[0]?.n)).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Store-exclusion invariant — owner spec: store flow is AI-propose ->
+// boss-approve, so scanBelowMin()/runEngineCycle() must NOT auto-create a
+// request for a below-min STORE, but MUST still auto-create for an internal
+// (non-store) below-min location.
+// ---------------------------------------------------------------------------
+describe('store-exclusion invariant — scanBelowMin/runEngineCycle skip stores, keep internal layers', () => {
+  it('does NOT auto-create a request for a below-min STORE, but DOES for a below-min sex_storage', async () => {
+    const { sexStorage, store } = await buildChain();
+    const product = await makeProduct(ctx.db, { type: 'finished' });
+
+    // Both are below min with positive max — the ONLY difference is location type.
+    await setStock(ctx.db, {
+      locationId: store, productId: product, qty: 0, minLevel: 5, maxLevel: 10,
+    });
+    await setStock(ctx.db, {
+      locationId: sexStorage, productId: product, qty: 0, minLevel: 5, maxLevel: 10,
+    });
+
+    // The raw scan surfaces the internal sex_storage but never the store.
+    const below = await scanBelowMin();
+    expect(below.some((r) => r.location_id === sexStorage)).toBe(true);
+    expect(below.some((r) => r.location_id === store)).toBe(false);
+
+    // The full cycle creates a request for the sex_storage only.
+    await runEngineCycle();
+
+    const { rows: storeRows } = await ctx.db.query<{ n: string }>(
+      `SELECT count(*) AS n FROM replenishment_requests
+       WHERE product_id = $1 AND requester_location_id = $2`,
+      [product, store],
+    );
+    expect(Number(storeRows[0]?.n)).toBe(0); // store: not auto-created
+
+    const { rows: sexRows } = await ctx.db.query<{ n: string }>(
+      `SELECT count(*) AS n FROM replenishment_requests
+       WHERE product_id = $1 AND requester_location_id = $2`,
+      [product, sexStorage],
+    );
+    expect(Number(sexRows[0]?.n)).toBe(1); // sex_storage: auto-created
   });
 });
 
@@ -343,6 +427,13 @@ describe('state machine invariants', () => {
     });
     await setStock(ctx.db, { locationId: central, productId: product, qty: 10 });
 
+    // Store request raised explicitly (not auto-scanned). qty_needed = 5 - 0.
+    await createRequest({
+      productId: product,
+      requesterLocationId: store,
+      qtyNeeded: 5,
+      actorUserId: null,
+    });
     await runEngineCycle();
     let req = await loadRequest(store, product);
     // Drive to CLOSED.
@@ -381,6 +472,13 @@ describe('state machine invariants', () => {
     });
     await setStock(ctx.db, { locationId: central, productId: product, qty: 10 });
 
+    // Store request raised explicitly (not auto-scanned). qty_needed = 4 - 0.
+    await createRequest({
+      productId: product,
+      requesterLocationId: store,
+      qtyNeeded: 4,
+      actorUserId: null,
+    });
     await runEngineCycle();
     let req = await loadRequest(store, product);
     while (!TERMINAL_STATUSES.includes(req.status)) {
@@ -415,6 +513,13 @@ describe('ADR-0001 §7 — raw transfer movement is appended on CREATE_PRODUCTIO
     });
     await setStock(ctx.db, { locationId: rawWh, productId: rawA, qty: 100 });
 
+    // Store request raised explicitly (not auto-scanned). qty_needed = 10 - 0.
+    await createRequest({
+      productId: finishedProduct,
+      requesterLocationId: store,
+      qtyNeeded: 10,
+      actorUserId: null,
+    });
     await runEngineCycle();
     let req = await loadRequest(store, finishedProduct);
     await advance(req.id, null); // -> CHECK_PRODUCTION_INPUT
@@ -461,6 +566,13 @@ describe('SM-7 — skip-state chaining inside one advance()', () => {
     });
     await setStock(ctx.db, { locationId: rawWh, productId: rawA, qty: 100 });
 
+    // Store request raised explicitly (not auto-scanned). qty_needed = 4 - 0.
+    await createRequest({
+      productId: finishedProduct,
+      requesterLocationId: store,
+      qtyNeeded: 4,
+      actorUserId: null,
+    });
     await runEngineCycle();
     let req = await loadRequest(store, finishedProduct);
     await advance(req.id, null); // -> CHECK_PRODUCTION_INPUT
@@ -536,6 +648,13 @@ describe('I3 — RBAC: production_manager advances a request linked to its produ
     });
     await setStock(ctx.db, { locationId: rawWh, productId: rawA, qty: 50 });
 
+    // Store request raised explicitly (not auto-scanned). qty_needed = 3 - 0.
+    await createRequest({
+      productId: finishedProduct,
+      requesterLocationId: store,
+      qtyNeeded: 3,
+      actorUserId: null,
+    });
     await runEngineCycle();
     let req = await loadRequest(store, finishedProduct);
     await advance(req.id, null); // -> CHECK_PRODUCTION_INPUT

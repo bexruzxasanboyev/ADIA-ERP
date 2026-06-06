@@ -21,7 +21,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { createTestContext, type TestContext } from './helpers/context.js';
 import { getQty, makeLocation, makeProduct, makeUser, setStock } from './helpers/fixtures.js';
-import { advance, runEngineCycle } from '../src/services/replenishment.js';
+import { advance, createRequest, runEngineCycle } from '../src/services/replenishment.js';
 
 let ctx: TestContext;
 
@@ -67,13 +67,18 @@ async function makeClosedRequest(opts: {
     productId: opts.product,
     qty: opts.centralStock,
   });
+  // Stores no longer auto-raise via scanBelowMin (AI-propose -> boss-approve).
+  // Create the store request EXPLICITLY with the qty the scan would have
+  // computed (max - qty = (initialQtyStore + qtyNeeded) - initialQtyStore),
+  // then drive the engine cycle from there.
+  const created = await createRequest({
+    productId: opts.product,
+    requesterLocationId: opts.store,
+    qtyNeeded: opts.qtyNeeded,
+    actorUserId: null,
+  });
   await runEngineCycle();
-  const { rows } = await ctx.db.query<{ id: number }>(
-    `SELECT id FROM replenishment_requests
-       WHERE product_id = $1 AND requester_location_id = $2`,
-    [opts.product, opts.store],
-  );
-  const reqId = Number(rows[0]?.id);
+  const reqId = created.id;
   for (let i = 0; i < 6; i++) {
     const r = await advance(reqId, null);
     if (r.request.status === 'CLOSED' || r.request.status === 'CANCELLED') break;

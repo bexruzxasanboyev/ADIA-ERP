@@ -71,7 +71,13 @@ export async function makeLocation(
   db: TestDb,
   opts: {
     name?: string;
-    type?: 'raw_warehouse' | 'production' | 'supply' | 'central_warehouse' | 'store';
+    type?:
+      | 'raw_warehouse'
+      | 'production'
+      | 'sex_storage'
+      | 'supply'
+      | 'central_warehouse'
+      | 'store';
     parentId?: number | null;
   } = {},
 ): Promise<number> {

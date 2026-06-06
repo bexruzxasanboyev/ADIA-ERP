@@ -115,13 +115,14 @@ describe('GET /api/replenishment/:id — RBAC + linkage branches', () => {
     // Raw warehouse short — engine will raise a PO.
     await setStock(ctx.db, { locationId: rawWh, productId: raw, qty: 1 });
 
+    // Stores no longer auto-raise via scanBelowMin (AI-propose -> boss-approve);
+    // create the store request EXPLICITLY with the qty the scan would compute
+    // (max 6 - qty 0 = 6), then drive the engine cycle from there.
+    const created = await createRequest({
+      productId: finished, requesterLocationId: store, qtyNeeded: 6, actorUserId: null,
+    });
     await runEngineCycle();
-    const { rows } = await ctx.db.query<{ id: number }>(
-      `SELECT id FROM replenishment_requests
-       WHERE product_id = $1 AND requester_location_id = $2`,
-      [finished, store],
-    );
-    const reqId = Number(rows[0]?.id);
+    const reqId = created.id;
     await advance(reqId, null); // -> CHECK_PRODUCTION_INPUT
     await advance(reqId, null); // -> CREATE_PURCHASE_ORDER
 
@@ -146,13 +147,12 @@ describe('GET /api/replenishment/:id — RBAC + linkage branches', () => {
     });
     await setStock(ctx.db, { locationId: rawWh, productId: raw, qty: 50 });
 
+    // Store request raised EXPLICITLY (scan excludes stores); qty = max 3 - 0.
+    const created = await createRequest({
+      productId: finished, requesterLocationId: store, qtyNeeded: 3, actorUserId: null,
+    });
     await runEngineCycle();
-    const { rows } = await ctx.db.query<{ id: number }>(
-      `SELECT id FROM replenishment_requests
-       WHERE product_id = $1 AND requester_location_id = $2`,
-      [finished, store],
-    );
-    const reqId = Number(rows[0]?.id);
+    const reqId = created.id;
     await advance(reqId, null); // -> CHECK_PRODUCTION_INPUT
     await advance(reqId, null); // -> CREATE_PRODUCTION_ORDER (links a PO at `production`)
 
@@ -468,13 +468,12 @@ describe('GET /api/replenishment — production_location_name embedding', () => 
       [production],
     );
 
+    // Store request raised EXPLICITLY (scan excludes stores); qty = max 3 - 0.
+    const created = await createRequest({
+      productId: finished, requesterLocationId: store, qtyNeeded: 3, actorUserId: null,
+    });
     await runEngineCycle();
-    const { rows } = await ctx.db.query<{ id: number }>(
-      `SELECT id FROM replenishment_requests
-       WHERE product_id = $1 AND requester_location_id = $2`,
-      [finished, store],
-    );
-    const reqId = Number(rows[0]?.id);
+    const reqId = created.id;
     await advance(reqId, null); // -> CHECK_PRODUCTION_INPUT
     await advance(reqId, null); // -> CREATE_PRODUCTION_ORDER (links PO at `production`)
 
