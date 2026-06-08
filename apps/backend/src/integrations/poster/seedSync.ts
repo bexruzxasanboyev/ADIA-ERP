@@ -11,9 +11,15 @@
  *   - syncSpots()       — Poster spots  -> locations(type='store')
  *   - syncStorages()    — Poster storages -> locations (default central_warehouse,
  *                         classification edited by PM in PATCH /api/locations/:id)
+ *   - syncWorkshops()   — menu.getWorkshops   -> locations(type='production')
  *   - syncIngredients() — menu.getIngredients -> products(type='raw')
- *   - syncPrepacks()    — menu.getPrepacks    -> products(type='semi') + recipes
- *   - syncMenuProducts() — menu.getProducts + menu.getProduct -> products(type='finished') + recipes
+ *   - syncPrepacks()    — menu.getPrepacks    -> products(type='semi' | 'finished')
+ *                         + recipes. «Г/П…» ready-prefix prepacks become finished.
+ *   - syncMenuProducts() — menu.getProducts used ONLY as a dish (тех.карта)
+ *                         enrichment source: name-matched to a prepack to set
+ *                         category_id / image_url / workshop_location_id, then
+ *                         the legacy menu-product rows are DROPPED. It no longer
+ *                         creates finished products.
  *
  * BOM import path is FULL (validated 2026-05-23 — see docs/adia-poster-api.md §8).
  *
@@ -1153,7 +1159,6 @@ async function dropMenuProducts(menuProductIds: readonly number[]): Promise<numb
       ['stock_movements', 'product_id'],
       ['sales', 'product_id'],
       ['stock', 'product_id'],
-      ['nakladnoy_lines', 'product_id'],
       ['nakladnoy_lines', 'component_product_id'],
       ['poster_writeback_queue', 'product_id'],
       ['production_dialog_sessions', 'product_id'],
