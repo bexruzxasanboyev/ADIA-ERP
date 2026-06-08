@@ -23,7 +23,8 @@
     "yandex:test": "tsx scripts/yandex-test.ts",
     "poster:backfill": "tsx scripts/poster-backfill.ts",
     "poster:backfill-sales": "tsx scripts/backfill-sales.ts",
-    "poster:diagnostic": "tsx scripts/poster-diagnostic.ts"
+    "poster:diagnostic": "tsx scripts/poster-diagnostic.ts",
+    "backfill:manual-cost": "tsx scripts/backfill-manual-cost.ts"
   },
   "dependencies": {
     "@google/genai": "^1.52.0",
