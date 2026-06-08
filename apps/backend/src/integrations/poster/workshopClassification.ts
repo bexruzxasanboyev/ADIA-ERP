@@ -1,0 +1,67 @@
+/**
+ * Poster workshop (Цех) classification + dish→prepack name normalisation.
+ *
+ * Owner decision (2026-06-08): seed ONLY real PRODUCTION workshops as
+ * `locations(type='production')`. A Poster workshop is EXCLUDED when its name:
+ *   - starts with «Склад…» (a POS/storage, not a production dept), or
+ *   - is a non-production display/dispatch area: «Витрина», «Кейтеринг»,
+ *     «Оформления отдел» (decoration — owner: not production), or a drinks
+ *     area («… напитки»).
+ * Everything else (the «… отдел» production depts + «Основной»,
+ * «Полуфабрикаты», «Адиа …», «Чак чак»…) is INCLUDED.
+ *
+ * The live `adia` split (verified 2026-06-08) is reported by the seed step for
+ * owner review — this predicate is the single source of that decision.
+ */
+
+/** Normalise a workshop name for case/whitespace-insensitive matching. */
+function normWs(name: string): string {
+  return name.trim().replace(/\s+/gu, ' ').toLowerCase();
+}
+
+/**
+ * EXCLUDE a workshop from production seeding when true. Conservative + explicit:
+ * a new Poster workshop that does not hit an exclusion rule defaults to INCLUDE
+ * (it is reported in the seed split, so a wrong include is visible to the owner).
+ */
+export function isExcludedWorkshop(name: string): boolean {
+  const n = normWs(name);
+  if (n === '') return true;
+  // Storage workshops («Склад Евро», «Склад Эклер»…) — POS/storage, not prod.
+  // NB: JS `\b` is ASCII-only (no boundary after a Cyrillic letter), so we
+  // anchor on a following space or end-of-string instead.
+  if (/^склад(?:\s|$)/u.test(n)) return true;
+  // Explicit non-production display / dispatch / decoration areas.
+  if (n === 'витрина') return true;
+  if (n === 'кейтеринг') return true;
+  if (n === 'оформления отдел') return true;
+  // Drinks workshops («холодные напитки», «горячие напитки»…) — not produced.
+  if (/напитк/u.test(n)) return true;
+  return false;
+}
+
+/** A workshop is included in production seeding when it is not excluded. */
+export function isProductionWorkshop(name: string): boolean {
+  return !isExcludedWorkshop(name);
+}
+
+/**
+ * Normalise a product/prepack name for dish↔prepack name-matching:
+ *   - uppercase;
+ *   - strip a leading «Г/П» ready-prefix (with any separator/spacing);
+ *   - strip a trailing portion suffix «(ЦЕЛЫЙ)» / «(ПОЛОВИНА)» / «(КУСОК)»;
+ *   - drop quote characters and collapse internal whitespace.
+ *
+ * Applied to BOTH sides so a Г/П prepack «Г/П ПИРОГ С ТВОРОГОМ КВ (ЦЕЛЫЙ)»
+ * matches the dish «ПИРОГ С ТВОРОГОМ КВ». Returns '' for an empty/degenerate
+ * name (callers MUST skip an empty key so two unrelated empties never match).
+ */
+export function normalizeMatchName(name: string): string {
+  return name
+    .toUpperCase()
+    .replace(/^\s*Г\s*[\\/]?\s*П\s*/u, '') // leading Г/П prefix
+    .replace(/\s*\(\s*(?:ЦЕЛЫЙ|ПОЛОВИНА|КУСОК)\s*\)\s*$/u, '') // trailing portion
+    .replace(/[«»"']/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}

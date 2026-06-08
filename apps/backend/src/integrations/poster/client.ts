@@ -111,6 +111,30 @@ export type PosterMenuProductRow = {
   ingredient_id?: string;
   unit?: string;
   menu_category_id?: string;
+  /**
+   * Поster Цех приготовления — the production-workshop id this dish/тех.карта is
+   * made in. "0" / absent = no workshop. Verified live on `menu.getProducts`
+   * rows (2026-06-08).
+   */
+  workshop?: string;
+  /** Display name of the dish's menu category (verified live 2026-06-08). */
+  category_name?: string;
+  /** Menu photo (CDN-relative). "" / absent = no photo. */
+  photo?: string;
+  /** Original (full-size) menu photo (CDN-relative). */
+  photo_origin?: string;
+};
+
+/**
+ * Row shape from `menu.getWorkshops` (doc §5.3) — a production workshop (Цех).
+ * Verified live against the `adia` account 2026-06-08: 20 rows, each
+ * `{ workshop_id, workshop_name, delete }` (all strings). `delete="1"` marks a
+ * soft-deleted workshop.
+ */
+export type PosterWorkshop = {
+  workshop_id: string;
+  workshop_name: string;
+  delete?: string;
 };
 
 export type PosterRecipeIngredient = {
@@ -549,6 +573,16 @@ export class PosterClient {
   /** All Poster product categories (menu.getCategories — doc §5.3). */
   async getCategories(): Promise<PosterCategory[]> {
     const r = await this.call<PosterCategory[]>('menu.getCategories');
+    return r ?? [];
+  }
+
+  /**
+   * All Poster production workshops (Цехи — menu.getWorkshops, doc §5.3). Used
+   * to seed `locations(type='production', poster_workshop_id=…)`. Returns `[]`
+   * when none.
+   */
+  async getWorkshops(): Promise<PosterWorkshop[]> {
+    const r = await this.call<PosterWorkshop[]>('menu.getWorkshops');
     return r ?? [];
   }
 
