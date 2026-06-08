@@ -36,12 +36,16 @@ export function PageTabs({ group }: PageTabsProps) {
   const section = NAV_SECTIONS.find((s) => s.key === group);
   if (!section || !user) return null;
 
-  // Exclude the PRIMARY modules (they live on the Home launcher) — with two
+  // Exclude the PRIMARY modules (they live on the Home launcher) — with these
   // exceptions that must ALSO remain reachable as header tabs:
   //   - the Kassa group keeps its "Cheklar" (/cashier/receipts) landing;
   //   - /replenishment ("So'rovlar") is now a Boshqaruv home tile too, but it
   //     stays the modules group's header tab so the unified requests hub is
   //     reachable from both the launcher and the header (owner 2026-06-06).
+  // NOTE — /yarim-tayyor is NO LONGER exempt: «Yarim tayyor mahsulotlar» moved
+  // from a header tab into an INTERNAL tab of the /production workspace
+  // (owner 2026-06-08), so it is excluded here like every other home tile. Its
+  // ROUTE stays alive (URL-reachable) and PM keeps the home tile.
   const TAB_EXEMPT_HOME_PATHS = new Set(['/replenishment']);
   const items = section.items.filter(
     (item) =>

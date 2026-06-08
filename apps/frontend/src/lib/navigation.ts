@@ -8,6 +8,7 @@ import {
   RefreshCw,
   MapPin,
   Package,
+  Layers,
   UserCog,
   ClipboardList,
   TrendingUp,
@@ -35,6 +36,7 @@ export type NavGroupKey =
   | 'forecasts'
   | 'store'
   | 'central'
+  | 'production'
   | 'modules'
   | 'cashier'
   | 'kpi'
@@ -157,7 +159,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     // kabi: bu guruh PageTabs ko'rsatmaydi (hasTabs: false), shuning uchun
     // sahifa tepasida module tab qatori chiqmaydi. PM + central_warehouse_manager.
     key: 'central',
-    label: 'Markaziy',
+    label: 'Markaziy ombor',
     icon: Warehouse,
     defaultPath: '/central-workflow',
     hasTabs: false,
@@ -167,6 +169,26 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: 'Markaziy sklad ish joyi',
         icon: Warehouse,
         roles: ['pm', 'central_warehouse_manager'],
+      },
+    ],
+  },
+  {
+    // Ishlab chiqarish bo'limi boshlig'ining asosiy ish joyi — zayafkalar +
+    // yarim tayyor mahsulotlar + so'rovlar bitta TOZA sahifada (Dashboard /
+    // Yarim tayyor / So'rovlar sub-tablari). Markaziy/Do'kon ish joyi kabi: bu
+    // guruh PageTabs ko'rsatmaydi (hasTabs: false), shuning uchun sahifa
+    // tepasida module tab qatori chiqmaydi. PM + production_manager.
+    key: 'production',
+    label: 'Ishlab chiqarish',
+    icon: Factory,
+    defaultPath: '/production',
+    hasTabs: false,
+    items: [
+      {
+        path: '/production',
+        label: 'Ishlab chiqarish bo‘limi',
+        icon: Factory,
+        roles: ['pm', 'production_manager'],
       },
     ],
   },
@@ -184,12 +206,13 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         roles: ['pm', 'raw_warehouse_manager'],
       },
       {
-        path: '/production',
-        label: 'Ishlab chiqarish',
-        icon: Factory,
-        roles: ['pm', 'production_manager'],
-      },
-      {
+        // NOTE — `/production` and `/yarim-tayyor` are NO LONGER modules tabs.
+        // The production manager's module screen is now the unified /production
+        // workspace (its OWN `production` nav group, hasTabs:false), and
+        // «Yarim tayyor mahsulotlar» became an INTERNAL tab of that workspace
+        // (owner 2026-06-08). Their ROUTES stay alive (URL-reachable); PM keeps
+        // both as home tiles.
+        //
         // URL stays `/supply` for back-compat with existing bookmarks
         // and the backend chain-layer endpoint; on-page copy + nav label
         // now reads "Ishlab chiqarish omborlari" (renamed from "Ta'minot"). Once the
@@ -285,7 +308,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         roles: MANAGER_ROLES,
       },
       {
-        // Bo'g'inlar = chain-wide location admin → PM only. Ordinary
+        // Bo‘g‘inlar = chain-wide location admin → PM only. Ordinary
         // single-link roles don't need to see the whole chain.
         path: '/locations',
         label: 'Bo‘g‘inlar',
@@ -350,6 +373,7 @@ export const HOME_TILE_GROUPS: readonly HomeTileGroup[] = [
       { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ALL_ROLES },
       { path: '/replenishment', label: 'So‘rovlar', icon: RefreshCw, roles: ALL_ROLES },
       { path: '/products', label: 'Mahsulotlar', icon: Package, roles: MANAGER_ROLES },
+      { path: '/yarim-tayyor', label: 'Yarim tayyor mahsulotlar', icon: Layers, roles: MANAGER_ROLES },
       { path: '/locations', label: 'Bo‘g‘inlar', icon: MapPin, roles: ['pm'] },
       { path: '/employees', label: 'Hodimlar', icon: UserCog, roles: ['pm'] },
       { path: '/kpi', label: 'KPI', icon: Target, roles: ['pm'] },

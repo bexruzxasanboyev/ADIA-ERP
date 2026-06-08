@@ -24,8 +24,8 @@ import { DashboardHome } from '@/pages/dashboard/DashboardHome';
 import { ForecastsPage } from '@/pages/forecasts/ForecastsPage';
 import { ImportWarningsPage } from '@/pages/admin/ImportWarningsPage';
 import { RawWarehousePage } from '@/pages/chain/RawWarehousePage';
-import { ProductionPage } from '@/pages/chain/ProductionPage';
 import { SupplyPage } from '@/pages/chain/SupplyPage';
+import { ProductionWorkflowPage } from '@/pages/production/ProductionWorkflowPage';
 import { CentralWarehousePage } from '@/pages/chain/CentralWarehousePage';
 import { StoreWorkflowPage } from '@/pages/stores/StoreWorkflowPage';
 import { CentralInboxPage } from '@/pages/central/CentralInboxPage';
@@ -45,13 +45,16 @@ import { KpiPage } from '@/pages/kpi/KpiPage';
  * placeholders until their sprints.
  */
 /**
- * Home route element — the /home module launcher, EXCEPT for the
- * `store_manager` role. The owner directed that store managers never see the
- * launcher: they land directly on their store workspace (/store-workflow) and
- * navigate via the fixed three-tab header (Do'kon / Kassa / Bashorat). Every
- * other role keeps the launcher. The redirect lives here (and the index `/`
- * route below sends everyone to /home first), so both `/` and `/home` honour
- * it.
+ * Home route element — the /home module launcher, EXCEPT for single-section
+ * managers, who land DIRECTLY on their own scoped workspace and never see the
+ * launcher (owner-directed). Each manages exactly one chain link, so the
+ * module grid is just an extra click between them and their only page:
+ *   - store_manager             → /store-workflow
+ *   - central_warehouse_manager → /central-workflow
+ *   - production_manager        → /production (their RBAC-scoped sex)
+ * Every other role (PM chain-wide, …) keeps the launcher. The redirect lives
+ * here (and the index `/` route below sends everyone to /home first), so both
+ * `/` and `/home` honour it.
  */
 function HomeRoute() {
   const { user } = useAuth();
@@ -63,6 +66,13 @@ function HomeRoute() {
   // exactly like the store manager → /store-workflow.
   if (user?.role === 'central_warehouse_manager') {
     return <Navigate to="/central-workflow" replace />;
+  }
+  // Owner feedback (2026-06-08): a production / workshop manager (Tort,
+  // Perojniy, «Наполеон отдел», …) lands directly on their production
+  // workspace (/production), which the backend RBAC-scopes to that one sex —
+  // never the /home launcher, exactly like the store and central managers.
+  if (user?.role === 'production_manager') {
+    return <Navigate to="/production" replace />;
   }
   return <HomePage />;
 }
@@ -124,11 +134,16 @@ export function AppRouter() {
             </RoleRoute>
           }
         />
+        {/* Ishlab chiqarish bo'limi ish joyi — clean, production-отдел-scoped
+            unified workspace (Dashboard + Yarim tayyor + So'rovlar), mirroring
+            the central warehouse workspace. The production manager lands here
+            directly (HomeRoute redirect, no /home launcher). PM can deep-link
+            too (chain-wide read). Backend RBAC-scopes every endpoint. */}
         <Route
           path="/production"
           element={
             <RoleRoute allow={['pm', 'production_manager']}>
-              <ProductionPage />
+              <ProductionWorkflowPage />
             </RoleRoute>
           }
         />
@@ -295,6 +310,25 @@ export function AppRouter() {
         {/* M2 — products & recipes. The recipe (BOM) opens as a dedicated
             page; editing is gated client- and server-side by role. */}
         <Route path="/products" element={<ProductsPage />} />
+        {/* «Yarim tayyor mahsulotlar» section — ONLY the logged-in отдел's зг
+            (semi-finished) WITH their on-hand stock (qoldiq). Data comes from
+            the dedicated, server-scoped `GET /api/products/yarim-tayyor`
+            (auto-scoped to the production_manager's отдел; PM sees all). The
+            card shows a «Qoldiq» line and drops the redundant type badge.
+            `forcedType="semi"` hides the type-tab row; `showStock` enables the
+            stock line + badge removal. Same RBAC as /products. */}
+        <Route
+          path="/yarim-tayyor"
+          element={
+            <ProductsPage
+              forcedType="semi"
+              dataEndpoint="/api/products/yarim-tayyor"
+              showStock
+              title="Yarim tayyor mahsulotlar"
+              description="Bo‘limingizning yarim tayyor mahsulotlari (зг) va ularning qoldig‘i."
+            />
+          }
+        />
         <Route
           path="/products/:productId/recipe"
           element={<RecipePage />}
