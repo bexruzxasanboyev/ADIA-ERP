@@ -227,6 +227,17 @@ export interface Product {
   cost_per_unit?: number | null;
   manual_cost_per_unit?: number | null;
   /**
+   * Себестоимость — the EFFECTIVE per-unit cost (so'm) computed by the backend
+   * (`GET /api/products`). For RAW products this is the editable manual/synced
+   * cost; for `semi`/`finished` it is the recipe rollup and is READ-ONLY
+   * (the cost-edit endpoint `PATCH /api/products/:id/cost` rejects non-raw).
+   * `null` when the backend cannot compute a cost (no costing / no recipe).
+   * This is the authoritative «Narx» value shown on every product card —
+   * prefer it over the legacy `manual_cost_per_unit ?? cost_per_unit` pair.
+   * Optional on the wire so older payloads stay strict-type-safe.
+   */
+  computed_cost?: number | null;
+  /**
    * Product photo URL (Poster "Обложка"). `null` when the product has no
    * image in Poster — the UI then renders a themed placeholder, never a
    * broken <img>. Optional on the wire so older payloads stay strict-safe.

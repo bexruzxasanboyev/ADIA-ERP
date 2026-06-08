@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
+  Calculator,
   Factory,
   Package,
   Pencil,
@@ -99,9 +100,29 @@ function ManualPriceBadge() {
   );
 }
 
-/** FEATURE A — effective per-unit cost: manual override wins over Poster. */
-function effectiveCost(p: Product): number | null {
-  return p.manual_cost_per_unit ?? p.cost_per_unit ?? null;
+/**
+ * The «Narx» (Себестоимость) value shown on a card. The backend now computes
+ * it server-side: for RAW products it is the editable manual/synced cost; for
+ * `semi`/`finished` it is the recipe rollup (read-only). `null` → render "—".
+ */
+function displayCost(p: Product): number | null {
+  return p.computed_cost ?? null;
+}
+
+/**
+ * Subtle muted hint for a SEMI/FINISHED card — its price is auto-derived from
+ * the recipe and not editable here (dark-premium muted, small calculator glyph).
+ */
+function ComputedPriceHint() {
+  return (
+    <span
+      className="inline-flex items-center gap-1 whitespace-nowrap text-[11px] font-medium text-muted-foreground/70"
+      title="Narx retsept asosida avtomatik hisoblangan (tahrirlab bo‘lmaydi)"
+    >
+      <Calculator className="size-3" aria-hidden="true" />
+      hisoblangan
+    </span>
+  );
 }
 
 /**
@@ -524,18 +545,20 @@ export function ProductsPage() {
                     value: (
                       <span className="flex items-center gap-1.5">
                         <span className="tabular-nums">
-                          {effectiveCost(p) != null
-                            ? formatSom(effectiveCost(p) as number)
+                          {displayCost(p) != null
+                            ? formatSom(displayCost(p) as number)
                             : '—'}
                         </span>
-                        {p.manual_cost_per_unit != null && <ManualPriceBadge />}
+                        {type === 'raw'
+                          ? p.manual_cost_per_unit != null && <ManualPriceBadge />
+                          : <ComputedPriceHint />}
                       </span>
                     ),
                   },
                 ],
                 footer: (
                   <div className="flex flex-col gap-2">
-                    {effectiveType(p) !== 'raw' && (
+                    {type !== 'raw' && (
                       <Button
                         variant="outline"
                         size="sm"
@@ -546,7 +569,8 @@ export function ProductsPage() {
                         Retsept
                       </Button>
                     )}
-                    {canEditCost && (
+                    {/* Only xom-ashyo (raw) price is editable. */}
+                    {canEditCost && type === 'raw' && (
                       <Button
                         variant="ghost"
                         size="sm"
@@ -632,23 +656,26 @@ export function ProductsPage() {
                               <dt className="text-muted-foreground">Narx</dt>
                               <dd className="flex items-center gap-1.5">
                                 <span className="truncate tabular-nums">
-                                  {effectiveCost(p) != null
-                                    ? formatSom(effectiveCost(p) as number)
+                                  {displayCost(p) != null
+                                    ? formatSom(displayCost(p) as number)
                                     : '—'}
                                 </span>
-                                {p.manual_cost_per_unit != null && (
-                                  <ManualPriceBadge />
-                                )}
+                                {type === 'raw'
+                                  ? p.manual_cost_per_unit != null && (
+                                      <ManualPriceBadge />
+                                    )
+                                  : <ComputedPriceHint />}
                               </dd>
                             </div>
                           </dl>
-                          {/* Narx (edit) + Retsept (view) side by side at the
-                              card foot — owner feedback: "yonma-yon, aniq,
-                              chiroyli". Each renders only when allowed; a lone
-                              button simply fills the row. */}
-                          {(canEditCost || effectiveType(p) !== 'raw') && (
+                          {/* Narx (edit, RAW only) + Retsept (view, non-raw)
+                              side by side at the card foot — owner feedback:
+                              "yonma-yon, aniq, chiroyli". Only xom-ashyo price
+                              is editable; semi/finished show a read-only
+                              computed price (the «hisoblangan» hint above). */}
+                          {((canEditCost && type === 'raw') || type !== 'raw') && (
                             <div className="mt-auto flex flex-wrap items-center gap-2">
-                              {canEditCost && (
+                              {canEditCost && type === 'raw' && (
                                 <Button
                                   variant="secondary"
                                   size="sm"
@@ -662,7 +689,7 @@ export function ProductsPage() {
                                   Narx
                                 </Button>
                               )}
-                              {effectiveType(p) !== 'raw' && (
+                              {type !== 'raw' && (
                                 <Button
                                   variant="outline"
                                   size="sm"
