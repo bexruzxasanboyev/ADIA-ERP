@@ -167,6 +167,79 @@ describe('products', () => {
   });
 });
 
+describe('product workshop (sex) assignment', () => {
+  it('assigns a valid production workshop → 200 + workshop {id,name}', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const product = await makeProduct(ctx.db, { type: 'finished' });
+    const sexName = `Sex Tort ${Math.random().toString(36).slice(2, 6)}`;
+    const sexId = await makeLocation(ctx.db, { type: 'production', name: sexName });
+
+    const res = await request(ctx.app)
+      .patch(`/api/products/${product}/workshop`)
+      .set('Authorization', `Bearer ${pm.token}`)
+      .send({ workshop_location_id: sexId });
+    expect(res.status).toBe(200);
+    expect(res.body.workshop).toEqual({ id: sexId, name: sexName });
+
+    // The list now reflects the assignment (same {id,name} shape).
+    const list = await request(ctx.app)
+      .get('/api/products')
+      .set('Authorization', `Bearer ${pm.token}`);
+    const row = (list.body as { id: number; workshop: { id: number; name: string } | null }[]).find(
+      (p) => Number(p.id) === product,
+    );
+    expect(row?.workshop).toEqual({ id: sexId, name: sexName });
+  });
+
+  it('rejects a non-production location (store) with 422', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const product = await makeProduct(ctx.db, { type: 'finished' });
+    const storeId = await makeLocation(ctx.db, { type: 'store' });
+
+    const res = await request(ctx.app)
+      .patch(`/api/products/${product}/workshop`)
+      .set('Authorization', `Bearer ${pm.token}`)
+      .send({ workshop_location_id: storeId });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('clears the assignment with null → 200 + workshop null', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const product = await makeProduct(ctx.db, { type: 'finished' });
+    const sexId = await makeLocation(ctx.db, { type: 'production' });
+
+    // Assign first, then clear.
+    await request(ctx.app)
+      .patch(`/api/products/${product}/workshop`)
+      .set('Authorization', `Bearer ${pm.token}`)
+      .send({ workshop_location_id: sexId });
+
+    const cleared = await request(ctx.app)
+      .patch(`/api/products/${product}/workshop`)
+      .set('Authorization', `Bearer ${pm.token}`)
+      .send({ workshop_location_id: null });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.workshop).toBeNull();
+  });
+
+  it('production_manager can assign a workshop too', async () => {
+    const pmgr = await makeUser(ctx.db, {
+      role: 'production_manager',
+      locationId: await makeLocation(ctx.db, { type: 'production' }),
+    });
+    const product = await makeProduct(ctx.db, { type: 'finished' });
+    const sexId = await makeLocation(ctx.db, { type: 'production' });
+
+    const res = await request(ctx.app)
+      .patch(`/api/products/${product}/workshop`)
+      .set('Authorization', `Bearer ${pmgr.token}`)
+      .send({ workshop_location_id: sexId });
+    expect(res.status).toBe(200);
+    expect(res.body.workshop?.id).toBe(sexId);
+  });
+});
+
 describe('recipes / BOM', () => {
   it('PUT replaces the BOM with valid components', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });

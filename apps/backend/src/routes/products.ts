@@ -346,6 +346,93 @@ productsRouter.patch(
   }),
 );
 
+// PATCH /api/products/:id/workshop  — assign / change the producing sex.
+//
+// Owner requirement: the boss assigns which production workshop (sex) makes a
+// product, or clears it. Body `{ workshop_location_id: number | null }`:
+//   - a number  → the target location MUST exist AND be type='production'
+//                 (a real sex/workshop); otherwise 422 (validation);
+//   - null      → clear the assignment.
+// Responds with the updated workshop in the SAME shape the list uses:
+// `{ id, name } | null`. pm + production_manager only.
+productsRouter.patch(
+  '/:id/workshop',
+  authenticate,
+  authorize('pm', 'production_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const productId = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+
+    // `workshop_location_id` is REQUIRED but may be `null` (clear) or a
+    // positive integer id (assign). Anything else is a 422.
+    const raw = body.workshop_location_id;
+    let workshopId: number | null;
+    if (raw === null) {
+      workshopId = null;
+    } else if (typeof raw === 'number' && Number.isInteger(raw) && raw > 0) {
+      workshopId = raw;
+    } else {
+      throw AppError.validation(
+        'Field "workshop_location_id" must be a positive integer id, or null to clear it.',
+      );
+    }
+
+    // The product must exist.
+    const target = await query<{ id: number }>('SELECT id FROM products WHERE id = $1', [
+      productId,
+    ]);
+    if (target.rows[0] === undefined) {
+      throw AppError.notFound('Product not found.');
+    }
+
+    // When assigning (non-null), the location must exist AND be a real
+    // production workshop (sex). Reject a store / raw_warehouse / etc. with a
+    // clear 422 before touching the row.
+    if (workshopId !== null) {
+      const loc = await query<{ type: string }>('SELECT type FROM locations WHERE id = $1', [
+        workshopId,
+      ]);
+      const locRow = loc.rows[0];
+      if (locRow === undefined || locRow.type !== 'production') {
+        throw AppError.validation(
+          'workshop_location_id must reference a production workshop.',
+        );
+      }
+    }
+
+    // Update + RETURN the joined workshop {id,name}. The LEFT JOIN yields a
+    // NULL name when workshop_location_id was cleared.
+    const { rows } = await query<{ workshop_location_id: number | null; workshop_name: string | null }>(
+      `UPDATE products p
+          SET workshop_location_id = $2, updated_at = now()
+         FROM (SELECT $1::bigint AS pid) ids
+        WHERE p.id = ids.pid
+      RETURNING p.workshop_location_id,
+                (SELECT name FROM locations WHERE id = p.workshop_location_id) AS workshop_name`,
+      [productId, workshopId],
+    );
+    const updated = rows[0];
+    if (updated === undefined) {
+      throw AppError.internal('Product disappeared after workshop assign.');
+    }
+
+    await writeAudit(poolRunner, {
+      actorUserId: principal.userId,
+      action: 'product.workshop.assign',
+      entity: 'products',
+      entityId: productId,
+      payload: { workshop_location_id: workshopId },
+    });
+
+    const workshop =
+      updated.workshop_location_id !== null && updated.workshop_name !== null
+        ? { id: Number(updated.workshop_location_id), name: updated.workshop_name }
+        : null;
+    res.status(200).json({ id: productId, workshop });
+  }),
+);
+
 // PATCH /api/products/:id/cost  — FEATURE A (editable MANUAL price).
 //
 // Pin a manual unit cost (so'm per unit) that OVERRIDES Poster's synced
