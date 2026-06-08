@@ -113,6 +113,45 @@ describe('FEATURE A — manual product cost override', () => {
     });
   });
 
+  it('PATCH allows editing a RAW price but rejects semi/finished (computed)', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const rawId = await makeProduct(ctx.db, { type: 'raw', unit: 'kg' });
+    const semiId = await makeProduct(ctx.db, { type: 'semi', unit: 'kg' });
+    const finishedId = await makeProduct(ctx.db, { type: 'finished', unit: 'pcs' });
+
+    // Raw — editing succeeds (manual override set), exactly as before.
+    const raw = await request(ctx.app)
+      .patch(`/api/products/${rawId}/cost`)
+      .set('Authorization', `Bearer ${pm.token}`)
+      .send({ cost_per_unit: 150 });
+    expect(raw.status).toBe(200);
+    expect(raw.body.manual_cost_per_unit).toBe(150);
+
+    // Semi — rejected (derived price is computed from the recipe).
+    const semi = await request(ctx.app)
+      .patch(`/api/products/${semiId}/cost`)
+      .set('Authorization', `Bearer ${pm.token}`)
+      .send({ cost_per_unit: 150 });
+    expect(semi.status).toBe(409);
+    expect(semi.body.error.code).toBe('CONFLICT');
+
+    // Finished — rejected for the same reason.
+    const finished = await request(ctx.app)
+      .patch(`/api/products/${finishedId}/cost`)
+      .set('Authorization', `Bearer ${pm.token}`)
+      .send({ cost_per_unit: 150 });
+    expect(finished.status).toBe(409);
+
+    // The rejected products keep a NULL manual override (no write happened).
+    const after = await ctx.db.query<{ manual_cost_per_unit: string | null }>(
+      'SELECT manual_cost_per_unit FROM products WHERE id = ANY($1::bigint[])',
+      [[semiId, finishedId]],
+    );
+    for (const r of after.rows) {
+      expect(r.manual_cost_per_unit).toBeNull();
+    }
+  });
+
   it('PATCH rejects a zero/negative price and a non-pm role', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const storeLoc = await makeLocation(ctx.db, { type: 'store' });
