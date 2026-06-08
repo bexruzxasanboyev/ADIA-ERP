@@ -33,7 +33,7 @@ import {
 } from './reportsHandler.js';
 import { handleStartCommand, type StartContext } from './startCommand.js';
 import { unlinkTelegramAccount } from '../../services/userTelegramLink.js';
-import { wireVoiceHandler } from './voiceHandler.js';
+import { wireReplenishmentVoiceHandler } from './replenishmentVoiceHandler.js';
 import { handleCashShiftMessage, type CashShiftCtxLike } from './cashShiftHandler.js';
 import { handleMenuMessage, type MenuCtxLike } from './menuHandler.js';
 import { handleAiChatMessage, exitAiChatMode, type AiChatCtxLike } from './aiChatHandler.js';
@@ -208,10 +208,13 @@ export function ensureCallbackHandlerWired(): void {
       await ctx.reply("Server xatosi. Birozdan so'ng qayta urinib ko'ring.").catch(() => undefined);
     }
   });
-  // F4.3 / ADR-0014 — message:voice handler. `wireVoiceHandler` ham idempotent
-  // (Grammy bot.on additive, lekin `inboundWired` flag dublikatlarni
-  // bo'g'adi).
-  wireVoiceHandler(bot);
+  // VOICE → replenishment-request. A store manager sends a voice message
+  // ("menga 10 ta napoleon kerak") → the bot transcribes it via the SAME web
+  // voice service (`runVoiceAssistant`), stages a `create_replenishment_request`
+  // pending action, and replies with a ✅ Tasdiqlash / ❌ Bekor qilish inline
+  // keyboard. Confirm/reject reuse the existing `apprv:act` / `rej:act`
+  // callback path (wired above). Idempotent — `inboundWired` gates re-wiring.
+  wireReplenishmentVoiceHandler(bot);
   // EPIC 8.5 — kassir smena topshirig'i (message:text). FAQAT smena
   // topshirig'iga o'xshagan matnga javob beradi (`looksLikeCashShift`); boshqa
   // matnni e'tiborsiz qoldiradi. `/start` command'i alohida handler'da —
