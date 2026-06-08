@@ -37,7 +37,7 @@ import {
 } from '@/lib/productCategory';
 import { formatSom } from '@/lib/format';
 import { cn } from '@/lib/utils';
-import type { Location, Product, Unit } from '@/lib/types';
+import type { Product, Unit } from '@/lib/types';
 import { ProductCostDialog } from './ProductCostDialog';
 import { ProductsPageSkeleton } from './ProductsPageSkeleton';
 import { WorkshopPicker, type WorkshopOption } from './WorkshopPicker';
@@ -434,16 +434,19 @@ export function ProductsPage() {
   const onEditCost = useCallback((p: Product) => setCostProduct(p), []);
 
   // Production workshops (sexes) for the workshop FILTER dimension and the
-  // inline sex-assign picker. pm + production_manager are authorised for this
-  // endpoint; for any other (read-only) role the query is skipped (`null`) and
-  // the workshop filter group / assign control simply don't appear.
-  const { data: workshopData } = useApiQuery<Location[]>(
-    canEditWorkshop ? '/api/locations?type=production' : null,
+  // inline sex-assign picker. `GET /api/products/workshops` is the SINGLE
+  // canonical source — it returns ONLY the 12 real Poster product workshops
+  // («Торт отдел», …), not the legacy stock-chain «… sexi» rows that
+  // `GET /api/locations?type=production` mixes in. pm + production_manager are
+  // authorised here; for any other (read-only) role the query is skipped
+  // (`null`) and the workshop filter group / assign control simply don't appear.
+  const { data: workshopData } = useApiQuery<WorkshopOption[]>(
+    canEditWorkshop ? '/api/products/workshops' : null,
   );
   const workshops = useMemo<WorkshopOption[]>(() => {
     const rows = workshopData ?? [];
     return rows
-      .map((l) => ({ id: l.id, name: l.name }))
+      .map((w) => ({ id: w.id, name: w.name }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [workshopData]);
 

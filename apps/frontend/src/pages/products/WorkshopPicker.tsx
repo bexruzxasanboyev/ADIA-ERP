@@ -7,8 +7,8 @@
  * «Sex biriktirish» button; when it already has one, a small pencil affordance
  * next to the WorkshopLine reuses the same picker to change it.
  *
- * The picker is a small searchable Popover (there are ~35 production
- * workshops, so a flat menu needs the search box). Selecting an option
+ * The picker is a small searchable Popover (there are ~12 canonical product
+ * workshops, so a flat menu still keeps the search box). Selecting an option
  * PATCHes `/api/products/:id/workshop` with `{ workshop_location_id }` and,
  * on success, calls `onAssigned` so the page can refetch and re-render the
  * WorkshopLine. Translit-aware search (Latin ↔ Cyrillic) matches the rest of
@@ -27,7 +27,7 @@ import { apiRequest, ApiError } from '@/lib/api-client';
 import { matchesSearch } from '@/lib/translit';
 import { cn } from '@/lib/utils';
 
-/** Minimal workshop option — `{ id, name }` from GET /api/locations?type=production. */
+/** Minimal workshop option — `{ id, name }` from GET /api/products/workshops. */
 export interface WorkshopOption {
   id: number;
   name: string;
