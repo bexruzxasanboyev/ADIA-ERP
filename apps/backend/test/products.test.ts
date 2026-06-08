@@ -202,8 +202,10 @@ describe('recipes / BOM', () => {
     const crem = await makeProduct(ctx.db, { type: 'semi' });
     const milk = await makeProduct(ctx.db, { type: 'raw', unit: 'kg' });
     const flour = await makeProduct(ctx.db, { type: 'raw', unit: 'kg' });
-    await ctx.db.query(`UPDATE products SET cost_per_unit = 20 WHERE id = $1`, [milk]);
-    await ctx.db.query(`UPDATE products SET cost_per_unit = 7.5 WHERE id = $1`, [flour]);
+    // Catalog price = manual_cost_per_unit ALONE (no Poster fallback), so seed
+    // the raw leaf costs via the MANUAL field.
+    await ctx.db.query(`UPDATE products SET manual_cost_per_unit = 20 WHERE id = $1`, [milk]);
+    await ctx.db.query(`UPDATE products SET manual_cost_per_unit = 7.5 WHERE id = $1`, [flour]);
 
     // crem = 2 kg milk per unit -> unit_cost 40
     await request(ctx.app)
@@ -259,7 +261,7 @@ describe('recipes / BOM', () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const prepack = await makeProduct(ctx.db, { type: 'semi', unit: 'kg' });
     const flour = await makeProduct(ctx.db, { type: 'raw', unit: 'kg' });
-    await ctx.db.query(`UPDATE products SET cost_per_unit = 7.5 WHERE id = $1`, [flour]);
+    await ctx.db.query(`UPDATE products SET manual_cost_per_unit = 7.5 WHERE id = $1`, [flour]);
     // Simulate a Poster-synced line: qty_per_unit derived (per-output-unit),
     // brutto/netto the raw structure figures (grams) stored alongside.
     await ctx.db.query(

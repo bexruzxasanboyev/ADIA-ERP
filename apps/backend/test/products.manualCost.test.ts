@@ -1,13 +1,17 @@
 /**
  * FEATURE A — editable MANUAL product price (manual_cost_per_unit).
  *
- * Proves the override semantics end-to-end:
+ * CATALOG PRICE RULE (2026-06-08): the catalog-price roll-up uses
+ * `manual_cost_per_unit` ALONE — app-owned, Poster-INDEPENDENT. The synced
+ * cost_per_unit is NOT a fallback; a raw with no manual price rolls up to null.
+ *
+ * Proves the semantics end-to-end:
  *   1. with a manual price set, the cost roll-up (readRecipeTree) uses the
- *      MANUAL price, not the Poster-synced cost_per_unit;
+ *      MANUAL price;
  *   2. a sync-style UPDATE to cost_per_unit does NOT change the effective cost
  *      while a manual price is pinned (the manual price SURVIVES re-sync);
- *   3. clearing the override (manual_cost_per_unit = NULL) falls back to the
- *      synced cost_per_unit;
+ *   3. clearing the override (manual_cost_per_unit = NULL) rolls up to NULL
+ *      (the synced cost is NOT a fallback any more);
  *   4. the PATCH /api/products/:id/cost endpoint (RBAC + null-to-clear) and the
  *      GET /api/products list both surface the two cost fields.
  *
@@ -46,15 +50,16 @@ async function makeFinishedWithRawLeaf(): Promise<{
 }
 
 describe('FEATURE A — manual product cost override', () => {
-  it('manual price wins, survives a sync-style cost_per_unit update, clears to fallback', async () => {
+  it('manual price drives the roll-up, survives a sync-style cost_per_unit update, clears to NULL', async () => {
     const { finishedId, rawId } = await makeFinishedWithRawLeaf();
 
-    // Poster-synced cost = 100 so'm/kg → roll-up total = 100.
+    // A Poster-synced cost alone (NO manual price) → roll-up is NULL: the synced
+    // cost is NOT a fallback under the manual-only catalog-price rule.
     await ctx.db.query('UPDATE products SET cost_per_unit = 100 WHERE id = $1', [rawId]);
     let tree = await readRecipeTree(ctx.db, finishedId);
-    expect(tree.total_cost).toBe(100);
+    expect(tree.total_cost).toBe(null);
 
-    // Pin a MANUAL price of 250 → roll-up now uses 250, not 100.
+    // Pin a MANUAL price of 250 → roll-up now uses 250.
     await ctx.db.query('UPDATE products SET manual_cost_per_unit = 250 WHERE id = $1', [rawId]);
     tree = await readRecipeTree(ctx.db, finishedId);
     expect(tree.total_cost).toBe(250);
@@ -65,10 +70,10 @@ describe('FEATURE A — manual product cost override', () => {
     tree = await readRecipeTree(ctx.db, finishedId);
     expect(tree.total_cost).toBe(250);
 
-    // Clear the override (NULL) → fall back to the synced cost_per_unit (999).
+    // Clear the override (NULL) → roll-up is NULL again (no Poster fallback).
     await ctx.db.query('UPDATE products SET manual_cost_per_unit = NULL WHERE id = $1', [rawId]);
     tree = await readRecipeTree(ctx.db, finishedId);
-    expect(tree.total_cost).toBe(999);
+    expect(tree.total_cost).toBe(null);
   });
 
   it('PATCH /api/products/:id/cost pins, returns the contract, then clears with null', async () => {

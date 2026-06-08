@@ -24,9 +24,10 @@ beforeEach(async () => {
 
 describe('readRecipeTree — recipe_yield', () => {
   it('divides cost + quantities by the product recipe_yield', async () => {
-    // Raw flour at 10 so'm per kg.
+    // Raw flour at 10 so'm per kg — set via the MANUAL price, since the
+    // catalog-price roll-up uses manual_cost_per_unit ALONE (no Poster fallback).
     const flour = await makeProduct(ctx.db, { type: 'raw', unit: 'kg' });
-    await ctx.db.query(`UPDATE products SET cost_per_unit = 10 WHERE id = $1`, [
+    await ctx.db.query(`UPDATE products SET manual_cost_per_unit = 10 WHERE id = $1`, [
       flour,
     ]);
     // Finished item; recipe (as imported "for the batch") needs 5 kg flour.

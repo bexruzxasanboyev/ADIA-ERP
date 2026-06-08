@@ -10,8 +10,9 @@
  * costs up IN MEMORY with memoization + a cycle guard.
  *
  * Semantics MUST agree with `readRecipeTree(...).total_cost`:
- *   - leaf / no recipe lines: cost = COALESCE(manual_cost_per_unit, cost_per_unit)
- *     (null when neither is set — we never fake a 0);
+ *   - leaf / no recipe lines: cost = manual_cost_per_unit ALONE — the catalog
+ *     price is app-owned and Poster-INDEPENDENT, so a raw with no manual price
+ *     is null (we never fake a 0 and never borrow the Poster cost_per_unit);
  *   - has recipe lines:       cost = Σ over lines of
  *                               (qty_per_unit / this_product.recipe_yield) × unitCost(component),
  *     where unitCost(component) recurses (a component with its own recipe rolls
@@ -37,7 +38,7 @@ type ProductCostRow = {
   readonly id: number;
   /** recipe_yield (TZ-3) — how many finished units one full recipe makes. */
   readonly recipe_yield: number;
-  /** COALESCE(manual_cost_per_unit, cost_per_unit) — the leaf unit cost (null if neither). */
+  /** manual_cost_per_unit — the leaf unit cost (null when no manual price). */
   readonly leaf_cost: number | null;
 };
 
@@ -53,8 +54,11 @@ type RecipeLine = {
 export async function computeAllProductCosts(
   runner: Runner,
 ): Promise<Map<number, number | null>> {
-  // Query 1 — every product's leaf cost + yield. COALESCE(manual, synced)
-  // matches the leaf unit cost bom.ts reads.
+  // Query 1 — every product's leaf cost + yield. The CATALOG PRICE is now
+  // app-owned and Poster-INDEPENDENT: the leaf unit cost is the MANUALLY
+  // entered raw price ALONE (`manual_cost_per_unit`), NOT a Poster fallback.
+  // A raw with no manual price -> null -> its dependent semi/finished -> null.
+  // This matches the leaf unit cost bom.ts reads.
   const { rows: productRows } = await runner.query<{
     id: string | number;
     recipe_yield: string | number | null;
@@ -62,7 +66,7 @@ export async function computeAllProductCosts(
   }>(
     `SELECT id,
             recipe_yield,
-            COALESCE(manual_cost_per_unit, cost_per_unit) AS leaf_cost
+            manual_cost_per_unit AS leaf_cost
        FROM products`,
   );
 

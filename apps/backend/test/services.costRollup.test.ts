@@ -7,6 +7,11 @@
  * a nested semi/prepack, a finished product, a recipe_yield case, and a
  * null-propagation case) and asserts the batched map agrees EXACTLY with
  * readRecipeTree(...).total_cost for the same products.
+ *
+ * CATALOG PRICE RULE (2026-06-08): the leaf/raw unit cost is
+ * `manual_cost_per_unit` ALONE — app-owned, Poster-INDEPENDENT. A raw with no
+ * MANUAL price is null (the Poster-synced cost_per_unit is NOT a fallback) and
+ * that null propagates up to dependent semi/finished.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestContext, type TestContext } from './helpers/context.js';
@@ -35,17 +40,21 @@ async function expectAgrees(id: number, costs: Map<number, number | null>): Prom
 describe('computeAllProductCosts', () => {
   it('agrees with readRecipeTree across raw / semi / finished + recipe_yield + null', async () => {
     // --- Raw leaves -----------------------------------------------------------
-    // Flour @ 10 so'm/kg (synced), Sugar @ 4 so'm/kg with a MANUAL override of 6
-    // (manual must win), Cocoa with NO cost at all (null propagation source).
+    // Catalog price = manual_cost_per_unit ALONE (Poster cost_per_unit is NOT a
+    // fallback). Flour: MANUAL 10. Sugar: synced 4 BUT MANUAL 6 — the synced
+    // value is ignored, the manual 6 stands. Cocoa: NO manual price (a stray
+    // synced cost present) -> null, the null-propagation source.
     const flour = await makeProduct(ctx.db, { type: 'raw', unit: 'kg' });
     const sugar = await makeProduct(ctx.db, { type: 'raw', unit: 'kg' });
     const cocoa = await makeProduct(ctx.db, { type: 'raw', unit: 'kg' });
-    await ctx.db.query('UPDATE products SET cost_per_unit = 10 WHERE id = $1', [flour]);
+    await ctx.db.query('UPDATE products SET manual_cost_per_unit = 10 WHERE id = $1', [flour]);
     await ctx.db.query(
       'UPDATE products SET cost_per_unit = 4, manual_cost_per_unit = 6 WHERE id = $1',
       [sugar],
     );
-    // cocoa: both costs NULL.
+    // cocoa: a synced cost is present but NO manual price -> manual-only rule
+    // makes it null (proves the Poster fallback is gone).
+    await ctx.db.query('UPDATE products SET cost_per_unit = 99 WHERE id = $1', [cocoa]);
 
     // --- Semi (prepack) — krem: 2 kg sugar per 1 unit -> 2 × 6 = 12 ----------
     const krem = await makeProduct(ctx.db, { type: 'semi', unit: 'kg' });
@@ -76,13 +85,13 @@ describe('computeAllProductCosts', () => {
 
     const costs = await computeAllProductCosts(ctx.db);
 
-    // Concrete expected values (the contract).
-    expect(costs.get(flour)).toBe(10); // raw, synced
-    expect(costs.get(sugar)).toBe(6); // raw, manual override wins over 4
-    expect(costs.get(cocoa)).toBe(null); // raw, no cost -> null (not 0)
+    // Concrete expected values (the contract — manual-only leaf rule).
+    expect(costs.get(flour)).toBe(10); // raw, manual price
+    expect(costs.get(sugar)).toBe(6); // raw, manual 6 (synced 4 ignored)
+    expect(costs.get(cocoa)).toBe(null); // raw, no MANUAL price -> null (synced 99 ignored)
     expect(costs.get(krem)).toBe(12); // semi: 2 × 6
     expect(costs.get(cake)).toBe(7); // finished: (3×10 + 1×12) / 6
-    expect(costs.get(biscuit)).toBe(null); // null propagates up
+    expect(costs.get(biscuit)).toBe(null); // null propagates up from cocoa
 
     // Cross-check: for products that HAVE a recipe, the batched roll-up must
     // equal readRecipeTree(...).total_cost exactly — same recipe_yield division,

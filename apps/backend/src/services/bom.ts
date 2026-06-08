@@ -123,9 +123,10 @@ function normalize(line: BomLine): BomLine {
 //
 // Owner decision: the recipe modal shows the BOM NESTED like Poster (prepacks
 // expandable) WITH Себестоимость per line + a product total. Cost is computed
-// BOTTOM-UP from `products.cost_per_unit` (raw leaf unit cost, so'm/unit):
+// BOTTOM-UP from `products.manual_cost_per_unit` (the app-owned, Poster-
+// INDEPENDENT raw leaf unit cost, so'm/unit):
 //
-//   * a RAW/leaf node's   unit_cost  = products.cost_per_unit (NULL if unknown);
+//   * a RAW/leaf node's   unit_cost  = products.manual_cost_per_unit (NULL if unset);
 //   * a parent node's     unit_cost  = Σ child.line_cost  (one parent unit);
 //   * a line's            line_cost  = qty_per_unit × child.unit_cost;
 //   * the product total   total_cost = Σ top-level line_cost.
@@ -237,10 +238,11 @@ async function buildChildren(
   }>(
     `SELECT r.component_product_id, r.qty_per_unit, r.brutto, r.netto,
             p.name, p.type, p.unit,
-            -- FEATURE A — a MANUAL price (manual_cost_per_unit) wins over the
-            -- Poster-synced cost_per_unit for the leaf unit cost. NULL manual
-            -- override falls back to the synced cost.
-            COALESCE(p.manual_cost_per_unit, p.cost_per_unit) AS cost_per_unit
+            -- CATALOG PRICE is app-owned and Poster-INDEPENDENT: the leaf unit
+            -- cost is the MANUALLY entered raw price ALONE (manual_cost_per_unit).
+            -- No Poster fallback — a raw with no manual price is null, which
+            -- propagates up to its dependent semi/finished (shown as "—").
+            p.manual_cost_per_unit AS cost_per_unit
        FROM recipes r
        JOIN products p ON p.id = r.component_product_id
       WHERE r.product_id = $1
