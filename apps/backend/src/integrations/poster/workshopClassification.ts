@@ -4,11 +4,11 @@
  * Owner decision (2026-06-08): seed ONLY real PRODUCTION workshops as
  * `locations(type='production')`. A Poster workshop is EXCLUDED when its name:
  *   - starts with «Склад…» (a POS/storage, not a production dept), or
- *   - is a non-production display/dispatch area: «Витрина», «Кейтеринг»,
- *     «Оформления отдел» (decoration — owner: not production), or a drinks
- *     area («… напитки»).
- * Everything else (the «… отдел» production depts + «Основной»,
- * «Полуфабрикаты», «Адиа …», «Чак чак»…) is INCLUDED.
+ *   - is a non-production display/dispatch area: «Витрина», «Кейтеринг», or a
+ *     drinks area («… напитки»).
+ * Everything else (the «… отдел» production depts including «Оформления отдел»
+ * (decoration/assembly — owner 2026-06-08: now treated as production) +
+ * «Основной», «Полуфабрикаты», «Адиа …», «Чак чак»…) is INCLUDED.
  *
  * The live `adia` split (verified 2026-06-08) is reported by the seed step for
  * owner review — this predicate is the single source of that decision.
@@ -31,10 +31,11 @@ export function isExcludedWorkshop(name: string): boolean {
   // NB: JS `\b` is ASCII-only (no boundary after a Cyrillic letter), so we
   // anchor on a following space or end-of-string instead.
   if (/^склад(?:\s|$)/u.test(n)) return true;
-  // Explicit non-production display / dispatch / decoration areas.
+  // Explicit non-production display / dispatch areas.
+  // NB: «Оформления отдел» (decoration/assembly) is INCLUDED as production
+  // per owner decision 2026-06-08 — no longer excluded here.
   if (n === 'витрина') return true;
   if (n === 'кейтеринг') return true;
-  if (n === 'оформления отдел') return true;
   // Drinks workshops («холодные напитки», «горячие напитки»…) — not produced.
   if (/напитк/u.test(n)) return true;
   return false;

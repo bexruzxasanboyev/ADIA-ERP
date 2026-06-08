@@ -25,6 +25,14 @@ describe('workshopClassification — include/exclude', () => {
     }
   });
 
+  it('INCLUDES «Оформления отдел» (decoration/assembly — owner 2026-06-08)', () => {
+    // Owner decision: «Оформления отдел» is now a production workshop.
+    expect(isProductionWorkshop('Оформления отдел')).toBe(true);
+    expect(isExcludedWorkshop('Оформления отдел')).toBe(false);
+    // case/whitespace-insensitive too
+    expect(isProductionWorkshop('  оформления   отдел ')).toBe(true);
+  });
+
   it('INCLUDES the non-«отдел» production workshops', () => {
     for (const name of [
       'Основной ',
@@ -49,11 +57,12 @@ describe('workshopClassification — include/exclude', () => {
     }
   });
 
-  it('EXCLUDES display/dispatch/decoration + drinks areas', () => {
+  it('EXCLUDES display/dispatch + drinks areas (but NOT «Оформления отдел»)', () => {
     expect(isExcludedWorkshop('Витрина')).toBe(true);
     expect(isExcludedWorkshop('Кейтеринг')).toBe(true);
-    expect(isExcludedWorkshop('Оформления отдел')).toBe(true);
     expect(isExcludedWorkshop('холодные напитки')).toBe(true);
+    // «Оформления отдел» is now production (owner 2026-06-08) — not excluded.
+    expect(isExcludedWorkshop('Оформления отдел')).toBe(false);
   });
 
   it('EXCLUDES an empty / whitespace name (degenerate)', () => {
