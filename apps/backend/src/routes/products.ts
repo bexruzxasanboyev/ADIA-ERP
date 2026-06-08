@@ -214,6 +214,37 @@ productsRouter.get(
   }),
 );
 
+// GET /api/products/workshops — the canonical product workshops (sexes).
+//
+// The SINGLE source the frontend product filter + the assign dropdown use.
+// Returns ONLY the 12 canonical Poster workshops: type='production' rows that
+// carry a Poster `workshop_id` (poster_workshop_id IS NOT NULL — «Торт отдел»,
+// «Наполеон отдел», …). The other production rows are legacy stock-bearing
+// sex-storage owners and must NOT appear here. Ordered by name.
+//
+// AuthZ mirrors GET /api/products (pm + the manager roles) so the filter is
+// visible to every product viewer.
+productsRouter.get(
+  '/workshops',
+  authenticate,
+  authorize(
+    'pm',
+    'raw_warehouse_manager',
+    'production_manager',
+    'supply_manager',
+    'central_warehouse_manager',
+    'store_manager',
+  ),
+  asyncHandler(async (_req, res) => {
+    const { rows } = await query<{ id: number; name: string }>(
+      `SELECT id, name FROM locations
+        WHERE type = 'production' AND poster_workshop_id IS NOT NULL
+        ORDER BY name`,
+    );
+    res.status(200).json(rows.map((r) => ({ id: Number(r.id), name: r.name })));
+  }),
+);
+
 // POST /api/products  — pm, raw_warehouse_manager.
 productsRouter.post(
   '/',
@@ -350,8 +381,10 @@ productsRouter.patch(
 //
 // Owner requirement: the boss assigns which production workshop (sex) makes a
 // product, or clears it. Body `{ workshop_location_id: number | null }`:
-//   - a number  → the target location MUST exist AND be type='production'
-//                 (a real sex/workshop); otherwise 422 (validation);
+//   - a number  → the target location MUST exist AND be a CANONICAL Poster
+//                 workshop (type='production' AND poster_workshop_id IS NOT
+//                 NULL — one of the 12). A legacy stock-bearing production row
+//                 (poster_workshop_id IS NULL) is rejected with 422;
 //   - null      → clear the assignment.
 // Responds with the updated workshop in the SAME shape the list uses:
 // `{ id, name } | null`. pm + production_manager only.
@@ -386,17 +419,24 @@ productsRouter.patch(
       throw AppError.notFound('Product not found.');
     }
 
-    // When assigning (non-null), the location must exist AND be a real
-    // production workshop (sex). Reject a store / raw_warehouse / etc. with a
-    // clear 422 before touching the row.
+    // When assigning (non-null), the location must exist AND be a CANONICAL
+    // Poster workshop: type='production' AND poster_workshop_id IS NOT NULL
+    // (one of the 12). Reject a store / raw_warehouse / etc. — and ALSO a
+    // legacy stock-bearing production row whose poster_workshop_id is NULL —
+    // with a clear 422 before touching the row.
     if (workshopId !== null) {
-      const loc = await query<{ type: string }>('SELECT type FROM locations WHERE id = $1', [
-        workshopId,
-      ]);
+      const loc = await query<{ type: string; poster_workshop_id: number | null }>(
+        'SELECT type, poster_workshop_id FROM locations WHERE id = $1',
+        [workshopId],
+      );
       const locRow = loc.rows[0];
-      if (locRow === undefined || locRow.type !== 'production') {
+      if (
+        locRow === undefined ||
+        locRow.type !== 'production' ||
+        locRow.poster_workshop_id === null
+      ) {
         throw AppError.validation(
-          'workshop_location_id must reference a production workshop.',
+          'workshop_location_id must reference a Poster production workshop.',
         );
       }
     }

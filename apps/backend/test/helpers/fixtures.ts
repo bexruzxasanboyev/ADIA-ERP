@@ -79,14 +79,23 @@ export async function makeLocation(
       | 'central_warehouse'
       | 'store';
     parentId?: number | null;
+    /**
+     * The Poster `workshop_id` — set ONLY for the 12 canonical product
+     * workshops. A production location WITH a non-null value is a real Poster
+     * workshop (a valid `workshop_location_id` target); NULL marks a legacy
+     * stock-bearing production row.
+     */
+    posterWorkshopId?: number | null;
   } = {},
 ): Promise<number> {
   const { rows } = await db.query<{ id: string }>(
-    `INSERT INTO locations (name, type, parent_id) VALUES ($1, $2, $3) RETURNING id`,
+    `INSERT INTO locations (name, type, parent_id, poster_workshop_id)
+     VALUES ($1, $2, $3, $4) RETURNING id`,
     [
       opts.name ?? `Location ${Math.random().toString(36).slice(2, 8)}`,
       opts.type ?? 'store',
       opts.parentId ?? null,
+      opts.posterWorkshopId ?? null,
     ],
   );
   const idRaw = rows[0]?.id;

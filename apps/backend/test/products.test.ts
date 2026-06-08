@@ -168,11 +168,20 @@ describe('products', () => {
 });
 
 describe('product workshop (sex) assignment', () => {
-  it('assigns a valid production workshop → 200 + workshop {id,name}', async () => {
+  // A unique Poster workshop_id per call — the partial UNIQUE index on
+  // locations.poster_workshop_id would otherwise collide within the suite.
+  let workshopSeq = 700000;
+  const nextWorkshopId = (): number => ++workshopSeq;
+
+  it('assigns a canonical Poster workshop → 200 + workshop {id,name}', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const product = await makeProduct(ctx.db, { type: 'finished' });
     const sexName = `Sex Tort ${Math.random().toString(36).slice(2, 6)}`;
-    const sexId = await makeLocation(ctx.db, { type: 'production', name: sexName });
+    const sexId = await makeLocation(ctx.db, {
+      type: 'production',
+      name: sexName,
+      posterWorkshopId: nextWorkshopId(),
+    });
 
     const res = await request(ctx.app)
       .patch(`/api/products/${product}/workshop`)
@@ -204,10 +213,28 @@ describe('product workshop (sex) assignment', () => {
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 
+  it('rejects a LEGACY production row (poster_workshop_id NULL) with 422', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const product = await makeProduct(ctx.db, { type: 'finished' });
+    // type='production' but NO Poster workshop_id — a legacy stock-bearing row,
+    // not one of the 12 canonical workshops. Must be rejected.
+    const legacyId = await makeLocation(ctx.db, { type: 'production' });
+
+    const res = await request(ctx.app)
+      .patch(`/api/products/${product}/workshop`)
+      .set('Authorization', `Bearer ${pm.token}`)
+      .send({ workshop_location_id: legacyId });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
   it('clears the assignment with null → 200 + workshop null', async () => {
     const pm = await makeUser(ctx.db, { role: 'pm' });
     const product = await makeProduct(ctx.db, { type: 'finished' });
-    const sexId = await makeLocation(ctx.db, { type: 'production' });
+    const sexId = await makeLocation(ctx.db, {
+      type: 'production',
+      posterWorkshopId: nextWorkshopId(),
+    });
 
     // Assign first, then clear.
     await request(ctx.app)
@@ -229,7 +256,10 @@ describe('product workshop (sex) assignment', () => {
       locationId: await makeLocation(ctx.db, { type: 'production' }),
     });
     const product = await makeProduct(ctx.db, { type: 'finished' });
-    const sexId = await makeLocation(ctx.db, { type: 'production' });
+    const sexId = await makeLocation(ctx.db, {
+      type: 'production',
+      posterWorkshopId: nextWorkshopId(),
+    });
 
     const res = await request(ctx.app)
       .patch(`/api/products/${product}/workshop`)
@@ -237,6 +267,66 @@ describe('product workshop (sex) assignment', () => {
       .send({ workshop_location_id: sexId });
     expect(res.status).toBe(200);
     expect(res.body.workshop?.id).toBe(sexId);
+  });
+});
+
+describe('GET /api/products/workshops', () => {
+  let workshopSeq = 800000;
+  const nextWorkshopId = (): number => ++workshopSeq;
+
+  it('returns only canonical Poster workshops as {id,name} ordered by name', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    // Two canonical workshops + one legacy production row + one store.
+    const wbName = `WS Beta ${Math.random().toString(36).slice(2, 6)}`;
+    const waName = `WS Alpha ${Math.random().toString(36).slice(2, 6)}`;
+    const wb = await makeLocation(ctx.db, {
+      type: 'production',
+      name: wbName,
+      posterWorkshopId: nextWorkshopId(),
+    });
+    const wa = await makeLocation(ctx.db, {
+      type: 'production',
+      name: waName,
+      posterWorkshopId: nextWorkshopId(),
+    });
+    const legacy = await makeLocation(ctx.db, { type: 'production' });
+    const store = await makeLocation(ctx.db, { type: 'store' });
+
+    const res = await request(ctx.app)
+      .get('/api/products/workshops')
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(200);
+    const rows = res.body as { id: number; name: string }[];
+
+    // Every returned row is a canonical workshop (no legacy / store).
+    const ids = rows.map((r) => r.id);
+    expect(ids).toContain(wa);
+    expect(ids).toContain(wb);
+    expect(ids).not.toContain(legacy);
+    expect(ids).not.toContain(store);
+
+    // Shape: exactly {id, name}.
+    for (const r of rows) {
+      expect(Object.keys(r).sort()).toEqual(['id', 'name']);
+      expect(typeof r.id).toBe('number');
+      expect(typeof r.name).toBe('string');
+    }
+
+    // Ordered by name (ascending).
+    const names = rows.map((r) => r.name);
+    expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)));
+  });
+
+  it('a store manager can read the workshops list (filter is visible to viewers)', async () => {
+    const mgr = await makeUser(ctx.db, {
+      role: 'store_manager',
+      locationId: await makeLocation(ctx.db, { type: 'store' }),
+    });
+    const res = await request(ctx.app)
+      .get('/api/products/workshops')
+      .set('Authorization', `Bearer ${mgr.token}`);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
   });
 });
 
