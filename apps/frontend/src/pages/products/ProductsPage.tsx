@@ -23,7 +23,6 @@ import { MobileCardList } from '@/components/ui/table-mobile';
 import {
   EmptyState,
   ErrorState,
-  LoadingState,
   PageHeader,
 } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
@@ -40,6 +39,7 @@ import { formatSom } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import type { Location, Product, Unit } from '@/lib/types';
 import { ProductCostDialog } from './ProductCostDialog';
+import { ProductsPageSkeleton } from './ProductsPageSkeleton';
 import { WorkshopPicker, type WorkshopOption } from './WorkshopPicker';
 
 /**
@@ -713,7 +713,7 @@ export function ProductsPage() {
             : undefined
         }
       >
-        {isLoading && <LoadingState />}
+        {isLoading && <ProductsPageSkeleton />}
         {!isLoading && error && (
           <ErrorState message={error} onRetry={refetch} />
         )}
