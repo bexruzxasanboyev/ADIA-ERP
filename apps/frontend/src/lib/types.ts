@@ -226,6 +226,18 @@ export interface Product {
    */
   cost_per_unit?: number | null;
   manual_cost_per_unit?: number | null;
+  /**
+   * Product photo URL (Poster "Обложка"). `null` when the product has no
+   * image in Poster — the UI then renders a themed placeholder, never a
+   * broken <img>. Optional on the wire so older payloads stay strict-safe.
+   */
+  image_url?: string | null;
+  /**
+   * The production sex (цех) that makes this product, when known. `null`
+   * for raw materials / resale items that aren't produced in-house. Optional
+   * on the wire so older payloads stay strict-safe.
+   */
+  workshop?: { id: number; name: string } | null;
 }
 
 /**

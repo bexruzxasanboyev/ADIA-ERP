@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertTriangle, Pencil, ScrollText, Search, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  Factory,
+  Package,
+  Pencil,
+  ScrollText,
+  Search,
+  X,
+} from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -94,6 +102,67 @@ function ManualPriceBadge() {
 /** FEATURE A — effective per-unit cost: manual override wins over Poster. */
 function effectiveCost(p: Product): number | null {
   return p.manual_cost_per_unit ?? p.cost_per_unit ?? null;
+}
+
+/**
+ * Small rounded product thumbnail shown at the card's top-left. Renders the
+ * Poster "Обложка" image when present; falls back to a themed placeholder
+ * (muted Package icon on a subtle surface) when `image_url` is null OR the
+ * image fails to load (`onError`) — never a broken-image glyph.
+ */
+function ProductThumbnail({
+  src,
+  alt,
+  className,
+}: {
+  src: string | null | undefined;
+  alt: string;
+  className?: string;
+}) {
+  const [failed, setFailed] = useState(false);
+  const showImage = src != null && src !== '' && !failed;
+  return (
+    <div
+      className={cn(
+        'flex shrink-0 items-center justify-center overflow-hidden rounded-md border border-border/60 bg-muted/40',
+        className,
+      )}
+    >
+      {showImage ? (
+        <img
+          src={src}
+          alt={alt}
+          loading="lazy"
+          onError={() => setFailed(true)}
+          className="size-full object-cover"
+        />
+      ) : (
+        <Package
+          className="size-1/2 text-muted-foreground/60"
+          aria-hidden="true"
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Subtle "🏭 {workshop.name}" line — the production sex that makes the
+ * product. Renders nothing when `workshop` is null (raw / resale items),
+ * so a card never shows an empty sex placeholder.
+ */
+function WorkshopLine({
+  workshop,
+}: {
+  workshop: Product['workshop'];
+}) {
+  if (workshop == null) return null;
+  return (
+    <p className="flex items-center gap-1 text-xs text-muted-foreground">
+      <Factory className="size-3 shrink-0" aria-hidden="true" />
+      <span className="truncate">{workshop.name}</span>
+    </p>
+  );
 }
 
 /**
@@ -424,8 +493,22 @@ export function ProductsPage() {
               const type = effectiveType(p);
               return {
                 id: p.id,
-                title: p.name,
-                subtitle: p.sku ?? undefined,
+                title: (
+                  <span className="flex items-center gap-2.5">
+                    <ProductThumbnail
+                      src={p.image_url}
+                      alt={p.name}
+                      className="size-10"
+                    />
+                    <span className="truncate">{p.name}</span>
+                  </span>
+                ),
+                subtitle: (
+                  <span className="flex flex-col gap-0.5">
+                    {p.sku && <span>SKU: {p.sku}</span>}
+                    <WorkshopLine workshop={p.workshop} />
+                  </span>
+                ),
                 badge: (
                   <div className="flex flex-wrap items-center gap-1.5">
                     <Badge variant={PRODUCT_CATEGORY_STYLE[type].badge}>
@@ -512,15 +595,23 @@ export function ProductsPage() {
                           )}
                         >
                           <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-semibold">
-                                {p.name}
-                              </p>
-                              {p.sku && (
-                                <p className="truncate text-xs text-muted-foreground">
-                                  SKU: {p.sku}
+                            <div className="flex min-w-0 items-start gap-2.5">
+                              <ProductThumbnail
+                                src={p.image_url}
+                                alt={p.name}
+                                className="size-11"
+                              />
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-semibold">
+                                  {p.name}
                                 </p>
-                              )}
+                                {p.sku && (
+                                  <p className="truncate text-xs text-muted-foreground">
+                                    SKU: {p.sku}
+                                  </p>
+                                )}
+                                <WorkshopLine workshop={p.workshop} />
+                              </div>
                             </div>
                             <div className="flex shrink-0 flex-col items-end gap-1">
                               <Badge
