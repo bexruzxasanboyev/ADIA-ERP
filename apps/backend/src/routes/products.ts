@@ -57,6 +57,12 @@ type ProductRow = {
   category_id: number | null;
   /** Joined from categories — the REAL Poster category name (NULL when none). */
   category_name: string | null;
+  /** Poster тех.карта photo URL (CDN-relative), or NULL. */
+  image_url: string | null;
+  /** Which production location (sex) makes this product, or NULL. */
+  workshop_location_id: number | null;
+  /** Joined from locations — the workshop (sex) name, or NULL. */
+  workshop_name: string | null;
   /** EXISTS flag — true when the product has at least one row in `recipes`. */
   has_recipe: boolean;
   /**
@@ -83,7 +89,7 @@ type PosterCategoryDto = { id: number; name: string } | null;
  * names to `finished`. The frontend prefers these over its own client-side
  * derivation.
  */
-type EnrichedProductRow = Omit<ProductRow, 'category_name'> & {
+type EnrichedProductRow = Omit<ProductRow, 'category_name' | 'workshop_name'> & {
   category: ProductCategory;
   effective_type: ProductType;
   /**
@@ -92,12 +98,17 @@ type EnrichedProductRow = Omit<ProductRow, 'category_name'> & {
    * guess). The frontend should prefer `poster_category` for grouping.
    */
   poster_category: PosterCategoryDto;
+  /**
+   * The production workshop (sex) that makes this product, joined from
+   * `locations` via `workshop_location_id`. `{ id, name }` or `null`.
+   */
+  workshop: { id: number; name: string } | null;
 };
 
-/** Attach the EPIC 1.3 smart-category fields + the real Poster category. */
+/** Attach the EPIC 1.3 smart-category fields + real Poster category + workshop. */
 function enrich(row: ProductRow): EnrichedProductRow {
   const type = row.type as ProductType;
-  const { category_name, ...rest } = row;
+  const { category_name, workshop_name, ...rest } = row;
   return {
     ...rest,
     category: deriveCategory(row.name, type),
@@ -105,6 +116,10 @@ function enrich(row: ProductRow): EnrichedProductRow {
     poster_category:
       row.category_id !== null && category_name !== null
         ? { id: Number(row.category_id), name: category_name }
+        : null,
+    workshop:
+      row.workshop_location_id !== null && workshop_name !== null
+        ? { id: Number(row.workshop_location_id), name: workshop_name }
         : null,
   };
 }
@@ -122,11 +137,14 @@ type RecipeRow = {
 const PRODUCT_SELECT = `SELECT p.id, p.name, p.type, p.unit, p.sku,
     p.poster_ingredient_id, p.poster_product_id, p.category_id,
     c.name AS category_name,
+    p.image_url, p.workshop_location_id,
+    w.name AS workshop_name,
     EXISTS (SELECT 1 FROM recipes r WHERE r.product_id = p.id) AS has_recipe,
     p.cost_per_unit, p.manual_cost_per_unit,
     p.is_active, p.created_at, p.updated_at
   FROM products p
-  LEFT JOIN categories c ON c.id = p.category_id`;
+  LEFT JOIN categories c ON c.id = p.category_id
+  LEFT JOIN locations w ON w.id = p.workshop_location_id`;
 
 // Columns for INSERT ... RETURNING (no join — category_name resolved separately).
 const PRODUCT_RETURNING = `id, name, type, unit, sku, poster_ingredient_id,
@@ -199,7 +217,12 @@ productsRouter.post(
       }
     }
 
-    const { rows } = await query<Omit<ProductRow, 'category_name' | 'has_recipe'>>(
+    const { rows } = await query<
+      Omit<
+        ProductRow,
+        'category_name' | 'has_recipe' | 'image_url' | 'workshop_location_id' | 'workshop_name'
+      >
+    >(
       `INSERT INTO products (name, type, unit, sku, poster_ingredient_id, poster_product_id)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING ${PRODUCT_RETURNING}`,
@@ -217,6 +240,9 @@ productsRouter.post(
     const created: ProductRow = {
       ...inserted,
       category_name: null,
+      image_url: null,
+      workshop_location_id: null,
+      workshop_name: null,
       has_recipe: false,
       cost_per_unit: null,
       manual_cost_per_unit: null,

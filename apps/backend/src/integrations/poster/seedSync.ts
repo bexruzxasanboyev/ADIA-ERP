@@ -32,6 +32,11 @@ import {
   type DeptCandidate,
 } from './storageClassification.js';
 import {
+  isProductionWorkshop,
+  normalizeMatchName,
+} from './workshopClassification.js';
+import { hasReadyPrefix } from '../../lib/productCategory.js';
+import {
   finishSyncRun,
   notifyPosterSyncFailed,
   redactUrl,
@@ -486,6 +491,66 @@ export async function attachSexStoragesToDepts(
 }
 
 /**
+ * Insert/update one Poster production workshop (Цех) as a
+ * `locations(type='production', poster_workshop_id=…)` row. Returns the local
+ * `locations.id`.
+ *
+ * Idempotency (per the owner spec — match on poster_workshop_id, fall back to
+ * name so we never duplicate an already-seeded production department):
+ *   1. a row already carrying this `poster_workshop_id` -> UPDATE its name;
+ *   2. else a `type='production'` row with the SAME name but no workshop link
+ *      (e.g. a `create-production-sexes` department) -> ADOPT it by stamping
+ *      `poster_workshop_id` (claim only when that id is free elsewhere);
+ *   3. else INSERT a fresh production location.
+ *
+ * `type` and `manager_user_id` of an adopted row are left untouched.
+ */
+async function upsertWorkshop(workshopId: number, name: string): Promise<number> {
+  const byId = await query<{ id: number }>(
+    `UPDATE locations SET name = $2, updated_at = now()
+      WHERE poster_workshop_id = $1
+      RETURNING id`,
+    [workshopId, name],
+  );
+  if (byId.rows[0] !== undefined) return byId.rows[0].id;
+
+  // Adopt a same-named production dept that has no workshop link yet — but only
+  // when this workshop id is not already owned by another row (uq guard).
+  const adopt = await query<{ id: number }>(
+    `UPDATE locations AS l SET poster_workshop_id = $1, updated_at = now()
+      WHERE l.type = 'production'
+        AND l.name = $2
+        AND l.poster_workshop_id IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM locations o WHERE o.poster_workshop_id = $1
+        )
+      RETURNING l.id`,
+    [workshopId, name],
+  );
+  if (adopt.rows[0] !== undefined) return adopt.rows[0].id;
+
+  const ins = await query<{ id: number }>(
+    `INSERT INTO locations (name, type, poster_workshop_id, is_active)
+     VALUES ($1, 'production', $2, TRUE)
+     ON CONFLICT (poster_workshop_id) WHERE poster_workshop_id IS NOT NULL
+       DO UPDATE SET name = EXCLUDED.name, updated_at = now()
+     RETURNING id`,
+    [name, workshopId],
+  );
+  const id = ins.rows[0]?.id;
+  if (id !== undefined) return id;
+  // ON CONFLICT fired without RETURNING — resolve via SELECT.
+  const sel = await query<{ id: number }>(
+    `SELECT id FROM locations WHERE poster_workshop_id = $1`,
+    [workshopId],
+  );
+  if (sel.rows[0] === undefined) {
+    throw new Error(`upsertWorkshop: cannot resolve id for workshop_id=${workshopId}`);
+  }
+  return sel.rows[0].id;
+}
+
+/**
  * Insert/update one Poster category into the `categories` lookup, keyed by its
  * natural `poster_category_id`. Returns the local `categories.id`. Idempotent:
  * a re-run UPDATEs the name (Poster may rename a category). RETURNING on the
@@ -563,14 +628,22 @@ async function upsertIngredient(
 }
 
 /**
- * Insert/update one Poster prepack (semi-finished — `type='semi'`). Prepacks
- * are stocked AND used as recipe components — both columns are filled
- * (`poster_product_id` for menu/sales sync, `poster_ingredient_id` for stock).
+ * Insert/update one Poster prepack. `productType` is decided by the caller from
+ * the prepack name (2026-06-08 owner rework):
+ *   - `Г/П…` ready-prefixed prepacks  -> `finished` (Tayyor mahsulot);
+ *   - everything else                  -> `semi` (Yarim tayyor).
+ *
+ * Prepacks are stocked AND used as recipe components — both Poster columns are
+ * filled (`poster_product_id` for menu/sales sync, `poster_ingredient_id` for
+ * stock). On a re-run the type is refreshed to `productType` so a renamed
+ * prepack (Г/П added/removed) re-classifies — but a `raw` row (an ingredient
+ * that collided on poster_ingredient_id) is NEVER demoted by this path.
  */
 async function upsertPrepack(
   posterProductId: number,
   posterIngredientId: number | null,
   name: string,
+  productType: 'semi' | 'finished',
 ): Promise<number> {
   // C5 — `products` has TWO partial UNIQUE indexes on the Poster keys:
   // `uq_products_poster_product` on (poster_product_id) AND
@@ -591,65 +664,32 @@ async function upsertPrepack(
   );
   const found = existing.rows[0];
   if (found !== undefined) {
+    // type: a `raw` collision (the prepack's ingredient_id also exists as a raw
+    // ingredient) is promoted to the prepack's `productType`; an existing
+    // semi/finished prepack is REFRESHED to `productType` so a Г/П rename
+    // re-classifies it (semi<->finished) on re-sync.
     await query(
       `UPDATE products
           SET name = $1,
               poster_product_id = COALESCE(poster_product_id, $2),
               poster_ingredient_id = COALESCE(poster_ingredient_id, $3),
-              type = CASE WHEN type = 'raw' THEN 'semi' ELSE type END
+              type = $5
         WHERE id = $4`,
-      [name, posterProductId, posterIngredientId, found.id],
+      [name, posterProductId, posterIngredientId, found.id, productType],
     );
     return found.id;
   }
   const { rows } = await query<{ id: number }>(
     `INSERT INTO products (name, type, unit, poster_product_id, poster_ingredient_id)
-     VALUES ($1, 'semi', 'kg', $2, $3)
+     VALUES ($1, $4, 'kg', $2, $3)
      RETURNING id`,
-    [name, posterProductId, posterIngredientId],
+    [name, posterProductId, posterIngredientId, productType],
   );
   const id = rows[0]?.id;
   if (id === undefined) {
     throw new Error(`upsertPrepack: could not resolve id for poster_product_id=${posterProductId}`);
   }
   return id;
-}
-
-/**
- * Insert/update one Poster menu product (finished — `type='finished'`). Both
- * `poster_product_id` (sales) and `poster_ingredient_id` (stock) are filled
- * when the row is stocked (Poster type=2). Type=3 menu items are
- * not-directly-stocked — `poster_ingredient_id` may be NULL.
- */
-async function upsertMenuProduct(
-  posterProductId: number,
-  posterIngredientId: number | null,
-  name: string,
-  categoryId: number | null,
-): Promise<number> {
-  // category_id is set from the product's Poster `menu_category_id` mapped via
-  // the `categories` lookup. On a re-run we always refresh it (EXCLUDED) so a
-  // re-categorisation in Poster propagates; a NULL incoming value clears it.
-  const { rows } = await query<{ id: number }>(
-    `INSERT INTO products (name, type, unit, poster_product_id, poster_ingredient_id, category_id)
-     VALUES ($1, 'finished', 'pcs', $2, $3, $4)
-     ON CONFLICT (poster_product_id) WHERE poster_product_id IS NOT NULL
-     DO UPDATE SET name = EXCLUDED.name,
-                   poster_ingredient_id = COALESCE(products.poster_ingredient_id, EXCLUDED.poster_ingredient_id),
-                   category_id = EXCLUDED.category_id
-     RETURNING id`,
-    [name, posterProductId, posterIngredientId, categoryId],
-  );
-  const id = rows[0]?.id;
-  if (id !== undefined) return id;
-  const { rows: r2 } = await query<{ id: number }>(
-    `SELECT id FROM products WHERE poster_product_id = $1`,
-    [posterProductId],
-  );
-  if (r2[0] === undefined) {
-    throw new Error(`upsertMenuProduct: cannot resolve id for poster_product_id=${posterProductId}`);
-  }
-  return r2[0].id;
 }
 
 /**
@@ -846,6 +886,61 @@ export async function syncStorages(
   }
 }
 
+/**
+ * Seed Poster production workshops (Цехи) as `locations(type='production')`.
+ *
+ * Owner rework (2026-06-08): only REAL production workshops become locations;
+ * storage/display/decoration/drinks workshops are skipped (see
+ * workshopClassification.isProductionWorkshop). Logged under the `storages`
+ * sync entity (workshops seed `locations`, same domain; the enum has no
+ * dedicated value). MUST run BEFORE the product enrichment so a product can
+ * resolve its workshop_id -> location id.
+ *
+ * The result `errorDetail` carries the include/exclude split for owner review.
+ */
+export async function syncWorkshops(
+  client: PosterClient,
+  trigger: SyncTrigger = 'manual',
+): Promise<SeedRunResult> {
+  const runId = await startSyncRun('storages', trigger);
+  try {
+    const rows = await client.getWorkshops();
+    const included: string[] = [];
+    const excluded: string[] = [];
+    let applied = 0;
+    for (const r of rows) {
+      const id = Number(r.workshop_id);
+      if (!Number.isInteger(id) || id <= 0) continue;
+      // A soft-deleted Poster workshop (delete="1") is skipped entirely.
+      if (String(r.delete ?? '0') === '1') continue;
+      const name = String(r.workshop_name ?? '').trim() || `Workshop ${id}`;
+      if (!isProductionWorkshop(name)) {
+        excluded.push(`${id}:${name}`);
+        continue;
+      }
+      await upsertWorkshop(id, name);
+      included.push(`${id}:${name}`);
+      applied += 1;
+    }
+    const split =
+      `included=${included.length} [${included.join(', ')}] | ` +
+      `excluded=${excluded.length} [${excluded.join(', ')}]`;
+    await finishSyncRun(runId, 'ok', { recordsIn: rows.length, recordsApplied: applied }, split);
+    return {
+      entity: 'storages',
+      status: 'ok',
+      recordsIn: rows.length,
+      recordsApplied: applied,
+      errorDetail: split,
+    };
+  } catch (err) {
+    const detail = redactUrl((err as Error).message);
+    await finishSyncRun(runId, 'failed', { recordsIn: 0, recordsApplied: 0 }, detail);
+    await notifyPosterSyncFailed('storages', detail);
+    return { entity: 'storages', status: 'failed', recordsIn: 0, recordsApplied: 0, errorDetail: detail };
+  }
+}
+
 export async function syncIngredients(
   client: PosterClient,
   trigger: SyncTrigger = 'manual',
@@ -893,88 +988,195 @@ export async function syncIngredients(
   }
 }
 
+/** One dish (тех.карта) record used only as an enrichment source. */
+type DishEnrichment = {
+  /** Local category_id resolved from the dish menu_category_id (or null). */
+  categoryId: number | null;
+  /** Poster photo URL (CDN-relative), or null. */
+  imageUrl: string | null;
+  /** Poster workshop_id (Цех) of the dish, or null when 0/absent. */
+  workshopId: number | null;
+};
+
 /**
- * Sync menu products + their per-product BOMs.
+ * Enrich prepack products (semi + finished) from Poster dishes (тех.карты), then
+ * DROP the legacy menu-product rows.
  *
- * Two-phase:
- *   1. upsert every product (type=2 and type=3) so their ids exist;
- *   2. for type=2 products with `ingredient_id`, fetch `menu.getProduct` and
- *      write `recipes` — this is the BOM import path validated 2026-05-23.
+ * Owner rework (2026-06-08): `menu.getProducts` no longer CREATES products.
+ * Товары (Coca Cola, Borjomi…) and dish-as-product rows are NOT products. The
+ * dishes are used ONLY as an enrichment source — matched BY NORMALISED NAME to a
+ * prepack — to supply three fields: menu `category_id`, `image_url`, and the
+ * production `workshop_location_id`. Anything that does not match a prepack
+ * (i.e. every товар) is simply ignored. After enrichment we delete the 294
+ * legacy menu-product rows the OLD `syncMenuProducts` created (see
+ * `dropMenuProducts`).
  *
- * Type=3 products (e.g. plate/portion variants) carry no top-level BOM and
- * are left without recipes — PM can add them via `PUT /api/products/:id/recipe`.
+ * Keeps the historic `syncMenuProducts` export name so the route + orchestrator
+ * entry points are unchanged. MUST run AFTER `syncWorkshops` (workshop link) and
+ * `syncPrepacks` (the rows being enriched).
  */
 export async function syncMenuProducts(
   client: PosterClient,
   trigger: SyncTrigger = 'manual',
 ): Promise<SeedRunResult> {
   const runId = await startSyncRun('products', trigger);
-  let applied = 0;
   let total = 0;
   try {
     const list = await client.getProducts();
     total = list.length;
-    // Real Poster category map (poster_category_id -> categories.id). Built
-    // once from the `categories` lookup that `syncCategories` populated first.
-    const categoryMap = await loadCategoryMap();
-    // Phase 1: upsert each product row.
-    const idMap = new Map<number, number>(); // poster_product_id -> ADIA id
+    const categoryMap = await loadCategoryMap(); // poster_category_id -> categories.id (menu)
+    // Workshop link map: Poster workshop_id -> ADIA production locations.id.
+    const { rows: wsRows } = await query<{ id: number; poster_workshop_id: number }>(
+      `SELECT id, poster_workshop_id FROM locations
+        WHERE poster_workshop_id IS NOT NULL`,
+    );
+    const workshopLocByPoster = new Map<number, number>();
+    for (const w of wsRows) workshopLocByPoster.set(Number(w.poster_workshop_id), Number(w.id));
+
+    // Build the dish enrichment map keyed by NORMALISED name. Later rows win on
+    // a name collision (rare; the catalogue is near-unique by normalised name).
+    const dishByName = new Map<string, DishEnrichment>();
     for (const p of list) {
-      const ppid = Number(p.product_id);
-      if (!Number.isInteger(ppid) || ppid <= 0) continue;
-      const pingId = p.ingredient_id !== undefined ? Number(p.ingredient_id) : null;
-      const pcid =
-        p.menu_category_id !== undefined ? Number(p.menu_category_id) : null;
+      const key = normalizeMatchName(String(p.product_name ?? ''));
+      if (key === '') continue;
+      const pcid = p.menu_category_id !== undefined ? Number(p.menu_category_id) : null;
       const categoryId =
         pcid !== null && Number.isInteger(pcid) && pcid > 0
           ? (categoryMap.get(pcid) ?? null)
           : null;
-      const adiaId = await upsertMenuProduct(
-        ppid,
-        pingId !== null && Number.isInteger(pingId) && pingId > 0 ? pingId : null,
-        String(p.product_name ?? '').trim() || `Product ${ppid}`,
+      const wsRaw = p.workshop !== undefined ? Number(p.workshop) : 0;
+      const workshopId = Number.isInteger(wsRaw) && wsRaw > 0 ? wsRaw : null;
+      const photo = String(p.photo ?? p.photo_origin ?? '').trim();
+      dishByName.set(key, {
         categoryId,
+        imageUrl: photo !== '' ? photo : null,
+        workshopId,
+      });
+    }
+
+    // Enrich every prepack (semi + finished) whose normalised name matches a
+    // dish. We only OVERWRITE a field when the dish supplies a value (COALESCE
+    // semantics handled in SQL) — never clobber an existing value with NULL.
+    const { rows: prepacks } = await query<{ id: number; name: string }>(
+      `SELECT id, name FROM products WHERE type IN ('semi', 'finished')`,
+    );
+    let enrichedCategory = 0;
+    let enrichedImage = 0;
+    let enrichedWorkshop = 0;
+    let matched = 0;
+    for (const pk of prepacks) {
+      const key = normalizeMatchName(pk.name);
+      if (key === '') continue;
+      const dish = dishByName.get(key);
+      if (dish === undefined) continue;
+      matched += 1;
+      const workshopLocId =
+        dish.workshopId !== null ? (workshopLocByPoster.get(dish.workshopId) ?? null) : null;
+      await query(
+        `UPDATE products
+            SET category_id = COALESCE($2, category_id),
+                image_url   = COALESCE($3, image_url),
+                workshop_location_id = COALESCE($4, workshop_location_id),
+                updated_at  = now()
+          WHERE id = $1`,
+        [pk.id, dish.categoryId, dish.imageUrl, workshopLocId],
       );
-      idMap.set(ppid, adiaId);
-      applied += 1;
+      if (dish.categoryId !== null) enrichedCategory += 1;
+      if (dish.imageUrl !== null) enrichedImage += 1;
+      if (workshopLocId !== null) enrichedWorkshop += 1;
     }
-    // Phase 2: BOM import for type=2 products only.
-    for (const p of list) {
-      if (p.type !== '2') continue;
-      const ppid = Number(p.product_id);
-      const parentId = idMap.get(ppid);
-      if (parentId === undefined) continue;
-      const full = await client.getProduct(ppid);
-      if (full === null) continue;
-      // Preferred: a flat `ingredients` BOM (raw + prepack lines).
-      let components: BomComponent[] = [];
-      if (Array.isArray(full.ingredients) && full.ingredients.length > 0) {
-        components = await resolveBomComponents(full.ingredients);
-      } else if (
-        Array.isArray(full.group_modifications) &&
-        full.group_modifications.length > 0
-      ) {
-        // No flat BOM — the cake is configured via Размеры modifications. Link
-        // the WHOLE (ЦЕЛЫЙ) modification's prepack as the single component.
-        components = await resolveModificationComponent(full.group_modifications);
-      }
-      if (components.length === 0) continue;
-      await replaceRecipe(parentId, components);
-    }
-    await finishSyncRun(runId, 'ok', { recordsIn: total, recordsApplied: applied });
-    return { entity: 'products', status: 'ok', recordsIn: total, recordsApplied: applied };
+
+    // Drop the legacy menu-product rows (товары + dish-as-product). The set is
+    // every local product whose poster_product_id is a menu product_id — these
+    // never overlap prepack product_ids (verified live 2026-06-08).
+    const menuPids = list
+      .map((p) => Number(p.product_id))
+      .filter((id) => Number.isInteger(id) && id > 0);
+    const dropped = await dropMenuProducts(menuPids);
+
+    const summary =
+      `dishes=${list.length} enrich(matched=${matched}, cat=${enrichedCategory}, ` +
+      `img=${enrichedImage}, ws=${enrichedWorkshop}) dropped_menu_products=${dropped}`;
+    await finishSyncRun(runId, 'ok', { recordsIn: total, recordsApplied: matched }, summary);
+    return {
+      entity: 'products',
+      status: 'ok',
+      recordsIn: total,
+      recordsApplied: matched,
+      errorDetail: summary,
+    };
   } catch (err) {
     const detail = redactUrl((err as Error).message);
-    await finishSyncRun(runId, 'partial', { recordsIn: total, recordsApplied: applied }, detail);
+    await finishSyncRun(runId, 'partial', { recordsIn: total, recordsApplied: 0 }, detail);
     await notifyPosterSyncFailed('products', detail);
     return {
       entity: 'products',
       status: 'partial',
       recordsIn: total,
-      recordsApplied: applied,
+      recordsApplied: 0,
       errorDetail: detail,
     };
   }
+}
+
+/**
+ * Delete the legacy menu-product rows (товары + dish-as-product) the OLD
+ * `syncMenuProducts` created, by `poster_product_id`. Wrapped in ONE
+ * transaction; all dependent rows that reference these products with
+ * `ON DELETE RESTRICT` (stock, movements, sales, replenishment, production /
+ * purchase orders, nakladnoy lines, writeback queue, dialog sessions, recipes
+ * as a component) are removed first in FK-safe order so the final
+ * `DELETE FROM products` cannot raise 23503. Raw/semi/finished prepacks and
+ * their stock are NEVER touched — only rows whose poster_product_id is in the
+ * menu-product id set (which is disjoint from prepack ids).
+ *
+ * Idempotent: a re-run finds no matching rows (the old menu-products are gone)
+ * and deletes nothing. Returns the number of product rows removed.
+ */
+async function dropMenuProducts(menuProductIds: readonly number[]): Promise<number> {
+  if (menuProductIds.length === 0) return 0;
+  return withTransaction(async (tx) => {
+    // Resolve the local product ids to delete (menu product_ids only; disjoint
+    // from prepack ids so no prepack is ever caught here).
+    const { rows: targets } = await tx.query<{ id: number }>(
+      `SELECT id FROM products WHERE poster_product_id = ANY($1::bigint[])`,
+      [menuProductIds],
+    );
+    const ids = targets.map((r) => Number(r.id));
+    if (ids.length === 0) return 0;
+
+    // FK-safe dependent deletes (children of these tables cascade / set-null).
+    const deps: readonly [string, string][] = [
+      ['purchase_orders', 'product_id'],
+      ['production_orders', 'product_id'],
+      ['replenishment_requests', 'product_id'],
+      ['stock_movements', 'product_id'],
+      ['sales', 'product_id'],
+      ['stock', 'product_id'],
+      ['nakladnoy_lines', 'product_id'],
+      ['nakladnoy_lines', 'component_product_id'],
+      ['poster_writeback_queue', 'product_id'],
+      ['production_dialog_sessions', 'product_id'],
+      ['recipes', 'component_product_id'],
+    ];
+    for (const [table, col] of deps) {
+      // table/col are server-side constants (never user input) — safe to inline.
+      await tx.query(`DELETE FROM ${table} WHERE ${col} = ANY($1::bigint[])`, [ids]);
+    }
+
+    // Now the products themselves. recipes.product_id, sales_stats_daily,
+    // forecasts, poster_product_writeback cascade automatically.
+    const del = await tx.query(`DELETE FROM products WHERE id = ANY($1::bigint[])`, [ids]);
+
+    await writeAudit(tx, {
+      actorUserId: null,
+      action: 'poster.menu_products.drop',
+      entity: 'products',
+      entityId: null,
+      payload: { dropped: del.rowCount ?? ids.length, product_ids: ids.slice(0, 50) },
+    });
+    return del.rowCount ?? ids.length;
+  });
 }
 
 /**
@@ -1017,12 +1219,14 @@ export async function syncPrepacks(
       // poster_product_id.
       if (!Number.isInteger(ppid) || ppid <= 0) continue;
       const ping = Number.isInteger(pingRaw) && pingRaw > 0 ? pingRaw : null;
+      const prepackName = String(p.product_name ?? '').trim() || `Prepack ${ppid}`;
+      // Owner rework (2026-06-08): a «Г/П…» ready-prefixed prepack is a finished
+      // sale-ready product (Tayyor mahsulot); everything else is semi (Yarim).
+      const productType: 'semi' | 'finished' = hasReadyPrefix(prepackName)
+        ? 'finished'
+        : 'semi';
       try {
-        const parentId = await upsertPrepack(
-          ppid,
-          ping,
-          String(p.product_name ?? '').trim() || `Prepack ${ppid}`,
-        );
+        const parentId = await upsertPrepack(ppid, ping, prepackName, productType);
         parentIdByPoster.set(ppid, parentId);
         // For every RAW (type=1) line, persist the derived unit cost on the
         // raw product. Best-effort — a not-yet-seeded raw is a no-op (the raw
@@ -1149,94 +1353,6 @@ export async function syncPrepacks(
   }
 }
 
-/**
- * Resolve a Poster `ingredients` array to ADIA component product ids +
- * normalised qty. Components that are not yet seeded are silently skipped —
- * the next seed run picks them up.
- */
-async function resolveBomComponents(
-  rows: readonly {
-    ingredient_id: string;
-    structure_unit: string;
-    ingredient_unit: string;
-    structure_brutto: number | string;
-    structure_netto?: number | string;
-    structure_type?: string;
-    structure_selfprice?: number | string;
-  }[],
-): Promise<BomComponent[]> {
-  const out: BomComponent[] = [];
-  for (const ing of rows) {
-    const ping = Number(ing.ingredient_id);
-    if (!Number.isInteger(ping) || ping <= 0) continue;
-    // structure_type drives the lookup column: 1 -> raw, 2 -> prepack (semi).
-    const sType = Number(ing.structure_type);
-    const structureType = Number.isFinite(sType) ? sType : 1;
-    // A RAW line carries the ingredient's unit cost — persist it.
-    if (structureType !== 2) {
-      const unitCost = rawUnitCostFromLine(ing);
-      if (unitCost !== null) await setRawIngredientCost(ping, unitCost);
-    }
-    const id = await resolveComponentId(ping, structureType);
-    if (id === null) continue;
-    // A finished product's flat `ingredients` BOM is already per ONE finished
-    // unit (menu.getProduct does not expose a batch `out`), so no yield divisor
-    // — qty_per_unit is the brutto converted to the component's unit.
-    const qty = normaliseQty(
-      String(ing.structure_unit ?? ''),
-      String(ing.ingredient_unit ?? ''),
-      ing.structure_brutto,
-    );
-    if (qty > 0) {
-      out.push({
-        componentProductId: id,
-        qtyPerUnit: qty,
-        brutto: numOrNull(ing.structure_brutto),
-        netto: numOrNull(ing.structure_netto),
-      });
-    }
-  }
-  return out;
-}
-
-/**
- * Resolve a finished product's BOM when `menu.getProduct` exposes no flat
- * `ingredients` array but a `group_modifications` block (Размеры: ЦЕЛЫЙ /
- * ПОЛОВИНА / КУСОК). Per owner: take the WHOLE (ЦЕЛЫЙ — largest `brutto`)
- * modification only and link the finished product to that prepack as its
- * single component. The modification's `ingredient_id` is a PREPACK's
- * `product_id` (resolve via poster_product_id). qty_per_unit = brutto in the
- * prepack's unit; brutto is in grams (e.g. 1000 = 1 unit) so we treat it as a
- * fraction of one prepack unit (÷1000) — ЦЕЛЫЙ=1000 -> 1.0.
- */
-async function resolveModificationComponent(
-  groups: readonly {
-    modifications?: { ingredient_id: number | string; brutto?: number | string }[];
-  }[],
-): Promise<BomComponent[]> {
-  // Flatten every modification, pick the one with the largest brutto (ЦЕЛЫЙ).
-  let best: { posterProductId: number; brutto: number } | null = null;
-  for (const g of groups) {
-    for (const m of g.modifications ?? []) {
-      const pid = Number(m.ingredient_id);
-      const brutto = Number(m.brutto);
-      if (!Number.isInteger(pid) || pid <= 0) continue;
-      if (!Number.isFinite(brutto) || brutto <= 0) continue;
-      if (best === null || brutto > best.brutto) {
-        best = { posterProductId: pid, brutto };
-      }
-    }
-  }
-  if (best === null) return [];
-  // The modification's ingredient_id is a PREPACK product_id.
-  const compId = await resolveComponentId(best.posterProductId, 2);
-  if (compId === null) return [];
-  // brutto is in grams of the prepack's produced unit; 1000 g = 1.0 unit.
-  const qtyPerUnit = best.brutto / 1000;
-  if (!(qtyPerUnit > 0)) return [];
-  return [{ componentProductId: compId, qtyPerUnit }];
-}
-
 // -----------------------------------------------------------------------------
 // Top-level orchestrator
 // -----------------------------------------------------------------------------
@@ -1258,6 +1374,9 @@ export async function runSeedSync(
   if (selector === 'all' || selector === 'locations') {
     results.push(await syncSpots(client, 'manual'));
     results.push(await syncStorages(client, 'manual'));
+    // Workshops (Цехи) -> locations(type='production'). MUST run before the
+    // product enrichment in syncMenuProducts so product->workshop links resolve.
+    results.push(await syncWorkshops(client, 'manual'));
   }
   if (selector === 'all' || selector === 'products') {
     // categories first — syncMenuProducts maps menu_category_id -> categories.id.
