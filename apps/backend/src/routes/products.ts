@@ -39,6 +39,7 @@ import {
   type ProductType,
 } from '../lib/productCategory.js';
 import { readRecipeTree } from '../services/bom.js';
+import { computeAllProductCosts } from '../services/costRollup.js';
 import { enqueueProductUnitWriteback } from '../services/posterWriteback.js';
 
 export const productsRouter: Router = Router();
@@ -103,10 +104,22 @@ type EnrichedProductRow = Omit<ProductRow, 'category_name' | 'workshop_name'> & 
    * `locations` via `workshop_location_id`. `{ id, name }` or `null`.
    */
   workshop: { id: number; name: string } | null;
+  /**
+   * The bottom-up COMPUTED recipe cost (Себестоимость, so'm per unit) — the
+   * same number as `GET /:id/recipe`'s `total_cost`. For a raw/leaf product it
+   * is COALESCE(manual_cost_per_unit, cost_per_unit); for a semi/finished it is
+   * the recipe roll-up. `null` when any leg's cost is unknown (never a fake 0).
+   * Batched per-list via `computeAllProductCosts` (NOT per-row readRecipeTree).
+   */
+  computed_cost: number | null;
 };
 
-/** Attach the EPIC 1.3 smart-category fields + real Poster category + workshop. */
-function enrich(row: ProductRow): EnrichedProductRow {
+/**
+ * Attach the EPIC 1.3 smart-category fields + real Poster category + workshop
+ * + the computed recipe cost. `computedCost` is passed in by the list endpoint
+ * (which batches all costs in one pass); other callers default to `null`.
+ */
+function enrich(row: ProductRow, computedCost: number | null = null): EnrichedProductRow {
   const type = row.type as ProductType;
   const { category_name, workshop_name, ...rest } = row;
   return {
@@ -121,6 +134,7 @@ function enrich(row: ProductRow): EnrichedProductRow {
       row.workshop_location_id !== null && workshop_name !== null
         ? { id: Number(row.workshop_location_id), name: workshop_name }
         : null,
+    computed_cost: computedCost,
   };
 }
 
@@ -188,9 +202,15 @@ productsRouter.get(
         ? rows
         : rows.filter((r) => matchesSearch(`${r.name} ${r.sku ?? ''}`, searchRaw));
 
+    // Bottom-up computed cost for EVERY product, in ONE batched pass (two
+    // queries total — NOT readRecipeTree per row). The map covers the whole
+    // catalogue because a filtered product's cost can depend on components that
+    // were filtered out; we just read the values we need from it.
+    const costs = await computeAllProductCosts(poolRunner);
+
     // List endpoints return a bare array (spec section 4) — no envelope.
-    // Each row carries the EPIC 1.3 smart-category fields.
-    res.status(200).json(filtered.map(enrich));
+    // Each row carries the EPIC 1.3 smart-category fields + computed_cost.
+    res.status(200).json(filtered.map((r) => enrich(r, costs.get(r.id) ?? null)));
   }),
 );
 
@@ -354,6 +374,23 @@ productsRouter.patch(
     } else {
       throw AppError.validation(
         'Field "cost_per_unit" must be a number greater than zero, or null to clear the override.',
+      );
+    }
+
+    // Owner rule: ONLY raw (xom-ashyo) products have an editable price. A
+    // semi/finished product's price is COMPUTED bottom-up from the recipe (BOM)
+    // and is read-only — reject the edit before touching the row.
+    const target = await query<{ type: string }>(
+      'SELECT type FROM products WHERE id = $1',
+      [productId],
+    );
+    const targetRow = target.rows[0];
+    if (targetRow === undefined) {
+      throw AppError.notFound('Product not found.');
+    }
+    if (targetRow.type !== 'raw') {
+      throw AppError.conflict(
+        'Only raw-material (xom-ashyo) prices can be edited; derived product prices are computed from the recipe.',
       );
     }
 
