@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
   Calculator,
   Factory,
-  Package,
   Pencil,
   ScrollText,
   Search,
@@ -39,8 +38,9 @@ import {
 } from '@/lib/productCategory';
 import { formatSom } from '@/lib/format';
 import { cn } from '@/lib/utils';
-import type { Product, Unit } from '@/lib/types';
+import type { Location, Product, Unit } from '@/lib/types';
 import { ProductCostDialog } from './ProductCostDialog';
+import { WorkshopPicker, type WorkshopOption } from './WorkshopPicker';
 
 /**
  * The three filter dimensions all live inside the Filter popover now
@@ -50,7 +50,14 @@ import { ProductCostDialog } from './ProductCostDialog';
  */
 
 /** Filter popover default — nothing pre-selected (each group empty). */
-const DEFAULT_FILTER: FilterValue = { category: [], unit: [] };
+const DEFAULT_FILTER: FilterValue = { category: [], unit: [], workshop: [] };
+
+/**
+ * Sentinel option value for the WORKSHOP filter that matches products with NO
+ * assigned sex (`workshop == null`). A real workshop id can never collide with
+ * it, so the `filtered` memo can branch on this string safely.
+ */
+const WORKSHOP_NONE = 'none';
 
 /** Product TYPE lives in a page-level segmented tab row (not the filter). */
 type TypeTab = 'all' | 'finished' | 'semi' | 'raw';
@@ -110,6 +117,22 @@ function displayCost(p: Product): number | null {
 }
 
 /**
+ * A PRODUCED product (finished/semi, non-resale category) whose backend
+ * `has_recipe` is EXPLICITLY false is missing its Poster recipe → warn.
+ * Resale/base items and older API rows (`has_recipe === undefined`) stay
+ * neutral so they don't all light up. Pure — lifted to module scope so the
+ * memoised card can reference it without a per-render closure dependency.
+ */
+function needsRecipeWarn(p: Product): boolean {
+  const type = effectiveType(p);
+  return (
+    p.has_recipe === false &&
+    (type === 'finished' || type === 'semi') &&
+    !isResaleCategory(p.poster_category?.name ?? null)
+  );
+}
+
+/**
  * Subtle muted hint for a SEMI/FINISHED card — its price is auto-derived from
  * the recipe and not editable here (dark-premium muted, small calculator glyph).
  */
@@ -127,9 +150,10 @@ function ComputedPriceHint() {
 
 /**
  * Small rounded product thumbnail shown at the card's top-left. Renders the
- * Poster "Обложка" image when present; falls back to a themed placeholder
- * (muted Package icon on a subtle surface) when `image_url` is null OR the
- * image fails to load (`onError`) — never a broken-image glyph.
+ * Poster "Обложка" image when present. When `image_url` is null/empty OR the
+ * image fails to load (`onError`), it renders NOTHING (no placeholder box /
+ * icon) — owner feedback: the empty Package placeholder is unwanted, the
+ * product name should take the freed space instead.
  */
 function ProductThumbnail({
   src,
@@ -142,6 +166,7 @@ function ProductThumbnail({
 }) {
   const [failed, setFailed] = useState(false);
   const showImage = src != null && src !== '' && !failed;
+  if (!showImage) return null;
   return (
     <div
       className={cn(
@@ -149,20 +174,13 @@ function ProductThumbnail({
         className,
       )}
     >
-      {showImage ? (
-        <img
-          src={src}
-          alt={alt}
-          loading="lazy"
-          onError={() => setFailed(true)}
-          className="size-full object-cover"
-        />
-      ) : (
-        <Package
-          className="size-1/2 text-muted-foreground/60"
-          aria-hidden="true"
-        />
-      )}
+      <img
+        src={src}
+        alt={alt}
+        loading="lazy"
+        onError={() => setFailed(true)}
+        className="size-full object-cover"
+      />
     </div>
   );
 }
@@ -170,21 +188,177 @@ function ProductThumbnail({
 /**
  * Subtle "🏭 {workshop.name}" line — the production sex that makes the
  * product. Renders nothing when `workshop` is null (raw / resale items),
- * so a card never shows an empty sex placeholder.
+ * so a card never shows an empty sex placeholder. When an `edit` node is
+ * passed (an editor's change-sex affordance) it sits inline after the name.
  */
 function WorkshopLine({
   workshop,
+  edit,
 }: {
   workshop: Product['workshop'];
+  edit?: React.ReactNode;
 }) {
   if (workshop == null) return null;
   return (
     <p className="flex items-center gap-1 text-xs text-muted-foreground">
       <Factory className="size-3 shrink-0" aria-hidden="true" />
       <span className="truncate">{workshop.name}</span>
+      {edit}
     </p>
   );
 }
+
+interface ProductCardProps {
+  product: Product;
+  /** May the current user assign / change the producing sex? (pm/prod-mgr) */
+  canEditWorkshop: boolean;
+  /** May the current user edit a RAW product's manual cost? (pm/prod-mgr) */
+  canEditCost: boolean;
+  /** Production workshops for the inline sex picker. */
+  workshops: WorkshopOption[];
+  /** Open the read-only recipe page for this product. */
+  onOpenRecipe: (p: Product) => void;
+  /** Open the manual-cost dialog for this RAW product. */
+  onEditCost: (p: Product) => void;
+  /** Refetch the product list after a successful sex assignment. */
+  onWorkshopAssigned: () => void;
+}
+
+/**
+ * EPIC 1.5 — a single desktop catalogue card, wrapped in {@link memo}.
+ *
+ * Memoising the card is the key fix for the «slow catalogue» owner report:
+ * the page mounts hundreds of cards and grows a lazy window (`visibleCount`)
+ * on scroll. Without memo, every scroll-batch state bump re-rendered ALL
+ * already-mounted cards. With stable callback props (the parent wraps its
+ * handlers in `useCallback`), `memo`'s shallow prop compare lets a mounted
+ * card skip re-render entirely when only the window counter changes — only
+ * the newly-revealed cards render.
+ */
+const ProductCard = memo(function ProductCard({
+  product: p,
+  canEditWorkshop,
+  canEditCost,
+  workshops,
+  onOpenRecipe,
+  onEditCost,
+  onWorkshopAssigned,
+}: ProductCardProps) {
+  // The section header already carries the real Poster category, so the card
+  // badge shows the product TYPE (raw / semi / finished) — colour-coded.
+  const type = effectiveType(p);
+  const style = PRODUCT_CATEGORY_STYLE[type];
+  // The inline sex-assign affordance is offered for PRODUCED products only
+  // (raw/resale items have no sex), and only to users who may edit it.
+  const canHaveWorkshop = type === 'finished' || type === 'semi';
+  const showAssign = canEditWorkshop && canHaveWorkshop;
+  return (
+    <div
+      className={cn(
+        'flex h-full flex-col gap-3 rounded-lg border border-l-4 border-border/60 bg-card/40 p-4 shadow-sm transition-colors hover:bg-card/70',
+        style.accent,
+      )}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 items-start gap-2.5">
+          <ProductThumbnail src={p.image_url} alt={p.name} className="size-11" />
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold" title={p.name}>
+              {p.name}
+            </p>
+            {p.sku && (
+              <p className="truncate text-xs text-muted-foreground">
+                SKU: {p.sku}
+              </p>
+            )}
+            <WorkshopLine
+              workshop={p.workshop}
+              edit={
+                showAssign && p.workshop != null ? (
+                  <WorkshopPicker
+                    productId={p.id}
+                    currentWorkshopId={p.workshop.id}
+                    workshops={workshops}
+                    variant="compact"
+                    onAssigned={onWorkshopAssigned}
+                  />
+                ) : undefined
+              }
+            />
+            {/* No sex yet → offer to assign one (produced products only). */}
+            {showAssign && p.workshop == null && (
+              <div className="mt-1">
+                <WorkshopPicker
+                  productId={p.id}
+                  currentWorkshopId={null}
+                  workshops={workshops}
+                  variant="button"
+                  onAssigned={onWorkshopAssigned}
+                />
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <Badge variant={style.badge} className="whitespace-nowrap">
+            {PRODUCT_TYPE_LABELS[type]}
+          </Badge>
+          {needsRecipeWarn(p) && <RecipelessBadge />}
+        </div>
+      </div>
+      <dl className="grid grid-cols-2 gap-2 text-xs">
+        <div>
+          <dt className="text-muted-foreground">Birlik</dt>
+          <dd>{UNIT_LABELS[p.unit]}</dd>
+        </div>
+        <div className="min-w-0">
+          <dt className="text-muted-foreground">Narx</dt>
+          <dd className="flex items-center gap-1.5">
+            <span className="truncate tabular-nums">
+              {displayCost(p) != null
+                ? formatSom(displayCost(p) as number)
+                : '—'}
+            </span>
+            {type === 'raw' ? (
+              p.manual_cost_per_unit != null && <ManualPriceBadge />
+            ) : (
+              <ComputedPriceHint />
+            )}
+          </dd>
+        </div>
+      </dl>
+      {/* Narx (edit, RAW only) + Retsept (view, non-raw) side by side at the
+          card foot. Only xom-ashyo price is editable; semi/finished show a
+          read-only computed price (the «hisoblangan» hint above). */}
+      {((canEditCost && type === 'raw') || type !== 'raw') && (
+        <div className="mt-auto flex flex-wrap items-center gap-2">
+          {canEditCost && type === 'raw' && (
+            <Button
+              variant="secondary"
+              size="sm"
+              className="h-8 flex-1"
+              onClick={() => onEditCost(p)}
+            >
+              <Pencil className="size-3.5" aria-hidden="true" />
+              Narx
+            </Button>
+          )}
+          {type !== 'raw' && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 flex-1"
+              onClick={() => onOpenRecipe(p)}
+            >
+              <ScrollText className="size-4" aria-hidden="true" />
+              Retseptni ko‘rish
+            </Button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+});
 
 /**
  * M2 — products list. EPIC 1 redesign:
@@ -204,9 +378,11 @@ function WorkshopLine({
 export function ProductsPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  // FEATURE A — only pm / production_manager may edit the manual cost.
+  // FEATURE A — only pm / production_manager may edit the manual cost. The
+  // same gate governs assigning / changing a product's producing sex.
   const canEditCost =
     user?.role === 'pm' || user?.role === 'production_manager';
+  const canEditWorkshop = canEditCost;
 
   // The product whose cost dialog is open (null = closed).
   const [costProduct, setCostProduct] = useState<Product | null>(null);
@@ -242,25 +418,34 @@ export function ProductsPage() {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   // The recipe (BOM) opens as a dedicated, read-only page (not a modal).
-  const openRecipe = (p: Product) => navigate(`/products/${p.id}/recipe`);
-
-  // A PRODUCED product (finished/semi, non-resale category) whose backend
-  // `has_recipe` is EXPLICITLY false is missing its Poster recipe → warn.
-  // Resale/base items and older API rows (`has_recipe === undefined`) stay
-  // neutral so they don't all light up.
-  const needsRecipeWarn = (p: Product): boolean => {
-    const type = effectiveType(p);
-    return (
-      p.has_recipe === false &&
-      (type === 'finished' || type === 'semi') &&
-      !isResaleCategory(p.poster_category?.name ?? null)
-    );
-  };
+  // Stable identities (useCallback) so the memoised ProductCard's props don't
+  // change every render — that's what lets a mounted card skip re-render when
+  // only the lazy `visibleCount` window grows (EPIC 1.5 perf fix).
+  const openRecipe = useCallback(
+    (p: Product) => navigate(`/products/${p.id}/recipe`),
+    [navigate],
+  );
 
   // The full list is fetched once (the backend `?type=` filter is replaced by
   // richer client-side filtering: multi-type, unit, and translit search).
   const { data, isLoading, error, refetch } =
     useApiQuery<Product[]>('/api/products');
+  const onWorkshopAssigned = useCallback(() => refetch(), [refetch]);
+  const onEditCost = useCallback((p: Product) => setCostProduct(p), []);
+
+  // Production workshops (sexes) for the workshop FILTER dimension and the
+  // inline sex-assign picker. pm + production_manager are authorised for this
+  // endpoint; for any other (read-only) role the query is skipped (`null`) and
+  // the workshop filter group / assign control simply don't appear.
+  const { data: workshopData } = useApiQuery<Location[]>(
+    canEditWorkshop ? '/api/locations?type=production' : null,
+  );
+  const workshops = useMemo<WorkshopOption[]>(() => {
+    const rows = workshopData ?? [];
+    return rows
+      .map((l) => ({ id: l.id, name: l.name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [workshopData]);
 
   // `useApiQuery` returns a stable `data` reference between renders, so memoise
   // on `data` itself (not a freshly-allocated `data ?? []`) to keep the
@@ -300,8 +485,20 @@ export function ProductsPage() {
   // Tur (type), Kategoriya (searchable, derived), Birlik (unit). The popover
   // renders them as tabs and turns the category list into a searchable
   // multi-select automatically (>6 options or `searchable`).
-  const FILTER_GROUPS = useMemo<FilterGroup[]>(
-    () => [
+  // Workshop (sex) filter options — every production workshop plus a leading
+  // "Sexsiz" pseudo-option so the owner can isolate products with no assigned
+  // sex. Only shown when the workshops list loaded (editors); for read-only
+  // roles the group is omitted entirely.
+  const workshopOptions = useMemo<FilterOption[]>(() => {
+    if (workshops.length === 0) return [];
+    return [
+      { value: WORKSHOP_NONE, label: 'Sexsiz' },
+      ...workshops.map((w) => ({ value: String(w.id), label: w.name })),
+    ];
+  }, [workshops]);
+
+  const FILTER_GROUPS = useMemo<FilterGroup[]>(() => {
+    const groups: FilterGroup[] = [
       {
         key: 'category',
         label: 'Kategoriya',
@@ -314,13 +511,22 @@ export function ProductsPage() {
         searchable: false,
         options: UNIT_OPTIONS.map((u) => ({ value: u.value, label: u.label })),
       },
-    ],
-    [categoryOptions],
-  );
+    ];
+    if (workshopOptions.length > 0) {
+      groups.push({
+        key: 'workshop',
+        label: 'Sex',
+        searchable: true,
+        options: workshopOptions,
+      });
+    }
+    return groups;
+  }, [categoryOptions, workshopOptions]);
 
   const filtered = useMemo(() => {
     const selectedCategories = filter.category ?? [];
     const selectedUnits = filter.unit ?? [];
+    const selectedWorkshops = filter.workshop ?? [];
     return allProducts.filter((p) => {
       // EPIC 1.3 — Г/П-prefixed products are treated as finished.
       if (typeTab !== 'all' && effectiveType(p) !== typeTab) {
@@ -337,6 +543,13 @@ export function ProductsPage() {
       }
       if (selectedUnits.length > 0 && !selectedUnits.includes(p.unit as Unit)) {
         return false;
+      }
+      if (selectedWorkshops.length > 0) {
+        // "Sexsiz" matches a null workshop; otherwise match the assigned id.
+        const key = p.workshop != null ? String(p.workshop.id) : WORKSHOP_NONE;
+        if (!selectedWorkshops.includes(key)) {
+          return false;
+        }
       }
       if (!matchesSearch(`${p.name} ${p.sku ?? ''}`, search)) {
         return false;
@@ -521,13 +734,43 @@ export function ProductsPage() {
                       alt={p.name}
                       className="size-10"
                     />
-                    <span className="truncate">{p.name}</span>
+                    <span className="truncate" title={p.name}>
+                      {p.name}
+                    </span>
                   </span>
                 ),
                 subtitle: (
                   <span className="flex flex-col gap-0.5">
                     {p.sku && <span>SKU: {p.sku}</span>}
-                    <WorkshopLine workshop={p.workshop} />
+                    <WorkshopLine
+                      workshop={p.workshop}
+                      edit={
+                        canEditWorkshop &&
+                        (type === 'finished' || type === 'semi') &&
+                        p.workshop != null ? (
+                          <WorkshopPicker
+                            productId={p.id}
+                            currentWorkshopId={p.workshop.id}
+                            workshops={workshops}
+                            variant="compact"
+                            onAssigned={onWorkshopAssigned}
+                          />
+                        ) : undefined
+                      }
+                    />
+                    {canEditWorkshop &&
+                      (type === 'finished' || type === 'semi') &&
+                      p.workshop == null && (
+                        <span className="mt-1 inline-flex">
+                          <WorkshopPicker
+                            productId={p.id}
+                            currentWorkshopId={null}
+                            workshops={workshops}
+                            variant="button"
+                            onAssigned={onWorkshopAssigned}
+                          />
+                        </span>
+                      )}
                   </span>
                 ),
                 badge: (
@@ -604,110 +847,18 @@ export function ProductsPage() {
                     </Badge>
                   </div>
                   <div className="grid grid-cols-1 items-stretch gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
-                    {group.items.map((p) => {
-                      // The section header already carries the real Poster
-                      // category, so the card badge shows the product TYPE
-                      // (raw / semi / finished) — colour-coded by type.
-                      const type = effectiveType(p);
-                      const style = PRODUCT_CATEGORY_STYLE[type];
-                      return (
-                        <div
-                          key={p.id}
-                          className={cn(
-                            'flex h-full flex-col gap-3 rounded-lg border border-l-4 border-border/60 bg-card/40 p-4 shadow-sm transition-colors hover:bg-card/70',
-                            style.accent,
-                          )}
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="flex min-w-0 items-start gap-2.5">
-                              <ProductThumbnail
-                                src={p.image_url}
-                                alt={p.name}
-                                className="size-11"
-                              />
-                              <div className="min-w-0">
-                                <p className="truncate text-sm font-semibold">
-                                  {p.name}
-                                </p>
-                                {p.sku && (
-                                  <p className="truncate text-xs text-muted-foreground">
-                                    SKU: {p.sku}
-                                  </p>
-                                )}
-                                <WorkshopLine workshop={p.workshop} />
-                              </div>
-                            </div>
-                            <div className="flex shrink-0 flex-col items-end gap-1">
-                              <Badge
-                                variant={style.badge}
-                                className="whitespace-nowrap"
-                              >
-                                {PRODUCT_TYPE_LABELS[type]}
-                              </Badge>
-                              {needsRecipeWarn(p) && <RecipelessBadge />}
-                            </div>
-                          </div>
-                          <dl className="grid grid-cols-2 gap-2 text-xs">
-                            <div>
-                              <dt className="text-muted-foreground">Birlik</dt>
-                              <dd>{UNIT_LABELS[p.unit]}</dd>
-                            </div>
-                            <div className="min-w-0">
-                              <dt className="text-muted-foreground">Narx</dt>
-                              <dd className="flex items-center gap-1.5">
-                                <span className="truncate tabular-nums">
-                                  {displayCost(p) != null
-                                    ? formatSom(displayCost(p) as number)
-                                    : '—'}
-                                </span>
-                                {type === 'raw'
-                                  ? p.manual_cost_per_unit != null && (
-                                      <ManualPriceBadge />
-                                    )
-                                  : <ComputedPriceHint />}
-                              </dd>
-                            </div>
-                          </dl>
-                          {/* Narx (edit, RAW only) + Retsept (view, non-raw)
-                              side by side at the card foot — owner feedback:
-                              "yonma-yon, aniq, chiroyli". Only xom-ashyo price
-                              is editable; semi/finished show a read-only
-                              computed price (the «hisoblangan» hint above). */}
-                          {((canEditCost && type === 'raw') || type !== 'raw') && (
-                            <div className="mt-auto flex flex-wrap items-center gap-2">
-                              {canEditCost && type === 'raw' && (
-                                <Button
-                                  variant="secondary"
-                                  size="sm"
-                                  className="h-8 flex-1"
-                                  onClick={() => setCostProduct(p)}
-                                >
-                                  <Pencil
-                                    className="size-3.5"
-                                    aria-hidden="true"
-                                  />
-                                  Narx
-                                </Button>
-                              )}
-                              {type !== 'raw' && (
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-8 flex-1"
-                                  onClick={() => openRecipe(p)}
-                                >
-                                  <ScrollText
-                                    className="size-4"
-                                    aria-hidden="true"
-                                  />
-                                  Retseptni ko‘rish
-                                </Button>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                    {group.items.map((p) => (
+                      <ProductCard
+                        key={p.id}
+                        product={p}
+                        canEditWorkshop={canEditWorkshop}
+                        canEditCost={canEditCost}
+                        workshops={workshops}
+                        onOpenRecipe={openRecipe}
+                        onEditCost={onEditCost}
+                        onWorkshopAssigned={onWorkshopAssigned}
+                      />
+                    ))}
                   </div>
                 </section>
               ))}
