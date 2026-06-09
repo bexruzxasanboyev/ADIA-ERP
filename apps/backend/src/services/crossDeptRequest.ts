@@ -21,7 +21,13 @@
  */
 import { withTransaction, type TxClient } from '../db/index.js';
 import { AppError } from '../errors/index.js';
-import { createRequest, REPLENISHMENT_COLUMNS, type ReplenishmentRow } from './replenishment.js';
+import {
+  createRequest,
+  createRequestInTx,
+  REPLENISHMENT_COLUMNS,
+  type ReplenishmentRow,
+  type RequestOrigin,
+} from './replenishment.js';
 import { createNotification, getLocationManager } from './notify.js';
 
 export type CrossDeptTarget = {
@@ -137,6 +143,18 @@ export async function createCrossDeptRequest(opts: {
   qty: number;
   actorUserId: number;
   note?: string | null;
+  /**
+   * 0065 / cross-dept-flow §8 — optional request-tree placement. The voice/menu
+   * caller (the original use) passes none and gets a fresh root with
+   * origin='voice'. The "Manba reja" resolver (F-B `'order'` action) passes the
+   * parent/root/depth so a producer sub-request (e.g. cream → Qaymoq) links into
+   * the root's tree, with origin='dialog'. Defaults preserve the original
+   * behaviour exactly for the existing callers.
+   */
+  parentRequestId?: number | null;
+  rootRequestId?: number | null;
+  depth?: number;
+  origin?: RequestOrigin;
 }): Promise<CrossDeptRequestResult> {
   // Resolve the target up-front (own short tx) so we can fail fast with a
   // clear message before touching the engine. The `productId` enables the
@@ -161,6 +179,12 @@ export async function createCrossDeptRequest(opts: {
     qtyNeeded: opts.qty,
     actorUserId: opts.actorUserId,
     note: opts.note ?? `telegram cross-dept: ${opts.productName} ×${opts.qty}`,
+    // 0065 — thread the request-tree placement; default origin 'voice' keeps the
+    // original Telegram voice/menu behaviour for callers that pass nothing.
+    parentRequestId: opts.parentRequestId ?? null,
+    rootRequestId: opts.rootRequestId ?? null,
+    depth: opts.depth ?? 0,
+    origin: opts.origin ?? 'voice',
   });
 
   // TZ §6 — PIN the target on the request ONLY for the producer-override path.
@@ -231,4 +255,160 @@ export async function createCrossDeptRequest(opts: {
   }
 
   return { request, target, targetManagerNotified };
+}
+
+/**
+ * The discriminated outcome of `createCrossDeptRequestInTx`.
+ *
+ *   - `created`  — a brand-new sub-request was opened (its row + target).
+ *   - `exists`   — invariant 2 fired: an open request for the SAME
+ *                  (product, producer-target) is already in flight. We DO NOT
+ *                  open a duplicate; we surface the existing child so the caller
+ *                  (resolver) can `linkWaiter` + `topUpQtyIfPreAccept` (§8). The
+ *                  `target` is still returned so the caller can audit/notify.
+ */
+export type CrossDeptInTxResult =
+  | { readonly kind: 'created'; readonly request: ReplenishmentRow; readonly target: CrossDeptTarget }
+  | {
+      readonly kind: 'exists';
+      readonly existingRequestId: number;
+      readonly existingStatus: string;
+      readonly target: CrossDeptTarget;
+    };
+
+/**
+ * tx-scoped sibling of `createCrossDeptRequest` (cross-dept-flow F-B).
+ *
+ * The public function opens its OWN transactions (request insert, target pin,
+ * notify) — fine for the voice/menu caller, but the "Manba reja" resolver
+ * (`productionPlan.executeProductionPlan`) needs the producer sub-request to be
+ * part of its single all-or-nothing transaction (so a later-line failure rolls
+ * the sub-request back too — §7/§13). This variant runs ENTIRELY inside the
+ * caller's `tx` and does NOT notify (the caller fans notifications out
+ * post-commit, best-effort, exactly as the engine does).
+ *
+ * Invariant 2 is enforced WITHOUT poisoning the caller's transaction: a raw
+ * 23505 would abort the whole tx (no SAVEPOINT here), so instead of inserting
+ * and catching, we PRE-CHECK for an open request on the pinned producer target
+ * and return `{ kind: 'exists', … }` when one is found. The partial UNIQUE
+ * index on `replenishment_requests` stays the hard backstop for the public,
+ * own-transaction path; here the explicit pre-check keeps the resolver's tx
+ * usable so it can link a waiter instead of failing.
+ *
+ * NOTE: the producer override pins `target_location_id`, so "one open request"
+ * is checked on (product, requester=producer-storage) — the producer storage is
+ * BOTH where the sub-request is routed AND, by the existing pin semantics, the
+ * requester is the original requester. We therefore debounce on the pinned
+ * TARGET (the producer storage), which is the location the duplicate would
+ * compete for. (For the resolver's `'order'` path the target is always a
+ * producer storage via the override; the fallback parent path keeps the
+ * standard requester-location debounce.)
+ */
+export async function createCrossDeptRequestInTx(
+  tx: TxClient,
+  opts: {
+    productId: number;
+    requesterLocationId: number;
+    qty: number;
+    actorUserId: number | null;
+    note?: string | null;
+    parentRequestId: number | null;
+    rootRequestId: number | null;
+    depth: number;
+    origin: RequestOrigin;
+  },
+): Promise<CrossDeptInTxResult> {
+  const target = await resolveRequestTarget(tx, opts.requesterLocationId, opts.productId);
+  if (target === null) {
+    throw AppError.validation(
+      "Sizning bo'limingiz uchun ustki bo'g'in topilmadi — so'rov yuborib bo'lmaydi.",
+    );
+  }
+
+  // Invariant-2 pre-check (see the doc-comment): on the producer-override path
+  // the duplicate would be a second open request whose pinned target is the
+  // producer storage; on the parent path it is the usual requester-location
+  // debounce. We check BOTH the requester-location open request (the partial
+  // index's exact predicate) AND, for the producer path, an open request
+  // already PINNED to that producer storage for the same product (a different
+  // root that linked here earlier).
+  const debounce = await findOpenChild(tx, opts.requesterLocationId, opts.productId, target);
+  if (debounce !== null) {
+    return {
+      kind: 'exists',
+      existingRequestId: debounce.id,
+      existingStatus: debounce.status,
+      target,
+    };
+  }
+
+  // No open duplicate — insert inside the caller's transaction.
+  const request = await createRequestInTx(tx, {
+    productId: opts.productId,
+    requesterLocationId: opts.requesterLocationId,
+    qtyNeeded: opts.qty,
+    actorUserId: opts.actorUserId,
+    note: opts.note ?? `cross-dept (resolver): product ${opts.productId} ×${opts.qty}`,
+    parentRequestId: opts.parentRequestId,
+    rootRequestId: opts.rootRequestId,
+    depth: opts.depth,
+    origin: opts.origin,
+  });
+
+  // PIN the target ONLY for the producer-override path — identical to the public
+  // function's reasoning: a parent-path (store→central) request must keep
+  // target NULL so the engine resolves the central warehouse itself; a
+  // producer-store target is not reachable by the engine's topology walk, so we
+  // record it. The row was just created at NEW, so the pin is safe.
+  let pinned = request;
+  if (target.via === 'producer_store') {
+    const { rows } = await tx.query<ReplenishmentRow>(
+      `UPDATE replenishment_requests
+          SET target_location_id = $2
+        WHERE id = $1 AND target_location_id IS NULL
+        RETURNING ${REPLENISHMENT_COLUMNS}`,
+      [request.id, target.locationId],
+    );
+    if (rows[0] !== undefined) {
+      pinned = rows[0];
+    }
+  }
+
+  return { kind: 'created', request: pinned, target };
+}
+
+/**
+ * Find an OPEN request that a new sub-request for (product, requesterLocation)
+ * would duplicate. Returns the lowest such id (deterministic) or null.
+ *
+ * Two predicates, OR-ed:
+ *   1. the partial-index predicate: an open request with this requester_location
+ *      + product (what the public createRequest would collide on);
+ *   2. the producer-override predicate: an open request already PINNED to the
+ *      producer storage for this product (a different requester/root that landed
+ *      on the same producer earlier — the §8 shared-child case).
+ * `FOR UPDATE` locks the row so two concurrent resolvers serialise on it.
+ */
+async function findOpenChild(
+  tx: TxClient,
+  requesterLocationId: number,
+  productId: number,
+  target: CrossDeptTarget,
+): Promise<{ id: number; status: string } | null> {
+  const producerTargetId = target.via === 'producer_store' ? target.locationId : null;
+  const { rows } = await tx.query<{ id: number; status: string }>(
+    `SELECT id, status FROM replenishment_requests
+      WHERE product_id = $1
+        AND status NOT IN ('CLOSED', 'CANCELLED')
+        AND (
+          requester_location_id = $2
+          OR ($3::bigint IS NOT NULL AND target_location_id = $3)
+        )
+      ORDER BY id
+      LIMIT 1
+      FOR UPDATE`,
+    [productId, requesterLocationId, producerTargetId],
+  );
+  const row = rows[0];
+  return row === undefined ? null : { id: Number(row.id), status: row.status };
 }

@@ -675,8 +675,13 @@ async function firstShortDecorationComponent(
  * supply flow (invariant 7). Debounced: an existing open request for the same
  * (product, requester_location) returns null (OPEN_REQUEST_EXISTS swallowed),
  * so a re-answered dialog never duplicates a request (invariant 2).
+ *
+ * Exported (cross-dept-flow F-B) so the N-component "Manba reja" resolver
+ * (`productionPlan.ts`) raises the SAME "ombordan" purchase request (the OQ5
+ * raw/short path) through this one helper instead of copy-pasting the inline
+ * NEW-request INSERT — one debounce + audit shape for both call sites.
  */
-async function raiseSupplyRequest(
+export async function raiseSupplyRequest(
   tx: TxClient,
   opts: { productId: number; requesterLocationId: number; qty: number; actorUserId: number | null },
 ): Promise<CreatedDocument | null> {
@@ -686,9 +691,11 @@ async function raiseSupplyRequest(
     // inline the same NEW-request INSERT + transition + audit here, inside the
     // dialog's transaction. The partial UNIQUE index still debounces duplicates.
     const { rows } = await tx.query<{ id: number }>(
+      // 0065 — origin='dialog': this material shortfall request was emitted by
+      // the production dialog resolver (a fresh root; parent/root stay NULL).
       `INSERT INTO replenishment_requests
-         (product_id, requester_location_id, qty_needed, status, note, created_by)
-       VALUES ($1, $2, $3, 'NEW', $4, $5)
+         (product_id, requester_location_id, qty_needed, status, note, created_by, origin)
+       VALUES ($1, $2, $3, 'NEW', $4, $5, 'dialog')
        RETURNING id`,
       [
         opts.productId,
@@ -728,8 +735,16 @@ async function raiseSupplyRequest(
   }
 }
 
-/** Insert a zagatovka sub-production-order targeting sex_storage. */
-async function insertZagatovkaOrder(
+/**
+ * Insert a zagatovka sub-production-order targeting sex_storage.
+ *
+ * Exported (cross-dept-flow F-B) so the "Manba reja" resolver's `'make'`
+ * decision (a `semi_own` / `semi_inplace` component produced from zero at the
+ * sex floor) creates the order with the EXACT same semantics the dialog uses
+ * (`stage_role='zagatovka'`, target = sex_storage, `parent_production_order_id`
+ * carried through) — one creation path, not two divergent ones.
+ */
+export async function insertZagatovkaOrder(
   tx: TxClient,
   opts: {
     productId: number;

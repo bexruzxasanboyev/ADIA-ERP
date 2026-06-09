@@ -20,6 +20,7 @@ import { stockRouter } from './stock.js';
 import { replenishmentRouter } from './replenishment.js';
 import { productionOrdersRouter } from './productionOrders.js';
 import { productionDialogRouter } from './productionDialog.js';
+import { productionPlanRouter } from './productionPlan.js';
 import { purchaseOrdersRouter } from './purchaseOrders.js';
 import { posterIntegrationRouter } from './posterIntegration.js';
 import { dashboardRouter } from './dashboard.js';
@@ -49,6 +50,9 @@ apiRouter.use('/replenishment', replenishmentRouter);
 apiRouter.use('/production-orders', productionOrdersRouter);
 // EPIC 5 / ADR-0016 — channel-agnostic AI production dialog (web channel).
 apiRouter.use('/production/dialog', productionDialogRouter);
+// cross-dept-flow §6.4 / F-B — the N-component "Manba reja" (source plan):
+// analyze (read) + execute (one transaction). The dialog Q1/Q2 generalised.
+apiRouter.use('/production-plan', productionPlanRouter);
 apiRouter.use('/purchase-orders', purchaseOrdersRouter);
 apiRouter.use('/dashboard', dashboardRouter);
 // Dashboard MEGA Redesign Sprint C — per-stage detail drawers
