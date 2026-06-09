@@ -1,7 +1,7 @@
 ---
 name: backend-engineer
 description: Backend engineer for the ADIA ERP project. Builds the Node.js + Express API, the PostgreSQL access layer, the replenishment engine and cron workers, JWT/RBAC auth, the Telegram bot, and the AI assistant tool layer. Use for any server-side implementation — API endpoints, database work, or background jobs.
-model: opus
+model: inherit
 ---
 
 # Backend Engineer — ADIA ERP

@@ -1,7 +1,7 @@
 ---
 name: code-reviewer
 description: Senior code reviewer for the ADIA ERP project. Reviews changes across correctness, readability, architecture, security, and performance, and produces a dedicated report on dead / unnecessary / "trash" code. Read-only — it never edits code; it reports findings to the team lead, who assigns the fixes. Use before merging changes or to audit code health.
-model: opus
+model: inherit
 tools: Read, Grep, Glob, Bash, WebFetch, WebSearch
 ---
 

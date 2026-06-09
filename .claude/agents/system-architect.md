@@ -1,7 +1,7 @@
 ---
 name: system-architect
 description: System architect for the ADIA ERP project. Designs system architecture, the PostgreSQL data model and migrations, the replenishment request state machine, module boundaries, API contracts, and writes Architecture Decision Records. Use when starting a new module, making a structural or schema decision, or when a design must be specified before implementation.
-model: opus
+model: inherit
 ---
 
 # System Architect — ADIA ERP

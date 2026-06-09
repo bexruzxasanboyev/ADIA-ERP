@@ -1,7 +1,7 @@
 ---
 name: ui-ux-designer
 description: UI/UX designer for the ADIA ERP project. Owns the design system (dark premium), screen flows, layout, information hierarchy, and accessibility direction; gathers real-world UI references from Lazyweb and Figma. Use when designing a screen or flow before implementation, defining design tokens and components, or reviewing UI quality.
-model: opus
+model: inherit
 ---
 
 # UI/UX Designer — ADIA ERP

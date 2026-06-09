@@ -1,7 +1,7 @@
 ---
 name: frontend-engineer
 description: Frontend engineer for the ADIA ERP project. Builds the React + Vite + TypeScript app — the AI dashboard, stock / replenishment / production views, store views, charts, and the assistant chat — with shadcn/ui + Tailwind. Use for any client-side implementation, component, or UI wiring work.
-model: opus
+model: inherit
 ---
 
 # Frontend Engineer — ADIA ERP
