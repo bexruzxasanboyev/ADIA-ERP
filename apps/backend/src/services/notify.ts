@@ -42,7 +42,12 @@ export type NotificationType =
   | 'cash_shift_submitted'
   // EPIC 8.6 — a store voice message ("10 ta Napoleon keldi") was turned into a
   // `voice` material nakladnoy; PM + the store manager are notified to review it.
-  | 'nakladnoy_created';
+  | 'nakladnoy_created'
+  // F-D / cross-dept-flow §8 — a sub-request in a request tree reached a terminal
+  // state (CLOSED / CANCELLED). Every OPEN root waiting on it (its parent +
+  // every `request_waiters` waiter) is re-advanced and its requester-location
+  // manager is told the child resolved (so the waiting root can proceed).
+  | 'sub_request_closed';
 
 /**
  * Inline keyboard payload persisted into `notifications.inline_callback`

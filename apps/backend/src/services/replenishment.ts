@@ -556,11 +556,15 @@ export async function cancelRequest(
   reason: string,
   closureReason: ReplenishmentClosureReason = 'cancelled_by_requester',
 ): Promise<ReplenishmentRow> {
-  return withTransaction(async (tx) => {
+  // `wasOpen` gates the post-commit cascade/chain: an idempotent re-cancel of an
+  // already-terminal row must NOT re-fire them.
+  let wasOpen = false;
+  const updated = await withTransaction(async (tx) => {
     const order = await lockRequest(tx, requestId);
     if (order.status === 'CANCELLED' || order.status === 'CLOSED') {
       return order;
     }
+    wasOpen = true;
     const { rows } = await tx.query<ReplenishmentRow>(
       `UPDATE replenishment_requests
          SET status = 'CANCELLED',
@@ -570,8 +574,8 @@ export async function cancelRequest(
        RETURNING ${REPLENISHMENT_COLUMNS}`,
       [requestId, closureReason],
     );
-    const updated = rows[0];
-    if (updated === undefined) {
+    const row = rows[0];
+    if (row === undefined) {
       throw AppError.internal('Replenishment cancel returned no row.');
     }
     await recordTransition(tx, requestId, order.status, 'CANCELLED', reason, actorUserId);
@@ -582,8 +586,97 @@ export async function cancelRequest(
       entityId: requestId,
       payload: { from: order.status, reason, closure_reason: closureReason },
     });
-    return updated;
+    // F-D / #10 — cancel cascade: a requester-side cancel of a ROOT also cancels
+    // its orphan early-stage children (NEW / CHECK_STORE_SUPPLIER) that no OTHER
+    // open root still waits on, in this SAME transaction. Runs only on a
+    // requester-side cancel; a fulfiller reject uses cancelRequestByFulfiller.
+    if (closureReason === 'cancelled_by_requester') {
+      await cancelOrphanChildrenInTx(tx, requestId, actorUserId);
+    }
+    return row;
   });
+  // F-D — when THIS request (as a child) reached terminal, fan out to its waiting
+  // roots. Post-commit, best-effort. Skipped on an idempotent re-cancel.
+  if (wasOpen) {
+    await fireWaiterChain(updated, actorUserId);
+  }
+  return updated;
+}
+
+/**
+ * F-D / decision #10 — cancel cascade. When a requester cancels a ROOT request,
+ * its EARLY-STAGE orphan children are auto-cancelled in the SAME transaction.
+ *
+ * "Orphan" = a child whose ONLY open waiter is this root: another open root still
+ * waiting on the child (a `request_waiters` row with a DIFFERENT, still-open
+ * waiter) spares it. "Early-stage" = `status IN ('NEW','CHECK_STORE_SUPPLIER')`.
+ *
+ * Why deeper-status children (CHECK_PRODUCTION_INPUT and beyond) are NOT
+ * auto-cancelled: by that point the producing отдел may ALREADY have transferred
+ * raw/semi inputs into production or started a production order (the engine's
+ * CHECK_PRODUCTION_INPUT step moves components + creates the PO). Cancelling
+ * there would strand committed stock movements / a running zayafka. Those
+ * children are left to finish (or be cancelled by hand by the fulfiller); the
+ * surviving child simply loses THIS root as a waiter (the waiter rows for the
+ * root are deleted below), so when it later closes it no longer fans out here.
+ *
+ * Runs INSIDE the caller's (`cancelRequest`) transaction so the root cancel and
+ * the child cancels are one all-or-nothing unit. Each cancelled child gets a
+ * transition (note 'root cancelled') + an audit row.
+ */
+async function cancelOrphanChildrenInTx(
+  tx: TxClient,
+  rootId: number,
+  actorUserId: number | null,
+): Promise<void> {
+  // Lock + read the early-stage children of this root whose only open waiter is
+  // the root itself (NO OTHER still-open waiter on the child). `FOR UPDATE`
+  // serialises against a concurrent advance trying to move the child forward.
+  const { rows: orphans } = await tx.query<{ id: number; status: ReplenishmentStatus }>(
+    `SELECT c.id, c.status
+       FROM replenishment_requests c
+      WHERE c.parent_request_id = $1
+        AND c.status IN ('NEW', 'CHECK_STORE_SUPPLIER')
+        AND NOT EXISTS (
+          SELECT 1 FROM request_waiters w
+           JOIN replenishment_requests wr ON wr.id = w.waiter_request_id
+          WHERE w.child_request_id = c.id
+            AND w.waiter_request_id <> $1
+            AND wr.status NOT IN ('CLOSED', 'CANCELLED')
+        )
+      FOR UPDATE`,
+    [rootId],
+  );
+
+  for (const child of orphans) {
+    const { rows } = await tx.query<{ id: number }>(
+      `UPDATE replenishment_requests
+          SET status = 'CANCELLED',
+              closed_at = now(),
+              closure_reason = 'cancelled_by_requester'
+        WHERE id = $1 AND status IN ('NEW', 'CHECK_STORE_SUPPLIER')
+        RETURNING id`,
+      [child.id],
+    );
+    if (rows[0] === undefined) {
+      // A concurrent advance moved it out of an early stage between our locked
+      // read and the UPDATE — skip it (it is no longer a safe orphan to cancel).
+      continue;
+    }
+    await recordTransition(tx, child.id, child.status, 'CANCELLED', 'root cancelled', actorUserId);
+    await writeAudit(tx, {
+      actorUserId,
+      action: 'replenishment.cancel_cascade',
+      entity: 'replenishment_requests',
+      entityId: child.id,
+      payload: { root_request_id: rootId, from: child.status, closure_reason: 'cancelled_by_requester' },
+    });
+  }
+
+  // Surviving children (spared because another open root still waits on them, or
+  // because they are past the early stage) simply LOSE this root as a waiter, so
+  // when they later close they no longer fan out to this (now cancelled) root.
+  await tx.query('DELETE FROM request_waiters WHERE waiter_request_id = $1', [rootId]);
 }
 
 /**
@@ -607,7 +700,8 @@ export async function cancelRequestByFulfiller(
     'PRODUCING',
     'DONE_TO_WAREHOUSE',
   ];
-  return withTransaction(async (tx) => {
+  let wasOpen = false;
+  const updated = await withTransaction(async (tx) => {
     const order = await lockRequest(tx, requestId);
     if (order.status === 'CANCELLED' || order.status === 'CLOSED') {
       return order;
@@ -618,6 +712,7 @@ export async function cancelRequestByFulfiller(
         `Cannot cancel-by-fulfiller in status ${order.status} — use reject or return after the shipment.`,
       );
     }
+    wasOpen = true;
     const { rows } = await tx.query<ReplenishmentRow>(
       `UPDATE replenishment_requests
          SET status = 'CANCELLED',
@@ -627,8 +722,8 @@ export async function cancelRequestByFulfiller(
        RETURNING ${REPLENISHMENT_COLUMNS}`,
       [requestId],
     );
-    const updated = rows[0];
-    if (updated === undefined) {
+    const row = rows[0];
+    if (row === undefined) {
       throw AppError.internal('Replenishment cancel returned no row.');
     }
     await recordTransition(tx, requestId, order.status, 'CANCELLED', reason, actorUserId);
@@ -639,8 +734,15 @@ export async function cancelRequestByFulfiller(
       entityId: requestId,
       payload: { from: order.status, reason },
     });
-    return updated;
+    return row;
   });
+  // F-D — fan out to waiting roots when this (child) request reached terminal.
+  // A fulfiller reject does NOT cascade to children (#10 cascade is requester-
+  // side only — cancelRequest); it only chains UPWARD to its waiting roots.
+  if (wasOpen) {
+    await fireWaiterChain(updated, actorUserId);
+  }
+  return updated;
 }
 
 // -----------------------------------------------------------------------------
@@ -685,12 +787,14 @@ export async function acceptShipment(opts: {
   if (!Number.isFinite(opts.qtyAccepted) || opts.qtyAccepted < 0) {
     throw AppError.validation('qty_accepted must be a number >= 0.');
   }
-  return withTransaction(async (tx) => {
+  let freshlyClosed = false;
+  const result = await withTransaction(async (tx) => {
     const order = await lockRequest(tx, opts.requestId);
     if (order.closure_reason !== null) {
       // Already finalised — second tap is a no-op (idempotent).
       return order;
     }
+    freshlyClosed = true;
     if (order.status !== 'CLOSED') {
       throw new AppError(
         'INVALID_TRANSITION',
@@ -769,6 +873,12 @@ export async function acceptShipment(opts: {
     });
     return updated;
   });
+  // F-D — the request is now fully terminal (closure_reason set); fan out to its
+  // waiting roots. Post-commit, best-effort; skipped on the idempotent no-op.
+  if (freshlyClosed) {
+    await fireWaiterChain(result, opts.actorUserId);
+  }
+  return result;
 }
 
 /**
@@ -787,7 +897,8 @@ export async function rejectShipment(opts: {
   if (reasonClean === '') {
     throw AppError.validation('reject reason must be a non-empty string.');
   }
-  return withTransaction(async (tx) => {
+  let freshlyClosed = false;
+  const result = await withTransaction(async (tx) => {
     const order = await lockRequest(tx, opts.requestId);
     if (order.closure_reason !== null) {
       return order;
@@ -798,6 +909,7 @@ export async function rejectShipment(opts: {
         `Cannot reject a shipment for a request in status ${order.status} — wait for SHIP_TO_REQUESTER to land.`,
       );
     }
+    freshlyClosed = true;
     if (order.target_location_id === null) {
       throw AppError.internal('Cannot reject — request has no target_location_id.');
     }
@@ -846,6 +958,11 @@ export async function rejectShipment(opts: {
     });
     return updated;
   });
+  // F-D — fan out to waiting roots (post-commit, best-effort).
+  if (freshlyClosed) {
+    await fireWaiterChain(result, opts.actorUserId);
+  }
+  return result;
 }
 
 /**
@@ -873,7 +990,7 @@ export async function returnShipment(opts: {
   if (reasonClean === '') {
     throw AppError.validation('return reason must be a non-empty string.');
   }
-  return withTransaction(async (tx) => {
+  const result = await withTransaction(async (tx) => {
     const order = await lockRequest(tx, opts.requestId);
     if (order.status !== 'CLOSED') {
       throw new AppError(
@@ -954,6 +1071,11 @@ export async function returnShipment(opts: {
     });
     return updated;
   });
+  // F-D — the request is terminal (CLOSED) and its closure_reason may have moved
+  // to 'returned'; re-notify any waiting roots of the updated outcome (post-
+  // commit, best-effort). The advance is idempotent.
+  await fireWaiterChain(result, opts.actorUserId);
+  return result;
 }
 
 /**
@@ -1003,7 +1125,8 @@ export async function receiveShipment(opts: {
   if (brakQty > 0 && brakReasonClean === null) {
     throw AppError.validation('brak_reason is required when brak_qty > 0.');
   }
-  return withTransaction(async (tx) => {
+  let freshlyClosed = false;
+  const result = await withTransaction(async (tx) => {
     const order = await lockRequest(tx, opts.requestId);
     if (order.closure_reason !== null) {
       // Already finalised — second tap is a no-op (idempotent).
@@ -1015,6 +1138,7 @@ export async function receiveShipment(opts: {
         `Cannot receive a shipment for a request in status ${order.status} — wait for SHIP_TO_REQUESTER to land.`,
       );
     }
+    freshlyClosed = true;
     if (order.target_location_id === null) {
       throw AppError.internal('Cannot receive — request has no target_location_id.');
     }
@@ -1095,6 +1219,11 @@ export async function receiveShipment(opts: {
     });
     return updated;
   });
+  // F-D — fan out to waiting roots (post-commit, best-effort; skip the no-op).
+  if (freshlyClosed) {
+    await fireWaiterChain(result, opts.actorUserId);
+  }
+  return result;
 }
 
 // -----------------------------------------------------------------------------
@@ -1160,7 +1289,19 @@ export async function advance(
     return result;
   };
 
-  return tx !== undefined ? run(tx) : withTransaction(run);
+  // When the caller passes its OWN `tx`, it owns the post-commit lifecycle (and
+  // must fire the waiter chain itself, after ITS transaction commits) — firing
+  // here would run mid-transaction, not post-commit. So the F-D chain hook is
+  // attached ONLY to the own-transaction branch.
+  if (tx !== undefined) {
+    return run(tx);
+  }
+  const result = await withTransaction(run);
+  // F-D — if this advance closed the request (the SHIP_TO_REQUESTER -> CLOSED
+  // internal close), fan out to its waiting roots. Post-commit, best-effort; the
+  // chain itself re-advances each root once (idempotent), recursing UP the tree.
+  await fireWaiterChain(result.request, actorUserId);
+  return result;
 }
 
 /** Dispatch one step against the current status. */
@@ -2054,7 +2195,7 @@ export async function acceptByCentral(opts: {
 }): Promise<{ request: ReplenishmentRow; shipped: boolean; reason: string }> {
   // Pin the target + ship (when stock allows) in ONE transaction so the pin and
   // the transfer are atomic.
-  return withTransaction(async (tx) => {
+  const outcome = await withTransaction(async (tx) => {
     const order = await lockRequest(tx, opts.requestId);
     if (TERMINAL_STATUSES.includes(order.status)) {
       return { request: order, shipped: false, reason: `request already ${order.status}` };
@@ -2140,6 +2281,10 @@ export async function acceptByCentral(opts: {
       reason: shipped ? 'shipped to store' : `held at ${current.status}`,
     };
   });
+  // F-D — if the accept closed the request (shipped to the store), fan out to its
+  // waiting roots. Post-commit, best-effort.
+  await fireWaiterChain(outcome.request, opts.actorUserId);
+  return outcome;
 }
 
 /**
@@ -2168,7 +2313,7 @@ export async function acceptByFulfiller(opts: {
   fulfillerLocationId: number;
   actorUserId: number | null;
 }): Promise<{ request: ReplenishmentRow; shipped: boolean; reason: string }> {
-  return withTransaction(async (tx) => {
+  const outcome = await withTransaction(async (tx) => {
     const order = await lockRequest(tx, opts.requestId);
     if (TERMINAL_STATUSES.includes(order.status)) {
       return { request: order, shipped: false, reason: `request already ${order.status}` };
@@ -2252,6 +2397,250 @@ export async function acceptByFulfiller(opts: {
       reason: shipped ? 'shipped to requester' : `held at ${current.status}`,
     };
   });
+  // F-D — a producer-override fulfiller accept (e.g. cream → the requesting sex)
+  // that closed the request is the COMMON case a waiting root waits on; fan out
+  // to its waiting roots. Post-commit, best-effort.
+  await fireWaiterChain(outcome.request, opts.actorUserId);
+  return outcome;
+}
+
+// -----------------------------------------------------------------------------
+// F-C / decision #8 — internal accept-gate for buffer (B-cycle) requests
+// -----------------------------------------------------------------------------
+
+/** The location type for one location id, or `null` when it does not exist. */
+async function readLocationType(tx: TxClient, locationId: number): Promise<string | null> {
+  const { rows } = await tx.query<{ type: string }>(
+    'SELECT type::text AS type FROM locations WHERE id = $1',
+    [locationId],
+  );
+  return rows[0]?.type ?? null;
+}
+
+/**
+ * INTERNAL ACCEPT (F-C / #8) — the producing отдел boss accepts a B-cycle buffer
+ * refill request (a `sex_storage` requester that fell below min — origin scan/
+ * buffer). With the cron gate in place (`runEngineCycle`), such a NEW request
+ * just SITS as a "tavsiya karta" until the boss explicitly accepts it; this is
+ * that accept.
+ *
+ * Semantics (mirrors `acceptByFulfiller`'s shape, but it only OPENS the gate —
+ * it does NOT ship): lock FOR UPDATE, require `status='NEW'` AND the requester
+ * is a `sex_storage`, then drive exactly ONE advance step
+ * (NEW -> CHECK_STORE_SUPPLIER) so the request enters the normal internal flow
+ * (the cron then carries it forward — production-input check, etc.). The single
+ * step is logged with note 'internal accept'.
+ *
+ * Idempotent: a re-call once the request is already past NEW (someone accepted
+ * it first, or the cron advanced it) returns the row unchanged with
+ * `accepted=false` and a friendly reason — a double-tap is a harmless no-op.
+ */
+export async function acceptInternal(opts: {
+  requestId: number;
+  actorUserId: number | null;
+}): Promise<{ request: ReplenishmentRow; accepted: boolean; reason: string }> {
+  return withTransaction(async (tx) => {
+    const order = await lockRequest(tx, opts.requestId);
+    if (TERMINAL_STATUSES.includes(order.status)) {
+      return { request: order, accepted: false, reason: `request already ${order.status}` };
+    }
+    // Idempotent no-op: already advanced past NEW (the gate is already open).
+    if (order.status !== 'NEW') {
+      return {
+        request: order,
+        accepted: false,
+        reason: `already accepted (status ${order.status})`,
+      };
+    }
+    // Gate scope: ONLY a sex_storage-requester buffer refill is internally
+    // accepted here. A non-sex_storage requester is a different flow (store ->
+    // central accept, cross-dept producer-override, …) and must not use this.
+    const requesterType = await readLocationType(tx, order.requester_location_id);
+    if (requesterType !== 'sex_storage') {
+      throw new AppError(
+        'INVALID_TRANSITION',
+        `accept-internal is only for a sex_storage buffer request; requester is '${requesterType ?? 'unknown'}'.`,
+      );
+    }
+
+    await writeAudit(tx, {
+      actorUserId: opts.actorUserId,
+      action: 'replenishment.accept_internal',
+      entity: 'replenishment_requests',
+      entityId: opts.requestId,
+      payload: { from_status: order.status, requester_location_id: order.requester_location_id },
+    });
+
+    // Drive exactly ONE step (NEW -> CHECK_STORE_SUPPLIER). `advanceNew`
+    // resolves the upward central target as usual; the note records the gate.
+    const next = await transitionStatus(
+      tx,
+      order,
+      'CHECK_STORE_SUPPLIER',
+      'internal accept',
+      opts.actorUserId,
+      ...(await resolveBufferTargetLink(tx, order)),
+    );
+    return { request: next, accepted: true, reason: 'internal accept — gate opened' };
+  });
+}
+
+/**
+ * Resolve the optional `targetLocationId` link for an internal-accept transition.
+ * When the buffer request has no pinned target we resolve the upward central
+ * warehouse (the same one `advanceNew` would), so the request enters
+ * CHECK_STORE_SUPPLIER already pointing at a real fulfiller. When a target is
+ * already pinned we leave it alone (return no link). Returns a single-element
+ * tuple suitable for spreading into `transitionStatus`'s variadic `links` arg.
+ */
+async function resolveBufferTargetLink(
+  tx: TxClient,
+  order: ReplenishmentRow,
+): Promise<[{ targetLocationId: number }] | []> {
+  if (order.target_location_id !== null) {
+    return [];
+  }
+  const topology = await resolveTopology(tx, order.requester_location_id);
+  if (topology.centralWarehouseLocationId === null) {
+    return [];
+  }
+  return [{ targetLocationId: topology.centralWarehouseLocationId }];
+}
+
+/**
+ * INTERNAL REJECT (F-C / #8) — the producing отдел boss refuses a B-cycle buffer
+ * refill request. Cancels it with `closure_reason='cancelled_by_fulfiller'` and
+ * the boss's reason recorded on the transition. Thin wrapper over `cancelRequest`
+ * (which is FOR-UPDATE + idempotent on already-terminal), so a double-tap is a
+ * harmless no-op.
+ */
+export async function rejectInternal(opts: {
+  requestId: number;
+  actorUserId: number | null;
+  reason?: string | null;
+}): Promise<ReplenishmentRow> {
+  const reason =
+    typeof opts.reason === 'string' && opts.reason.trim() !== ''
+      ? opts.reason.trim()
+      : 'internal reject';
+  return cancelRequest(opts.requestId, opts.actorUserId, reason, 'cancelled_by_fulfiller');
+}
+
+// -----------------------------------------------------------------------------
+// F-D / cross-dept-flow §8 — waiter chaining when a sub-request goes terminal
+// -----------------------------------------------------------------------------
+
+/**
+ * Fan out from a just-terminal sub-request (`request`) to EVERY open root that
+ * was waiting on it, re-advance each once, and tell its requester-location
+ * manager the child resolved (`sub_request_closed`).
+ *
+ * Called POST-COMMIT, best-effort (engine-style try/catch by the CALLER) from
+ * every path where a request reaches CLOSED / CANCELLED (receive/accept/reject/
+ * return shipment, cancelRequest, cancelRequestByFulfiller, rejectInternal, and
+ * the advance() internal close). The child has already committed to its terminal
+ * state, so this opens its OWN transactions and never participates in the
+ * caller's unit — a failure here must NOT roll the (already-final) close back.
+ *
+ * Open roots = `parent_request_id` ∪ `request_waiters.waiter_request_id` (the
+ * F-B note: a child fans out via BOTH links, not the parent alone), de-duped,
+ * each filtered to still-open (a root that already closed is skipped). For each:
+ *   - `advance(root)` once (idempotent — the root's own guard decides whether it
+ *     actually moves; a wait-state that is still not satisfied is a harmless
+ *     no-op);
+ *   - one `sub_request_closed` notification to the root's requester-location
+ *     manager with {root_request_id, child_request_id, product_id, child_outcome}.
+ *
+ * `child_outcome` is the child's terminal kind: 'CANCELLED', or for CLOSED the
+ * closure_reason when set (accepted_full / rejected / …) else 'closed'.
+ */
+/**
+ * Best-effort, post-commit wrapper around `chainWaitersAfterTerminal`. Fires the
+ * waiter chain ONLY when `row` actually reached a terminal state, and swallows
+ * every error (engine-style) so a fan-out failure never rolls the (already
+ * committed) close back. This is the single hook the public terminal paths call
+ * AFTER their `withTransaction` resolves.
+ */
+async function fireWaiterChain(
+  row: ReplenishmentRow,
+  actorUserId: number | null,
+): Promise<void> {
+  if (!TERMINAL_STATUSES.includes(row.status)) {
+    return;
+  }
+  try {
+    await chainWaitersAfterTerminal(row, actorUserId);
+  } catch (err) {
+    console.error(
+      `[replenishment-engine] chainWaitersAfterTerminal(${row.id}) failed:`,
+      (err as Error).message,
+    );
+  }
+}
+
+export async function chainWaitersAfterTerminal(
+  request: ReplenishmentRow,
+  actorUserId: number | null,
+): Promise<void> {
+  // Collect candidate roots: the immediate parent + every waiter on this child.
+  const rootIds = new Set<number>();
+  if (request.parent_request_id !== null) {
+    rootIds.add(Number(request.parent_request_id));
+  }
+  const { rows: waiterRows } = await query<{ waiter_request_id: number }>(
+    'SELECT waiter_request_id FROM request_waiters WHERE child_request_id = $1',
+    [request.id],
+  );
+  for (const w of waiterRows) {
+    rootIds.add(Number(w.waiter_request_id));
+  }
+  if (rootIds.size === 0) {
+    return;
+  }
+
+  // The child's terminal outcome label (for the notification payload).
+  const childOutcome =
+    request.status === 'CANCELLED'
+      ? 'CANCELLED'
+      : request.closure_reason ?? 'closed';
+
+  for (const rootId of rootIds) {
+    // Skip a root that is itself already terminal (nothing to chain into).
+    const { rows: rootRows } = await query<{
+      status: ReplenishmentStatus;
+      requester_location_id: number;
+    }>(
+      'SELECT status, requester_location_id FROM replenishment_requests WHERE id = $1',
+      [rootId],
+    );
+    const root = rootRows[0];
+    if (root === undefined || TERMINAL_STATUSES.includes(root.status)) {
+      continue;
+    }
+
+    // Re-advance the waiting root once (idempotent; its own guard decides).
+    await advance(rootId, actorUserId);
+
+    // Notify the root's requester-location manager that the child resolved.
+    await withTransaction(async (tx) => {
+      const managerId = await getLocationManager(tx, Number(root.requester_location_id));
+      if (managerId === null) return;
+      await createNotification(tx, {
+        recipientUserId: managerId,
+        type: 'sub_request_closed',
+        title: `Quyi so'rov yakunlandi #${request.id}`,
+        body:
+          `So'rov #${rootId} kutgan quyi so'rov #${request.id} ` +
+          `yakunlandi (${childOutcome}). Asosiy so'rov davom etadi.`,
+        payload: {
+          root_request_id: rootId,
+          child_request_id: request.id,
+          product_id: request.product_id,
+          child_outcome: childOutcome,
+        },
+      });
+    });
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -2523,7 +2912,7 @@ export async function shipToStore(opts: {
   requestId: number;
   actorUserId: number | null;
 }): Promise<{ request: ReplenishmentRow; shipped: boolean; reason: string }> {
-  return withTransaction(async (tx) => {
+  const outcome = await withTransaction(async (tx) => {
     const order = await lockRequest(tx, opts.requestId);
     if (TERMINAL_STATUSES.includes(order.status)) {
       return { request: order, shipped: false, reason: `request already ${order.status}` };
@@ -2547,6 +2936,10 @@ export async function shipToStore(opts: {
       reason: result.reason,
     };
   });
+  // F-D — forwarding central -> store closed the request; fan out to waiting
+  // roots. Post-commit, best-effort.
+  await fireWaiterChain(outcome.request, opts.actorUserId);
+  return outcome;
 }
 
 // -----------------------------------------------------------------------------
@@ -2701,7 +3094,7 @@ export async function fulfillStoreRequest(opts: {
   ) {
     throw AppError.validation('ship_qty must be a number >= 0.');
   }
-  return withTransaction(async (tx) => {
+  const fulfillResult = await withTransaction(async (tx) => {
     const order = await lockRequest(tx, opts.requestId);
     if (TERMINAL_STATUSES.includes(order.status)) {
       throw new AppError(
@@ -2806,6 +3199,11 @@ export async function fulfillStoreRequest(opts: {
       request: originalAfter,
     };
   });
+  // F-D — if the (original) request closed via the partial ship, fan out to any
+  // waiting roots. Post-commit, best-effort. (A store request is normally a root
+  // with no waiters — a harmless no-op — but a linked child would chain here.)
+  await fireWaiterChain(fulfillResult.request, opts.actorUserId);
+  return fulfillResult;
 }
 
 /**
@@ -2973,7 +3371,7 @@ export async function runEngineCycle(opts: { actorUserId?: number | null } = {})
       continue;
     }
     try {
-      await createRequest({
+      const createdRow = await createRequest({
         productId: row.product_id,
         requesterLocationId: row.location_id,
         qtyNeeded,
@@ -2983,6 +3381,21 @@ export async function runEngineCycle(opts: { actorUserId?: number | null } = {})
         origin: row.location_type === 'sex_storage' ? 'buffer' : 'scan',
       });
       created += 1;
+      // F-C / decision #8 — for a sex_storage buffer refill, nudge the PRODUCING
+      // отдел boss (the requester's parent workshop manager) with the actionable
+      // ireq:accept / ireq:reject inline buttons so the "tavsiya karta" can be
+      // accepted/rejected straight from Telegram. Best-effort — a notify failure
+      // must never block the cron.
+      if (row.location_type === 'sex_storage') {
+        try {
+          await withTransaction((tx) => notifyBufferRequestToWorkshop(tx, createdRow));
+        } catch (err) {
+          console.error(
+            '[replenishment-engine] buffer-request workshop notify failed:',
+            (err as Error).message,
+          );
+        }
+      }
     } catch (err) {
       if (err instanceof AppError && err.code === 'OPEN_REQUEST_EXISTS') {
         // Expected — the previous scan already raised a request for this row.
@@ -3006,12 +3419,37 @@ export async function runEngineCycle(opts: { actorUserId?: number | null } = {})
   // requests (production / sex_storage / central / raw) keep auto-advancing.
   // The manual `advance()` function itself is unchanged — acceptByCentral and
   // the tests still drive store requests through it directly.
+  //
+  // F-C / decision #8 — INTERNAL accept-gates. Two NEW-only classes ALSO wait
+  // for an explicit internal accept before the cron may touch them (the skip
+  // predicate is `status='NEW'` only — past NEW both flow normally; the store
+  // skip above is unconditional and untouched):
+  //   (a) a request PINNED to a `sex_storage` target (the producer-override /
+  //       Qaymoq case). Today `advanceNew` would CLOBBER that pinned target with
+  //       the central warehouse and ship without the producing отдел manager's
+  //       accept — exactly the bug this gate closes. `acceptByFulfiller` (driven
+  //       by the existing xreq buttons) is the only forward path for them.
+  //   (b) a `sex_storage` REQUESTER (the B-cycle buffer refill — the "tavsiya
+  //       karta"). It waits for an explicit internal accept (`acceptInternal`,
+  //       ireq buttons) so the producing отдел boss confirms the buffer top-up.
+  // NOTE: `tl.type` is NULL for an untargeted request (LEFT JOIN). `COALESCE(…,
+  // FALSE)` keeps the predicate two-valued — without it `NOT (NEW AND (NULL OR
+  // …))` evaluates to NULL, which a WHERE treats as FALSE and would wrongly DROP
+  // every untargeted NEW internal row from the auto-advance loop.
   const { rows: open } = await query<{ id: number }>(
     `SELECT r.id
        FROM replenishment_requests r
        JOIN locations rl ON rl.id = r.requester_location_id
+       LEFT JOIN locations tl ON tl.id = r.target_location_id
       WHERE r.status NOT IN ('CLOSED','CANCELLED')
-        AND rl.type <> 'store'::location_type`,
+        AND rl.type <> 'store'::location_type
+        AND NOT (
+          r.status = 'NEW'
+          AND (
+            COALESCE(tl.type = 'sex_storage'::location_type, FALSE)
+            OR rl.type = 'sex_storage'::location_type
+          )
+        )`,
   );
   let advanced = 0;
   for (const r of open) {
@@ -3279,6 +3717,68 @@ async function notifyReplenishmentTargetSet(
         [
           { text: "🔄 Tezda bajarish", data: `fast:req:${request.id}` },
           { text: "📋 Ko'rish", data: `view:req:${request.id}` },
+        ],
+      ],
+    },
+  });
+}
+
+/**
+ * F-C / decision #8 — notify the PRODUCING отдел boss about a NEW B-cycle buffer
+ * refill request (a `sex_storage` requester) with the actionable ireq:accept /
+ * ireq:reject inline buttons. The producing workshop is the requester
+ * sex_storage's PARENT (per migration 0022); its manager is the recipient.
+ *
+ * Reuses the exact `createNotification` inlineCallback shape `crossDeptRequest`
+ * uses for xreq buttons, so the outbox worker renders them identically. The
+ * dedupe key keeps a re-scan from double-nudging while the request stays open.
+ * Best-effort — the caller wraps this in try/catch.
+ */
+async function notifyBufferRequestToWorkshop(
+  tx: TxClient,
+  request: ReplenishmentRow,
+): Promise<void> {
+  // The producing workshop = the requester sex_storage's parent.
+  const { rows } = await tx.query<{ id: number; name: string }>(
+    `SELECT w.id, w.name
+       FROM locations s
+       JOIN locations w ON w.id = s.parent_id
+      WHERE s.id = $1 AND s.type = 'sex_storage'::location_type
+        AND w.type = 'production'::location_type`,
+    [request.requester_location_id],
+  );
+  const workshop = rows[0];
+  if (workshop === undefined) return;
+  const managerId = await getLocationManager(tx, Number(workshop.id));
+  if (managerId === null) return;
+  const { productName, productUnit, locationName } = await fetchProductAndLocation(
+    tx,
+    request.product_id,
+    request.requester_location_id,
+  );
+  await createNotification(tx, {
+    recipientUserId: managerId,
+    type: 'replenishment_created',
+    title: `Bufer to'ldirish — ${locationName}`,
+    body:
+      `${productName} × ${request.qty_needed} ${productUnit}\n` +
+      `Bufer so'rovi #${request.id}: ostatka min dan tushdi. Ishlab chiqaramizmi?`,
+    payload: {
+      replenishment_id: request.id,
+      requester_location_id: request.requester_location_id,
+      workshop_location_id: Number(workshop.id),
+      product_id: request.product_id,
+      qty: request.qty_needed,
+      origin: 'buffer',
+    },
+    // One nudge per (request) — a re-scan before the boss acts must not re-ping.
+    dedupeKey: `buffer_request:${request.id}`,
+    dedupeWindowMinutes: 24 * 60,
+    inlineCallback: {
+      buttons: [
+        [
+          { text: '✅ Ishlab chiqarish', data: `ireq:accept:${request.id}` },
+          { text: '❌ Rad', data: `ireq:reject:${request.id}` },
         ],
       ],
     },

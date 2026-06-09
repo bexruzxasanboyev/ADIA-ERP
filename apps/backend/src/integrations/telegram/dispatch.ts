@@ -39,7 +39,9 @@ import {
   advance,
   acceptByCentral,
   acceptByFulfiller,
+  acceptInternal,
   cancelRequestByFulfiller,
+  rejectInternal,
 } from '../../services/replenishment.js';
 import {
   confirmAction,
@@ -94,6 +96,11 @@ export const CALLBACK_VERBS = [
   // segment carries the sub-action (accept|reject) rather than an entity, so
   // these are parsed by a dedicated branch in `parseCallbackData`.
   'xreq',
+  // F-C / decision #8 — INTERNAL accept-gate for a buffer (B-cycle) request. The
+  // producing отдел boss accepts/rejects a sex_storage buffer refill via
+  // `ireq:accept:<id>` / `ireq:reject:<id>` — same 2nd-segment sub-action shape
+  // as `xreq`, parsed by the same dedicated branch.
+  'ireq',
 ] as const;
 export type CallbackVerb = (typeof CALLBACK_VERBS)[number];
 
@@ -144,16 +151,18 @@ export function parseCallbackData(raw: string): ParsedCallback | null {
   const entityRaw = parts[1]!;
   const idRaw = parts[2]!;
 
-  // B4 — `xreq:accept:<id>` / `xreq:reject:<id>` — the 2nd segment is a string
-  // sub-action. Validate it here and synthesize a `req`-entity ParsedCallback.
-  if (verbRaw === 'xreq') {
+  // B4 / F-C — `xreq:accept:<id>` / `xreq:reject:<id>` (cross-dept) and
+  // `ireq:accept:<id>` / `ireq:reject:<id>` (internal buffer gate) — the 2nd
+  // segment is a string sub-action. Validate it here and synthesize a
+  // `req`-entity ParsedCallback so the rest of the pipeline keeps working.
+  if (verbRaw === 'xreq' || verbRaw === 'ireq') {
     if (parts.length !== 3) return null;
     if (entityRaw !== 'accept' && entityRaw !== 'reject') return null;
     if (!/^\d{1,15}$/.test(idRaw)) return null;
     const reqId = Number(idRaw);
     if (!Number.isInteger(reqId) || reqId <= 0) return null;
     return {
-      verb: 'xreq',
+      verb: verbRaw,
       entity: 'req',
       id: reqId,
       extraId: null,
@@ -256,6 +265,14 @@ export async function dispatchCallback(
   }
   if (verb === 'xreq' && parsed.subAction === 'reject') {
     return xreqRejectCallback(id, principal);
+  }
+
+  // ---- F-C / decision #8 — internal buffer-gate accept / reject ------------
+  if (verb === 'ireq' && parsed.subAction === 'accept') {
+    return ireqAcceptCallback(id, principal);
+  }
+  if (verb === 'ireq' && parsed.subAction === 'reject') {
+    return ireqRejectCallback(id, principal);
   }
 
   return {
@@ -958,6 +975,111 @@ async function xreqRejectCallback(
     return {
       kind: 'failed',
       message: "So'rovni rad etib bo'lmadi",
+      error: (err as Error).message,
+    };
+  }
+}
+
+// -----------------------------------------------------------------------------
+// F-C / decision #8 — internal buffer-gate accept / reject (ireq:*)
+// -----------------------------------------------------------------------------
+
+/**
+ * RBAC for an `ireq:*` press: only the PRODUCING отдел boss — the manager of the
+ * requester sex_storage's PARENT workshop — or a `pm` may act. This mirrors the
+ * accept-internal route's `requireLocationOperator(workshop)` guard, but against
+ * the presser's single Telegram `locationId`.
+ */
+async function checkIreqRbac(
+  requestId: number,
+  principal: CallbackPrincipal,
+): Promise<DispatchOutcome | null> {
+  if (principal.role === 'pm') return null;
+  const { rows } = await query<{
+    requester_type: string;
+    workshop_location_id: number | null;
+  }>(
+    `SELECT rl.type::text AS requester_type, rl.parent_id AS workshop_location_id
+       FROM replenishment_requests r
+       JOIN locations rl ON rl.id = r.requester_location_id
+      WHERE r.id = $1`,
+    [requestId],
+  );
+  if (rows.length === 0) return { kind: 'invalid', message: "So'rov topilmadi" };
+  const r = rows[0]!;
+  const workshopId = r.workshop_location_id === null ? null : Number(r.workshop_location_id);
+  if (
+    workshopId !== null &&
+    principal.locationId !== null &&
+    principal.locationId === workshopId
+  ) {
+    return null;
+  }
+  return {
+    kind: 'rbac',
+    message: "Bu bufer so'rovini faqat ishlab chiqaruvchi sex boshlig'i qabul/rad qila oladi",
+  };
+}
+
+/** ireq:accept:<id> — the producing отдел boss accepts a buffer refill. */
+async function ireqAcceptCallback(
+  requestId: number,
+  principal: CallbackPrincipal,
+): Promise<DispatchOutcome> {
+  const rbac = await checkIreqRbac(requestId, principal);
+  if (rbac !== null) return rbac;
+  try {
+    const result = await acceptInternal({ requestId, actorUserId: principal.userId });
+    const msg = result.accepted
+      ? `Bufer so'rovi #${requestId} qabul qilindi — ishlab chiqarishga o'tdi`
+      : `Bufer so'rovi #${requestId}: ${result.reason}`;
+    // Notify the requester side (the sex_storage manager) of the outcome.
+    if (result.accepted) {
+      await notifyRequesterOfOutcome(requestId, 'accepted', 'qabul qilindi');
+    }
+    return {
+      kind: 'ok',
+      message: msg,
+      result: {
+        replenishment_id: requestId,
+        accepted: result.accepted,
+        new_status: result.request.status,
+      },
+      removeButtons: result.accepted,
+    };
+  } catch (err) {
+    return {
+      kind: 'failed',
+      message: "Bufer so'rovini qabul qilib bo'lmadi",
+      error: (err as Error).message,
+    };
+  }
+}
+
+/** ireq:reject:<id> — the producing отдел boss refuses a buffer refill. */
+async function ireqRejectCallback(
+  requestId: number,
+  principal: CallbackPrincipal,
+): Promise<DispatchOutcome> {
+  const rbac = await checkIreqRbac(requestId, principal);
+  if (rbac !== null) return rbac;
+  try {
+    const updated = await rejectInternal({
+      requestId,
+      actorUserId: principal.userId,
+      reason: 'Telegram: ishlab chiqaruvchi sex boshlig\'i rad etdi',
+    });
+    await notifyRequesterOfOutcome(requestId, 'rejected', 'rad etildi');
+    return {
+      kind: 'ok',
+      message: `Bufer so'rovi #${requestId} rad etildi`,
+      result: { replenishment_id: requestId, new_status: updated.status },
+      removeButtons: true,
+    };
+  } catch (err) {
+    return {
+      kind: 'failed',
+      message: "Bufer so'rovini rad etib bo'lmadi",
       error: (err as Error).message,
     };
   }

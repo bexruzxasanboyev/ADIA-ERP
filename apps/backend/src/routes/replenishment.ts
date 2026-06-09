@@ -31,6 +31,7 @@ import {
 } from '../lib/validate.js';
 import {
   acceptByCentral,
+  acceptInternal,
   acceptShipment,
   advance,
   cancelRequest,
@@ -43,6 +44,7 @@ import {
   type PipelineStage,
   receiveFromProduction,
   receiveShipment,
+  rejectInternal,
   rejectShipment,
   REPLENISHMENT_COLUMNS,
   returnShipment,
@@ -234,6 +236,162 @@ replenishmentRouter.get(
       [id],
     );
     res.status(200).json({ request, transitions });
+  }),
+);
+
+// GET /api/replenishment/:id/tree
+//
+// F-D / cross-dept-flow §8 — the WHOLE request tree rooted at :id's tree root
+// (`root_request_id ?? id`). The frontend builds the nested Kanban tree from a
+// FLAT `nodes` list (it nests via `parent_request_id`), so this shape is PINNED:
+//
+//   {
+//     "root":  { ...full request row..., "pipeline_stage": "kutuvda" },
+//     "nodes": [ { ...full request row..., "pipeline_stage": "...", "waiters_count": N } ],
+//     "waiters": [ { "child_request_id": 56, "waiter_request_id": 99 } ]
+//   }
+//
+// `nodes` = ALL descendants of the root (flat, ordered by depth then id), each
+// enriched with `pipeline_stage` (server-computed, no N+1) + `waiters_count`
+// (rows in `request_waiters` where it is the child). `waiters` = every
+// request_waiters row anywhere in the tree.
+//
+// RBAC mirrors GET /:id: pm/ai_assistant see any tree; a scoped role must touch
+// the ROOT (requester/target, or a linked production/purchase order).
+replenishmentRouter.get(
+  '/:id(\\d+)/tree',
+  authenticate,
+  authorize(
+    'pm',
+    'raw_warehouse_manager',
+    'production_manager',
+    'supply_manager',
+    'central_warehouse_manager',
+    'store_manager',
+    'ai_assistant',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+
+    // Resolve the tree root of :id (root_request_id ?? id).
+    const { rows: rootRows } = await query<{ root_id: number }>(
+      `SELECT COALESCE(root_request_id, id) AS root_id
+         FROM replenishment_requests WHERE id = $1`,
+      [id],
+    );
+    const rootRow = rootRows[0];
+    if (rootRow === undefined) {
+      throw AppError.notFound('Replenishment request not found.');
+    }
+    const rootId = Number(rootRow.root_id);
+
+    const qualifiedCols = REPLENISHMENT_COLUMNS.split(',')
+      .map((c) => `r.${c.trim()}`)
+      .join(', ');
+
+    // The ROOT row, enriched with its pipeline_stage + the embedded names (parity
+    // with GET /:id so the frontend renders identically).
+    const { rows: rootFull } = await query<
+      ReplenishmentRow & {
+        product_name: string;
+        product_unit: string;
+        requester_location_name: string | null;
+        target_location_name: string | null;
+        pipeline_stage: PipelineStage;
+      }
+    >(
+      `SELECT ${qualifiedCols},
+              p.name AS product_name,
+              p.unit AS product_unit,
+              rl.name AS requester_location_name,
+              tl.name AS target_location_name,
+              ${PIPELINE_STAGE_SQL} AS pipeline_stage
+         FROM replenishment_requests r
+         JOIN products p ON p.id = r.product_id
+         LEFT JOIN locations rl ON rl.id = r.requester_location_id
+         LEFT JOIN locations tl ON tl.id = r.target_location_id
+        WHERE r.id = $1`,
+      [rootId],
+    );
+    const root = rootFull[0];
+    if (root === undefined) {
+      throw AppError.notFound('Replenishment request not found.');
+    }
+
+    // RBAC: a scoped role must touch the ROOT (same semantics as GET /:id).
+    if (!isSuperAdmin(principal) && principal.role !== 'ai_assistant') {
+      const own = principal.locationId;
+      if (own === null || !(await requestTouchesLocation(root, own))) {
+        throw AppError.forbidden('You may only view trees that touch your location.');
+      }
+    }
+
+    // ALL descendants of the root (flat), enriched with pipeline_stage +
+    // waiters_count. The recursive CTE walks DOWN via parent_request_id from the
+    // root; ordered by depth then id so the frontend can nest deterministically.
+    const { rows: nodes } = await query<
+      ReplenishmentRow & {
+        product_name: string;
+        product_unit: string;
+        requester_location_name: string | null;
+        target_location_name: string | null;
+        pipeline_stage: PipelineStage;
+        waiters_count: number;
+      }
+    >(
+      `WITH RECURSIVE descendants AS (
+         SELECT id FROM replenishment_requests WHERE parent_request_id = $1
+         UNION ALL
+         SELECT c.id
+           FROM replenishment_requests c
+           JOIN descendants d ON c.parent_request_id = d.id
+       )
+       SELECT ${qualifiedCols},
+              p.name AS product_name,
+              p.unit AS product_unit,
+              rl.name AS requester_location_name,
+              tl.name AS target_location_name,
+              ${PIPELINE_STAGE_SQL} AS pipeline_stage,
+              (SELECT count(*) FROM request_waiters w WHERE w.child_request_id = r.id)::int
+                AS waiters_count
+         FROM descendants dd
+         JOIN replenishment_requests r ON r.id = dd.id
+         JOIN products p ON p.id = r.product_id
+         LEFT JOIN locations rl ON rl.id = r.requester_location_id
+         LEFT JOIN locations tl ON tl.id = r.target_location_id
+        ORDER BY r.depth ASC, r.id ASC`,
+      [rootId],
+    );
+
+    // Every request_waiters row anywhere in the tree (root + descendants).
+    const { rows: waiters } = await query<{
+      child_request_id: number;
+      waiter_request_id: number;
+    }>(
+      `WITH RECURSIVE tree AS (
+         SELECT id FROM replenishment_requests WHERE id = $1
+         UNION ALL
+         SELECT c.id
+           FROM replenishment_requests c
+           JOIN tree t ON c.parent_request_id = t.id
+       )
+       SELECT w.child_request_id, w.waiter_request_id
+         FROM request_waiters w
+        WHERE w.child_request_id IN (SELECT id FROM tree)
+           OR w.waiter_request_id IN (SELECT id FROM tree)
+        ORDER BY w.child_request_id ASC, w.waiter_request_id ASC`,
+      [rootId],
+    );
+
+    res.status(200).json({
+      root,
+      nodes,
+      waiters: waiters.map((w) => ({
+        child_request_id: Number(w.child_request_id),
+        waiter_request_id: Number(w.waiter_request_id),
+      })),
+    });
   }),
 );
 
@@ -1445,6 +1603,109 @@ replenishmentRouter.post(
     }
 
     const updated = await cancelRequestByFulfiller(id, principal.userId, reason);
+    res.status(200).json({ request: updated });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// F-C / decision #8 — internal accept-gate for buffer (B-cycle) requests
+// ---------------------------------------------------------------------------
+// A sex_storage з/г buffer that fell below min raises a NEW request (origin
+// scan/buffer). With the cron gate (runEngineCycle) it now SITS as a "tavsiya
+// karta" until the PRODUCING отдел boss explicitly accepts or rejects it.
+//
+// RBAC: the producing workshop is the requester sex_storage's PARENT location
+// (per migration 0022 every sex_storage hangs off its production sex). The
+// acting operator must manage THAT workshop (requireLocationOperator). PM is
+// 403 (read-and-recommend write guard — authorizeWrite excludes PM). 404 vs
+// 403 split: unknown id -> 404; a real id outside the operator's scope -> 403.
+
+/**
+ * Load the request's requester location id + the producing workshop (its parent)
+ * for the internal accept-gate RBAC. Throws 404 when the request is missing.
+ */
+async function loadInternalGateScope(
+  id: number,
+): Promise<{ requesterLocationId: number; workshopLocationId: number | null }> {
+  const { rows } = await query<{
+    requester_location_id: number;
+    workshop_location_id: number | null;
+  }>(
+    `SELECT r.requester_location_id,
+            rl.parent_id AS workshop_location_id
+       FROM replenishment_requests r
+       JOIN locations rl ON rl.id = r.requester_location_id
+      WHERE r.id = $1`,
+    [id],
+  );
+  const row = rows[0];
+  if (row === undefined) {
+    throw AppError.notFound('Replenishment request not found.');
+  }
+  return {
+    requesterLocationId: Number(row.requester_location_id),
+    workshopLocationId: row.workshop_location_id === null ? null : Number(row.workshop_location_id),
+  };
+}
+
+// POST /api/replenishment/:id/accept-internal
+//   body: {}  (no fields)
+//
+// The producing отдел boss accepts a buffer refill -> NEW -> CHECK_STORE_SUPPLIER
+// (the gate opens; the cron then carries the request forward). Idempotent.
+replenishmentRouter.post(
+  '/:id/accept-internal',
+  authenticate,
+  authorizeWrite('production_manager', 'central_warehouse_manager', 'raw_warehouse_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+
+    const scope = await loadInternalGateScope(id);
+    if (scope.workshopLocationId === null) {
+      throw AppError.validation(
+        'This request has no producing workshop (the requester is not a sex_storage with a parent).',
+      );
+    }
+    // The acting operator must manage the producing workshop.
+    await requireLocationOperator(principal, scope.workshopLocationId);
+
+    const result = await acceptInternal({ requestId: id, actorUserId: principal.userId });
+    res.status(200).json({
+      request: result.request,
+      accepted: result.accepted,
+      reason: result.reason,
+    });
+  }),
+);
+
+// POST /api/replenishment/:id/reject-internal
+//   body: { reason?: string }
+//
+// The producing отдел boss refuses a buffer refill -> CANCELLED
+// (closure_reason='cancelled_by_fulfiller'). Idempotent.
+replenishmentRouter.post(
+  '/:id/reject-internal',
+  authenticate,
+  authorizeWrite('production_manager', 'central_warehouse_manager', 'raw_warehouse_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+    const body = (req.body as Record<string, unknown> | null) ?? {};
+    const reason =
+      typeof body.reason === 'string' && body.reason.trim() !== ''
+        ? body.reason.trim()
+        : null;
+
+    const scope = await loadInternalGateScope(id);
+    if (scope.workshopLocationId === null) {
+      throw AppError.validation(
+        'This request has no producing workshop (the requester is not a sex_storage with a parent).',
+      );
+    }
+    await requireLocationOperator(principal, scope.workshopLocationId);
+
+    const updated = await rejectInternal({ requestId: id, actorUserId: principal.userId, reason });
     res.status(200).json({ request: updated });
   }),
 );
