@@ -25,6 +25,8 @@ import {
   TimerReset,
   TriangleAlert,
 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { assistantWriteToolLabel } from '@/lib/labels';
 import type {
@@ -138,12 +140,8 @@ export function PendingActionCard({
   }, [argsForDisplay]);
 
   return (
-    <div
-      className={cn(
-        'overflow-hidden rounded-lg border bg-card text-card-foreground shadow-sm',
-        headerTone.border,
-        className,
-      )}
+    <Card
+      className={cn('overflow-hidden', headerTone.border, className)}
       role="region"
       aria-label="AI yordamchi tasdiq so‘rovi"
       data-testid="pending-action-card"
@@ -175,7 +173,7 @@ export function PendingActionCard({
 
       <div className="space-y-3 px-4 py-3">
         <div className="space-y-1">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             {toolLabel}
           </p>
           <p className="text-sm font-medium leading-relaxed text-foreground">
@@ -184,7 +182,7 @@ export function PendingActionCard({
         </div>
 
         <details
-          className="rounded-md border border-border/60 bg-muted/30"
+          className="rounded-lg border border-border/60 bg-surface-3"
           open={argsExpanded}
           onToggle={(e) => setArgsExpanded((e.target as HTMLDetailsElement).open)}
         >
@@ -207,7 +205,7 @@ export function PendingActionCard({
         {error !== null && (
           <p
             role="alert"
-            className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-xs text-destructive"
+            className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-xs text-destructive"
           >
             <TriangleAlert
               className="mt-0.5 size-3.5 shrink-0"
@@ -219,48 +217,37 @@ export function PendingActionCard({
 
         {isPending && (
           <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
-            <button
+            <Button
               type="button"
+              variant="outline"
               onClick={handleReject}
               disabled={isLoading}
-              className={cn(
-                'inline-flex h-9 items-center gap-1.5 rounded-md border border-input bg-transparent px-3 text-sm font-medium ring-offset-background transition-colors',
-                'hover:bg-accent hover:text-accent-foreground',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-                'disabled:pointer-events-none disabled:opacity-50',
-              )}
               data-testid="pending-action-reject"
             >
               {isLoading ? (
-                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
               ) : (
-                <CircleX className="size-3.5" aria-hidden="true" />
+                <CircleX className="size-4" aria-hidden="true" />
               )}
               <span>Rad qilish</span>
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
               onClick={handleConfirm}
               disabled={isLoading || isLocallyExpired}
-              className={cn(
-                'inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground ring-offset-background transition-colors',
-                'hover:bg-primary/90',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-                'disabled:pointer-events-none disabled:opacity-50',
-              )}
               data-testid="pending-action-confirm"
             >
               {isLoading ? (
-                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
               ) : (
-                <CheckCircle2 className="size-3.5" aria-hidden="true" />
+                <CheckCircle2 className="size-4" aria-hidden="true" />
               )}
               <span>Tasdiqlash</span>
-            </button>
+            </Button>
           </div>
         )}
       </div>
-    </div>
+    </Card>
   );
 }
 

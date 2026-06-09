@@ -215,7 +215,7 @@ function ShipToStoresPanel({
       <header className="flex items-center justify-between gap-3 border-b border-border/60 p-5">
         <div className="space-y-0.5">
           <h2 className="flex items-center gap-2 text-base font-semibold">
-            <Send className="size-4 text-emerald-600 dark:text-emerald-300" aria-hidden="true" />
+            <Send className="size-4 text-chain-central" aria-hidden="true" />
             Do‘konlarga jo‘natish kerak
           </h2>
           <p className="text-xs text-muted-foreground">

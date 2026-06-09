@@ -285,17 +285,17 @@ export function CentralWorkflowPage() {
           {/* Floating basket pill — same shape/treatment as the AI button,
               stacked just above it (bottom-right). central manager only. */}
           {canShip && basketCount > 0 && (
-            <button
+            <Button
               type="button"
               onClick={() => setBasketOpen(true)}
               aria-label={`Savatni ko‘rish — ${basketCount} ta mahsulot`}
               title="Savatni ko‘rish"
               className={cn(
-                'group fixed bottom-[5.5rem] right-6 z-40 inline-flex items-center gap-2 rounded-full',
-                'bg-primary px-4 py-3 text-sm font-medium text-primary-foreground shadow-lg shadow-primary/30',
-                'ring-1 ring-primary/40 transition-all',
+                // FAB — intentionally mirrors the global AssistantButton glow
+                // (stacked just above it), hence the kept primary shadow.
+                'group fixed bottom-[5.5rem] right-6 z-40 h-auto rounded-full px-4 py-3',
+                'shadow-lg shadow-primary/30 ring-1 ring-primary/40 transition-all',
                 'hover:translate-y-[-1px] hover:shadow-xl hover:shadow-primary/40',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
               )}
             >
               <ShoppingCart className="size-4" aria-hidden="true" />
@@ -309,7 +309,7 @@ export function CentralWorkflowPage() {
               >
                 {basketCount}
               </span>
-            </button>
+            </Button>
           )}
         </>
       )}
@@ -534,14 +534,16 @@ function CentralProductsTab({
                 className="pl-9 pr-9"
               />
               {productSearch !== '' && (
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
+                  size="icon"
                   onClick={() => setProductSearch('')}
                   aria-label="Qidiruvni tozalash"
-                  className="absolute right-2 top-2 rounded-md p-1 text-muted-foreground hover:bg-accent"
+                  className="absolute right-1.5 top-1.5 size-6 rounded-md text-muted-foreground"
                 >
                   <X className="size-4" />
-                </button>
+                </Button>
               )}
             </div>
             <FilterPopover
@@ -586,7 +588,7 @@ function CentralProductsTab({
                     <div
                       key={`${row.location_id}-${row.product_id}`}
                       className={cn(
-                        'flex flex-col gap-3 rounded-lg border border-border/60 bg-card/40 p-4 shadow-sm transition-colors hover:bg-card/70',
+                        'flex flex-col gap-3 rounded-lg border border-border/60 bg-surface-3 p-3 transition-colors hover:border-border-strong',
                         danger && 'border-destructive/40 bg-destructive/5',
                         basketItem && 'border-primary/50 bg-primary/5',
                       )}

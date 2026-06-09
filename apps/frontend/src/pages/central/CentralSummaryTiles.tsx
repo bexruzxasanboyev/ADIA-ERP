@@ -168,7 +168,7 @@ function Tile({ tile }: { tile: TileModel }) {
       )}
     >
       <div className="flex items-start justify-between gap-2">
-        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           {tile.label}
         </p>
         <tile.Icon

@@ -165,7 +165,7 @@ function renderTrendTooltip(props: TooltipProps<number, string>) {
   const point = payload[0]?.payload as TrendDatum | undefined;
   if (!point) return null;
   return (
-    <div className="min-w-[11rem] rounded-lg border border-border bg-popover px-3 py-2.5 text-popover-foreground shadow-lg">
+    <div className="min-w-[11rem] rounded-lg border border-border bg-popover px-3 py-2.5 text-popover-foreground shadow-pop">
       <p className="mb-2 text-xs font-semibold text-foreground">
         {point.label}
       </p>

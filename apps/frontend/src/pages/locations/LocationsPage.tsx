@@ -96,31 +96,30 @@ const TYPE_TAB_KEY = 'locations.typeTab';
 const SHOW_ARCHIVED_KEY = 'locations.showArchived';
 
 /**
- * Per-type colour accent — mirrors the ChainLayerLayout LAYER_ACCENT palette
- * (teal=raw, amber=production, sky=sex_storage, emerald=central,
- * primary=store) with light-mode-safe `dark:` variants. `border` drives the
- * card left-border; `iconWrap` tints the card icon chip.
+ * Per-type colour accent — sourced from the semantic chain tokens
+ * (`--chain-*` in index.css) so light/dark themes inherit automatically.
+ * `border` drives the card left-border; `iconWrap` tints the card icon chip.
  */
 const TYPE_ACCENT: Record<CanonicalType, { border: string; iconWrap: string }> = {
   raw_warehouse: {
-    border: 'border-l-teal-500/60',
-    iconWrap: 'bg-teal-500/15 text-teal-600 dark:text-teal-300',
+    border: 'border-l-chain-raw/60',
+    iconWrap: 'bg-chain-raw-tint text-chain-raw',
   },
   production: {
-    border: 'border-l-amber-500/60',
-    iconWrap: 'bg-amber-500/15 text-amber-600 dark:text-amber-300',
+    border: 'border-l-chain-production/60',
+    iconWrap: 'bg-chain-production-tint text-chain-production',
   },
   sex_storage: {
-    border: 'border-l-sky-500/60',
-    iconWrap: 'bg-sky-500/15 text-sky-600 dark:text-sky-300',
+    border: 'border-l-chain-supply/60',
+    iconWrap: 'bg-chain-supply-tint text-chain-supply',
   },
   central_warehouse: {
-    border: 'border-l-emerald-500/60',
-    iconWrap: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300',
+    border: 'border-l-chain-central/60',
+    iconWrap: 'bg-chain-central-tint text-chain-central',
   },
   store: {
-    border: 'border-l-primary/60',
-    iconWrap: 'bg-primary/15 text-primary',
+    border: 'border-l-chain-store/60',
+    iconWrap: 'bg-chain-store-tint text-chain-store',
   },
 };
 
@@ -443,7 +442,7 @@ export function LocationsPage() {
         <div
           role="tablist"
           aria-label="Bo‘g‘in turi"
-          className="inline-flex flex-wrap items-center gap-1 self-start rounded-lg border border-border bg-card p-1"
+          className="inline-flex flex-wrap items-center gap-1 self-start rounded-xl border border-border/70 bg-surface-1 p-1"
         >
           {TYPE_TABS.map((t) => {
             const active = typeTab === t.value;
@@ -455,18 +454,18 @@ export function LocationsPage() {
                 aria-selected={active}
                 onClick={() => setTypeTab(t.value)}
                 className={cn(
-                  'inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                  'inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   active
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                    ? 'bg-primary/15 text-primary ring-1 ring-inset ring-primary/25'
+                    : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
                 )}
               >
                 {t.label}
                 <span
                   className={cn(
                     'rounded-full px-1.5 text-xs tabular-nums',
-                    active ? 'bg-primary-foreground/20' : 'bg-muted',
+                    active ? 'bg-primary/20' : 'bg-muted',
                   )}
                 >
                   {typeCounts[t.value]}
@@ -504,20 +503,22 @@ export function LocationsPage() {
               className="pl-9 pr-9"
             />
             {search !== '' && (
-              <button
+              <Button
                 type="button"
+                variant="ghost"
+                size="icon"
                 onClick={() => setSearch('')}
                 aria-label="Qidiruvni tozalash"
-                className="absolute right-2 top-2 rounded-md p-1 text-muted-foreground hover:bg-accent"
+                className="absolute right-1 top-1 size-7 text-muted-foreground"
               >
                 <X className="size-4" />
-              </button>
+              </Button>
             )}
           </div>
         </div>
       </div>
 
-      <Card className="border-0 bg-transparent p-0 shadow-none">
+      <div>
         {isLoading && <LoadingState />}
         {!isLoading && error && <ErrorState message={error} onRetry={refetch} />}
         {!isLoading && !error && filtered.length === 0 && (
@@ -525,13 +526,13 @@ export function LocationsPage() {
         )}
 
         {!isLoading && !error && filtered.length > 0 && (
-          <div className="space-y-8">
+          <div className="space-y-6">
             {groups.map((group) => {
               const accent = TYPE_ACCENT[group.type];
               return (
                 <section key={group.type} className="space-y-3">
                   <div className="flex items-center gap-2">
-                    <h2 className="text-xs uppercase tracking-wide text-muted-foreground">
+                    <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                       {LOCATION_TYPE_LABELS[group.type]}
                     </h2>
                     <Badge variant="outline" className="tabular-nums">
@@ -546,10 +547,10 @@ export function LocationsPage() {
                       const busy = archivingId === location.id;
                       const deleting = deletingId === location.id;
                       return (
-                        <div
+                        <Card
                           key={location.id}
                           className={cn(
-                            'flex flex-col gap-3 rounded-lg border border-l-4 border-border/60 bg-card/40 p-4 shadow-sm transition-colors hover:bg-card/70',
+                            'flex flex-col gap-3 border-l-4 p-4',
                             accent.border,
                             archived && 'opacity-60',
                           )}
@@ -557,7 +558,7 @@ export function LocationsPage() {
                           <div className="flex items-start gap-3">
                             <div
                               className={cn(
-                                'flex size-10 shrink-0 items-center justify-center rounded-md',
+                                'flex size-10 shrink-0 items-center justify-center rounded-lg',
                                 accent.iconWrap,
                               )}
                             >
@@ -648,7 +649,7 @@ export function LocationsPage() {
                               </dd>
                             </div>
                           </dl>
-                        </div>
+                        </Card>
                       );
                     })}
                   </div>
@@ -657,7 +658,7 @@ export function LocationsPage() {
             })}
           </div>
         )}
-      </Card>
+      </div>
 
       {isPm && (
         <LocationFormDialog

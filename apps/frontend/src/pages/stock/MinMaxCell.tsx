@@ -185,10 +185,12 @@ export function MinMaxCell({ row, canEdit, onSaved }: MinMaxCellProps) {
             {formatQty(row.min_level)} / {formatQty(row.max_level)}
           </span>
           {canEdit ? (
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="sm"
               onClick={() => setModeDialogOpen(true)}
-              className="inline-flex items-center gap-0.5 rounded-md focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-auto gap-0.5 rounded-full p-0 hover:bg-transparent [&_svg]:size-3"
               aria-label={
                 isDynamic
                   ? 'Rejimni manual ga almashtirish'
@@ -197,7 +199,7 @@ export function MinMaxCell({ row, canEdit, onSaved }: MinMaxCellProps) {
             >
               {modeBadge}
               <ChevronDown className="size-3 text-muted-foreground" aria-hidden="true" />
-            </button>
+            </Button>
           ) : (
             modeBadge
           )}
@@ -216,13 +218,14 @@ export function MinMaxCell({ row, canEdit, onSaved }: MinMaxCellProps) {
         {isDynamic && canEdit && (
           <p className="mt-1 text-[11px] text-muted-foreground">
             Dynamic rejimda qiymatlar avtomatik.{' '}
-            <button
+            <Button
               type="button"
+              variant="link"
               onClick={() => setModeDialogOpen(true)}
-              className="underline underline-offset-2 hover:text-foreground"
+              className="h-auto p-0 text-[11px] font-normal text-muted-foreground underline underline-offset-2 hover:text-foreground"
             >
               Manual ga o‘ting
-            </button>{' '}
+            </Button>{' '}
             tahrirlash uchun.
           </p>
         )}

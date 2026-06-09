@@ -50,27 +50,27 @@ const STATUS_META: Record<
 > = {
   below_min: {
     label: 'Min’dan past',
-    colour: 'hsl(24 90% 55%)',
-    accent: 'border-l-orange-500',
-    value: 'text-orange-500',
+    colour: 'hsl(var(--warning))',
+    accent: 'border-l-warning',
+    value: 'text-warning',
   },
   low: {
     label: 'Kam',
-    colour: 'hsl(45 93% 52%)',
-    accent: 'border-l-amber-500',
-    value: 'text-amber-500',
+    colour: 'hsl(var(--warning) / 0.65)',
+    accent: 'border-l-warning/70',
+    value: 'text-warning/80',
   },
   out: {
     label: 'Tugagan',
-    colour: 'hsl(0 84% 60%)',
+    colour: 'hsl(var(--destructive))',
     accent: 'border-l-destructive',
     value: 'text-destructive',
   },
   enough: {
     label: 'Yetarli',
-    colour: 'hsl(152 56% 48%)',
-    accent: 'border-l-emerald-500',
-    value: 'text-emerald-500',
+    colour: 'hsl(var(--success))',
+    accent: 'border-l-success',
+    value: 'text-success',
   },
 };
 

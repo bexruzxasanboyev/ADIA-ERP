@@ -52,14 +52,14 @@ export const PRODUCT_CATEGORY_STYLE: Record<
     accent: string;
   }
 > = {
-  drink: { badge: 'info', accent: 'border-l-sky-500' },
-  decoration: { badge: 'warning', accent: 'border-l-fuchsia-500' },
-  cake: { badge: 'success', accent: 'border-l-rose-500' },
-  pastry: { badge: 'success', accent: 'border-l-amber-500' },
-  bread: { badge: 'success', accent: 'border-l-orange-500' },
-  semi: { badge: 'default', accent: 'border-l-violet-500' },
-  raw: { badge: 'outline', accent: 'border-l-slate-500' },
-  finished: { badge: 'success', accent: 'border-l-emerald-500' },
+  drink: { badge: 'info', accent: 'border-l-info' },
+  decoration: { badge: 'warning', accent: 'border-l-chain-store' },
+  cake: { badge: 'success', accent: 'border-l-chain-production' },
+  pastry: { badge: 'success', accent: 'border-l-chain-central' },
+  bread: { badge: 'success', accent: 'border-l-warning' },
+  semi: { badge: 'default', accent: 'border-l-primary' },
+  raw: { badge: 'outline', accent: 'border-l-muted-foreground' },
+  finished: { badge: 'success', accent: 'border-l-success' },
 };
 
 /** Name substrings (lower-cased, Latin + Cyrillic) → category. Order matters. */

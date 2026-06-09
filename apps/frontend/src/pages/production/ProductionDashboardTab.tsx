@@ -81,9 +81,9 @@ const ORDER_STAGE_META: Record<
   OrderStageKey,
   { label: string; colour: string }
 > = {
-  pending: { label: 'Kutilmoqda', colour: 'hsl(45 93% 52%)' }, // amber
-  in_progress: { label: 'Ishlab chiqarilmoqda', colour: 'hsl(217 91% 60%)' }, // blue
-  done_today: { label: 'Bugun tayyor', colour: 'hsl(152 56% 48%)' }, // emerald
+  pending: { label: 'Kutilmoqda', colour: 'hsl(var(--warning))' },
+  in_progress: { label: 'Ishlab chiqarilmoqda', colour: 'hsl(var(--info))' },
+  done_today: { label: 'Bugun tayyor', colour: 'hsl(var(--success))' }
 };
 
 const ORDER_STAGE_ORDER: OrderStageKey[] = [
@@ -123,20 +123,20 @@ function KpiCard({
   iconClass?: string;
 }) {
   return (
-    <Card className="flex min-h-[140px] flex-col justify-between gap-3 border-border/60 p-5 sm:p-6">
+    <Card className="flex flex-col justify-between gap-3 p-5">
       <div className="flex items-start justify-between gap-3">
-        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           {label}
         </p>
         <Icon
           aria-hidden="true"
-          className={cn('size-6 shrink-0 sm:size-7', iconClass)}
+          className={cn('size-5 shrink-0', iconClass)}
         />
       </div>
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <span
           className={cn(
-            'text-4xl font-bold leading-none tabular-nums sm:text-5xl',
+            'text-2xl font-semibold tabular-nums tracking-tight',
             valueClass,
           )}
         >
@@ -281,15 +281,15 @@ export function ProductionDashboardTab({
           value={activeCount}
           caption="ishlab chiqarilmoqda"
           Icon={Factory}
-          iconClass="text-amber-500"
+          iconClass="text-warning"
         />
         <KpiCard
           label="Kutilayotgan zayafkalar"
           value={pendingCount}
           caption="navbatda"
           Icon={ClipboardList}
-          valueClass={pendingCount > 0 ? 'text-amber-500' : undefined}
-          iconClass={pendingCount > 0 ? 'text-amber-500' : 'text-muted-foreground'}
+          valueClass={pendingCount > 0 ? 'text-warning' : undefined}
+          iconClass={pendingCount > 0 ? 'text-warning' : 'text-muted-foreground'}
         />
         <KpiCard
           label="Yarim tayyor turlari"
@@ -311,17 +311,17 @@ export function ProductionDashboardTab({
           value={finishedProducts.length}
           caption="ishlab chiqaradi"
           Icon={Package}
-          iconClass="text-emerald-500"
+          iconClass="text-success"
         />
       </div>
 
       {/* Order-pipeline BAR chart (central "Holat bo'yicha taqsimot" shape) —
           one horizontal bar per pipeline stage, coloured by tone, with a
           "count · %" end label. */}
-      <Card className="space-y-4 p-5 sm:p-6">
+      <Card className="space-y-4 p-5">
         <header className="flex items-baseline justify-between gap-3">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Zayafkalar holati
             </p>
             <p className="mt-0.5 text-xs text-muted-foreground">

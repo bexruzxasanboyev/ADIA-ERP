@@ -104,24 +104,28 @@ export function StoreMultiSelect({
               className="h-9 pl-8 pr-8"
             />
             {search !== '' && (
-              <button
+              <Button
                 type="button"
+                variant="ghost"
+                size="icon"
                 onClick={() => setSearch('')}
                 aria-label="Qidiruvni tozalash"
-                className="absolute right-2 top-2 rounded-md p-1 text-muted-foreground hover:bg-accent"
+                className="absolute right-1.5 top-1.5 size-6 text-muted-foreground"
               >
                 <X className="size-4" />
-              </button>
+              </Button>
             )}
           </div>
           {selectedIds.length > 0 && (
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="sm"
               onClick={() => onChange([])}
-              className="w-full rounded-md px-2 py-1 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="w-full justify-start px-2 text-xs font-normal text-muted-foreground hover:text-foreground"
             >
               Tanlovni tozalash ({selectedIds.length})
-            </button>
+            </Button>
           )}
           <ul
             className="max-h-64 space-y-0.5 overflow-y-auto"
@@ -142,7 +146,10 @@ export function StoreMultiSelect({
                     role="checkbox"
                     aria-checked={checked}
                     onClick={() => toggle(s.id)}
-                    className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
+                    className={cn(
+                      'flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm hover:bg-accent',
+                      checked && 'bg-primary/15 text-primary',
+                    )}
                   >
                     <span
                       className={cn(

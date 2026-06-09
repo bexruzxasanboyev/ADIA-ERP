@@ -162,7 +162,7 @@ export function ProductionOrderFormDialog({
         </DialogHeader>
 
         <form id="po-form" className="space-y-4" onSubmit={handleSubmit}>
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="po-product">Mahsulot</Label>
             <Select
               id="po-product"
@@ -182,7 +182,7 @@ export function ProductionOrderFormDialog({
             </Select>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="po-qty">Miqdor</Label>
             <NumberInput
               id="po-qty"
@@ -196,7 +196,7 @@ export function ProductionOrderFormDialog({
           </div>
 
           <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="po-loc">Ishlab chiqarish bo‘g‘ini</Label>
               <Select
                 id="po-loc"
@@ -215,7 +215,7 @@ export function ProductionOrderFormDialog({
                 ))}
               </Select>
             </div>
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="po-target">Maqsad bo‘g‘in (ixtiyoriy)</Label>
               <Select
                 id="po-target"
@@ -235,7 +235,7 @@ export function ProductionOrderFormDialog({
             </div>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="po-deadline">Muddat (ixtiyoriy)</Label>
             <Input
               id="po-deadline"
@@ -246,7 +246,7 @@ export function ProductionOrderFormDialog({
             />
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="po-note">Izoh (ixtiyoriy)</Label>
             <Textarea
               id="po-note"
@@ -258,7 +258,7 @@ export function ProductionOrderFormDialog({
 
           {error && (
             <p
-              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
               role="alert"
             >
               {error}

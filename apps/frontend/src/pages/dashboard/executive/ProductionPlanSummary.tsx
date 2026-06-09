@@ -105,7 +105,7 @@ export function ProductionPlanSummary({
             {upcoming.map((item) => (
               <li
                 key={item.id}
-                className="flex items-center justify-between gap-2 rounded-md border border-border/40 bg-surface-2/30 px-2.5 py-1.5 text-xs"
+                className="flex items-center justify-between gap-2 rounded-lg border border-border/60 bg-surface-3 px-2.5 py-1.5 text-xs"
               >
                 <span className="min-w-0 truncate font-medium">
                   {item.product_name}

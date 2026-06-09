@@ -62,8 +62,8 @@ function SummaryCard({
         <Icon className="size-5" />
       </span>
       <div className="min-w-0">
-        <p className="truncate text-xs text-muted-foreground">{label}</p>
-        <p className="truncate text-lg font-semibold tabular-nums">{value}</p>
+        <p className="truncate text-xs font-medium uppercase tracking-wider text-muted-foreground">{label}</p>
+        <p className="truncate text-2xl font-semibold tabular-nums tracking-tight">{value}</p>
       </div>
     </Card>
   );
@@ -222,7 +222,7 @@ export function KpiPage() {
                       'text-right font-semibold tabular-nums',
                       p.profit != null &&
                         p.profit > 0 &&
-                        'text-emerald-600 dark:text-emerald-400',
+                        'text-success',
                       p.profit != null && p.profit < 0 && 'text-destructive',
                     )}
                   >

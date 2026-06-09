@@ -10,6 +10,7 @@ import {
   YAxis,
   type TooltipProps,
 } from 'recharts';
+import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { EmptyState } from '@/components/PageState';
 import type {
@@ -274,7 +275,7 @@ export function SalesChart({
           <p className="text-xs text-muted-foreground">{description}</p>
         </div>
         <div className="text-right">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Jami
           </p>
           <p className="text-lg font-semibold tabular-nums leading-none">
@@ -420,7 +421,7 @@ function SalesChartSkeleton({
           <p className="text-xs text-muted-foreground">{description}</p>
         </div>
         <div className="space-y-1.5 text-right">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Jami
           </p>
           {/* value placeholder bar — stands in for the total while loading */}
@@ -473,14 +474,16 @@ export function PinnedTooltip({
       data-testid="sales-tooltip-pinned"
     >
       <div className="pointer-events-auto relative">
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="icon"
           onClick={onClose}
           aria-label="Yopish"
-          className="absolute -right-2 -top-2 z-10 grid size-5 place-items-center rounded-full border border-border bg-popover text-muted-foreground shadow-sm transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="absolute -right-2 -top-2 z-10 size-5 rounded-full border border-border bg-popover text-muted-foreground hover:bg-popover hover:text-foreground [&_svg]:size-3"
         >
-          <X className="size-3" aria-hidden="true" />
-        </button>
+          <X aria-hidden="true" />
+        </Button>
         <SalesTooltip
           active
           payload={[{ payload: point.datum, value: point.datum.value }]}
@@ -533,7 +536,7 @@ export function SalesTooltip({
 
   return (
     <div
-      className="min-w-[12rem] max-w-[18rem] rounded-lg border border-border bg-popover px-3 py-2.5 text-popover-foreground shadow-lg"
+      className="min-w-[12rem] max-w-[18rem] rounded-lg border border-border bg-popover px-3 py-2.5 text-popover-foreground shadow-pop"
       data-testid="sales-tooltip"
     >
       <p className="mb-2 text-xs font-semibold tabular-nums text-foreground">

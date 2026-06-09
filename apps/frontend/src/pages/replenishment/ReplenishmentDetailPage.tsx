@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Loader2 } from 'lucide-react';
-import { Card } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/components/ui/toast';
@@ -226,7 +226,7 @@ export function ReplenishmentDetailPage() {
         actions={
           <>
             {isReadOnly && (
-              <Badge variant="secondary" className="h-10 items-center px-3" aria-label="Faqat o‘qish rejimi">
+              <Badge variant="secondary" className="h-9 items-center px-3" aria-label="Faqat o‘qish rejimi">
                 Faqat o‘qish
               </Badge>
             )}
@@ -292,14 +292,14 @@ export function ReplenishmentDetailPage() {
 
       {actionError && (
         <p
-          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
           role="alert"
         >
           {actionError}
         </p>
       )}
 
-      <Card className="space-y-4 p-6">
+      <Card className="space-y-4 p-5">
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <Field label="Holat">
             <Badge variant={REPLENISHMENT_STATUS_VARIANT[request.status]}>
@@ -345,17 +345,19 @@ export function ReplenishmentDetailPage() {
           <Field label="Yangilangan">{formatDateTime(request.updated_at)}</Field>
         </div>
         {request.note && (
-          <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
+          <div className="rounded-lg border border-border/60 bg-surface-3 p-3 text-sm">
             {request.note}
           </div>
         )}
       </Card>
 
       <Card>
-        <div className="border-b border-border px-4 py-3 text-sm font-medium">
-          O‘tishlar tarixi
-        </div>
-        <TransitionTimeline transitions={transitions} />
+        <CardHeader className="pb-3">
+          <CardTitle>O‘tishlar tarixi</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          <TransitionTimeline transitions={transitions} />
+        </CardContent>
       </Card>
 
       {/* So'rovlar daraxti — root + bolalar + nabiralar (F-D tree endpoint).
@@ -398,7 +400,7 @@ function Field({
 }) {
   return (
     <div className="space-y-1">
-      <div className="text-xs uppercase tracking-wide text-muted-foreground">
+      <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
         {label}
       </div>
       <div className="text-sm">{children}</div>

@@ -156,11 +156,11 @@ const LABEL: Record<string, string> = {
 
 function SummaryStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-border/60 p-3">
-      <p className="text-xs uppercase tracking-wide text-muted-foreground">
+    <div className="rounded-lg border border-border/60 bg-surface-3 p-3">
+      <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
         {label}
       </p>
-      <p className="mt-1 text-lg font-semibold tabular-nums">{value}</p>
+      <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight">{value}</p>
     </div>
   );
 }

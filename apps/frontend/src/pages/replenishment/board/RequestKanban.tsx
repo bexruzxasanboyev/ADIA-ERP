@@ -1,6 +1,7 @@
 import { useMemo, type ReactNode } from 'react';
 import { ArrowRight, Package } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { formatQtyUnit } from '@/lib/format';
 import { pipelineStageOf } from '@/lib/pipeline';
@@ -34,8 +35,8 @@ const COLUMNS: readonly { stage: PipelineStage; label: string }[] = [
 /** Per-stage column accent (header dot + subtle top rail). */
 const STAGE_ACCENT: Record<PipelineStage, string> = {
   kutuvda: 'bg-warning',
-  soralgan: 'bg-sky-500',
-  qabul_qilingan: 'bg-emerald-500',
+  soralgan: 'bg-info',
+  qabul_qilingan: 'bg-success',
   yuborilgan: 'bg-primary',
   yopilgan: 'bg-muted-foreground',
 };
@@ -145,10 +146,11 @@ export function RequestCard({ req, action, onOpen }: RequestCardProps) {
   const interactive = onOpen !== undefined;
 
   return (
-    <article
+    <Card
       className={cn(
-        'rounded-lg border border-border/60 bg-card/70 p-3 text-left shadow-sm transition-colors',
-        interactive && 'cursor-pointer hover:border-primary/40 hover:bg-card',
+        'p-3 text-left',
+        interactive &&
+          'cursor-pointer hover:border-border-strong hover:shadow-card-hover',
       )}
       onClick={onOpen}
       onKeyDown={
@@ -216,6 +218,6 @@ export function RequestCard({ req, action, onOpen }: RequestCardProps) {
       )}
 
       {action && <div className="mt-2 flex justify-end">{action}</div>}
-    </article>
+    </Card>
   );
 }

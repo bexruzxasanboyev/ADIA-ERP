@@ -379,7 +379,7 @@ export function EmployeeFormDialog({
           // built-in submit gate.
           noValidate
         >
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="employee-name">Ism-familiya</Label>
             <Input
               id="employee-name"
@@ -391,7 +391,7 @@ export function EmployeeFormDialog({
             />
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="employee-username">Foydalanuvchi nomi</Label>
             <Input
               id="employee-username"
@@ -418,7 +418,7 @@ export function EmployeeFormDialog({
           {/* Password is create-only — a separate reset flow owns it in edit
               mode, so the field is hidden when editing an existing hodim. */}
           {!isEdit && (
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="employee-password">Parol</Label>
               <Input
                 id="employee-password"
@@ -436,7 +436,7 @@ export function EmployeeFormDialog({
             </div>
           )}
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="employee-role">Rol</Label>
             <Select
               id="employee-role"
@@ -453,7 +453,7 @@ export function EmployeeFormDialog({
           </div>
 
           {locationRequired && (
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="employee-location">Bo‘g‘in</Label>
               {visibleLocations.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
@@ -485,7 +485,7 @@ export function EmployeeFormDialog({
 
           {error && (
             <p
-              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
               role="alert"
             >
               {error}

@@ -1,4 +1,5 @@
 import { Wrench } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import type { AssistantToolCall } from '@/lib/types';
 
@@ -33,11 +34,9 @@ export function ToolCallBadge({
 }) {
   const label = TOOL_LABELS[call.tool_name] ?? call.tool_name;
   return (
-    <span
-      className={cn(
-        'inline-flex items-center gap-1.5 rounded-full border border-info/30 bg-info/10 px-2.5 py-1 text-xs font-medium text-info',
-        className,
-      )}
+    <Badge
+      variant="info"
+      className={cn('gap-1.5', className)}
       title={`${call.tool_name} · ${call.result_summary}`}
     >
       <Wrench className="size-3" aria-hidden="true" />
@@ -45,7 +44,7 @@ export function ToolCallBadge({
       {call.result_summary && (
         <span className="text-info/70">· {call.result_summary}</span>
       )}
-    </span>
+    </Badge>
   );
 }
 

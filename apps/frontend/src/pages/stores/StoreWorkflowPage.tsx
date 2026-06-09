@@ -21,6 +21,7 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
+import { NumberInput } from '@/components/ui/number-input';
 import { Tabs } from '@/components/ui/tabs';
 import {
   FilterPopover,
@@ -721,14 +722,16 @@ export function StoreWorkflowPage() {
                         className="pl-9 pr-9"
                       />
                       {productSearch !== '' && (
-                        <button
+                        <Button
                           type="button"
+                          variant="ghost"
+                          size="icon"
                           onClick={() => setProductSearch('')}
                           aria-label="Qidiruvni tozalash"
-                          className="absolute right-2 top-2 rounded-md p-1 text-muted-foreground hover:bg-accent"
+                          className="absolute right-1.5 top-1.5 size-6 text-muted-foreground"
                         >
                           <X className="size-4" />
-                        </button>
+                        </Button>
                       )}
                     </div>
                     <FilterPopover
@@ -765,7 +768,7 @@ export function StoreWorkflowPage() {
                   {stockGroups.map((group) => (
                     <section key={group.key} className="space-y-3">
                       <div className="flex items-center gap-2">
-                        <h3 className="text-xs uppercase tracking-wide text-muted-foreground">
+                        <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                           {group.name}
                         </h3>
                         <Badge variant="outline" className="tabular-nums">
@@ -781,7 +784,7 @@ export function StoreWorkflowPage() {
                             <div
                               key={`${row.location_id}-${row.product_id}`}
                               className={cn(
-                                'flex flex-col gap-3 rounded-lg border border-border/60 bg-card/40 p-4 shadow-sm transition-colors hover:bg-card/70',
+                                'flex flex-col gap-3 rounded-lg border border-border/60 bg-surface-3 p-4 transition-colors hover:border-border-strong',
                                 danger && 'border-destructive/40 bg-destructive/5',
                                 basketItem && 'border-primary/50 bg-primary/5',
                               )}
@@ -880,18 +883,13 @@ export function StoreWorkflowPage() {
                                           aria-hidden="true"
                                         />
                                       </Button>
-                                      <Input
-                                        type="number"
-                                        inputMode="decimal"
-                                        min="0"
-                                        step="any"
+                                      <NumberInput
+                                        decimals
                                         value={basketItem.qty}
-                                        onChange={(e) =>
+                                        onValueChange={(v) =>
                                           setBasketQty(
                                             row.product_id,
-                                            Number(
-                                              e.target.value.replace(',', '.'),
-                                            ),
+                                            v ?? Number.NaN,
                                           )
                                         }
                                         aria-label={`${row.product_name} soni`}
@@ -958,7 +956,7 @@ export function StoreWorkflowPage() {
           {/* Sticky basket bar — visible on Mahsulotlar while the draft has
               lines; opens the Savat slide-over to review + confirm. */}
           {pageTab === 'products' && isStoreManager && basketCount > 0 && (
-            <div className="sticky bottom-4 z-10 flex items-center justify-between gap-3 rounded-lg border border-primary/40 bg-card/95 px-4 py-3 pr-[5.5rem] shadow-lg backdrop-blur sm:pr-[11rem]">
+            <div className="sticky bottom-4 z-10 flex items-center justify-between gap-3 rounded-lg border border-primary/40 bg-card/95 px-4 py-3 pr-[5.5rem] shadow-pop backdrop-blur sm:pr-[11rem]">
               <span className="flex items-center gap-2 text-sm font-medium">
                 <ShoppingCart className="size-4 text-primary" aria-hidden="true" />
                 {basketCount} ta mahsulot tanlandi
@@ -1055,7 +1053,7 @@ export function StoreWorkflowPage() {
                       return (
                         <section
                           key={group.key}
-                          className="rounded-lg border border-border/60 bg-card/40"
+                          className="rounded-lg border border-border/60 bg-surface-3"
                           aria-label={`Buyurtma — ${group.lines.length} mahsulot`}
                         >
                           <header className="flex flex-wrap items-center gap-2 border-b border-border/60 p-4">

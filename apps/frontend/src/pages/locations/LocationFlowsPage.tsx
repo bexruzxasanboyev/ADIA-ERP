@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, ArrowRight, Loader2, Plus, Trash2 } from 'lucide-react';
-import { Card } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
@@ -166,8 +166,11 @@ export function LocationFlowsPage() {
       />
 
       {/* Add flow */}
-      <Card className="space-y-4 p-5">
-        <h2 className="text-sm font-semibold">Yangi oqim qo‘shish</h2>
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle>Yangi oqim qo‘shish</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
         <form
           className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto_1fr_1fr_auto] sm:items-end"
           onSubmit={handleAdd}
@@ -237,7 +240,7 @@ export function LocationFlowsPage() {
 
         {submitError && (
           <p
-            className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
             role="alert"
           >
             {submitError}
@@ -246,31 +249,33 @@ export function LocationFlowsPage() {
 
         {locationsError && (
           <p
-            className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-sm text-muted-foreground"
+            className="rounded-lg border border-border/60 bg-surface-3 px-3 py-2 text-sm text-muted-foreground"
             role="status"
           >
             Bo‘g‘inlar ro‘yxatini yuklab bo‘lmadi.{' '}
-            <button
+            <Button
               type="button"
+              variant="link"
               onClick={refetchLocations}
-              className="underline underline-offset-2 hover:text-foreground"
+              className="h-auto p-0 text-sm"
             >
               Qayta urinish
-            </button>
+            </Button>
           </p>
         )}
+        </CardContent>
       </Card>
 
       {/* Existing flows */}
       <Card>
-        <header className="flex items-center justify-between gap-3 border-b border-border/60 p-5">
-          <h2 className="flex items-center gap-2 text-base font-semibold">
+        <CardHeader className="border-b border-border/60">
+          <CardTitle className="flex items-center gap-2">
             Mavjud oqimlar
             <Badge variant="outline" className="tabular-nums">
               {flows.length}
             </Badge>
-          </h2>
-        </header>
+          </CardTitle>
+        </CardHeader>
 
         {flowsLoading && <LoadingState />}
         {!flowsLoading && loadError && (

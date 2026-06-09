@@ -81,8 +81,8 @@ export function ProductUnitDialog({
           <DialogDescription className="truncate">{product.name}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-3">
-          <div className="space-y-2">
+        <div className="space-y-4">
+          <div className="space-y-1.5">
             <Label htmlFor="product-unit">O‘lchov birligi</Label>
             <Select
               id="product-unit"

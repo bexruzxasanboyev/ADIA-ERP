@@ -124,7 +124,7 @@ export function ProductionOrdersPage() {
         actions={
           <>
             {isReadOnly && (
-              <Badge variant="secondary" className="h-10 items-center px-3" aria-label="Faqat o‘qish rejimi">
+              <Badge variant="secondary" className="h-9 items-center px-3" aria-label="Faqat o‘qish rejimi">
                 Faqat o‘qish
               </Badge>
             )}
@@ -139,7 +139,7 @@ export function ProductionOrdersPage() {
       />
 
       <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4">
-        <div className="space-y-1">
+        <div className="space-y-1.5">
           <Label htmlFor="po-status">Holat bo‘yicha</Label>
           <Select
             id="po-status"
@@ -161,7 +161,7 @@ export function ProductionOrdersPage() {
 
       {actionError && (
         <p
-          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
           role="alert"
         >
           {actionError}

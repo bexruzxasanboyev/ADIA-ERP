@@ -52,7 +52,7 @@ export function SessionList({
         </Button>
       </div>
 
-      <div className="flex items-center gap-2 px-3 pt-3 text-xs uppercase tracking-wider text-muted-foreground">
+      <div className="flex items-center gap-2 px-3 pt-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">
         <History className="size-3" aria-hidden="true" />
         Suhbatlar
       </div>
@@ -77,15 +77,15 @@ export function SessionList({
             const isActive = session.id === activeSessionId;
             return (
               <li key={session.id}>
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
                   onClick={() => onSelectSession(session.id)}
                   className={cn(
-                    'flex w-full flex-col items-start gap-0.5 rounded-md px-2.5 py-2 text-left text-xs transition-colors',
-                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    'h-auto w-full flex-col items-start gap-0.5 whitespace-normal rounded-md px-2.5 py-2 text-left text-xs font-normal',
                     isActive
-                      ? 'bg-primary/15 text-foreground ring-1 ring-primary/30'
-                      : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                      ? 'bg-primary/15 text-foreground ring-1 ring-primary/30 hover:bg-primary/15'
+                      : 'text-muted-foreground hover:text-foreground',
                   )}
                   aria-current={isActive ? 'true' : undefined}
                 >
@@ -98,7 +98,7 @@ export function SessionList({
                   >
                     {formatDateTime(session.updated_at)}
                   </time>
-                </button>
+                </Button>
               </li>
             );
           })}

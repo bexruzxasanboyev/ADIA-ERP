@@ -77,20 +77,16 @@ function ApprovalSteps({ order }: { order: PurchaseOrder }) {
 function StepPill({ label, signed }: { label: string; signed: boolean }) {
   const Icon = signed ? CheckCircle2 : Circle;
   return (
-    <span
-      className={cn(
-        'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]',
-        signed
-          ? 'border-success/40 bg-success/10 text-success'
-          : 'border-border text-muted-foreground',
-      )}
+    <Badge
+      variant={signed ? 'success' : 'outline'}
+      className={cn('px-2 text-[11px] font-normal', !signed && 'text-muted-foreground')}
     >
       <Icon className="size-3" aria-hidden="true" />
       {label}
       <span className="sr-only">
         {signed ? ' tasdiqladi' : ' hali tasdiqlamagan'}
       </span>
-    </span>
+    </Badge>
   );
 }
 

@@ -260,12 +260,12 @@ function KpiCard({ card }: { card: KpiCardData }) {
     <Card className={cn('p-5', toneRing)}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 space-y-1">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             {card.label}
           </p>
           <p
             className={cn(
-              'text-3xl font-semibold tabular-nums leading-none',
+              'text-2xl font-semibold tabular-nums tracking-tight',
               numberTone,
             )}
           >

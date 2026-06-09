@@ -21,6 +21,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
+import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/components/ui/toast';
 import { apiRequest, ApiError } from '@/lib/api-client';
@@ -103,25 +104,26 @@ export function WorkshopPicker({
     >
       <PopoverTrigger asChild>
         {variant === 'button' ? (
-          <button
+          <Button
             type="button"
+            variant="outline"
+            size="sm"
             aria-label="Sex biriktirish"
-            className={cn(
-              'inline-flex items-center gap-1.5 rounded-md border border-dashed border-border/70 px-2 py-1 text-xs font-medium text-muted-foreground transition-colors',
-              'hover:border-primary/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-            )}
+            className="h-7 gap-1.5 border-dashed border-border/70 bg-transparent px-2 text-xs text-muted-foreground shadow-none hover:border-primary/50 hover:bg-transparent hover:text-foreground"
           >
             <Plus className="size-3.5" aria-hidden="true" />
             Sex biriktirish
-          </button>
+          </Button>
         ) : (
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="icon"
             aria-label="Sexni o‘zgartirish"
-            className="rounded p-0.5 text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="h-5 w-5 rounded text-muted-foreground/70 hover:bg-transparent hover:text-foreground [&_svg]:size-3"
           >
             <Pencil className="size-3" aria-hidden="true" />
-          </button>
+          </Button>
         )}
       </PopoverTrigger>
       <PopoverContent align="start" className="w-64 p-0">
@@ -156,16 +158,16 @@ export function WorkshopPicker({
             const saving = savingId === w.id;
             return (
               <li key={w.id}>
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
+                  size="sm"
                   role="option"
                   aria-selected={selected}
                   disabled={savingId !== null}
                   onClick={() => assign(w.id)}
                   className={cn(
-                    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors',
-                    'hover:bg-accent focus-visible:outline-none focus-visible:bg-accent',
-                    'disabled:cursor-not-allowed disabled:opacity-60',
+                    'h-auto w-full justify-start gap-2 rounded-md px-2 py-1.5 text-left text-sm font-normal [&_svg]:size-3.5',
                     selected && 'bg-accent/60',
                   )}
                 >
@@ -182,7 +184,7 @@ export function WorkshopPicker({
                       …
                     </span>
                   )}
-                </button>
+                </Button>
               </li>
             );
           })}

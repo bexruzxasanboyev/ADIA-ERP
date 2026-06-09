@@ -91,7 +91,7 @@ export function CancelDialog({
 
         <form
           id="cancel-replenishment-form"
-          className="space-y-2"
+          className="space-y-1.5"
           onSubmit={handleSubmit}
         >
           <Label htmlFor="cancel-reason">Bekor qilish sababi (ixtiyoriy)</Label>

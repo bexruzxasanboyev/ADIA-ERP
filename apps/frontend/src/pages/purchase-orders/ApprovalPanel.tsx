@@ -221,10 +221,10 @@ function StepCard({
   return (
     <div
       className={cn(
-        'flex items-start gap-3 rounded-md border p-3',
+        'flex items-start gap-3 rounded-lg border p-3',
         signed
           ? 'border-success/30 bg-success/5'
-          : 'border-border bg-card',
+          : 'border-border/60 bg-surface-3',
       )}
     >
       {signed ? (

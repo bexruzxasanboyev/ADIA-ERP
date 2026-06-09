@@ -812,7 +812,7 @@ function ProductionDeliveryRow({
 }) {
   return (
     <section
-      className="rounded-lg border border-border/60 bg-card/40"
+      className="rounded-lg border border-border/60 bg-surface-3"
       aria-label={`Ishlab chiqarishdan keldi — ${req.product_name}`}
     >
       <div className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -865,7 +865,7 @@ function StoreOrderCard({
 
   return (
     <section
-      className="rounded-lg border border-border/60 bg-card/40"
+      className="rounded-lg border border-border/60 bg-surface-3"
       aria-label={`${storeName} — ${group.lines.length} mahsulot`}
     >
       <header className="flex flex-col gap-3 border-b border-border/60 p-4 sm:flex-row sm:items-center sm:justify-between">

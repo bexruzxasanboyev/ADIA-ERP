@@ -50,7 +50,7 @@ function TrendTooltip({
   if (!head) return null;
   return (
     <div
-      className="min-w-[9rem] rounded-lg border border-border bg-popover px-3 py-2.5 text-popover-foreground shadow-lg"
+      className="min-w-[9rem] rounded-lg border border-border bg-popover px-3 py-2.5 text-popover-foreground shadow-pop"
       data-testid="store-requests-trend-tooltip"
     >
       <p className="mb-2 text-xs font-semibold tabular-nums text-foreground">
@@ -124,7 +124,7 @@ export function StoreRequestsTrendChart({
           </p>
         </div>
         <div className="text-right">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Jami
           </p>
           <p className="text-lg font-semibold leading-none tabular-nums">

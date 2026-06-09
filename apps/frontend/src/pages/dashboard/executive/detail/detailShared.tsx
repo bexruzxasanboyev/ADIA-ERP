@@ -50,13 +50,13 @@ function SubKpiCell({
 }) {
   const toneClass = TILE_TONE_CLASS[tile.tone ?? 'default'];
   return (
-    <div className="rounded-md border border-border/40 bg-surface-2/40 p-3">
-      <p className="truncate text-[10px] uppercase tracking-wide text-muted-foreground">
+    <div className="rounded-lg border border-border/60 bg-surface-3 p-3">
+      <p className="truncate text-xs font-medium uppercase tracking-wider text-muted-foreground">
         {tile.label}
       </p>
       <p
         className={cn(
-          'mt-1 truncate text-xl font-semibold leading-tight tabular-nums',
+          'mt-1 truncate text-2xl font-semibold tabular-nums tracking-tight',
           toneClass,
         )}
         data-tone={tone}
@@ -109,11 +109,11 @@ export function PanelSkeleton() {
         {Array.from({ length: 4 }).map((_, i) => (
           <div
             key={i}
-            className="h-[78px] rounded-md border border-border/40 bg-surface-2/40"
+            className="h-[78px] rounded-lg border border-border/60 bg-surface-3"
           />
         ))}
       </div>
-      <div className="h-44 rounded-md border border-border/40 bg-surface-2/40" />
+      <div className="h-44 rounded-lg border border-border/60 bg-surface-3" />
       <div className="flex flex-col gap-2">
         {Array.from({ length: 5 }).map((_, i) => (
           <div key={i} className="h-9 rounded-md bg-surface-2/40" />

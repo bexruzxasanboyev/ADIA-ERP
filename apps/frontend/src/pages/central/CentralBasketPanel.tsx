@@ -249,7 +249,7 @@ function CentralBasketLineCard({
   return (
     <div
       className={cn(
-        'space-y-2.5 rounded-lg border border-border/60 bg-surface-3 p-3.5 transition-colors',
+        'space-y-2.5 rounded-lg border border-border/60 bg-surface-3 p-3 transition-colors',
         belowMin && 'border-destructive/30',
         !reducedMotion && 'transition-opacity duration-150',
         leaving && 'opacity-0',
@@ -272,18 +272,20 @@ function CentralBasketLineCard({
 
       <div className="flex flex-wrap items-center gap-2">
         <div className="inline-flex h-9 items-center rounded-md border border-input bg-surface-2">
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="icon"
             onClick={() => stepQty(item.product_id, -1)}
             disabled={disabled || item.qty <= 1}
             aria-label={`${item.product_name} sonini kamaytirish`}
             className={cn(
-              'grid h-9 w-9 place-items-center rounded-l-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40',
+              'rounded-none rounded-l-md text-muted-foreground hover:text-foreground',
               !reducedMotion && 'active:scale-95',
             )}
           >
             −
-          </button>
+          </Button>
           <input
             type="text"
             inputMode="decimal"
@@ -295,18 +297,20 @@ function CentralBasketLineCard({
             aria-label={`${item.product_name} soni`}
             className="h-9 w-12 border-x border-input bg-transparent text-center text-sm font-semibold tabular-nums focus:bg-accent/40 focus:outline-none"
           />
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="icon"
             onClick={() => stepQty(item.product_id, 1)}
             disabled={disabled}
             aria-label={`${item.product_name} sonini oshirish`}
             className={cn(
-              'grid h-9 w-9 place-items-center rounded-r-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40',
+              'rounded-none rounded-r-md text-muted-foreground hover:text-foreground',
               !reducedMotion && 'active:scale-95',
             )}
           >
             +
-          </button>
+          </Button>
         </div>
 
         <span className="text-xs text-muted-foreground">{unitLabel}</span>

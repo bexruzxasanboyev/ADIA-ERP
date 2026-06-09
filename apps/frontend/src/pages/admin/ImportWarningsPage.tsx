@@ -112,7 +112,7 @@ export function ImportWarningsPage() {
       />
 
       <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4">
-        <div className="space-y-1">
+        <div className="space-y-1.5">
           <Label htmlFor="warning-source">Manba</Label>
           <Select
             id="warning-source"
@@ -127,7 +127,7 @@ export function ImportWarningsPage() {
             ))}
           </Select>
         </div>
-        <div className="space-y-1">
+        <div className="space-y-1.5">
           <Label htmlFor="warning-resolved">Holat</Label>
           <Select
             id="warning-resolved"

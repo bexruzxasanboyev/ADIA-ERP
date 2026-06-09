@@ -261,14 +261,14 @@ export function RecipePage() {
           {tree.length === 0 ? (
             isProduced ? (
               <div
-                className="flex flex-col items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 py-12 text-center"
+                className="flex flex-col items-center gap-2 rounded-lg border border-warning/40 bg-warning/10 py-12 text-center"
                 role="alert"
               >
                 <AlertTriangle
-                  className="size-6 text-amber-600 dark:text-amber-400"
+                  className="size-6 text-warning"
                   aria-hidden="true"
                 />
-                <p className="text-sm font-medium text-amber-700 dark:text-amber-300">
+                <p className="text-sm font-medium text-warning">
                   Retsept yo‘q — Posterda kiritilishi kerak.
                 </p>
               </div>
@@ -287,7 +287,7 @@ export function RecipePage() {
             <div className="space-y-6">
               {/* Grand total (itogo) over all stages, shown once. */}
               <Card className="border-primary/30 bg-primary/5 p-5">
-                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                   Umumiy tannarx (itogo)
                 </p>
                 <p className="mt-1 text-3xl font-bold tabular-nums text-primary">

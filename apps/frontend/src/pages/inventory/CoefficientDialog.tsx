@@ -98,7 +98,7 @@ export function CoefficientDialog({
         </DialogHeader>
 
         <div className="space-y-4 py-2">
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="coeff-weight">Bitta butunning og‘irligi (kg)</Label>
             <NumberInput
               id="coeff-weight"
@@ -109,7 +109,7 @@ export function CoefficientDialog({
               aria-label="Bitta butunning og‘irligi (kg)"
             />
           </div>
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="coeff-pieces">Bitta butundagi bo‘laklar</Label>
             <NumberInput
               id="coeff-pieces"

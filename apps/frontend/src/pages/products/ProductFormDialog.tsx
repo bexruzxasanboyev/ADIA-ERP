@@ -90,7 +90,7 @@ export function ProductFormDialog({
         </DialogHeader>
 
         <form id="product-form" className="space-y-4" onSubmit={handleSubmit}>
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="product-name">Nomi</Label>
             <Input
               id="product-name"
@@ -102,7 +102,7 @@ export function ProductFormDialog({
           </div>
 
           <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="product-type">Turi</Label>
               <Select
                 id="product-type"
@@ -120,7 +120,7 @@ export function ProductFormDialog({
               </Select>
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="product-unit">O‘lchov birligi</Label>
               <Select
                 id="product-unit"
@@ -139,7 +139,7 @@ export function ProductFormDialog({
             </div>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="product-sku">SKU (ixtiyoriy)</Label>
             <Input
               id="product-sku"

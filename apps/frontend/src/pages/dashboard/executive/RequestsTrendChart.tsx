@@ -251,7 +251,7 @@ function LegendTotal({
 }) {
   return (
     <div>
-      <p className="flex items-center justify-end gap-1.5 text-xs uppercase tracking-wide text-muted-foreground">
+      <p className="flex items-center justify-end gap-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
         <span
           aria-hidden="true"
           className="size-2.5 rounded-sm"
@@ -273,7 +273,7 @@ function renderRequestsTooltip(props: TooltipProps<number, string>) {
   if (!point) return null;
   return (
     <div
-      className="min-w-[11rem] rounded-lg border border-border bg-popover px-3 py-2.5 text-popover-foreground shadow-lg"
+      className="min-w-[11rem] rounded-lg border border-border bg-popover px-3 py-2.5 text-popover-foreground shadow-pop"
       data-testid="requests-tooltip"
     >
       <p className="mb-2 text-xs font-semibold tabular-nums text-foreground">

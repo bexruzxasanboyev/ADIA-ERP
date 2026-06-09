@@ -4,6 +4,7 @@ import { Loader2, RotateCcw, Send, ShoppingCart, Trash2 } from 'lucide-react';
 import { Sheet, SheetContent } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { NumberInput } from '@/components/ui/number-input';
 import { UNIT_LABELS } from '@/lib/labels';
 import { formatQty } from '@/lib/format';
 import { usePrefersReducedMotion } from '@/hooks/usePrefersReducedMotion';
@@ -239,41 +240,36 @@ function BasketLineCard({
       {/* Row 3 — stepper + unit + refill + remove */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="inline-flex h-9 items-center rounded-md border border-input bg-surface-2">
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="icon"
             onClick={() => stepQty(item.product_id, -1)}
             disabled={disabled || item.qty <= 1}
             aria-label={`${item.product_name} sonini kamaytirish`}
-            className={cn(
-              'grid h-9 w-9 place-items-center rounded-l-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40',
-              !reducedMotion && 'active:scale-95',
-            )}
+            className="rounded-none rounded-l-md text-muted-foreground hover:text-foreground"
           >
             −
-          </button>
-          <input
-            type="text"
-            inputMode="decimal"
+          </Button>
+          <NumberInput
+            decimals
             value={item.qty}
             disabled={disabled}
-            onChange={(e) =>
-              setQty(item.product_id, Number(e.target.value.replace(',', '.')))
-            }
+            onValueChange={(v) => setQty(item.product_id, v ?? Number.NaN)}
             aria-label={`${item.product_name} soni`}
-            className="h-9 w-12 border-x border-input bg-transparent text-center text-sm font-semibold tabular-nums focus:bg-accent/40 focus:outline-none"
+            className="h-9 w-12 rounded-none border-y-0 bg-transparent px-0 text-center text-sm font-semibold tabular-nums"
           />
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="icon"
             onClick={() => stepQty(item.product_id, 1)}
             disabled={disabled}
             aria-label={`${item.product_name} sonini oshirish`}
-            className={cn(
-              'grid h-9 w-9 place-items-center rounded-r-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40',
-              !reducedMotion && 'active:scale-95',
-            )}
+            className="rounded-none rounded-r-md text-muted-foreground hover:text-foreground"
           >
             +
-          </button>
+          </Button>
         </div>
 
         <span className="text-xs text-muted-foreground">{unitLabel}</span>

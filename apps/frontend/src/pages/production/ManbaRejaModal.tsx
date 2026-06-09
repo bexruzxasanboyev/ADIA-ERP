@@ -348,7 +348,7 @@ function PlanLineRow({
   const showQtyReady = choice.action === 'use_ready';
 
   return (
-    <div className="rounded-lg border border-border/60 bg-card/40 p-3">
+    <div className="rounded-lg border border-border/60 bg-surface-3 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="text-sm font-semibold">{line.name}</span>
@@ -431,7 +431,7 @@ function PlanLineRow({
 function ExecuteResult({ lines }: { lines: ExecutedPlanLine[] }) {
   if (lines.length === 0) {
     return (
-      <p className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+      <p className="rounded-lg border border-border/60 bg-surface-3 p-3 text-sm text-muted-foreground">
         Hech qanday hujjat yaratilmadi (hammasi allaqachon tayyor edi).
       </p>
     );
@@ -441,7 +441,7 @@ function ExecuteResult({ lines }: { lines: ExecutedPlanLine[] }) {
       {lines.map((line, idx) => (
         <li
           key={`${line.component_product_id}-${idx}`}
-          className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm"
+          className="flex flex-wrap items-center gap-2 rounded-lg border border-success/30 bg-success/5 px-3 py-2 text-sm"
         >
           <ResultIcon action={line.action} />
           <span className="font-medium">{resultActionLabel(line)}</span>
@@ -489,7 +489,7 @@ function resultActionLabel(line: ExecutedPlanLine): string {
 }
 
 function ResultIcon({ action }: { action: PlanLineAction }) {
-  const cls = cn('size-4 shrink-0 text-emerald-600 dark:text-emerald-300');
+  const cls = cn('size-4 shrink-0 text-success');
   switch (action) {
     case 'transfer':
     case 'use_ready':

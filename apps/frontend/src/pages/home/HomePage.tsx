@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { CakeSlice, CircleUser } from 'lucide-react';
 import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { ThemeToggle } from '@/components/layout/ThemeToggle';
 import { useAuth } from '@/hooks/useAuth';
 import { getGreeting } from '@/lib/format';
@@ -40,19 +41,19 @@ interface GroupAccent {
 }
 const GROUP_ACCENTS: Record<string, GroupAccent> = {
   Boshqaruv: {
-    heading: 'text-blue-400/80',
-    icon: 'bg-blue-500/10 text-blue-400 group-hover:bg-blue-500/20',
-    card: 'hover:border-blue-500/60 hover:bg-blue-500/5 group-focus-visible:border-blue-500/60',
+    heading: 'text-primary/80',
+    icon: 'bg-primary/10 text-primary group-hover:bg-primary/20',
+    card: 'hover:border-primary/60 hover:bg-primary/5 group-focus-visible:border-primary/60',
   },
   'Bo‘limlar': {
-    heading: 'text-emerald-400/80',
-    icon: 'bg-emerald-500/10 text-emerald-400 group-hover:bg-emerald-500/20',
-    card: 'hover:border-emerald-500/60 hover:bg-emerald-500/5 group-focus-visible:border-emerald-500/60',
+    heading: 'text-success/80',
+    icon: 'bg-success/10 text-success group-hover:bg-success/20',
+    card: 'hover:border-success/60 hover:bg-success/5 group-focus-visible:border-success/60',
   },
   'Qo‘shimcha': {
-    heading: 'text-amber-400/80',
-    icon: 'bg-amber-500/10 text-amber-400 group-hover:bg-amber-500/20',
-    card: 'hover:border-amber-500/60 hover:bg-amber-500/5 group-focus-visible:border-amber-500/60',
+    heading: 'text-warning/80',
+    icon: 'bg-warning/10 text-warning group-hover:bg-warning/20',
+    card: 'hover:border-warning/60 hover:bg-warning/5 group-focus-visible:border-warning/60',
   },
 };
 const DEFAULT_ACCENT: GroupAccent = {
@@ -71,7 +72,7 @@ function TileCard({ tile, accent }: { tile: HomeTile; accent: GroupAccent }) {
     >
       <Card
         className={cn(
-          'flex h-full min-h-[7rem] flex-col items-center justify-center gap-3 p-4 text-center transition-all hover:shadow-lg',
+          'flex h-full min-h-[7rem] flex-col items-center justify-center gap-3 p-4 text-center transition-all hover:border-border-strong hover:shadow-card-hover',
           accent.card,
         )}
       >
@@ -102,13 +103,17 @@ export function HomePage() {
     <div className="flex min-h-screen flex-col bg-background text-foreground">
       <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border px-4 sm:px-6 lg:px-8">
         <ThemeToggle compact />
-        <Link
-          to="/profile"
-          className="inline-flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        <Button
+          asChild
+          variant="ghost"
+          size="sm"
+          className="text-muted-foreground hover:text-foreground"
         >
-          <CircleUser className="size-5" aria-hidden="true" />
-          <span className="hidden sm:inline">Profil</span>
-        </Link>
+          <Link to="/profile">
+            <CircleUser className="size-5" aria-hidden="true" />
+            <span className="hidden sm:inline">Profil</span>
+          </Link>
+        </Button>
       </header>
 
       <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col px-4 py-10 sm:px-6 sm:py-14 lg:px-8">

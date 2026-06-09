@@ -30,7 +30,12 @@ export function ErrorState({
       className="flex flex-col items-center gap-3 py-16 text-center"
       role="alert"
     >
-      <AlertTriangle className="size-6 text-destructive" aria-hidden="true" />
+      <span
+        aria-hidden="true"
+        className="flex size-10 items-center justify-center rounded-full bg-destructive/10 text-destructive"
+      >
+        <AlertTriangle className="size-5" />
+      </span>
       <p className="text-sm text-muted-foreground">{message}</p>
       {onRetry && (
         <Button variant="outline" size="sm" onClick={onRetry}>
@@ -44,8 +49,13 @@ export function ErrorState({
 /** Empty-list placeholder. */
 export function EmptyState({ message }: { message: string }) {
   return (
-    <div className="flex flex-col items-center gap-2 py-16 text-center">
-      <Inbox className="size-6 text-muted-foreground" aria-hidden="true" />
+    <div className="flex flex-col items-center gap-3 py-16 text-center">
+      <span
+        aria-hidden="true"
+        className="flex size-10 items-center justify-center rounded-full bg-muted/60 text-muted-foreground"
+      >
+        <Inbox className="size-5" />
+      </span>
       <p className="text-sm text-muted-foreground">{message}</p>
     </div>
   );
@@ -79,9 +89,7 @@ export function PageHeader({
   return (
     <header className="min-w-0">
       {actions && <PageHeaderActions>{actions}</PageHeaderActions>}
-      <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">
-        {title}
-      </h1>
+      <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
       {description && (
         <p className="mt-1 text-sm text-muted-foreground">{description}</p>
       )}

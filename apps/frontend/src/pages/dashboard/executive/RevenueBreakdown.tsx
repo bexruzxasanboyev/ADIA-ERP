@@ -271,13 +271,13 @@ export function RevenueBreakdown({
   return (
     <Card
       data-testid="revenue-breakdown"
-      className={cn('space-y-4 p-5 sm:p-6', className)}
+      className={cn('space-y-4 p-5', className)}
       role="region"
       aria-label={`${title} brekdown`}
     >
       <header className="flex items-baseline justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Tushum taqsimoti
           </p>
           <p className="mt-0.5 text-xs text-muted-foreground">
@@ -373,7 +373,7 @@ export function RevenueBreakdown({
               <span
                 key={activeSlice ? activeSlice.key : '__total__'}
                 className={cn(
-                  'flex h-[2.75rem] animate-in items-center justify-center fade-in duration-200 font-bold leading-none tabular-nums sm:h-[3rem]',
+                  'flex h-[2.75rem] animate-in items-center justify-center fade-in duration-200 font-semibold leading-none tabular-nums tracking-tight sm:h-[3rem]',
                   centreSizeClass,
                 )}
                 data-testid="revenue-breakdown-total"
@@ -437,7 +437,7 @@ export function RevenueBreakdown({
         </div>
       ) : (
         <p
-          className="rounded-md border border-border/40 bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+          className="rounded-lg border border-border/60 bg-surface-3 px-3 py-2 text-xs text-muted-foreground"
           role="note"
         >
           {"Tushum brekdown ma'lumotlari tayyor emas."}
@@ -448,7 +448,7 @@ export function RevenueBreakdown({
           headline number doesn't vanish (preserves prior behaviour). */}
       {legendRows === null && isMissing && (
         <p
-          className="text-3xl font-bold leading-none tabular-nums xl:text-4xl"
+          className="text-2xl font-semibold tabular-nums tracking-tight"
           data-testid="revenue-breakdown-total"
         >
           {formatSum(total)}

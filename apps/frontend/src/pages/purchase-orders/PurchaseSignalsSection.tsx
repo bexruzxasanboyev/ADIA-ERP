@@ -175,10 +175,10 @@ function SignalsSkeleton() {
   );
 }
 
-/** Tailwind tone classes for the starved ratio chip + bar fill. */
-const TIER_CHIP: Record<'critical' | 'low', string> = {
-  critical: 'border-destructive/40 bg-destructive/10 text-destructive',
-  low: 'border-warning/40 bg-warning/10 text-warning',
+/** Badge variant for the starved-tier chip + Tailwind tone for the bar fill. */
+const TIER_BADGE: Record<'critical' | 'low', 'danger' | 'warning'> = {
+  critical: 'danger',
+  low: 'warning',
 };
 const TIER_BAR: Record<'critical' | 'low', string> = {
   critical: 'bg-destructive',
@@ -221,15 +221,13 @@ function SignalCard({
             {signal.location_name}
           </p>
         </div>
-        <span
-          className={cn(
-            'shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium',
-            TIER_CHIP[tier],
-          )}
+        <Badge
+          variant={TIER_BADGE[tier]}
+          className="shrink-0 px-2 text-[11px]"
           aria-label={`Holat: ${TIER_LABEL[tier]}, min'ning ${ratioPct}%`}
         >
           {TIER_LABEL[tier]}
-        </span>
+        </Badge>
       </div>
 
       {/* Starved ratio — qty / min, with a colored fill bar. */}

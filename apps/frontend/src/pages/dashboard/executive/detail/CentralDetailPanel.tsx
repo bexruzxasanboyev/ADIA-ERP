@@ -9,6 +9,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import { Badge } from '@/components/ui/badge';
 import { ErrorState } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { dateRangeToQuery, type DateRangeValue } from '@/components/DateRangeFilter';
@@ -157,7 +158,7 @@ export function CentralDetailPanelView({
         description="Holatlar bo'yicha taqsimlangan."
       >
         <div
-          className="h-44 w-full rounded-md border border-border/40 bg-surface-2/30 p-2"
+          className="h-44 w-full rounded-lg border border-border/60 bg-surface-3 p-2"
           data-testid="central-detail-chart"
         >
           {chartData.length === 0 ? (
@@ -252,20 +253,14 @@ export function CentralDetailPanelView({
 function SyncLogRowView({ row }: { row: SyncLogRow }) {
   const isOk = row.status === 'ok';
   const isPartial = row.status === 'partial';
-  const tone = isOk
-    ? 'border-success/40 text-success'
-    : isPartial
-      ? 'border-warning/40 text-warning'
-      : 'border-destructive/40 text-destructive';
+  const variant = isOk ? 'success' : isPartial ? 'warning' : 'danger';
   const label = isOk ? 'OK' : isPartial ? 'Qisman' : 'Xato';
   return (
-    <li className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-surface-2/40 px-3 py-2 text-xs">
+    <li className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-surface-3 px-3 py-2 text-xs">
       <div className="flex min-w-0 items-center gap-2">
-        <span
-          className={`inline-flex h-5 items-center rounded border px-1.5 text-[10px] font-semibold uppercase tracking-wide ${tone}`}
-        >
+        <Badge variant={variant} className="shrink-0 uppercase">
           {label}
-        </span>
+        </Badge>
         <div className="min-w-0">
           <p className="truncate text-foreground">{row.entity}</p>
           <p className="truncate text-[10px] text-muted-foreground">

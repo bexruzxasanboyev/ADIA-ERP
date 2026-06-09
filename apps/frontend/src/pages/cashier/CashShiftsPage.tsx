@@ -106,10 +106,10 @@ export function CashShiftsPage() {
 function CashShiftCard({ shift }: { shift: CashShift }) {
   const unbalanced = shift.balance_discrepancy !== 0;
   return (
-    <article
+    <Card
       className={cn(
-        'space-y-3 rounded-lg border bg-card/50 p-4',
-        unbalanced ? 'border-warning/50 bg-warning/5' : 'border-border/60',
+        'space-y-3 p-4',
+        unbalanced && 'border-warning/50 bg-warning/5',
       )}
       aria-label={`Smena #${shift.id}`}
     >
@@ -144,7 +144,7 @@ function CashShiftCard({ shift }: { shift: CashShift }) {
           Kniжный/факт nomuvofiqligi: {formatSom(shift.balance_discrepancy)}
         </p>
       )}
-    </article>
+    </Card>
   );
 }
 

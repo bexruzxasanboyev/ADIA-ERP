@@ -182,10 +182,10 @@ export function QualityRow({ rangeQuery, className }: QualityRowProps) {
 
   return (
     <section className={cn('space-y-3', className)} aria-label="Sifat va integritet">
-      <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+      <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
         Sifat &amp; integritet
       </h2>
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {tiles.map((tile) => (
           <QualityTileCard key={tile.testId} tile={tile} />
         ))}
@@ -200,24 +200,24 @@ function QualityTileCard({ tile }: { tile: QualityTile }) {
   const body = (
     <>
       <div className="flex items-start justify-between gap-3">
-        <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground sm:text-xs">
+        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           {tile.label}
         </p>
         <Icon
           aria-hidden="true"
-          className={cn('size-5 shrink-0 sm:size-6', ICON_TONE[tile.tone])}
+          className={cn('size-5 shrink-0', ICON_TONE[tile.tone])}
         />
       </div>
       {tile.loading ? (
         <div className="flex flex-col gap-2" aria-hidden="true">
-          <div className="h-8 w-16 animate-pulse rounded bg-foreground/10 sm:h-9" />
+          <div className="h-8 w-16 animate-pulse rounded bg-foreground/10" />
           <div className="h-3 w-20 animate-pulse rounded bg-foreground/10" />
         </div>
       ) : (
         <div className="flex flex-col gap-1">
           <span
             className={cn(
-              'text-3xl font-bold leading-none tabular-nums sm:text-4xl',
+              'text-2xl font-semibold tabular-nums tracking-tight',
               VALUE_TONE[tile.tone],
             )}
             data-testid={`${tile.testId}-value`}
@@ -231,7 +231,7 @@ function QualityTileCard({ tile }: { tile: QualityTile }) {
   );
 
   const surfaceClass =
-    'flex min-h-[120px] flex-col justify-between gap-3 border-border/60 p-4 sm:p-5';
+    'flex min-h-[112px] flex-col justify-between gap-3 p-4';
 
   if (tile.href !== undefined) {
     return (
@@ -241,7 +241,7 @@ function QualityTileCard({ tile }: { tile: QualityTile }) {
         data-tone={tile.tone}
         aria-label={`${tile.label} — batafsil`}
         className={cn(
-          'group rounded-lg border bg-card text-card-foreground shadow-sm transition-colors hover:border-border',
+          'group rounded-xl border border-border/70 bg-card text-card-foreground shadow-card transition-[border-color,box-shadow] hover:border-border-strong hover:shadow-card-hover',
           surfaceClass,
           'outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
         )}

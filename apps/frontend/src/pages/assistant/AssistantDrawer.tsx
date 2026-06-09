@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { Bot, X, AlertTriangle } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
@@ -70,7 +71,7 @@ export function AssistantDrawer({ open, onOpenChange }: AssistantDrawerProps) {
         <DialogPrimitive.Content
           aria-describedby={undefined}
           className={cn(
-            'fixed inset-y-0 right-0 z-50 flex w-full flex-col bg-background shadow-2xl',
+            'fixed inset-y-0 right-0 z-50 flex w-full flex-col bg-background shadow-pop',
             'sm:max-w-xl md:max-w-3xl',
             'border-l border-border/60',
             'data-[state=open]:animate-in data-[state=open]:slide-in-from-right',
@@ -90,11 +91,15 @@ export function AssistantDrawer({ open, onOpenChange }: AssistantDrawerProps) {
                 AI yordamchi
               </DialogPrimitive.Title>
             </div>
-            <DialogPrimitive.Close
-              aria-label="Yopish"
-              className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <X className="size-4" aria-hidden="true" />
+            <DialogPrimitive.Close asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Yopish"
+                className="size-8 text-muted-foreground hover:text-foreground"
+              >
+                <X className="size-4" aria-hidden="true" />
+              </Button>
             </DialogPrimitive.Close>
           </header>
 
@@ -156,14 +161,16 @@ function ErrorBanner({
     >
       <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
       <p className="flex-1">{message}</p>
-      <button
+      <Button
         type="button"
+        variant="ghost"
+        size="icon"
         onClick={onDismiss}
         aria-label="Xatoni yopish"
-        className="rounded-sm text-destructive/70 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="size-6 shrink-0 text-destructive/70 hover:text-destructive"
       >
         <X className="size-4" aria-hidden="true" />
-      </button>
+      </Button>
     </div>
   );
 }

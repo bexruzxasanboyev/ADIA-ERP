@@ -241,14 +241,16 @@ export function ReplenishmentPage() {
                 className="pl-9 pr-9"
               />
               {search !== '' && (
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
+                  size="icon"
                   onClick={() => setSearch('')}
                   aria-label="Qidiruvni tozalash"
-                  className="absolute right-2 top-2 rounded-md p-1 text-muted-foreground hover:bg-accent"
+                  className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 text-muted-foreground"
                 >
-                  <X className="size-4" />
-                </button>
+                  <X className="size-4" aria-hidden="true" />
+                </Button>
               )}
             </div>
             <div className="flex flex-wrap items-center gap-3">

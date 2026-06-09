@@ -91,13 +91,13 @@ function Metric({
 }) {
   return (
     <div className="min-w-0">
-      <p className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+      <p className="flex items-center gap-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
         {Icon && <Icon aria-hidden="true" className="size-3" />}
         {label}
       </p>
       <p
         className={cn(
-          'mt-1 truncate text-lg font-bold leading-tight tabular-nums sm:text-xl',
+          'mt-1 truncate text-2xl font-semibold tabular-nums tracking-tight',
           valueClass ?? 'text-foreground',
         )}
       >

@@ -43,19 +43,19 @@ const TONE_STYLES: Record<
     rail: 'bg-border',
   },
   progress: {
-    ring: 'border-sky-500/40 bg-sky-500/10',
-    icon: 'text-sky-600 dark:text-sky-300',
-    rail: 'bg-sky-500/30',
+    ring: 'border-info/40 bg-info/10',
+    icon: 'text-info',
+    rail: 'bg-info/30',
   },
   success: {
-    ring: 'border-emerald-500/40 bg-emerald-500/15',
-    icon: 'text-emerald-600 dark:text-emerald-300',
-    rail: 'bg-emerald-500/30',
+    ring: 'border-success/40 bg-success/15',
+    icon: 'text-success',
+    rail: 'bg-success/30',
   },
   danger: {
-    ring: 'border-red-500/40 bg-red-500/15',
-    icon: 'text-red-600 dark:text-red-300',
-    rail: 'bg-red-500/30',
+    ring: 'border-destructive/40 bg-destructive/15',
+    icon: 'text-destructive',
+    rail: 'bg-destructive/30',
   },
 };
 
@@ -97,7 +97,7 @@ function toneForStatus(status: ReplenishmentStatus): StepTone {
 export function TransitionTimeline({ transitions }: TransitionTimelineProps) {
   if (transitions.length === 0) {
     return (
-      <p className="px-4 py-6 text-sm text-muted-foreground">
+      <p className="px-5 py-6 text-sm text-muted-foreground">
         O‘tishlar tarixi bo‘sh.
       </p>
     );
@@ -105,7 +105,7 @@ export function TransitionTimeline({ transitions }: TransitionTimelineProps) {
 
   return (
     <ol
-      className="space-y-1 px-4 py-4"
+      className="space-y-1 px-5 py-4"
       aria-label="O‘tishlar tarixi"
       aria-live="polite"
     >
@@ -164,7 +164,7 @@ export function TransitionTimeline({ transitions }: TransitionTimelineProps) {
                 </time>
               </div>
               {t.reason && (
-                <p className="mt-1 rounded-md border border-border/60 bg-muted/30 px-2 py-1 text-xs text-foreground/80">
+                <p className="mt-1 rounded-lg border border-border/60 bg-surface-3 px-2 py-1 text-xs text-foreground/80">
                   {t.reason}
                 </p>
               )}

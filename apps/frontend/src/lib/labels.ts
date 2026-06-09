@@ -47,16 +47,21 @@ export const ROLE_LABELS: Record<Role, string> = {
  * map is total (no `??` fallback needed at the call site).
  */
 export const ROLE_ACCENT_STYLE: Record<Role, { accent: string; dot: string }> = {
-  pm: { accent: 'border-l-violet-500', dot: 'bg-violet-500' },
-  raw_warehouse_manager: { accent: 'border-l-amber-500', dot: 'bg-amber-500' },
-  production_manager: { accent: 'border-l-rose-500', dot: 'bg-rose-500' },
-  supply_manager: { accent: 'border-l-sky-500', dot: 'bg-sky-500' },
-  central_warehouse_manager: {
-    accent: 'border-l-emerald-500',
-    dot: 'bg-emerald-500',
+  // Roles wear the colour of their chain link (chain-* tokens); PM oversees
+  // the whole chain so it takes the brand cobalt, AI the info teal.
+  pm: { accent: 'border-l-primary', dot: 'bg-primary' },
+  raw_warehouse_manager: { accent: 'border-l-chain-raw', dot: 'bg-chain-raw' },
+  production_manager: {
+    accent: 'border-l-chain-production',
+    dot: 'bg-chain-production',
   },
-  store_manager: { accent: 'border-l-orange-500', dot: 'bg-orange-500' },
-  ai_assistant: { accent: 'border-l-fuchsia-500', dot: 'bg-fuchsia-500' },
+  supply_manager: { accent: 'border-l-chain-supply', dot: 'bg-chain-supply' },
+  central_warehouse_manager: {
+    accent: 'border-l-chain-central',
+    dot: 'bg-chain-central',
+  },
+  store_manager: { accent: 'border-l-chain-store', dot: 'bg-chain-store' },
+  ai_assistant: { accent: 'border-l-info', dot: 'bg-info' },
 };
 
 export const LOCATION_TYPE_LABELS: Record<LocationType, string> = {

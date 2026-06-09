@@ -209,7 +209,7 @@ export function ProfilePage() {
           {editing ? (
             <form onSubmit={handleIdentitySubmit} className="space-y-4">
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   <Label htmlFor="profile-name">Ism</Label>
                   <Input
                     id="profile-name"
@@ -220,7 +220,7 @@ export function ProfilePage() {
                     aria-invalid={identityError !== null}
                   />
                 </div>
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   <Label htmlFor="profile-username">Login</Label>
                   <Input
                     id="profile-username"
@@ -246,7 +246,7 @@ export function ProfilePage() {
 
               {identityError && (
                 <p
-                  className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                  className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
                   role="alert"
                 >
                   {identityError}
@@ -276,13 +276,13 @@ export function ProfilePage() {
           ) : (
             <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <dt className="text-xs uppercase tracking-wide text-muted-foreground">
+                <dt className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                   Ism
                 </dt>
                 <dd className="mt-1 text-sm font-medium">{user.name}</dd>
               </div>
               <div>
-                <dt className="text-xs uppercase tracking-wide text-muted-foreground">
+                <dt className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                   Login
                 </dt>
                 <dd className="mt-1 font-mono text-sm">@{user.username}</dd>
@@ -292,7 +292,7 @@ export function ProfilePage() {
 
           <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <dt className="text-xs uppercase tracking-wide text-muted-foreground">
+              <dt className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                 Rol
               </dt>
               <dd className="mt-1">
@@ -300,7 +300,7 @@ export function ProfilePage() {
               </dd>
             </div>
             <div>
-              <dt className="text-xs uppercase tracking-wide text-muted-foreground">
+              <dt className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                 Telegram
               </dt>
               <dd className="mt-1">
@@ -310,7 +310,7 @@ export function ProfilePage() {
           </dl>
 
           <div>
-            <dt className="text-xs uppercase tracking-wide text-muted-foreground">
+            <dt className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Biriktirilgan bo‘g‘inlar
             </dt>
             <dd className="mt-2 flex flex-wrap gap-2">
@@ -349,7 +349,7 @@ export function ProfilePage() {
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="current-password">Joriy parol</Label>
               <Input
                 id="current-password"
@@ -363,7 +363,7 @@ export function ProfilePage() {
               />
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="new-password">Yangi parol</Label>
               <div className="relative">
                 <Input
@@ -379,11 +379,13 @@ export function ProfilePage() {
                   aria-describedby="new-password-hint"
                   className="pr-10"
                 />
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
+                  size="icon"
                   onClick={() => setShow((v) => !v)}
                   disabled={submitting}
-                  className="absolute inset-y-0 right-0 flex items-center justify-center px-3 text-muted-foreground hover:text-foreground disabled:opacity-50"
+                  className="absolute right-0 top-0 size-9 text-muted-foreground hover:bg-transparent hover:text-foreground"
                   aria-label={show ? 'Parolni yashirish' : 'Parolni ko‘rsatish'}
                   aria-pressed={show}
                   tabIndex={-1}
@@ -393,7 +395,7 @@ export function ProfilePage() {
                   ) : (
                     <Eye className="size-4" aria-hidden="true" />
                   )}
-                </button>
+                </Button>
               </div>
               <p
                 id="new-password-hint"
@@ -403,7 +405,7 @@ export function ProfilePage() {
               </p>
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="repeat-password">Yangi parolni takrorlash</Label>
               <Input
                 id="repeat-password"
@@ -419,7 +421,7 @@ export function ProfilePage() {
 
             {error && (
               <p
-                className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
                 role="alert"
               >
                 {error}

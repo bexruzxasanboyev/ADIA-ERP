@@ -125,7 +125,7 @@ export function LocationFormDialog({
         </DialogHeader>
 
         <form id="location-form" className="space-y-4" onSubmit={handleSubmit}>
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="loc-name">Nomi</Label>
             <Input
               id="loc-name"
@@ -136,7 +136,7 @@ export function LocationFormDialog({
             />
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="loc-type">Turi</Label>
             <Select
               id="loc-type"
@@ -154,7 +154,7 @@ export function LocationFormDialog({
             </Select>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="loc-parent">Yuqori bo‘g‘in</Label>
             <Select
               id="loc-parent"
@@ -175,7 +175,7 @@ export function LocationFormDialog({
             </Select>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="loc-lead">Yetkazib berish muddati (kun)</Label>
             <NumberInput
               id="loc-lead"
@@ -190,7 +190,7 @@ export function LocationFormDialog({
 
           {error && (
             <p
-              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
               role="alert"
             >
               {error}

@@ -116,7 +116,7 @@ export function DateRangeFilter({ value, onChange }: Props) {
       <div
         role="tablist"
         aria-label="Sana oralig'i tanlash"
-        className="inline-flex items-center rounded-md border border-border bg-card p-0.5 shadow-sm"
+        className="inline-flex items-center gap-1 rounded-xl border border-border/70 bg-surface-1 p-1"
       >
         {PRESETS.map((preset) => {
           const active = value.range === preset.id;
@@ -129,10 +129,11 @@ export function DateRangeFilter({ value, onChange }: Props) {
               data-state={active ? 'active' : 'inactive'}
               onClick={() => selectPreset(preset.id)}
               className={cn(
-                'h-8 rounded-sm px-3 text-xs font-medium transition-colors',
+                'h-7 rounded-lg px-3 text-xs font-medium transition-colors',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                 active
-                  ? 'bg-primary text-primary-foreground shadow-sm'
-                  : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                  ? 'bg-primary/15 text-primary ring-1 ring-inset ring-primary/25'
+                  : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
               )}
             >
               {preset.label}
@@ -159,16 +160,18 @@ export function DateRangeFilter({ value, onChange }: Props) {
           className="w-[320px] p-0"
           data-testid="date-range-picker"
         >
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <div className="flex items-center justify-between border-b border-border/70 px-4 py-3">
             <h3 className="text-sm font-semibold">Sana oralig'i</h3>
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="icon"
+              className="size-7 text-muted-foreground hover:text-foreground"
               onClick={() => setOpen(false)}
-              className="rounded-sm text-muted-foreground hover:text-foreground"
               aria-label="Yopish"
             >
               <X className="size-4" aria-hidden="true" />
-            </button>
+            </Button>
           </div>
 
           <div className="px-3 py-3">
@@ -228,14 +231,16 @@ export function DateRangeFilter({ value, onChange }: Props) {
             />
           </div>
 
-          <div className="flex items-center justify-between border-t border-border px-4 py-3">
-            <button
+          <div className="flex items-center justify-between border-t border-border/70 px-4 py-3">
+            <Button
               type="button"
+              variant="ghost"
+              size="sm"
               onClick={clearDraft}
-              className="text-sm text-muted-foreground hover:text-foreground"
+              className="text-muted-foreground hover:text-foreground"
             >
               Tozalash
-            </button>
+            </Button>
             <Button
               type="button"
               size="sm"

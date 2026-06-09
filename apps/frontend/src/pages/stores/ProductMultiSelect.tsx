@@ -83,14 +83,16 @@ export function ProductMultiSelect({
               className="h-9 pl-8 pr-8"
             />
             {search !== '' && (
-              <button
+              <Button
                 type="button"
+                variant="ghost"
+                size="icon"
                 onClick={() => setSearch('')}
                 aria-label="Qidiruvni tozalash"
-                className="absolute right-2 top-2 rounded-md p-1 text-muted-foreground hover:bg-accent"
+                className="absolute right-1.5 top-1.5 size-6 text-muted-foreground"
               >
                 <X className="size-4" />
-              </button>
+              </Button>
             )}
           </div>
           <ul
@@ -112,7 +114,10 @@ export function ProductMultiSelect({
                     role="checkbox"
                     aria-checked={checked}
                     onClick={() => onToggle(p.id)}
-                    className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
+                    className={cn(
+                      'flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm hover:bg-accent',
+                      checked && 'bg-primary/15 text-primary',
+                    )}
                   >
                     <span
                       className={cn(

@@ -193,9 +193,9 @@ function StoreSalesAnalyticsView({
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-3">
             {data.store_breakdown.map((store) => (
-              <div
+              <Card
                 key={store.location_id}
-                className="flex flex-col gap-4 rounded-lg border border-border/60 bg-card/40 p-5 transition-colors hover:bg-card/70"
+                className="flex flex-col gap-4 p-5"
               >
                 {/* Store name + hero revenue. */}
                 <div className="flex flex-col gap-2">
@@ -232,7 +232,7 @@ function StoreSalesAnalyticsView({
                     value={formatPlainNumber(store.open_replenishments)}
                   />
                 </div>
-              </div>
+              </Card>
             ))}
           </div>
         )}

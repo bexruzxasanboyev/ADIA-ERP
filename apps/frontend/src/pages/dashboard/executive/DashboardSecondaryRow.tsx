@@ -31,7 +31,7 @@ export function DashboardSecondaryRow({
     <div className="space-y-6">
       <RequestsTrendChart range={range} />
 
-      <div className="grid gap-4 sm:gap-6 xl:grid-cols-2">
+      <div className="grid gap-4 xl:grid-cols-2">
         <ForecastsPanel />
         <OpenRequestsPanel overview={overview} />
       </div>

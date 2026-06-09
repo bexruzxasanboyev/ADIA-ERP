@@ -143,13 +143,13 @@ export function CentralCategoryDonut({
   return (
     <Card
       data-testid="central-category-donut"
-      className={cn('space-y-4 p-5 sm:p-6', className)}
+      className={cn('space-y-4 p-5', className)}
       role="region"
       aria-label="Kategoriya bo‘yicha mahsulotlar taqsimoti"
     >
       <header className="flex items-baseline justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Kategoriya bo‘yicha mahsulotlar
           </p>
           <p className="mt-0.5 text-xs text-muted-foreground">

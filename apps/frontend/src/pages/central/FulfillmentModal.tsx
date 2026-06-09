@@ -159,7 +159,7 @@ export function FulfillmentModal({
             return (
               <div
                 key={line.id}
-                className="rounded-lg border border-border/60 bg-card/40 p-3"
+                className="rounded-lg border border-border/60 bg-surface-3 p-3"
               >
                 <div className="flex items-center justify-between gap-2">
                   <p className="min-w-0 text-sm font-semibold leading-tight">
@@ -217,7 +217,7 @@ export function FulfillmentModal({
         </div>
 
         {/* Footer summary — what ships now vs. what is routed to production. */}
-        <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-xs">
+        <div className="rounded-lg border border-border/60 bg-surface-3 px-3 py-2 text-xs">
           <span className="text-muted-foreground">Jami jo‘natiladigan: </span>
           <span className="font-medium tabular-nums">
             {formatQty(totalShip)}

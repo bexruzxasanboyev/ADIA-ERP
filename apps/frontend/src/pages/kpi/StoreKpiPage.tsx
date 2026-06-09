@@ -90,8 +90,8 @@ function SummaryCard({
         <Icon className="size-5" />
       </span>
       <div className="min-w-0">
-        <p className="truncate text-xs text-muted-foreground">{label}</p>
-        <p className="truncate text-lg font-semibold tabular-nums">{value}</p>
+        <p className="truncate text-xs font-medium uppercase tracking-wider text-muted-foreground">{label}</p>
+        <p className="truncate text-2xl font-semibold tabular-nums tracking-tight">{value}</p>
       </div>
     </Card>
   );
@@ -104,7 +104,7 @@ function GrowthCell({ value }: { value: number | null }) {
   }
   if (value > 0) {
     return (
-      <span className="inline-flex items-center justify-end gap-1 font-medium text-emerald-600 dark:text-emerald-400">
+      <span className="inline-flex items-center justify-end gap-1 font-medium text-success">
         <ArrowUpRight className="size-3.5" aria-hidden="true" />
         {pct(value)}
       </span>
@@ -375,13 +375,15 @@ function SortHeader({
   onClick: () => void;
 }) {
   return (
-    <button
+    <Button
       type="button"
+      variant="ghost"
+      size="sm"
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        'inline-flex items-center gap-1 font-medium transition-colors hover:text-foreground',
-        active ? 'text-foreground' : 'text-muted-foreground',
+        '-mx-2 h-7 gap-1 px-2',
+        active ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
       )}
     >
       {label}
@@ -389,7 +391,7 @@ function SortHeader({
         className={cn('size-3.5', active ? 'opacity-100' : 'opacity-40')}
         aria-hidden="true"
       />
-    </button>
+    </Button>
   );
 }
 

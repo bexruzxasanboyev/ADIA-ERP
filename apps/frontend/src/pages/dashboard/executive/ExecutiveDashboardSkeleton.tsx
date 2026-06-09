@@ -17,7 +17,7 @@ import { Card } from '@/components/ui/card';
 export function ExecutiveDashboardSkeleton() {
   return (
     <div
-      className="space-y-4 sm:space-y-6"
+      className="space-y-6"
       data-testid="executive-dashboard-skeleton"
       role="status"
       aria-busy="true"
@@ -30,7 +30,7 @@ export function ExecutiveDashboardSkeleton() {
         aria-hidden="true"
       >
         {Array.from({ length: 4 }).map((_, i) => (
-          <Card key={i} className="animate-pulse space-y-4 p-5 sm:p-6">
+          <Card key={i} className="animate-pulse space-y-4 p-5">
             {/* label bar */}
             <div className="h-3 w-24 rounded bg-foreground/10" />
             {/* large number bar */}
@@ -43,11 +43,11 @@ export function ExecutiveDashboardSkeleton() {
 
       {/* 2 — Two-up: revenue donut + legend | ranked top-products list. */}
       <div
-        className="grid grid-cols-1 gap-4 sm:gap-6 xl:grid-cols-2"
+        className="grid grid-cols-1 gap-4 xl:grid-cols-2"
         aria-hidden="true"
       >
         {/* LEFT — donut ring + ~5 legend rows (mirrors RevenueBreakdown). */}
-        <Card className="space-y-4 p-5 sm:p-6">
+        <Card className="space-y-4 p-5">
           <div className="space-y-2">
             <div className="h-3 w-32 rounded bg-foreground/10" />
             <div className="h-3 w-40 rounded bg-foreground/10" />
@@ -76,7 +76,7 @@ export function ExecutiveDashboardSkeleton() {
         </Card>
 
         {/* RIGHT — ranked list (mirrors TopProducts). */}
-        <Card className="space-y-4 p-5 sm:p-6">
+        <Card className="space-y-4 p-5">
           <div className="space-y-2">
             <div className="h-3 w-44 rounded bg-foreground/10" />
             <div className="h-3 w-24 rounded bg-foreground/10" />
@@ -108,7 +108,7 @@ export function ExecutiveDashboardSkeleton() {
         aria-hidden="true"
       >
         {Array.from({ length: 2 }).map((_, i) => (
-          <Card key={i} className="animate-pulse space-y-4 p-5 sm:p-6">
+          <Card key={i} className="animate-pulse space-y-4 p-5">
             <div className="h-3 w-36 rounded bg-foreground/10" />
             <div className="h-48 w-full rounded-lg bg-foreground/10" />
           </Card>
@@ -117,7 +117,7 @@ export function ExecutiveDashboardSkeleton() {
 
       {/* 4 — Action row: 3 cards (col-span 5 / 4 / 3) of list-row bars. */}
       <div
-        className="grid gap-4 sm:gap-6 xl:grid-cols-12"
+        className="grid gap-4 xl:grid-cols-12"
         aria-hidden="true"
       >
         {[
@@ -125,7 +125,7 @@ export function ExecutiveDashboardSkeleton() {
           'xl:col-span-4',
           'xl:col-span-3',
         ].map((span, i) => (
-          <Card key={i} className={`animate-pulse space-y-4 p-5 sm:p-6 ${span}`}>
+          <Card key={i} className={`animate-pulse space-y-4 p-5 ${span}`}>
             <div className="h-3 w-28 rounded bg-foreground/10" />
             <ul className="space-y-3">
               {Array.from({ length: 4 }).map((_, j) => (

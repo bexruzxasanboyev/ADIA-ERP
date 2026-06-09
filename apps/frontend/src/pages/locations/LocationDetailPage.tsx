@@ -13,7 +13,7 @@ import {
   MapPin,
   User as UserIcon,
 } from 'lucide-react';
-import { Card } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import {
   Table,
@@ -100,7 +100,7 @@ export function LocationDetailPage() {
     return (
       <div className="space-y-4">
         <BackLink />
-        <Card className="p-6">
+        <Card>
           <EmptyState message="Bo'g'in topilmadi." />
         </Card>
       </div>
@@ -128,7 +128,7 @@ export function LocationDetailPage() {
     return (
       <div className="space-y-4">
         <BackLink />
-        <Card className="p-6">
+        <Card>
           <EmptyState message="Bo'g'in topilmadi." />
         </Card>
       </div>
@@ -253,7 +253,7 @@ function LocationHeader({
   return (
     <header className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-4">
       <div className="min-w-0">
-        <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">
+        <h1 className="text-xl font-semibold tracking-tight">
           {location.name}
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -268,17 +268,18 @@ function LocationHeader({
           <Icon className="size-3.5" aria-hidden="true" />
           {LOCATION_TYPE_LABELS[location.type]}
         </Badge>
-        <span
-          className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-card/40 px-2 py-0.5 text-xs"
+        <Badge
+          variant="outline"
+          className="gap-1.5"
           data-testid="location-detail-status"
           aria-label={statusLabel(status)}
         >
           <span
             aria-hidden="true"
-            className={cn('inline-block size-2 rounded-full', statusDotClass(status))}
+            className={cn('inline-block size-1.5 rounded-full', statusDotClass(status))}
           />
           {statusLabel(status)}
-        </span>
+        </Badge>
       </div>
     </header>
   );
@@ -334,19 +335,19 @@ function KpiStrip({
         <Card
           key={c.id}
           className={cn(
-            'flex min-h-[120px] flex-col p-4 sm:p-5',
+            'flex flex-col p-4 sm:p-5',
             c.tone === 'danger' && 'ring-1 ring-destructive/40',
             c.tone === 'warning' && 'ring-1 ring-warning/40',
           )}
           data-testid={`location-detail-kpi-${c.id}`}
           data-tone={c.tone}
         >
-          <p className="truncate text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          <p className="truncate text-xs font-medium uppercase tracking-wider text-muted-foreground">
             {c.label}
           </p>
           <p
             className={cn(
-              'mt-2 text-3xl font-bold tabular-nums leading-none sm:text-4xl',
+              'mt-2 text-2xl font-semibold tabular-nums tracking-tight',
               c.tone === 'danger' && 'text-destructive',
               c.tone === 'warning' && 'text-warning',
             )}
@@ -390,16 +391,14 @@ function StockSection({
   }
 
   return (
-    <Card className={cn('p-4 sm:p-5', className)} data-testid="location-detail-stock">
-      <header className="flex items-center justify-between gap-3 pb-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-          Mahsulot qoldig'i
-        </h2>
+    <Card className={className} data-testid="location-detail-stock">
+      <CardHeader className="flex-row items-center justify-between gap-3 space-y-0 pb-3">
+        <CardTitle>Mahsulot qoldig'i</CardTitle>
         <span className="text-xs text-muted-foreground tabular-nums">
           {formatQty(rows.length)} ta SKU
         </span>
-      </header>
-
+      </CardHeader>
+      <CardContent>
       {isLoading && rows.length === 0 ? (
         <LoadingState />
       ) : error ? (
@@ -471,6 +470,7 @@ function StockSection({
           </TableBody>
         </Table>
       )}
+      </CardContent>
     </Card>
   );
 }
@@ -489,19 +489,14 @@ function MovementsSection({
   className?: string;
 }) {
   return (
-    <Card
-      className={cn('p-4 sm:p-5', className)}
-      data-testid="location-detail-movements"
-    >
-      <header className="flex items-center justify-between gap-3 pb-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-          Oxirgi harakatlar
-        </h2>
+    <Card className={className} data-testid="location-detail-movements">
+      <CardHeader className="flex-row items-center justify-between gap-3 space-y-0 pb-3">
+        <CardTitle>Oxirgi harakatlar</CardTitle>
         <span className="text-xs text-muted-foreground tabular-nums">
           {formatQty(movements.length)} ta
         </span>
-      </header>
-
+      </CardHeader>
+      <CardContent>
       {isLoading && movements.length === 0 ? (
         <LoadingState />
       ) : error ? (
@@ -545,6 +540,7 @@ function MovementsSection({
           </TableBody>
         </Table>
       )}
+      </CardContent>
     </Card>
   );
 }
@@ -566,18 +562,16 @@ function OpenRequestsSection({
 }) {
   return (
     <Card
-      className={cn('flex flex-col p-4 sm:p-5', className)}
+      className={cn('flex flex-col', className)}
       data-testid="location-detail-requests"
     >
-      <header className="flex items-center justify-between gap-3 pb-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-          Ochiq so'rovlar
-        </h2>
+      <CardHeader className="flex-row items-center justify-between gap-3 space-y-0 pb-3">
+        <CardTitle>Ochiq so'rovlar</CardTitle>
         <span className="text-xs text-muted-foreground tabular-nums">
           {formatQty(requests.length)} ta
         </span>
-      </header>
-
+      </CardHeader>
+      <CardContent>
       {isLoading && requests.length === 0 ? (
         <LoadingState />
       ) : error ? (
@@ -595,7 +589,7 @@ function OpenRequestsSection({
               <li key={r.id}>
                 <Link
                   to={`/replenishment/${r.id}`}
-                  className="block rounded-md border border-border/60 bg-card/40 px-3 py-2 transition-colors hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="block rounded-lg border border-border/60 bg-surface-3 px-3 py-2 transition-colors hover:border-border-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
@@ -617,6 +611,7 @@ function OpenRequestsSection({
           })}
         </ul>
       )}
+      </CardContent>
     </Card>
   );
 }
@@ -635,15 +630,13 @@ function ManagerCard({
   const hasManagerId = location.manager_user_id !== null;
   return (
     <Card
-      className={cn('flex flex-col gap-3 p-4 sm:p-5', className)}
+      className={cn('flex flex-col', className)}
       data-testid="location-detail-manager"
     >
-      <header className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-          Bo'g'in boshlig'i
-        </h2>
-      </header>
-
+      <CardHeader className="pb-3">
+        <CardTitle>Bo'g'in boshlig'i</CardTitle>
+      </CardHeader>
+      <CardContent>
       {!hasManagerId ? (
         <EmptyState message="Bu bo'g'in uchun boshliq tayinlanmagan." />
       ) : manager !== null ? (
@@ -671,6 +664,7 @@ function ManagerCard({
             : `Boshliq tayinlangan (#${location.manager_user_id}). To'liq ma'lumotni ko'rish uchun loyiha rahbari roli kerak.`}
         </p>
       )}
+      </CardContent>
     </Card>
   );
 }

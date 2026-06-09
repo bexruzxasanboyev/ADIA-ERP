@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { CornerDownRight, GitBranch, Users } from 'lucide-react';
-import { Card } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { LoadingState } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
@@ -58,9 +58,9 @@ export function RequestTreeSection({ requestId }: { requestId: string }) {
   if (tree.isLoading) {
     return (
       <Card>
-        <div className="border-b border-border px-4 py-3 text-sm font-medium">
-          So‘rovlar daraxti
-        </div>
+        <CardHeader className="pb-3">
+          <CardTitle>So‘rovlar daraxti</CardTitle>
+        </CardHeader>
         <LoadingState />
       </Card>
     );
@@ -75,13 +75,17 @@ export function RequestTreeSection({ requestId }: { requestId: string }) {
 
   return (
     <Card>
-      <div className="flex items-center gap-2 border-b border-border px-4 py-3 text-sm font-medium">
-        <GitBranch className="size-4 text-primary" aria-hidden="true" />
-        So‘rovlar daraxti
-      </div>
-      <ul className="space-y-1 p-3">
-        <TreeRow node={nested} depth={0} selfId={Number(requestId)} />
-      </ul>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2">
+          <GitBranch className="size-4 text-primary" aria-hidden="true" />
+          So‘rovlar daraxti
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <ul className="space-y-1">
+          <TreeRow node={nested} depth={0} selfId={Number(requestId)} />
+        </ul>
+      </CardContent>
     </Card>
   );
 }

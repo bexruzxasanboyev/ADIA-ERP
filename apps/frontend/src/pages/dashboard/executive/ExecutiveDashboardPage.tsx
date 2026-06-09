@@ -202,7 +202,7 @@ export function ExecutiveDashboardPage() {
   }
 
   return (
-    <div className="space-y-4 sm:space-y-6">
+    <div className="space-y-6">
       {/* 2. HERO STRIP — 4 big KPI cards. */}
       <HeroStrip
         overview={overview.data}
@@ -217,7 +217,7 @@ export function ExecutiveDashboardPage() {
       {/* 3a. ROW A — MOLIYA (revenue donut + profit/margin footer) on the left,
           "Eng ko'p sotilgan mahsulotlar" (TopProducts) on the right. The two
           columns stretch to equal height so they sit cleanly side by side. */}
-      <div className="grid grid-cols-1 gap-4 sm:gap-6 xl:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <div className="flex flex-col gap-4">
           <RevenueBreakdown
             range={range}
@@ -254,7 +254,7 @@ export function ExecutiveDashboardPage() {
       <QualityRow rangeQuery={rangeQuery} />
 
       {/* 6. AMALLAR — critical alerts + approval queue + production digest. */}
-      <div className="grid gap-4 sm:gap-6 xl:grid-cols-12">
+      <div className="grid gap-4 xl:grid-cols-12">
         <CriticalAlerts
           belowMin={overview.data.below_min}
           alerts={ecosystem.data?.alerts_feed ?? []}
@@ -294,7 +294,7 @@ function SecondaryRowGuard({
 
   if (isEmpty) {
     return (
-      <Card className="p-6 text-center text-sm text-muted-foreground">
+      <Card className="p-5 text-center text-sm text-muted-foreground">
         Hozircha kuzatish uchun ma’lumot yo‘q.
       </Card>
     );

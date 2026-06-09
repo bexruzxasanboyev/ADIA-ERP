@@ -27,7 +27,7 @@ export function ThemeToggle({ compact = false }: ThemeToggleProps) {
         onClick={() => setMode(next.id)}
         aria-label={`Mavzu: ${current.label}. Bosing — ${next.label} ga o‘tish.`}
         title={`Mavzu: ${current.label}`}
-        className="inline-flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+        className="inline-flex size-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground"
       >
         <current.Icon className="size-4" aria-hidden="true" />
       </button>
@@ -40,7 +40,7 @@ export function ThemeToggle({ compact = false }: ThemeToggleProps) {
     <div
       role="radiogroup"
       aria-label="Mavzu rejimi"
-      className="flex w-full items-center gap-0.5 rounded-lg border border-border bg-card/40 p-1"
+      className="flex w-full items-center gap-1 rounded-xl border border-border/70 bg-surface-1 p-1"
     >
       {OPTIONS.map((opt) => {
         const active = mode === opt.id;
@@ -54,10 +54,10 @@ export function ThemeToggle({ compact = false }: ThemeToggleProps) {
             title={opt.label}
             onClick={() => setMode(opt.id)}
             className={cn(
-              'inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              'inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               active
-                ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                ? 'bg-primary/15 text-primary ring-1 ring-inset ring-primary/25'
+                : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
             )}
           >
             <opt.Icon className="size-4" aria-hidden="true" />

@@ -123,7 +123,7 @@ export function ReplenishmentFormDialog({
         </DialogHeader>
 
         <form id="repl-form" className="space-y-4" onSubmit={handleSubmit}>
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="repl-product">Mahsulot</Label>
             <Select
               id="repl-product"
@@ -143,7 +143,7 @@ export function ReplenishmentFormDialog({
             </Select>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="repl-location">So‘rovchi bo‘g‘in</Label>
             <Select
               id="repl-location"
@@ -163,7 +163,7 @@ export function ReplenishmentFormDialog({
             </Select>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="repl-qty">Kerakli miqdor</Label>
             <NumberInput
               id="repl-qty"
@@ -176,7 +176,7 @@ export function ReplenishmentFormDialog({
             />
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="repl-note">Izoh (ixtiyoriy)</Label>
             <Textarea
               id="repl-note"
@@ -188,7 +188,7 @@ export function ReplenishmentFormDialog({
 
           {error && (
             <p
-              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
               role="alert"
             >
               {error}

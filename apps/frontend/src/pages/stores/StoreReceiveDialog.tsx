@@ -149,7 +149,7 @@ export function StoreReceiveDialog({
         </DialogHeader>
 
         <form id="store-receive-form" className="space-y-4" onSubmit={handleSubmit}>
-          <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+          <div className="rounded-lg border border-border/60 bg-surface-3 p-3 text-sm">
             <p className="font-medium">
               #{request.id} · {request.product_name}
             </p>
@@ -158,7 +158,7 @@ export function StoreReceiveDialog({
             </p>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="receive-qty">Qabul qilingan soni</Label>
             <div className="flex items-center gap-2">
               <NumberInput
@@ -181,7 +181,7 @@ export function StoreReceiveDialog({
             </div>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="receive-brak">Brak (yaroqsiz) soni</Label>
             <div className="flex items-center gap-2">
               <NumberInput
@@ -205,7 +205,7 @@ export function StoreReceiveDialog({
           </div>
 
           {showBrakReason && (
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="receive-brak-reason">Brak izohi</Label>
               <Textarea
                 id="receive-brak-reason"
@@ -221,7 +221,7 @@ export function StoreReceiveDialog({
 
           {error && (
             <p
-              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
               role="alert"
             >
               {error}

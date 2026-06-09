@@ -101,13 +101,13 @@ export function StoresDetailPanelView({
             {data.store_breakdown.map((store) => (
               <div
                 key={store.location_id}
-                className="rounded-md border border-border/40 bg-surface-2/40 p-3"
+                className="rounded-lg border border-border/60 bg-surface-3 p-3"
               >
                 <p className="truncate text-xs font-semibold text-foreground">
                   {store.location_name}
                 </p>
                 <div className="mt-1 flex items-baseline gap-1">
-                  <span className="text-lg font-semibold tabular-nums text-chain-store">
+                  <span className="text-2xl font-semibold tabular-nums tracking-tight text-chain-store">
                     {formatCurrencyCompact(store.sales_sum)}
                   </span>
                   <span className="text-[10px] text-muted-foreground">
@@ -138,7 +138,7 @@ export function StoresDetailPanelView({
         description="Tanlangan oraliq bo'yicha umumiy daromad."
       >
         <div
-          className="h-44 w-full rounded-md border border-border/40 bg-surface-2/30 p-2"
+          className="h-44 w-full rounded-lg border border-border/60 bg-surface-3 p-2"
           data-testid="stores-detail-chart"
         >
           {chartData.length === 0 ? (
@@ -222,7 +222,7 @@ export function StoresDetailPanelView({
             {data.top_products_today.slice(0, 5).map((row) => (
               <li
                 key={row.product_id}
-                className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-surface-2/40 px-3 py-2 text-xs"
+                className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-surface-3 px-3 py-2 text-xs"
               >
                 <span className="min-w-0 truncate font-medium text-foreground">
                   {row.product_name}

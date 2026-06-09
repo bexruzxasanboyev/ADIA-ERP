@@ -285,12 +285,12 @@ function HeroKpiCard({
   const body = (
     <>
       <div className="flex items-start justify-between gap-3">
-        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           {kpi.label}
         </p>
         <Icon
           aria-hidden="true"
-          className={cn('size-6 shrink-0 sm:size-7', ICON_TONE[kpi.tone])}
+          className={cn('size-5 shrink-0', ICON_TONE[kpi.tone])}
         />
       </div>
 
@@ -302,7 +302,7 @@ function HeroKpiCard({
         >
           {/* large number bar + delta bar — matches the dashboard skeleton
               shade (`bg-foreground/10` + `animate-pulse`). */}
-          <div className="h-10 w-36 animate-pulse rounded bg-foreground/10 sm:h-12" />
+          <div className="h-8 w-36 animate-pulse rounded bg-foreground/10" />
           <div className="h-3 w-20 animate-pulse rounded bg-foreground/10" />
         </div>
       ) : (
@@ -310,7 +310,7 @@ function HeroKpiCard({
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
             <span
               className={cn(
-                'text-4xl font-bold leading-none tabular-nums sm:text-5xl',
+                'text-2xl font-semibold tabular-nums tracking-tight',
                 VALUE_TONE[kpi.tone],
               )}
               data-testid={`${kpi.testId}-value`}
@@ -329,14 +329,14 @@ function HeroKpiCard({
     </>
   );
 
-  // Shared visual: matches the shadcn Card surface so the clickable
-  // button is pixel-identical to the static region. `group` + `isolate`
-  // let the hover gradient overlay fade in beneath the content.
+  // Shared visual: matches the Card primitive surface exactly so the
+  // clickable button is pixel-identical to the static region. `group` +
+  // `isolate` let the hover gradient overlay fade in beneath the content.
   const surfaceClass = cn(
     'group relative isolate overflow-hidden',
-    'rounded-lg border border-border bg-card text-card-foreground shadow-sm',
-    'flex min-h-[140px] flex-col justify-between gap-3 p-5 sm:p-6',
-    'border-border/60 transition-colors hover:border-border',
+    'rounded-xl border border-border/70 bg-card text-card-foreground shadow-card',
+    'flex min-h-[124px] flex-col justify-between gap-3 p-5',
+    'transition-[border-color,box-shadow] hover:border-border-strong hover:shadow-card-hover',
   );
 
   // Tone-matched side gradient, hidden until hover. `-z-10` keeps it above

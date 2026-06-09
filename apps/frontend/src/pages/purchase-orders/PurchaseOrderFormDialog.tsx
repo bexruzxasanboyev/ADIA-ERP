@@ -162,7 +162,7 @@ export function PurchaseOrderFormDialog({
         </DialogHeader>
 
         <form id="purch-form" className="space-y-4" onSubmit={handleSubmit}>
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="purch-product">Mahsulot</Label>
             <Select
               id="purch-product"
@@ -182,7 +182,7 @@ export function PurchaseOrderFormDialog({
             </Select>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="purch-qty">Miqdor</Label>
             <NumberInput
               id="purch-qty"
@@ -195,7 +195,7 @@ export function PurchaseOrderFormDialog({
             />
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="purch-target">Qabul qiluvchi bo‘g‘in</Label>
             <Select
               id="purch-target"
@@ -215,7 +215,7 @@ export function PurchaseOrderFormDialog({
             </Select>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="purch-supplier">Yetkazib beruvchi ID (ixtiyoriy)</Label>
             <NumberInput
               id="purch-supplier"
@@ -226,7 +226,7 @@ export function PurchaseOrderFormDialog({
             />
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="purch-note">Izoh (ixtiyoriy)</Label>
             <Textarea
               id="purch-note"

@@ -109,7 +109,7 @@ export function CashReconciliationPage() {
       {/* Filters: Do'kon (PM only) · Sana oralig'i (from/to) · Holat. */}
       <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4">
         {isPm && (
-          <div className="space-y-1">
+          <div className="space-y-1.5">
             <Label htmlFor="reconciliation-store">Do‘kon</Label>
             <Select
               id="reconciliation-store"
@@ -126,7 +126,7 @@ export function CashReconciliationPage() {
             </Select>
           </div>
         )}
-        <div className="space-y-1">
+        <div className="space-y-1.5">
           <Label htmlFor="reconciliation-from">Sanadan</Label>
           <Input
             id="reconciliation-from"
@@ -137,7 +137,7 @@ export function CashReconciliationPage() {
             onChange={(e) => setFrom(e.target.value)}
           />
         </div>
-        <div className="space-y-1">
+        <div className="space-y-1.5">
           <Label htmlFor="reconciliation-to">Sanagacha</Label>
           <Input
             id="reconciliation-to"
@@ -148,7 +148,7 @@ export function CashReconciliationPage() {
             onChange={(e) => setTo(e.target.value)}
           />
         </div>
-        <div className="space-y-1">
+        <div className="space-y-1.5">
           <Label htmlFor="reconciliation-status">Holat</Label>
           <Select
             id="reconciliation-status"

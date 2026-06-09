@@ -425,18 +425,18 @@ export function CentralDispatchGrid({
                               {item.product_name}
                             </span>
                             <span className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-                              <button
+                              <Button
                                 type="button"
+                                variant="ghost"
+                                size="sm"
                                 onClick={() => splitRow(item)}
                                 disabled={submitting || noStores}
-                                className={cn(
-                                  'inline-flex items-center gap-1 rounded px-1 py-0.5 text-primary hover:bg-primary/10 disabled:opacity-40',
-                                )}
+                                className="h-5 gap-1 rounded px-1 py-0 text-[11px] font-normal text-primary hover:bg-primary/10 hover:text-primary [&_svg]:size-3"
                                 title="Mavjud qoldiqni do‘konlar bo‘yicha teng bo‘lish"
                               >
                                 <Split className="size-3" aria-hidden="true" />
                                 Teng bo‘l
-                              </button>
+                              </Button>
                             </span>
                           </th>
 

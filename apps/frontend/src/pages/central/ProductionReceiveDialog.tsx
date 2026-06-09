@@ -134,7 +134,7 @@ export function ProductionReceiveDialog({
           className="space-y-4"
           onSubmit={handleSubmit}
         >
-          <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+          <div className="rounded-lg border border-border/60 bg-surface-3 px-3 py-2 text-sm">
             <p className="font-medium">
               #{request.id} · {request.product_name}
             </p>
@@ -143,7 +143,7 @@ export function ProductionReceiveDialog({
             </p>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="production-receive-brak">Brak (yaroqsiz) soni</Label>
             <div className="flex items-center gap-2">
               <NumberInput
@@ -169,7 +169,7 @@ export function ProductionReceiveDialog({
           </div>
 
           {showBrakReason && (
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="production-receive-brak-reason">Brak izohi</Label>
               <Textarea
                 id="production-receive-brak-reason"

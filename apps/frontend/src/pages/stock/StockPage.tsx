@@ -188,7 +188,7 @@ export function StockPage({
           options={TAB_OPTIONS}
           ariaLabel="Qoldiq ko‘rinishi"
         />
-        <div className="space-y-1">
+        <div className="space-y-1.5">
           <Label htmlFor="stock-location">Bo‘g‘in bo‘yicha</Label>
           <Select
             id="stock-location"

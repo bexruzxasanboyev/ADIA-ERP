@@ -178,7 +178,7 @@ export function MovementDialog({
         </DialogHeader>
 
         <form id="movement-form" className="space-y-4" onSubmit={handleSubmit}>
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="mv-kind">Harakat turi</Label>
             <Select
               id="mv-kind"
@@ -196,7 +196,7 @@ export function MovementDialog({
             </Select>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="mv-product">Mahsulot</Label>
             <Select
               id="mv-product"
@@ -217,7 +217,7 @@ export function MovementDialog({
           </div>
 
           {showSingleLocation ? (
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="mv-location">Bo‘g‘in</Label>
               <Select
                 id="mv-location"
@@ -238,7 +238,7 @@ export function MovementDialog({
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 <Label htmlFor="mv-from">Manba bo‘g‘in</Label>
                 <Select
                   id="mv-from"
@@ -257,7 +257,7 @@ export function MovementDialog({
                   ))}
                 </Select>
               </div>
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 <Label htmlFor="mv-to">Qabul qiluvchi</Label>
                 <Select
                   id="mv-to"
@@ -279,7 +279,7 @@ export function MovementDialog({
             </div>
           )}
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="mv-qty">Miqdor</Label>
             <NumberInput
               id="mv-qty"
@@ -292,7 +292,7 @@ export function MovementDialog({
             />
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="mv-note">Izoh (ixtiyoriy)</Label>
             <Textarea
               id="mv-note"

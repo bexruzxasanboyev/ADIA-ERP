@@ -124,7 +124,7 @@ export function InventoryPage() {
       {/* Filters: Do'kon (PM / ishlab chiqarish boshlig'i) · Sana. */}
       <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4">
         {canPickStore && (
-          <div className="space-y-1">
+          <div className="space-y-1.5">
             <Label htmlFor="inventory-store">Do‘kon</Label>
             <Select
               id="inventory-store"
@@ -141,7 +141,7 @@ export function InventoryPage() {
             </Select>
           </div>
         )}
-        <div className="space-y-1">
+        <div className="space-y-1.5">
           <Label htmlFor="inventory-date">Sana</Label>
           <Input
             id="inventory-date"

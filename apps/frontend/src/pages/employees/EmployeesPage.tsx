@@ -55,11 +55,7 @@ const TG_STATUS_VALUES = { linked: 'linked', unlinked: 'unlinked' } as const;
 function TgStatusBadge({ linked }: { linked: boolean }) {
   if (linked) {
     return (
-      <Badge
-        variant="outline"
-        className="gap-1 border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
-        aria-label="Telegram ulangan"
-      >
+      <Badge variant="success" className="gap-1" aria-label="Telegram ulangan">
         TG ulangan
       </Badge>
     );
@@ -67,7 +63,7 @@ function TgStatusBadge({ linked }: { linked: boolean }) {
   return (
     <Badge
       variant="outline"
-      className="gap-1 border-border/60 text-muted-foreground"
+      className="gap-1 text-muted-foreground"
       aria-label="Telegram ulanmagan"
     >
       TG ulanmagan
@@ -226,20 +222,22 @@ export function EmployeesPage() {
             className="pl-9 pr-9"
           />
           {search !== '' && (
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="icon"
               onClick={() => setSearch('')}
               aria-label="Qidiruvni tozalash"
-              className="absolute right-2 top-2 rounded-md p-1 text-muted-foreground hover:bg-accent"
+              className="absolute right-1 top-1 size-7 text-muted-foreground"
             >
               <X className="size-4" />
-            </button>
+            </Button>
           )}
         </div>
         <FilterPopover groups={filterGroups} value={filter} onApply={setFilter} />
       </div>
 
-      <Card className="border-0 bg-transparent p-0 shadow-none">
+      <div>
         {users.isLoading && <LoadingState />}
         {!users.isLoading && users.error && (
           <ErrorState message={users.error} onRetry={users.refetch} />
@@ -255,7 +253,7 @@ export function EmployeesPage() {
         )}
 
         {!users.isLoading && !users.error && !isEmpty && (
-          <div className="space-y-8">
+          <div className="space-y-6">
             {cardGroups.map((group) => {
               const style = ROLE_ACCENT_STYLE[group.role];
               return (
@@ -265,7 +263,7 @@ export function EmployeesPage() {
                       className={cn('size-2 shrink-0 rounded-full', style.dot)}
                       aria-hidden="true"
                     />
-                    <h2 className="text-xs uppercase tracking-wide text-muted-foreground">
+                    <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                       {ROLE_LABELS[group.role]}
                     </h2>
                     <Badge variant="outline" className="tabular-nums">
@@ -291,11 +289,11 @@ export function EmployeesPage() {
                       const busy = busyUserId === u.id;
                       const confirming = confirmDeleteUser?.id === u.id;
                       return (
-                        <div
+                        <Card
                           key={u.id}
                           data-testid={`employee-card-${u.id}`}
                           className={cn(
-                            'flex h-full w-full flex-col gap-3 rounded-lg border border-l-4 border-border/60 bg-card/40 p-4 text-left shadow-sm transition-colors hover:bg-card/70',
+                            'flex h-full w-full flex-col gap-3 border-l-4 p-4 text-left',
                             style.accent,
                             inactive && 'opacity-60',
                           )}
@@ -378,7 +376,7 @@ export function EmployeesPage() {
                               "O'chirish" surfaces this strip; the user must
                               confirm before the DELETE fires. */}
                           {confirming && (
-                            <div className="flex items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs">
+                            <div className="flex items-center justify-between gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs">
                               <span className="text-destructive">
                                 Faolsizlantirilsinmi?
                               </span>
@@ -416,7 +414,7 @@ export function EmployeesPage() {
                             )}
                             <TgStatusBadge linked={u.telegram_id != null} />
                           </div>
-                        </div>
+                        </Card>
                       );
                     })}
                   </div>
@@ -425,7 +423,7 @@ export function EmployeesPage() {
             })}
           </div>
         )}
-      </Card>
+      </div>
 
       {/* Create — no `user` prop ("Yangi hodim"). */}
       <EmployeeFormDialog

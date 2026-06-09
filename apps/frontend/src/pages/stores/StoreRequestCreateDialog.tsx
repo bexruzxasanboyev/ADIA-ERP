@@ -163,7 +163,7 @@ export function StoreRequestCreateDialog({
           className="space-y-4"
           onSubmit={handleSubmit}
         >
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label>Mahsulotlar</Label>
             <ProductMultiSelect
               products={products}
@@ -174,7 +174,7 @@ export function StoreRequestCreateDialog({
           </div>
 
           {picked.length > 0 && (
-            <div className="rounded-md border border-border">
+            <div className="overflow-hidden rounded-lg border border-border/60">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -228,7 +228,7 @@ export function StoreRequestCreateDialog({
             </div>
           )}
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="store-request-note">Izoh (ixtiyoriy)</Label>
             <Textarea
               id="store-request-note"
@@ -241,7 +241,7 @@ export function StoreRequestCreateDialog({
 
           {error && (
             <p
-              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
               role="alert"
             >
               {error}

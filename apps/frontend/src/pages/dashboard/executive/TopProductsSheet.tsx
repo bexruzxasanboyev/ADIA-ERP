@@ -160,21 +160,21 @@ function TopProductsSheetBody({ range }: { range: DateRangeValue }) {
           </ul>
         ) : isMissing ? (
           <p
-            className="rounded-md border border-border/40 bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+            className="rounded-lg border border-border/60 bg-surface-3 px-3 py-2 text-xs text-muted-foreground"
             role="note"
           >
             {"Sotuv ma'lumotlari tayyor emas."}
           </p>
         ) : total === 0 ? (
           <p
-            className="rounded-md border border-border/40 bg-muted/40 px-3 py-6 text-center text-sm text-muted-foreground"
+            className="rounded-lg border border-border/60 bg-surface-3 px-3 py-6 text-center text-sm text-muted-foreground"
             role="note"
           >
             Ma&apos;lumot yo&apos;q
           </p>
         ) : filtered.length === 0 ? (
           <p
-            className="rounded-md border border-border/40 bg-muted/40 px-3 py-6 text-center text-sm text-muted-foreground"
+            className="rounded-lg border border-border/60 bg-surface-3 px-3 py-6 text-center text-sm text-muted-foreground"
             role="note"
           >
             Mos mahsulot topilmadi

@@ -185,7 +185,7 @@ export function DiscrepanciesPage() {
           isPm && (
             <Badge
               variant="secondary"
-              className="h-10 items-center px-3"
+              className="h-9 items-center px-3"
               aria-label="Butun zanjir ko‘rinishi"
             >
               Butun zanjir
@@ -200,7 +200,7 @@ export function DiscrepanciesPage() {
       {/* Filters: Do'kon (PM only) · Turi · Holat · Sana oralig'i. */}
       <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4">
         {isPm && (
-          <div className="space-y-1">
+          <div className="space-y-1.5">
             <Label htmlFor="discrepancy-store">Do‘kon</Label>
             <Select
               id="discrepancy-store"
@@ -217,7 +217,7 @@ export function DiscrepanciesPage() {
             </Select>
           </div>
         )}
-        <div className="space-y-1">
+        <div className="space-y-1.5">
           <Label htmlFor="discrepancy-kind">Turi</Label>
           <Select
             id="discrepancy-kind"
@@ -232,7 +232,7 @@ export function DiscrepanciesPage() {
             ))}
           </Select>
         </div>
-        <div className="space-y-1">
+        <div className="space-y-1.5">
           <Label htmlFor="discrepancy-status">Holat</Label>
           <Select
             id="discrepancy-status"
@@ -247,7 +247,7 @@ export function DiscrepanciesPage() {
             ))}
           </Select>
         </div>
-        <div className="space-y-1">
+        <div className="space-y-1.5">
           <Label className="block">Sana oralig‘i</Label>
           <DateRangeFilter value={dateRange} onChange={setDateRange} />
         </div>
@@ -368,12 +368,12 @@ function SummaryCards({
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
       {tiles.map((tile) => (
         <Card key={tile.key} className="p-5">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             {tile.label}
           </p>
           <p
             className={cn(
-              'mt-1 text-2xl font-semibold tabular-nums leading-none',
+              'mt-1 text-2xl font-semibold tabular-nums leading-none tracking-tight',
               tile.tone,
             )}
             aria-busy={loading}
@@ -564,7 +564,7 @@ function ResolveDialog({
         </DialogHeader>
 
         <form id="resolve-form" className="space-y-4" onSubmit={handleSubmit}>
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="resolve-note">Izoh (ixtiyoriy)</Label>
             <Textarea
               id="resolve-note"
@@ -577,7 +577,7 @@ function ResolveDialog({
           </div>
           {error && (
             <p
-              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
               role="alert"
             >
               {error}

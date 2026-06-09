@@ -91,8 +91,8 @@ export function ProductCostDialog({
           <DialogDescription className="truncate">{product.name}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-3">
-          <div className="space-y-2">
+        <div className="space-y-4">
+          <div className="space-y-1.5">
             <Label htmlFor="product-cost">Narx (1 birlik uchun, so‘m)</Label>
             <NumberInput
               id="product-cost"

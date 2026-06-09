@@ -278,7 +278,7 @@ export function RecipeBreakdown({
     <div className="space-y-4">
       {showSummary && (
         <Card className="border-primary/30 bg-primary/5 p-5">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Jami tannarx · {perUnitCaption}
           </p>
           <p className="mt-1 text-3xl font-bold tabular-nums text-primary">

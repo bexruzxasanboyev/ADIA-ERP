@@ -468,7 +468,7 @@ export function CentralInboxPage({
       )}
 
       {isPm && (
-        <div className="space-y-1">
+        <div className="space-y-1.5">
           <Label htmlFor="central-picker">Markaziy sklad</Label>
           <Select
             id="central-picker"
@@ -732,7 +732,7 @@ function BulkActionBar({
       role="region"
       aria-label="Tanlangan so‘rovlar uchun amallar"
     >
-      <div className="flex flex-col gap-3 rounded-xl border border-border bg-card/95 p-3 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-card/80 sm:flex-row sm:items-center sm:justify-between">
+      <Card className="flex flex-col gap-3 border-border bg-card/95 p-3 shadow-pop backdrop-blur supports-[backdrop-filter]:bg-card/80 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           {busy && (
             <Loader2
@@ -777,7 +777,7 @@ function BulkActionBar({
             Rad et
           </Button>
         </div>
-      </div>
+      </Card>
     </div>
   );
 }
@@ -830,7 +830,7 @@ function OrderCard({
   return (
     <section
       className={cn(
-        'rounded-lg border bg-card/40',
+        'rounded-lg border bg-surface-3',
         exception ? 'border-warning/40' : 'border-border/60',
       )}
       aria-label={`${storeName} — ${group.lines.length} mahsulot`}
@@ -1118,7 +1118,7 @@ function RejectDialog({
         </DialogHeader>
 
         <form id="reject-form" className="space-y-4" onSubmit={handleSubmit}>
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="reject-reason">Sabab</Label>
             <Textarea
               id="reject-reason"

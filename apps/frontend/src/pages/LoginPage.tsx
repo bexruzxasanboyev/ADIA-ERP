@@ -81,14 +81,19 @@ export function LoginPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
       <Card className="w-full max-w-sm">
-        <CardHeader className="items-center text-center">
-          <CakeSlice className="size-9 text-primary" aria-hidden="true" />
+        <CardHeader className="items-center gap-1 text-center">
+          <span
+            aria-hidden="true"
+            className="mb-1 flex size-12 items-center justify-center rounded-xl bg-primary/15 text-primary"
+          >
+            <CakeSlice className="size-6" />
+          </span>
           <CardTitle className="text-xl">ADIA ERP</CardTitle>
           <CardDescription>Tizimga kirish</CardDescription>
         </CardHeader>
         <CardContent>
           <form className="space-y-4" onSubmit={handleSubmit} noValidate>
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="login">Foydalanuvchi nomi</Label>
               <Input
                 id="login"
@@ -103,7 +108,7 @@ export function LoginPage() {
                 aria-invalid={error !== null}
               />
             </div>
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="password">Parol</Label>
               <div className="relative">
                 <Input
@@ -119,11 +124,13 @@ export function LoginPage() {
                   aria-invalid={error !== null}
                   className="pr-10"
                 />
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
+                  size="icon"
                   onClick={() => setShowPassword((v) => !v)}
                   disabled={isSubmitting}
-                  className="absolute inset-y-0 right-0 flex items-center justify-center px-3 text-muted-foreground hover:text-foreground disabled:opacity-50"
+                  className="absolute right-0 top-0 size-9 text-muted-foreground hover:bg-transparent hover:text-foreground"
                   aria-label={showPassword ? 'Parolni yashirish' : 'Parolni ko‘rsatish'}
                   aria-pressed={showPassword}
                   tabIndex={-1}
@@ -133,13 +140,13 @@ export function LoginPage() {
                   ) : (
                     <Eye className="size-4" aria-hidden="true" />
                   )}
-                </button>
+                </Button>
               </div>
             </div>
 
             {error && (
               <p
-                className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
                 role="alert"
               >
                 {error}

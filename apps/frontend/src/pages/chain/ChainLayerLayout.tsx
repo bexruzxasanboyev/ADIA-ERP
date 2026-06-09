@@ -68,41 +68,41 @@ const LAYER_ACCENT: Record<
   { ring: string; iconWrap: string; valueText: string; icon: LucideIcon }
 > = {
   raw_warehouse: {
-    ring: 'ring-1 ring-teal-500/30',
-    iconWrap: 'bg-teal-500/15 text-teal-600 dark:text-teal-300',
-    valueText: 'text-teal-700 dark:text-teal-200',
+    ring: 'ring-1 ring-chain-raw/30',
+    iconWrap: 'bg-chain-raw/15 text-chain-raw',
+    valueText: 'text-chain-raw',
     icon: Boxes,
   },
   production: {
-    ring: 'ring-1 ring-amber-500/30',
-    iconWrap: 'bg-amber-500/15 text-amber-600 dark:text-amber-300',
-    valueText: 'text-amber-700 dark:text-amber-200',
+    ring: 'ring-1 ring-chain-production/30',
+    iconWrap: 'bg-chain-production/15 text-chain-production',
+    valueText: 'text-chain-production',
     icon: Factory,
   },
   supply: {
-    ring: 'ring-1 ring-sky-500/30',
-    iconWrap: 'bg-sky-500/15 text-sky-600 dark:text-sky-300',
-    valueText: 'text-sky-700 dark:text-sky-200',
+    ring: 'ring-1 ring-chain-supply/30',
+    iconWrap: 'bg-chain-supply/15 text-chain-supply',
+    valueText: 'text-chain-supply',
     icon: PackageOpen,
   },
   // `sex_storage` reuses the supply accent — the layer is the same
   // visual stage, only the name has changed.
   sex_storage: {
-    ring: 'ring-1 ring-sky-500/30',
-    iconWrap: 'bg-sky-500/15 text-sky-600 dark:text-sky-300',
-    valueText: 'text-sky-700 dark:text-sky-200',
+    ring: 'ring-1 ring-chain-supply/30',
+    iconWrap: 'bg-chain-supply/15 text-chain-supply',
+    valueText: 'text-chain-supply',
     icon: PackageOpen,
   },
   central_warehouse: {
-    ring: 'ring-1 ring-emerald-500/30',
-    iconWrap: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300',
-    valueText: 'text-emerald-700 dark:text-emerald-200',
+    ring: 'ring-1 ring-chain-central/30',
+    iconWrap: 'bg-chain-central/15 text-chain-central',
+    valueText: 'text-chain-central',
     icon: Warehouse,
   },
   store: {
-    ring: 'ring-1 ring-primary/30',
-    iconWrap: 'bg-primary/15 text-primary',
-    valueText: 'text-primary',
+    ring: 'ring-1 ring-chain-store/30',
+    iconWrap: 'bg-chain-store/15 text-chain-store',
+    valueText: 'text-chain-store',
     icon: Store,
   },
 };
@@ -202,7 +202,7 @@ function KpiCard({ kpi, layerType }: { kpi: ChainKpi; layerType: LocationType })
     kpi.tone === 'destructive'
       ? 'ring-1 ring-destructive/30'
       : kpi.tone === 'amber'
-        ? 'ring-1 ring-amber-500/30'
+        ? 'ring-1 ring-warning/30'
         : kpi.tone === 'accent'
           ? accent.ring
           : '';
@@ -210,7 +210,7 @@ function KpiCard({ kpi, layerType }: { kpi: ChainKpi; layerType: LocationType })
     kpi.tone === 'destructive'
       ? 'bg-destructive/15 text-destructive'
       : kpi.tone === 'amber'
-        ? 'bg-amber-500/15 text-amber-600 dark:text-amber-300'
+        ? 'bg-warning/15 text-warning'
         : kpi.tone === 'accent'
           ? accent.iconWrap
           : 'bg-muted text-muted-foreground';
@@ -218,7 +218,7 @@ function KpiCard({ kpi, layerType }: { kpi: ChainKpi; layerType: LocationType })
     kpi.tone === 'destructive'
       ? 'text-destructive'
       : kpi.tone === 'amber'
-        ? 'text-amber-700 dark:text-amber-200'
+        ? 'text-warning'
         : kpi.tone === 'accent'
           ? accent.valueText
           : 'text-foreground';
@@ -226,7 +226,7 @@ function KpiCard({ kpi, layerType }: { kpi: ChainKpi; layerType: LocationType })
   const inner = (
     <div className="flex items-start justify-between gap-3">
       <div className="min-w-0 space-y-1">
-        <p className="text-xs uppercase tracking-wide text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           {kpi.label}
         </p>
         <p
@@ -399,10 +399,10 @@ function Stat({
     tone === 'danger'
       ? 'text-destructive font-semibold'
       : tone === 'amber'
-        ? 'text-amber-700 dark:text-amber-200 font-semibold'
+        ? 'text-warning font-semibold'
         : 'text-foreground';
   return (
-    <div className="rounded-md border border-border/40 bg-background/40 p-2">
+    <div className="rounded-lg border border-border/60 bg-surface-3 p-2">
       <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">
         {label}
       </dt>

@@ -142,9 +142,9 @@ describe('DashboardPage — overview contract', () => {
     // KPI numbers — collisions (the donut centre also prints the
     // total, the legend the per-status counts, the production-plan
     // table the qty), so we anchor on the KPI card's <p> class chain:
-    // an element with `text-3xl` AND the expected number is the KPI.
+    // an element with `text-2xl` AND the expected number is the KPI.
     const kpiNumbers = Array.from(
-      document.querySelectorAll('p.text-3xl'),
+      document.querySelectorAll('p.text-2xl'),
     ).map((node) => node.textContent?.trim());
     expect(kpiNumbers).toEqual(['6', '2', '4', '1']);
   });

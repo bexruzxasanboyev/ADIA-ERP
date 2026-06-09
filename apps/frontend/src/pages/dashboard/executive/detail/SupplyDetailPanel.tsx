@@ -94,7 +94,7 @@ export function SupplyDetailPanelView({
         description="Sexlardan kirim vs do'konlarga chiqim."
       >
         <div
-          className="h-44 w-full rounded-md border border-border/40 bg-surface-2/30 p-2"
+          className="h-44 w-full rounded-lg border border-border/60 bg-surface-3 p-2"
           data-testid="supply-detail-chart"
         >
           {chartData.length === 0 ? (
@@ -183,7 +183,7 @@ export function SupplyDetailPanelView({
             {data.top_destinations_today.slice(0, 5).map((row) => (
               <li
                 key={row.location_id}
-                className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-surface-2/40 px-3 py-2 text-xs"
+                className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-surface-3 px-3 py-2 text-xs"
               >
                 <span className="min-w-0 truncate font-medium text-foreground">
                   {row.location_name}
@@ -210,7 +210,7 @@ export function SupplyDetailPanelView({
             {data.open_request_items.slice(0, 6).map((req) => (
               <li
                 key={req.id}
-                className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-surface-2/40 px-3 py-2 text-xs"
+                className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-surface-3 px-3 py-2 text-xs"
               >
                 <div className="min-w-0">
                   <p className="truncate font-medium text-foreground">

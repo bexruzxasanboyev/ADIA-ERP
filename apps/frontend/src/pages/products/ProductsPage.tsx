@@ -123,13 +123,14 @@ const EMPTY_FACETS: ProductFacets = { categories: [], units: [], workshops: [] }
  */
 function RecipelessBadge() {
   return (
-    <span
-      className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300"
+    <Badge
+      variant="warning"
+      className="whitespace-nowrap"
       title="Bu mahsulot ishlab chiqariladi, lekin Posterda retsepti yo‘q"
     >
       <AlertTriangle className="size-3" aria-hidden="true" />
       Retseptsiz
-    </span>
+    </Badge>
   );
 }
 
@@ -139,12 +140,13 @@ function RecipelessBadge() {
  */
 function ManualPriceBadge() {
   return (
-    <span
-      className="inline-flex items-center whitespace-nowrap rounded-full border border-indigo-500/40 bg-indigo-500/10 px-2 py-0.5 text-[11px] font-medium text-indigo-700 dark:text-indigo-300"
+    <Badge
+      variant="info"
+      className="whitespace-nowrap text-[11px]"
       title="Narx qo‘lda kiritilgan (Poster narxidan emas)"
     >
       qo‘lda
-    </span>
+    </Badge>
   );
 }
 
@@ -211,7 +213,7 @@ function ProductThumbnail({
   return (
     <div
       className={cn(
-        'flex shrink-0 items-center justify-center overflow-hidden rounded-md border border-border/60 bg-muted/40',
+        'flex shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border/60 bg-surface-3',
         className,
       )}
     >
@@ -317,9 +319,9 @@ const ProductCard = memo(function ProductCard({
   const canHaveWorkshop = type === 'finished' || type === 'semi';
   const showAssign = canEditWorkshop && canHaveWorkshop;
   return (
-    <div
+    <Card
       className={cn(
-        'flex h-full flex-col gap-3 rounded-lg border border-l-4 border-border/60 bg-card/40 p-4 shadow-sm transition-colors hover:bg-card/70',
+        'flex h-full flex-col gap-3 border-l-4 border-border/60 p-4',
         style.accent,
       )}
     >
@@ -432,7 +434,7 @@ const ProductCard = memo(function ProductCard({
           )}
         </div>
       )}
-    </div>
+    </Card>
   );
 });
 
@@ -940,23 +942,24 @@ export function ProductsPage({
         <div
           role="tablist"
           aria-label="Mahsulot turi"
-          className="inline-flex flex-wrap items-center gap-1 self-start rounded-lg border border-border bg-card p-1"
+          className="inline-flex flex-wrap items-center gap-1 self-start rounded-xl border border-border/70 bg-surface-1 p-1"
         >
         {TYPE_TABS.map((t) => {
           const active = typeTab === t.value;
           return (
-            <button
+            <Button
               key={t.value}
               type="button"
               role="tab"
               aria-selected={active}
               onClick={() => setTypeTab(t.value)}
+              variant="ghost"
+              size="sm"
               className={cn(
-                'inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                'rounded-lg text-sm',
                 active
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                  ? 'bg-primary/15 text-primary ring-1 ring-inset ring-primary/25 hover:bg-primary/15 hover:text-primary'
+                  : 'text-muted-foreground hover:text-foreground',
               )}
             >
               {t.label}
@@ -964,11 +967,11 @@ export function ProductsPage({
                   the page holds a partial set, so a per-tab whole-catalogue
                   count is not known client-side. */}
               {active && (
-                <span className="rounded-full bg-primary-foreground/20 px-1.5 text-xs tabular-nums">
+                <span className="rounded-full bg-primary/20 px-1.5 text-xs tabular-nums">
                   {activeTabCount}
                 </span>
               )}
-            </button>
+            </Button>
           );
         })}
       </div>
@@ -988,14 +991,16 @@ export function ProductsPage({
             className="pl-9 pr-9"
           />
           {search !== '' && (
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="icon"
               onClick={() => setSearch('')}
               aria-label="Qidiruvni tozalash"
-              className="absolute right-2 top-2 rounded-md p-1 text-muted-foreground hover:bg-accent"
+              className="absolute right-1.5 top-1.5 h-6 w-6 text-muted-foreground"
             >
               <X className="size-4" />
-            </button>
+            </Button>
           )}
         </div>
           <FilterPopover groups={FILTER_GROUPS} value={filter} onApply={setFilter} />
@@ -1163,7 +1168,7 @@ export function ProductsPage({
               {cardGroups.map((group) => (
                 <section key={group.key} className="space-y-3">
                   <div className="flex items-center gap-2">
-                    <h2 className="text-xs uppercase tracking-wide text-muted-foreground">
+                    <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                       {group.name}
                     </h2>
                     <Badge variant="outline" className="tabular-nums">

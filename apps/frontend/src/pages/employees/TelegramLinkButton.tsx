@@ -105,11 +105,7 @@ export function TelegramLinkButton({
 
   if (linked) {
     return (
-      <Badge
-        variant="outline"
-        className="gap-1 border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
-        aria-label="Telegram ulangan"
-      >
+      <Badge variant="success" className="gap-1" aria-label="Telegram ulangan">
         <Check className="size-3" aria-hidden="true" />
         TG ulangan
       </Badge>
@@ -122,7 +118,7 @@ export function TelegramLinkButton({
     return (
       <Badge
         variant="outline"
-        className="gap-1 border-border/60 text-muted-foreground"
+        className="gap-1 text-muted-foreground"
         aria-label="Telegram ulanmagan"
       >
         <Send className="size-3" aria-hidden="true" />
@@ -273,7 +269,7 @@ export function TelegramLinkButton({
                     ? 'Hodim quyidagi havola orqali botni ochsin — Telegram hisobi avtomatik bog‘lanadi.'
                     : 'Hodim botni ochib, quyidagi buyruqni yuborsin — Telegram hisobi bog‘lanadi.'}
                 </p>
-                <div className="flex items-center gap-2 rounded-md border border-border bg-muted/30 p-2">
+                <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-surface-3 p-2">
                   <code className="min-w-0 flex-1 truncate text-xs">
                     {link ?? startCommand}
                   </code>
@@ -299,7 +295,7 @@ export function TelegramLinkButton({
             )}
 
             {!loading && unavailable && (
-              <div className="space-y-2 rounded-md border border-border bg-muted/20 p-3 text-muted-foreground">
+              <div className="space-y-2 rounded-lg border border-border/60 bg-surface-3 p-3 text-muted-foreground">
                 <p>
                   Telegram ulash xizmati hali ishga tushmagan. Tez orada
                   hodim botda <code>/start</code> orqali o‘zini ulay oladi.
@@ -314,7 +310,7 @@ export function TelegramLinkButton({
 
             {!loading && error && (
               <p
-                className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
                 role="alert"
               >
                 {error}

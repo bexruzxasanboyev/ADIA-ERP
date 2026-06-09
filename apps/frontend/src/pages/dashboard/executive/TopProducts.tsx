@@ -117,9 +117,9 @@ export function TopProductRow({
       <span
         aria-hidden="true"
         className={cn(
-          'flex size-7 items-center justify-center rounded-full text-xs font-bold tabular-nums',
+          'flex size-7 items-center justify-center rounded-full text-xs font-semibold tabular-nums',
           isTop
-            ? 'bg-emerald-500/20 text-emerald-400 ring-1 ring-emerald-500/40'
+            ? 'bg-success/15 text-success ring-1 ring-success/40'
             : 'bg-surface-2/60 text-muted-foreground',
         )}
       >
@@ -284,7 +284,7 @@ export function TopProductsCard({
           : undefined
       }
       className={cn(
-        'space-y-4 p-5 sm:p-6',
+        'space-y-4 p-5',
         interactive &&
           'group cursor-pointer transition-colors hover:border-border hover:bg-surface-2/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         className,
@@ -292,7 +292,7 @@ export function TopProductsCard({
     >
       <header className="flex items-baseline justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Eng ko&apos;p sotilgan mahsulotlar
           </p>
           <p className="mt-0.5 text-xs text-muted-foreground">
@@ -314,14 +314,14 @@ export function TopProductsCard({
         <TopProductsSkeleton count={limit} />
       ) : isMissing ? (
         <p
-          className="rounded-md border border-border/40 bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+          className="rounded-lg border border-border/60 bg-surface-3 px-3 py-2 text-xs text-muted-foreground"
           role="note"
         >
           {"Sotuv ma'lumotlari tayyor emas."}
         </p>
       ) : products.length === 0 ? (
         <p
-          className="rounded-md border border-border/40 bg-muted/40 px-3 py-6 text-center text-sm text-muted-foreground"
+          className="rounded-lg border border-border/60 bg-surface-3 px-3 py-6 text-center text-sm text-muted-foreground"
           role="note"
         >
           Ma&apos;lumot yo&apos;q

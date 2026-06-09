@@ -720,7 +720,7 @@ function SemiSummaryCard({
   }, [totals]);
 
   return (
-    <Card className="flex flex-col gap-3 border-border/60 p-4 sm:flex-row sm:items-center sm:justify-between">
+    <Card className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
       <div className="flex items-center gap-3">
         <span
           aria-hidden="true"

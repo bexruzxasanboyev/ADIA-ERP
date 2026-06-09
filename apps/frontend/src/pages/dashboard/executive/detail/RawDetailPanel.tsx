@@ -99,7 +99,7 @@ export function RawDetailPanelView({ data }: { data: DashboardRawDetail }) {
         description="Xom-ashyo qabul va chiqim oqimi."
       >
         <div
-          className="h-44 w-full rounded-md border border-border/40 bg-surface-2/30 p-2"
+          className="h-44 w-full rounded-lg border border-border/60 bg-surface-3 p-2"
           data-testid="raw-detail-chart"
         >
           {chartData.length === 0 ? (
@@ -214,7 +214,7 @@ export function RawDetailPanelView({ data }: { data: DashboardRawDetail }) {
             {data.below_min_items.slice(0, 10).map((item) => (
               <li
                 key={`${item.product_id}-${item.location_id}`}
-                className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-surface-2/40 px-3 py-2 text-xs"
+                className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-surface-3 px-3 py-2 text-xs"
               >
                 <div className="min-w-0">
                   <p className="truncate font-medium text-foreground">
@@ -251,7 +251,7 @@ export function RawDetailPanelView({ data }: { data: DashboardRawDetail }) {
             {data.pending_purchase_orders.slice(0, 6).map((po) => (
               <li
                 key={po.id}
-                className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-surface-2/40 px-3 py-2 text-xs"
+                className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-surface-3 px-3 py-2 text-xs"
               >
                 <div className="min-w-0">
                   <p className="truncate font-medium text-foreground">

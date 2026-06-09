@@ -108,7 +108,7 @@ export function OpenRequestsChart({
           </PieChart>
         </ResponsiveContainer>
         <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-3xl font-bold leading-none tabular-nums sm:text-4xl">
+          <span className="text-3xl font-semibold leading-none tabular-nums tracking-tight">
             {formatQty(total)}
           </span>
           <span className="mt-1.5 text-xs text-muted-foreground">jami</span>

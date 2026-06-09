@@ -72,12 +72,12 @@ const STATUS_META: Record<
   below_min: {
     label: 'Min’dan past',
     colour: 'hsl(24 90% 55%)',
-    value: 'text-orange-500',
+    value: 'text-warning',
   },
   low: {
     label: 'Kam',
     colour: 'hsl(45 93% 52%)',
-    value: 'text-amber-500',
+    value: 'text-warning',
   },
   out: {
     label: 'Tugagan',
@@ -87,7 +87,7 @@ const STATUS_META: Record<
   enough: {
     label: 'Yetarli',
     colour: 'hsl(152 56% 48%)',
-    value: 'text-emerald-500',
+    value: 'text-success',
   },
 };
 
@@ -141,9 +141,9 @@ function KpiCard({
   iconClass?: string;
 }) {
   return (
-    <Card className="flex min-h-[140px] flex-col justify-between gap-3 border-border/60 p-5 sm:p-6">
+    <Card className="flex min-h-[140px] flex-col justify-between gap-3 border-border/60 p-5">
       <div className="flex items-start justify-between gap-3">
-        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           {label}
         </p>
         <Icon
@@ -305,7 +305,7 @@ export function CentralDashboardTab({
           value={shipTasks.data?.length ?? 0}
           caption="so‘rov"
           Icon={Send}
-          iconClass="text-emerald-500"
+          iconClass="text-success"
         />
         <KpiCard
           label="Kelayotgan"
@@ -326,10 +326,10 @@ export function CentralDashboardTab({
 
       {/* Status BAR chart (owner: do'kondek) — one horizontal bar per status,
           coloured by tone, with a "count · %" end label. Finished stock only. */}
-      <Card className="space-y-4 p-5 sm:p-6">
+      <Card className="space-y-4 p-5">
         <header className="flex items-baseline justify-between gap-3">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Holat bo‘yicha taqsimot
             </p>
             <p className="mt-0.5 text-xs text-muted-foreground">

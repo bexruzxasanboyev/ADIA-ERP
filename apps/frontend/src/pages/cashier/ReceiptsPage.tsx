@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Loader2, ReceiptText } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
   EmptyState,
   ErrorState,
@@ -196,21 +197,22 @@ export function ReceiptsPage() {
       {!isLoadingFirst && !error && items.length > 0 && (
         <div className="flex flex-wrap items-center gap-3">
           {forceMajeureCount > 0 ? (
-            <button
+            <Button
               type="button"
+              variant="outline"
               onClick={() => setOnlyForceMajeure((v) => !v)}
               aria-pressed={onlyForceMajeure}
               className={cn(
-                'inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                'text-destructive hover:text-destructive',
                 onlyForceMajeure
-                  ? 'border-destructive bg-destructive/15 text-destructive'
-                  : 'border-destructive/40 text-destructive hover:bg-destructive/10',
+                  ? 'border-destructive bg-destructive/15 hover:bg-destructive/20'
+                  : 'border-destructive/40 bg-transparent hover:bg-destructive/10',
               )}
             >
               <AlertTriangle className="size-4" aria-hidden="true" />
               {forceMajeureCount} ta noto‘g‘ri urilgan chek
               {onlyForceMajeure ? ' — barchasini ko‘rsatish' : ''}
-            </button>
+            </Button>
           ) : (
             <Badge variant="secondary">Barcha cheklar to‘g‘ri urilgan</Badge>
           )}
@@ -270,12 +272,10 @@ export function ReceiptsPage() {
 
 function ReceiptCard({ receipt }: { receipt: ReceiptWithStock }) {
   return (
-    <article
+    <Card
       className={cn(
-        'space-y-3 rounded-lg border bg-card/50 p-4',
-        receipt.has_force_majeure
-          ? 'border-destructive/50 bg-destructive/5'
-          : 'border-border/60',
+        'space-y-3 p-4',
+        receipt.has_force_majeure && 'border-destructive/50 bg-destructive/5',
       )}
       aria-label={`Chek #${receipt.poster_transaction_id}`}
     >
@@ -347,6 +347,6 @@ function ReceiptCard({ receipt }: { receipt: ReceiptWithStock }) {
           })}
         </tbody>
       </table>
-    </article>
+    </Card>
   );
 }

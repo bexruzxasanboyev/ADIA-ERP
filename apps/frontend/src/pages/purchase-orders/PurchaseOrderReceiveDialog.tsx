@@ -152,7 +152,7 @@ export function PurchaseOrderReceiveDialog({
           className="space-y-4"
           onSubmit={handleSubmit}
         >
-          <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+          <div className="rounded-lg border border-border/60 bg-surface-3 p-3 text-sm">
             <p className="font-medium">
               #{order.id} · {order.product_name}
             </p>
@@ -161,7 +161,7 @@ export function PurchaseOrderReceiveDialog({
             </p>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="purchase-order-receive-brak">
               Brak (yaroqsiz) soni
             </Label>
@@ -189,7 +189,7 @@ export function PurchaseOrderReceiveDialog({
           </div>
 
           {showBrakReason && (
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="purchase-order-receive-brak-reason">
                 Brak izohi
               </Label>

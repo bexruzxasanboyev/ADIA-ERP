@@ -247,7 +247,7 @@ function ActiveOrdersPanel({
       <header className="flex items-center justify-between gap-3 border-b border-border/60 p-5">
         <div className="space-y-0.5">
           <h2 className="flex items-center gap-2 text-base font-semibold">
-            <Factory className="size-4 text-amber-600 dark:text-amber-300" aria-hidden="true" />
+            <Factory className="size-4 text-chain-production" aria-hidden="true" />
             Faol zayafkalar
           </h2>
           <p className="text-xs text-muted-foreground">
@@ -514,7 +514,7 @@ function SubDepartmentsPanel({
       <header className="flex items-center justify-between gap-3 border-b border-border/60 p-5">
         <div className="space-y-0.5">
           <h2 className="flex items-center gap-2 text-base font-semibold">
-            <Factory className="size-4 text-amber-600 dark:text-amber-300" aria-hidden="true" />
+            <Factory className="size-4 text-chain-production" aria-hidden="true" />
             Sub-bo‘limlar
           </h2>
           <p className="text-xs text-muted-foreground">
@@ -541,7 +541,7 @@ function SubDepartmentsPanel({
               <div key={root.id} className="space-y-3">
                 <header className="flex items-center gap-2">
                   <Factory
-                    className="size-4 text-amber-600 dark:text-amber-300"
+                    className="size-4 text-chain-production"
                     aria-hidden="true"
                   />
                   <h3 className="text-sm font-semibold">{root.name}</h3>
@@ -550,7 +550,7 @@ function SubDepartmentsPanel({
                   </Badge>
                 </header>
                 {subs.length === 0 ? (
-                  <p className="rounded-md border border-dashed border-border/60 px-3 py-2 text-xs text-muted-foreground">
+                  <p className="rounded-lg border border-dashed border-border/60 px-3 py-2 text-xs text-muted-foreground">
                     Sub-bo‘lim yo‘q. <Link to="/locations" className="underline">Qo‘shish</Link>
                   </p>
                 ) : (
@@ -561,7 +561,7 @@ function SubDepartmentsPanel({
                       return (
                         <div
                           key={sub.id}
-                          className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/40 p-3 shadow-sm"
+                          className="flex flex-col gap-2 rounded-lg border border-border/60 bg-surface-3 p-3"
                           data-testid={`sub-department-${sub.id}`}
                         >
                           <div className="flex items-center justify-between gap-2">

@@ -121,14 +121,14 @@ export function ChainHealthRow({ chainSummary, className }: ChainHealthRowProps)
       className={cn('space-y-3', className)}
     >
       <div className="flex items-baseline justify-between gap-3">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           Zanjir salomatligi
         </h2>
         <p className="hidden text-xs text-muted-foreground sm:block">
           5 bo&apos;g&apos;in · har biri bir bosishda batafsil
         </p>
       </div>
-      <ol className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+      <ol className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         {STAGE_ORDER.map((type) => (
           <li key={type}>
             <ChainHealthCard type={type} summary={byType.get(type) ?? null} />
@@ -159,7 +159,7 @@ function ChainHealthCard({
       data-status={status}
       aria-label={`${CHAIN_LABELS[tone]} — ${STATUS_LABEL[status]}, batafsil ochish`}
       className={cn(
-        'group relative flex h-full flex-col gap-3 overflow-hidden rounded-lg border border-border/60 bg-card p-4 pl-5 transition-colors',
+        'group relative flex h-full flex-col gap-3 overflow-hidden rounded-xl border border-border/70 bg-card text-card-foreground shadow-card p-4 pl-5 transition-[border-color,box-shadow] hover:shadow-card-hover',
         'outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
         TONE_HOVER_BORDER[tone],
       )}
@@ -202,7 +202,7 @@ function ChainHealthCard({
       <div className="flex items-baseline gap-2">
         <span
           className={cn(
-            'text-2xl font-bold leading-none tabular-nums',
+            'text-2xl font-semibold tabular-nums tracking-tight',
             belowMin > 0 ? 'text-destructive' : 'text-foreground',
           )}
         >

@@ -42,9 +42,9 @@ export function AssistantButton({ className }: { className?: string }) {
         aria-expanded={open}
         className={cn(
           'group fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 rounded-full',
-          'bg-primary px-4 py-3 text-sm font-medium text-primary-foreground shadow-lg shadow-primary/30',
+          'bg-primary px-4 py-3 text-sm font-medium text-primary-foreground shadow-pop',
           'ring-1 ring-primary/40 transition-all',
-          'hover:translate-y-[-1px] hover:shadow-xl hover:shadow-primary/40',
+          'hover:translate-y-[-1px] hover:bg-primary/90',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
           className,
         )}

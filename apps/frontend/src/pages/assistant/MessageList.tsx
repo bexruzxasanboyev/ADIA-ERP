@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { Loader2, Sparkles } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { AssistantMessage } from '@/lib/types';
 import { MessageItem, AssistantAvatar } from './MessageItem';
@@ -87,22 +88,19 @@ export function MessageList({
         <ul className="w-full max-w-md space-y-2">
           {STARTER_PROMPTS.map((prompt) => (
             <li key={prompt}>
-              <button
+              <Button
                 type="button"
+                variant="outline"
                 onClick={() => onSelectPrompt?.(prompt)}
                 disabled={!onSelectPrompt}
-                className={cn(
-                  'group flex w-full items-center gap-2 rounded-md border border-border/70 bg-card/50 px-3 py-2 text-left text-sm text-foreground transition-colors',
-                  'hover:border-primary/40 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  'disabled:opacity-60',
-                )}
+                className="h-auto w-full justify-start gap-2 whitespace-normal px-3 py-2 text-left text-sm font-normal"
               >
                 <Sparkles
                   className="size-3.5 shrink-0 text-info"
                   aria-hidden="true"
                 />
                 <span className="flex-1">{prompt}</span>
-              </button>
+              </Button>
             </li>
           ))}
         </ul>

@@ -70,7 +70,7 @@ export function StoreManagerTabs() {
       role="tablist"
       aria-label="Asosiy bo‘limlar"
       data-testid="store-manager-tabs"
-      className="scrollbar-thin flex max-w-full items-center gap-1 overflow-x-auto"
+      className="scrollbar-thin flex max-w-full items-center gap-1 overflow-x-auto rounded-xl border border-border/70 bg-surface-1 p-1"
     >
       {STORE_MANAGER_TABS.map((tab) => {
         const isActive = isTabActive(location.pathname, tab.match);
@@ -83,11 +83,11 @@ export function StoreManagerTabs() {
             aria-selected={isActive}
             data-testid={`store-manager-tab-${tab.testId}`}
             className={cn(
-              'inline-flex shrink-0 items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition-colors',
+              'inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               isActive
-                ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                ? 'bg-primary/15 text-primary ring-1 ring-inset ring-primary/25'
+                : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
             )}
           >
             <Icon className="size-4 shrink-0" aria-hidden="true" />

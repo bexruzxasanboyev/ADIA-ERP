@@ -54,7 +54,7 @@ export function PosterStatusCard({
       ) : (
         <div className="grid grid-cols-2 gap-4 p-5 text-sm">
           <div className="space-y-1">
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Oxirgi sinxron
             </p>
             <p
@@ -77,12 +77,12 @@ export function PosterStatusCard({
           </div>
 
           <div className="space-y-1">
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
               24h xatoliklar
             </p>
             <p
               className={cn(
-                'text-2xl font-semibold tabular-nums leading-none',
+                'text-2xl font-semibold tabular-nums tracking-tight',
                 hasErrors ? 'text-destructive' : 'text-foreground',
               )}
               data-testid="poster-error-count"
@@ -98,19 +98,19 @@ export function PosterStatusCard({
           </div>
 
           <div className="space-y-1">
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Bugun cheklar
             </p>
-            <p className="text-2xl font-semibold tabular-nums leading-none">
+            <p className="text-2xl font-semibold tabular-nums tracking-tight">
               {formatQty(status.sales_today_count)}
             </p>
           </div>
 
           <div className="space-y-1">
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Bugun savdo
             </p>
-            <p className="text-2xl font-semibold tabular-nums leading-none">
+            <p className="text-2xl font-semibold tabular-nums tracking-tight">
               {formatQty(status.sales_today_sum)}
             </p>
           </div>

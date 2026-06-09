@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Send, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
+import { Textarea } from '@/components/ui/textarea';
 
 interface MessageInputProps {
   /** Called with a trimmed, non-empty message string. */
@@ -105,7 +105,7 @@ export function MessageInput({
       <label htmlFor="assistant-input" className="sr-only">
         Xabar yozing
       </label>
-      <textarea
+      <Textarea
         id="assistant-input"
         ref={textareaRef}
         value={value}
@@ -114,11 +114,7 @@ export function MessageInput({
         placeholder={placeholder}
         rows={1}
         disabled={isSending}
-        className={cn(
-          'flex w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm',
-          'placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-          'disabled:cursor-not-allowed disabled:opacity-60',
-        )}
+        className="min-h-0 resize-none"
         style={{ minHeight: 40, maxHeight: 144 }}
         aria-label="AI yordamchiga xabar"
       />

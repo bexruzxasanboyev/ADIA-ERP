@@ -111,7 +111,7 @@ function AppLayoutShell() {
 
   return (
     <div className="flex h-screen w-full flex-col overflow-hidden bg-background">
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-3 sm:px-6 lg:px-8">
+      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border/70 bg-background px-3 sm:px-6 lg:px-8">
         <Link
           to={isStoreManager ? '/store-workflow' : '/home'}
           className="flex min-w-0 shrink-0 items-center gap-2 rounded-md px-1 py-1 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -149,7 +149,7 @@ function AppLayoutShell() {
               accessible via aria-label + title. */}
           <Link
             to="/profile"
-            className="inline-flex size-9 items-center justify-center rounded-full border border-border bg-card/40 text-muted-foreground transition-colors hover:border-primary/40 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="inline-flex size-9 items-center justify-center rounded-full border border-border/70 bg-surface-1 text-muted-foreground transition-colors hover:border-primary/40 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label="Profil"
             title="Profil"
           >

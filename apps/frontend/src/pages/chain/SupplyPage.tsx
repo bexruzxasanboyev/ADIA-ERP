@@ -168,7 +168,7 @@ function ReadyToShipPanel({ rows }: { rows: StockRow[] }) {
       <header className="flex items-center justify-between gap-3 border-b border-border/60 p-5">
         <div className="space-y-0.5">
           <h2 className="flex items-center gap-2 text-base font-semibold">
-            <PackageCheck className="size-4 text-sky-600 dark:text-sky-300" aria-hidden="true" />
+            <PackageCheck className="size-4 text-chain-supply" aria-hidden="true" />
             Jo‘natmaga tayyor
           </h2>
           <p className="text-xs text-muted-foreground">
