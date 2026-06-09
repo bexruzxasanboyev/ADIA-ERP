@@ -17,12 +17,31 @@ import { useToast } from '@/components/ui/toast';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import type { Location, Product } from '@/lib/types';
 
+/**
+ * Optional seed values for the form. Used by the "Xarid signallari" surface
+ * (F-F) to prefill a draft straight from a below-min signal — product, the
+ * suggested top-up qty, and the raw location. Absent on the plain "Yangi
+ * sotib olish" path, where the dialog opens blank exactly as before.
+ */
+export interface PurchaseOrderFormInitialValues {
+  product_id?: number;
+  qty?: number;
+  target_location_id?: number;
+  note?: string;
+}
+
 interface PurchaseOrderFormDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   products: Product[];
   locations: Location[];
   onSaved: () => void;
+  /**
+   * Seed the form when it opens (prefill from a signal). The dialog reads
+   * these ONLY at open time; clearing them is the caller's job (it owns the
+   * open state). Omit for the normal blank create flow.
+   */
+  initialValues?: PurchaseOrderFormInitialValues;
 }
 
 interface FormState {
@@ -41,6 +60,21 @@ const EMPTY_FORM: FormState = {
   note: '',
 };
 
+/** Merge optional seed values onto the blank form (open-time prefill). */
+function seedForm(initial?: PurchaseOrderFormInitialValues): FormState {
+  if (!initial) return EMPTY_FORM;
+  return {
+    product_id: initial.product_id != null ? String(initial.product_id) : '',
+    qty: initial.qty ?? null,
+    target_location_id:
+      initial.target_location_id != null
+        ? String(initial.target_location_id)
+        : '',
+    supplier_id: null,
+    note: initial.note ?? '',
+  };
+}
+
 /**
  * Create a purchase order draft — `POST /api/purchase-orders` (M6, §4.7).
  * Only `pm` and `supply_manager` may raise a draft. The target_location_id
@@ -55,17 +89,24 @@ export function PurchaseOrderFormDialog({
   products,
   locations,
   onSaved,
+  initialValues,
 }: PurchaseOrderFormDialogProps) {
   const { notify } = useToast();
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Seed (or reset) the form each time the dialog opens — blank for the plain
+  // create flow, prefilled when a signal passes `initialValues`. We re-seed
+  // only on the open transition so typing isn't clobbered mid-edit.
   useEffect(() => {
     if (open) {
-      setForm(EMPTY_FORM);
+      setForm(seedForm(initialValues));
       setError(null);
     }
+    // `initialValues` is read at open time only; the caller swaps it before
+    // flipping `open`, so we intentionally don't react to it changing while open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   // Raw materials go to a raw warehouse — narrow the targets list.

@@ -269,6 +269,71 @@ export interface ExecutePlanResponse {
   executed: ExecutedPlanLine[];
 }
 
+// ---------------------------------------------------------------------------
+// GET /api/purchase-orders/signals — PINNED, FROZEN shape (F-F, parallel build).
+// Below-min raw-warehouse stock surfaced as actionable "Xarid signallari"
+// cards so the homashyo boshlig'i can open a purchase-order draft straight
+// from a starved row. Ordered most-starved first by the backend. RBAC:
+// raw-warehouse keeper/manager + PM; a 404/403 (endpoint not yet live, or the
+// caller lacks scope) MUST degrade gracefully — hide the section, no error.
+// ---------------------------------------------------------------------------
+
+/**
+ * One below-min raw-material signal. `qty < min_level` always holds (the
+ * backend only emits starved rows). `suggested_qty` is the pre-computed
+ * top-up (typically `max_level - qty`) that prefills the create-PO form.
+ *
+ * `open_purchase_order_id` / `open_request_id` are mutually-informative: when
+ * either is set there is already an in-flight document for this
+ * `(product, location)` pair, so the card renders a link chip INSTEAD of the
+ * "PO yaratish" button (no duplicate PO — mirrors Invariant 2 debounce).
+ */
+export interface PurchaseSignal {
+  product_id: number;
+  name: string;
+  unit: string;
+  location_id: number;
+  location_name: string;
+  qty: number;
+  min_level: number;
+  max_level: number;
+  suggested_qty: number;
+  /** An already-open purchase order for this pair, or `null`. */
+  open_purchase_order_id: number | null;
+  /** An already-open replenishment request for this pair, or `null`. */
+  open_request_id: number | null;
+}
+
+/** `GET /api/purchase-orders/signals` envelope (PINNED). */
+export interface PurchaseSignalsResponse {
+  signals: PurchaseSignal[];
+}
+
+/**
+ * Starvation tier of a signal — drives the colored ratio chip/bar:
+ *   - `critical` — qty is 0–50% of min (qizil / danger).
+ *   - `low`      — qty is 50–100% of min (sariq / warning).
+ * A signal is always below min, so there is no "ok" tier here. Guards a zero
+ * (or absent) `min_level` defensively: with no min there is no meaningful
+ * ratio, so we treat it as the more urgent `critical` tier.
+ */
+export type StarvedTier = 'critical' | 'low';
+
+/** Fraction of min that `qty` covers, clamped to [0, 1]. `0` when min ≤ 0. */
+export function starvedRatio(signal: Pick<PurchaseSignal, 'qty' | 'min_level'>): number {
+  if (signal.min_level <= 0) return 0;
+  const ratio = signal.qty / signal.min_level;
+  if (!Number.isFinite(ratio) || ratio < 0) return 0;
+  return ratio > 1 ? 1 : ratio;
+}
+
+/** Classify a signal into its starvation tier from the qty/min ratio. */
+export function starvedTier(
+  signal: Pick<PurchaseSignal, 'qty' | 'min_level'>,
+): StarvedTier {
+  return starvedRatio(signal) <= 0.5 ? 'critical' : 'low';
+}
+
 /** A node nested into a tree for rendering (root + recursive children). */
 export interface NestedTreeNode {
   node: RequestTreeNode;

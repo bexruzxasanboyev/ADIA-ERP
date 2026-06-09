@@ -1,4 +1,5 @@
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Plus, CheckCircle2, Circle, AlertTriangle } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -38,9 +39,14 @@ import type {
   PurchaseOrder,
   PurchaseOrderStatus,
 } from '@/lib/types';
-import { PurchaseOrderFormDialog } from './PurchaseOrderFormDialog';
+import {
+  PurchaseOrderFormDialog,
+  type PurchaseOrderFormInitialValues,
+} from './PurchaseOrderFormDialog';
 import { AdminPurchaseOrderFormDialog } from './AdminPurchaseOrderFormDialog';
 import { ApprovalPanel } from './ApprovalPanel';
+import { PurchaseSignalsSection } from './PurchaseSignalsSection';
+import type { PurchaseSignal } from '@/lib/replenishmentFlow';
 
 /**
  * EPIC 6.1 — at-a-glance two-step approval indicator.
@@ -120,6 +126,18 @@ export function PurchaseOrdersPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [adminDialogOpen, setAdminDialogOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  // F-F — seed values for the create-PO dialog when it is opened from a
+  // "Xarid signallari" card (prefill product / suggested qty / raw location).
+  // `undefined` for the plain "Yangi sotib olish" button → blank form.
+  const [signalSeed, setSignalSeed] = useState<
+    PurchaseOrderFormInitialValues | undefined
+  >(undefined);
+
+  // F-F — an open-PO chip on a signal links to `?focus=<id>`. We honour that
+  // by expanding + scrolling to the matching row (the page has no standalone
+  // PO detail route — rows expand inline via `ApprovalPanel`).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rowRefs = useRef(new Map<number, HTMLTableRowElement>());
 
   const selectedStatuses = useMemo(
     () => (filter['status'] ?? []) as PurchaseOrderStatus[],
@@ -163,6 +181,36 @@ export function PurchaseOrdersPage() {
     return all.filter((r) => set.has(r.status));
   }, [data, selectedStatuses]);
 
+  // Open the EXISTING create-PO dialog prefilled from a signal. Only a writer
+  // (supply_manager) reaches this — the section passes `null` otherwise.
+  const handleCreatePoFromSignal = useCallback((signal: PurchaseSignal) => {
+    setSignalSeed({
+      product_id: signal.product_id,
+      qty: signal.suggested_qty,
+      target_location_id: signal.location_id,
+      note: `Xarid signali: ${signal.name} — ostatka ${signal.qty} ${signal.unit}, min ${signal.min_level} ${signal.unit}`,
+    });
+    setDialogOpen(true);
+  }, []);
+
+  // Honour `?focus=<po-id>` from an open-PO signal chip: expand that row and
+  // scroll it into view once it is present in the list, then strip the param
+  // so a later manual collapse isn't fought by the URL.
+  const focusId = searchParams.get('focus');
+  useEffect(() => {
+    if (focusId === null) return;
+    const id = Number(focusId);
+    if (!Number.isInteger(id) || id <= 0) return;
+    if (!rows.some((r) => r.id === id)) return; // not loaded / not in scope yet
+    setExpandedId(id);
+    rowRefs.current
+      .get(id)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const next = new URLSearchParams(searchParams);
+    next.delete('focus');
+    setSearchParams(next, { replace: true });
+  }, [focusId, rows, searchParams, setSearchParams]);
+
   return (
     <div className="mx-auto max-w-[120rem] space-y-6">
       <PageHeader
@@ -196,6 +244,11 @@ export function PurchaseOrdersPage() {
         }
       />
 
+      {/* F-F — below-min raw-material signals; self-hides on 404/403. */}
+      <PurchaseSignalsSection
+        onCreatePo={canCreate ? handleCreatePoFromSignal : null}
+      />
+
       <Card>
         {isLoading && <LoadingState />}
         {!isLoading && error && (
@@ -225,7 +278,14 @@ export function PurchaseOrdersPage() {
                 const brakQty = row.brak_qty ?? 0;
                 return (
                   <Fragment key={row.id}>
-                    <TableRow>
+                    <TableRow
+                      ref={(el) => {
+                        if (el) rowRefs.current.set(row.id, el);
+                        else rowRefs.current.delete(row.id);
+                      }}
+                      data-focused={expandedId === row.id ? '' : undefined}
+                      className="scroll-mt-24 data-[focused]:bg-primary/5"
+                    >
                       <TableCell className="text-muted-foreground">
                         #{row.id}
                       </TableCell>
@@ -292,10 +352,16 @@ export function PurchaseOrdersPage() {
       {canCreate && (
         <PurchaseOrderFormDialog
           open={dialogOpen}
-          onOpenChange={setDialogOpen}
+          onOpenChange={(next) => {
+            setDialogOpen(next);
+            // Drop the signal seed on close so the next plain "Yangi sotib
+            // olish" opens a blank form.
+            if (!next) setSignalSeed(undefined);
+          }}
           products={products.data ?? []}
           locations={locations.data ?? []}
           onSaved={refetch}
+          initialValues={signalSeed}
         />
       )}
 
