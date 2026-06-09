@@ -7,16 +7,21 @@ import {
   type DateRangeValue,
 } from '@/components/DateRangeFilter';
 import { prefetchApiQuery, useApiQuery } from '@/hooks/useApiQuery';
+import { useAuth } from '@/hooks/useAuth';
 import { todayIso } from '@/lib/format';
 import type {
   DashboardEcosystem,
   DashboardOverview,
+  KpiProductsResponse,
   PurchaseOrder,
   ReplenishmentRequest,
 } from '@/lib/types';
 import { useHeaderSlot } from '@/components/layout/HeaderSlot';
 import { DashboardHeaderSlot } from './DashboardHeaderSlot';
 import { HeroStrip } from './HeroStrip';
+import { ChainHealthRow } from './ChainHealthRow';
+import { QualityRow } from './QualityRow';
+import { ProfitSummary } from './ProfitSummary';
 import { CriticalAlerts } from './CriticalAlerts';
 import { MyActionsList } from './MyActionsList';
 import { ProductionPlanSummary } from './ProductionPlanSummary';
@@ -27,28 +32,29 @@ import { SalesChartsRow } from '../SalesChartsRow';
 import { ExecutiveDashboardSkeleton } from './ExecutiveDashboardSkeleton';
 
 /**
- * Executive dashboard — insight-first redesign (2026-05).
+ * Executive dashboard — "Command Center" (owner-approved redesign, 2026-06).
  *
- * The previous version centred a React-Flow node graph of the whole
- * ecosystem; it degraded badly as locations multiplied (crossing edges,
- * overlap, nothing scannable). It is gone. The first view is now built
- * around answers, not topology:
+ * The whole ERP at a glance, top → bottom:
  *
  *   1. HeaderSlot         — greeting + date-range filter (layout-owned)
- *   2. HeroStrip          — 4 clickable KPI cards (revenue / receipts /
- *                           active requests / critical positions)
- *   3. RevenueBreakdown   — revenue split donut + legend (payment methods)
- *   4. SalesChartsRow     — today's sales count + revenue area charts
- *   5. Action row         — CriticalAlerts + MyActionsList (the approval
- *                           queue) + today's production digest
- *   6. SecondaryRowGuard  — forecasts, full plan / open-requests tables
- *                           (below the fold)
+ *   2. HeroStrip          — 4 big KPI cards (tushum / sotuvlar / foyda /
+ *                           kritik pozitsiya)
+ *   3a. ROW A             — Moliya (revenue donut + profit/margin footer) ‖
+ *                           "Eng ko'p sotilgan mahsulotlar" (TopProducts)
+ *   3b. ROW B             — full-width sales pair: Sotuv soni ‖ Sotuv summasi
+ *   4. ZANJIR SALOMATLIGI — 5 chain-node cards (raw → production → supply →
+ *                           central → store), each a link into its workspace
+ *   5. SIFAT & INTEGRITET — kassa tafovuti / manfiy ostatka / muddati
+ *                           o'tayotgan / brak %
+ *   6. Amallar            — CriticalAlerts + MyActionsList + ProductionPlan
+ *   7. SecondaryRowGuard (below the fold)
  *
  * Auto-refresh: 30 s while the tab is visible. The page is the only
  * place that knows the polling cadence — every child reads the snapshot.
  */
 export function ExecutiveDashboardPage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [range, setRange] = useState<DateRangeValue>({ range: 'today' });
   const rangeQuery = dateRangeToQuery(range);
 
@@ -66,6 +72,43 @@ export function ExecutiveDashboardPage() {
   const replenishments = useApiQuery<ReplenishmentRequest[]>(
     '/api/replenishment?status=NEW',
   );
+
+  // Foyda / margin — `GET /api/kpi/products?month=YYYY-MM` is pm-only, so it
+  // 403s for `ai_assistant`. We still fire it for the PM and degrade
+  // gracefully (em-dash hero card, hidden margin footer) when it errors — the
+  // useApiQuery `error` channel captures the 403 without breaking the page.
+  const currentMonth = useMemo(() => todayIso().slice(0, 7), []);
+  const isPm = user?.role === 'pm';
+  const kpi = useApiQuery<KpiProductsResponse>(
+    isPm ? `/api/kpi/products?month=${currentMonth}` : null,
+  );
+
+  // Aggregate this month's profit / revenue / margin from the per-product
+  // rows. `available` is false when the query errored (403 / network) so the
+  // Foyda card shows "—" and the margin footer hides — never a wrong "0".
+  const finance = useMemo(() => {
+    const rows = kpi.data?.products ?? [];
+    if (kpi.error !== null || kpi.data === null) {
+      return {
+        available: false,
+        totalProfit: 0,
+        totalRevenue: 0,
+        margin: null as number | null,
+      };
+    }
+    let totalProfit = 0;
+    let totalRevenue = 0;
+    for (const r of rows) {
+      totalProfit += r.profit ?? 0;
+      totalRevenue += r.revenue;
+    }
+    return {
+      available: true,
+      totalProfit,
+      totalRevenue,
+      margin: totalRevenue > 0 ? totalProfit / totalRevenue : null,
+    };
+  }, [kpi.data, kpi.error]);
 
   const overviewRefetch = overview.refetch;
   const ecosystemRefetch = ecosystem.refetch;
@@ -132,7 +175,6 @@ export function ExecutiveDashboardPage() {
       prefetchApiQuery(`/api/dashboard/sales-breakdown?${q}&by=product&limit=6`);
       prefetchApiQuery(`/api/dashboard/ecosystem?${q}`);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const today = useMemo(() => todayIso(), []);
@@ -161,25 +203,43 @@ export function ExecutiveDashboardPage() {
 
   return (
     <div className="space-y-4 sm:space-y-6">
+      {/* 2. HERO STRIP — 4 big KPI cards. */}
       <HeroStrip
         overview={overview.data}
         ecosystem={ecosystem.data}
         range={range}
         onNavigate={navigate}
         ecosystemLoading={ecosystem.isLoading && ecosystem.data === null}
+        monthlyProfit={finance.available ? finance.totalProfit : null}
+        profitLoading={isPm && kpi.isLoading && kpi.data === null}
       />
 
+      {/* 3a. ROW A — MOLIYA (revenue donut + profit/margin footer) on the left,
+          "Eng ko'p sotilgan mahsulotlar" (TopProducts) on the right. The two
+          columns stretch to equal height so they sit cleanly side by side. */}
       <div className="grid grid-cols-1 gap-4 sm:gap-6 xl:grid-cols-2">
-        <RevenueBreakdown
-          range={range}
-          fallbackTotal={ecosystem.data?.poster_status.sales_today_sum ?? 0}
-        />
-        <TopProducts range={range} limit={5} />
+        <div className="flex flex-col gap-4">
+          <RevenueBreakdown
+            range={range}
+            fallbackTotal={ecosystem.data?.poster_status.sales_today_sum ?? 0}
+            className="flex-1"
+          />
+          <ProfitSummary
+            available={finance.available}
+            totalProfit={finance.totalProfit}
+            totalRevenue={finance.totalRevenue}
+            margin={finance.margin}
+          />
+        </div>
+        {/* Top-sellers for the selected range. `h-full` so it stretches to the
+            Moliya column's height and the row stays balanced. */}
+        <TopProducts range={range} limit={8} className="h-full" />
       </div>
 
-      {/* Always render the row so each chart owns its own skeleton while the
-          ecosystem query is still loading — no late pop-in after the page
-          skeleton disappears. When data lands the series fill in smoothly. */}
+      {/* 3b. ROW B — the detailed sales pair (Sotuv soni + Sotuv summasi) on
+          its own full-width row below Row A. Bigger and clearer with the full
+          width. Always render so each chart owns its own skeleton while the
+          ecosystem query is still loading — no late pop-in. */}
       <SalesChartsRow
         days={ecosystem.data?.sales_chart.days ?? []}
         granularity={ecosystem.data?.sales_chart.granularity}
@@ -187,6 +247,13 @@ export function ExecutiveDashboardPage() {
         range={range}
       />
 
+      {/* 4. ZANJIR SALOMATLIGI — full-width chain-node cards. */}
+      <ChainHealthRow chainSummary={ecosystem.data?.chain_summary ?? []} />
+
+      {/* 5. SIFAT & INTEGRITET — quality / integrity tiles. */}
+      <QualityRow rangeQuery={rangeQuery} />
+
+      {/* 6. AMALLAR — critical alerts + approval queue + production digest. */}
       <div className="grid gap-4 sm:gap-6 xl:grid-cols-12">
         <CriticalAlerts
           belowMin={overview.data.below_min}
@@ -205,6 +272,7 @@ export function ExecutiveDashboardPage() {
         />
       </div>
 
+      {/* 7. Secondary tables (below the fold). */}
       <SecondaryRowGuard overview={overview.data} range={range} />
     </div>
   );

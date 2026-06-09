@@ -48,11 +48,39 @@ const READY_ECLAIR = product({
   unit: 'pcs',
 });
 
+/**
+ * Mock the catalogue endpoints. PERFORMANCE rework — `GET /api/products` now
+ * returns the SERVER-PAGINATED envelope `{ items, total, facets }` (the page
+ * always passes `?limit=`), so the mock derives `facets` from the fixture
+ * products. The workshops endpoint (fetched for editor roles) returns a bare
+ * `WorkshopOption[]`.
+ *
+ * NOTE: these jsdom tests are not run in CI (they hang); this mock keeps the
+ * file type-checking and structurally honest against the new contract.
+ */
 function mockProducts(items: Product[]) {
+  const categories = [
+    ...new Map(
+      items
+        .filter((p) => p.poster_category != null)
+        .map((p) => [
+          p.poster_category!.name,
+          { value: p.poster_category!.name, label: p.poster_category!.name },
+        ]),
+    ).values(),
+  ].map((c) => ({ ...c, count: 1 }));
+  const units = [...new Set(items.map((p) => p.unit))];
+  const facets = { categories, units, workshops: [] as { id: number; name: string }[] };
+
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = typeof input === 'string' ? input : (input as Request).url;
+    if (url.includes('/api/products/workshops')) {
+      return Promise.resolve(jsonResponse(200, []));
+    }
     if (url.includes('/api/products')) {
-      return Promise.resolve(jsonResponse(200, items));
+      return Promise.resolve(
+        jsonResponse(200, { items, total: items.length, facets }),
+      );
     }
     return Promise.reject(new Error(`unexpected fetch: ${url}`));
   });

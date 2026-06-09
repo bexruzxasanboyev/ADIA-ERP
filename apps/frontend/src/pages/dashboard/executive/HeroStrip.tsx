@@ -3,7 +3,7 @@ import {
   ArrowDown,
   ArrowRight,
   ArrowUp,
-  ClipboardList,
+  Coins,
   Receipt,
   Wallet,
 } from 'lucide-react';
@@ -31,7 +31,7 @@ import { cn } from '@/lib/utils';
  *
  *   1. Bugungi tushum     — Poster `sales_today_sum` (so'm, FULL number)
  *   2. Sotuvlar soni      — Poster `sales_today_count` (cheklar)
- *   3. Faol so'rovlar     — active production + open requests + pending approvals
+ *   3. Foyda              — this month's profit (so'm, from /api/kpi/products)
  *   4. Kritik pozitsiya   — below-min stock count (danger tone)
  *
  * Layout follows the Stripe / Vercel pattern: huge tabular number, a
@@ -64,6 +64,18 @@ export interface HeroStripProps {
    * time HeroStrip renders, so they never skeleton.
    */
   ecosystemLoading?: boolean;
+  /**
+   * This month's profit (so'm) from `GET /api/kpi/products` — drives the
+   * "Foyda" hero card. `null` means the figure is unavailable (the endpoint
+   * is pm-only, so it 403s for `ai_assistant`, or it's still loading): the
+   * card then shows an em-dash instead of a misleading "0".
+   */
+  monthlyProfit?: number | null;
+  /**
+   * When true the Foyda card shows a skeleton (the KPI request is still in
+   * flight). Independent of `ecosystemLoading` since it has its own query.
+   */
+  profitLoading?: boolean;
   className?: string;
 }
 
@@ -157,6 +169,8 @@ export function HeroStrip({
   range,
   onNavigate,
   ecosystemLoading,
+  monthlyProfit,
+  profitLoading,
   className,
 }: HeroStripProps) {
   const copy = rangeCopy(range?.range ?? 'today');
@@ -165,11 +179,13 @@ export function HeroStrip({
   const metricsLoading = Boolean(ecosystemLoading) && ecosystem === null;
   const salesToday = ecosystem?.poster_status.sales_today_sum ?? 0;
   const receiptsToday = ecosystem?.poster_status.sales_today_count ?? 0;
-  const activeRequests =
-    overview.kpis.active_production_orders +
-    overview.kpis.total_open_requests +
-    overview.kpis.pending_approvals;
   const belowMin = overview.kpis.below_min_count;
+  // Foyda — this month's profit. `null` (endpoint 403 for ai_assistant, or
+  // still loading) renders an em-dash, never a misleading "0".
+  const profitKnown = monthlyProfit !== null && monthlyProfit !== undefined;
+  const profitValue = profitKnown
+    ? formatFullNumber(monthlyProfit as number)
+    : '—';
 
   // Prior-day comparison comes from `ecosystem.sales_chart.days`, which
   // tracks total sold qty per day. Sales-sum (revenue) uses qty as a
@@ -212,16 +228,17 @@ export function HeroStrip({
       href: '/dashboard/operations',
     },
     {
-      testId: 'hero-strip-requests',
-      label: "Faol so'rovlar",
-      value: formatQty(activeRequests),
-      caption: 'jami',
-      tone: activeRequests > 0 ? 'warning' : 'default',
-      Icon: ClipboardList,
-      direction: 'down-good',
+      testId: 'hero-strip-profit',
+      label: 'Oylik foyda',
+      value: profitValue,
+      caption: profitKnown ? "so'm" : "ma'lumot yo'q",
+      tone: 'default',
+      Icon: Coins,
+      direction: 'up-good',
       deltaPct: null,
-      // Open replenishment + production + supply requests inbox.
-      href: '/sorovnomalar',
+      loading: Boolean(profitLoading) && !profitKnown,
+      // Per-product cost / profit breakdown (KPI page).
+      href: '/kpi',
     },
     {
       testId: 'hero-strip-critical',

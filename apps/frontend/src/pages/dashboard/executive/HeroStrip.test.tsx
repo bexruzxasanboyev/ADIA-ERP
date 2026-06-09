@@ -4,7 +4,7 @@
  * The hero strip exposes four KPI cards in a fixed order:
  *   1. Bugungi tushum     — Poster `sales_today_sum`, compact currency
  *   2. Sotuvlar soni      — Poster `sales_today_count`
- *   3. Faol so'rovlar     — active production + open requests + pending approvals
+ *   3. Oylik foyda        — this month's profit (`monthlyProfit` prop)
  *   4. Kritik pozitsiya   — `kpis.below_min_count` (danger tone)
  */
 import { describe, expect, it, vi } from 'vitest';
@@ -45,7 +45,7 @@ describe('HeroStrip', () => {
 
     expect(screen.getByTestId('hero-strip-revenue')).toBeInTheDocument();
     expect(screen.getByTestId('hero-strip-receipts')).toBeInTheDocument();
-    expect(screen.getByTestId('hero-strip-requests')).toBeInTheDocument();
+    expect(screen.getByTestId('hero-strip-profit')).toBeInTheDocument();
     expect(screen.getByTestId('hero-strip-critical')).toBeInTheDocument();
   });
 
@@ -64,12 +64,23 @@ describe('HeroStrip', () => {
     );
   });
 
-  it('sums active production orders, open requests and pending approvals', () => {
-    render(<HeroStrip overview={OVERVIEW} ecosystem={ECOSYSTEM} />);
-    // 5 + 3 + 4 = 12
-    expect(screen.getByTestId('hero-strip-requests-value').textContent).toBe(
-      '12',
+  it("renders this month's profit as a full grouped number", () => {
+    render(
+      <HeroStrip
+        overview={OVERVIEW}
+        ecosystem={ECOSYSTEM}
+        monthlyProfit={1_250_000}
+      />,
     );
+    const value = screen.getByTestId('hero-strip-profit-value');
+    expect(value.textContent?.replace(/\s+/g, '')).toBe('1250000');
+  });
+
+  it('shows an em-dash for profit when monthlyProfit is null/absent', () => {
+    render(
+      <HeroStrip overview={OVERVIEW} ecosystem={ECOSYSTEM} monthlyProfit={null} />,
+    );
+    expect(screen.getByTestId('hero-strip-profit-value').textContent).toBe('—');
   });
 
   it("uses the danger tone when below_min_count > 0", () => {
@@ -81,11 +92,21 @@ describe('HeroStrip', () => {
     );
   });
 
-  it('uses the warning tone when there are active requests', () => {
-    render(<HeroStrip overview={OVERVIEW} ecosystem={ECOSYSTEM} />);
-    expect(screen.getByTestId('hero-strip-requests').getAttribute('data-tone')).toBe(
-      'warning',
+  it('skeletons the profit card while the KPI query is still loading', () => {
+    render(
+      <HeroStrip
+        overview={OVERVIEW}
+        ecosystem={ECOSYSTEM}
+        monthlyProfit={null}
+        profitLoading
+      />,
     );
+    expect(
+      screen.getByTestId('hero-strip-profit-skeleton'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('hero-strip-profit-value'),
+    ).not.toBeInTheDocument();
   });
 
   it('falls back to zeros when the ecosystem snapshot is null', () => {
@@ -198,8 +219,8 @@ describe('HeroStrip', () => {
     fireEvent.click(revenue);
     expect(onNavigate).toHaveBeenCalledWith('/dashboard/operations');
 
-    fireEvent.click(screen.getByTestId('hero-strip-requests'));
-    expect(onNavigate).toHaveBeenCalledWith('/sorovnomalar');
+    fireEvent.click(screen.getByTestId('hero-strip-profit'));
+    expect(onNavigate).toHaveBeenCalledWith('/kpi');
 
     fireEvent.click(screen.getByTestId('hero-strip-critical'));
     expect(onNavigate).toHaveBeenCalledWith('/stock');
@@ -218,9 +239,6 @@ describe('HeroStrip', () => {
     render(<HeroStrip overview={safe} ecosystem={ECOSYSTEM} />);
     expect(
       screen.getByTestId('hero-strip-critical').getAttribute('data-tone'),
-    ).toBe('default');
-    expect(
-      screen.getByTestId('hero-strip-requests').getAttribute('data-tone'),
     ).toBe('default');
   });
 });

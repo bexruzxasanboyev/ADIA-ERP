@@ -167,6 +167,307 @@ describe('products', () => {
   });
 });
 
+describe('GET /api/products — opt-in pagination', () => {
+  // A distinctive, normalisation-stable tag so a `?search=<tag>` scopes the
+  // WHOLE pipeline (type+search set, facets, narrowing, total, slice) to ONLY
+  // this test's seeded products — making `total` / slice deterministic even
+  // though the per-suite schema accumulates rows across `it`s. Lower-case
+  // letters only (no digits / no fold-colliding chars) keep translit honest.
+  const uniqueTag = (): string => `zzq${Math.random().toString(36).slice(2, 8).replace(/[0-9]/g, 'a')}tag`;
+
+  /** Direct insert with a chosen type (makeProduct can't make `resale`). */
+  async function insertProduct(opts: {
+    name: string;
+    type: 'raw' | 'semi' | 'finished' | 'resale';
+    unit?: 'kg' | 'l' | 'pcs';
+    sku?: string;
+  }): Promise<number> {
+    const { rows } = await ctx.db.query<{ id: string }>(
+      `INSERT INTO products (name, type, unit, sku) VALUES ($1, $2, $3, $4) RETURNING id`,
+      [opts.name, opts.type, opts.unit ?? 'pcs', opts.sku ?? null],
+    );
+    return Number(rows[0]!.id);
+  }
+
+  it('(a) without ?limit the response is still the full bare array (unchanged)', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const tag = uniqueTag();
+    await insertProduct({ name: `${tag} Mango`, type: 'finished' });
+
+    const res = await request(ctx.app)
+      .get('/api/products')
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(200);
+    // A bare ARRAY (no { items, total, facets } envelope).
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body).not.toHaveProperty('items');
+    expect(res.body).not.toHaveProperty('total');
+    expect(res.body).not.toHaveProperty('facets');
+  });
+
+  it('(b) ?limit/?offset returns { items, total, facets } with the correct slice + total', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const tag = uniqueTag();
+    // 5 finished products that all share the tag.
+    for (let i = 0; i < 5; i += 1) {
+      await insertProduct({ name: `${tag} Cake ${i}`, type: 'finished' });
+    }
+
+    const page1 = await request(ctx.app)
+      .get(`/api/products?search=${tag}&limit=2&offset=0`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(page1.status).toBe(200);
+    const body = page1.body as {
+      items: { id: number; name: string }[];
+      total: number;
+      facets: unknown;
+    };
+    expect(Array.isArray(body.items)).toBe(true);
+    expect(body).toHaveProperty('facets');
+    expect(body.total).toBe(5); // narrowed total — every tagged product
+    expect(body.items).toHaveLength(2); // sliced to the page size
+
+    const page2 = await request(ctx.app)
+      .get(`/api/products?search=${tag}&limit=2&offset=2`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    const page3 = await request(ctx.app)
+      .get(`/api/products?search=${tag}&limit=2&offset=4`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect((page2.body as { items: unknown[] }).items).toHaveLength(2);
+    expect((page3.body as { items: unknown[] }).items).toHaveLength(1); // 5 total
+
+    // The three pages cover the 5 products with no overlap (ordered by id).
+    const ids = [
+      ...(page1.body as { items: { id: number }[] }).items,
+      ...(page2.body as { items: { id: number }[] }).items,
+      ...(page3.body as { items: { id: number }[] }).items,
+    ].map((p) => Number(p.id));
+    expect(new Set(ids).size).toBe(5);
+    expect([...ids]).toEqual([...ids].sort((a, b) => a - b)); // stable id order
+  });
+
+  it('(c) type filter narrows to the requested product type', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const tag = uniqueTag();
+    await insertProduct({ name: `${tag} Flour`, type: 'raw', unit: 'kg' });
+    await insertProduct({ name: `${tag} Sugar`, type: 'raw', unit: 'kg' });
+    await insertProduct({ name: `${tag} Eclair`, type: 'finished' });
+
+    const rawOnly = await request(ctx.app)
+      .get(`/api/products?search=${tag}&type=raw&limit=50`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(rawOnly.status).toBe(200);
+    const body = rawOnly.body as { items: { type: string }[]; total: number };
+    expect(body.total).toBe(2);
+    expect(body.items.every((p) => p.type === 'raw')).toBe(true);
+  });
+
+  it('(c) search filter narrows (translit) inside the paginated branch', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    // A Cyrillic-named product found by a Latin translit query, with ?limit set.
+    const sku = `PG-SRCH-${Math.random().toString(36).slice(2, 8)}`;
+    await insertProduct({ name: 'Шоколад горький', type: 'raw', unit: 'kg', sku });
+
+    const hit = await request(ctx.app)
+      .get('/api/products?search=shokolad&limit=50')
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(hit.status).toBe(200);
+    const items = (hit.body as { items: { name: string }[] }).items;
+    expect(items.some((p) => p.name === 'Шоколад горький')).toBe(true);
+  });
+
+  it('(c) type=resale selects only resale products', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const tag = uniqueTag();
+    await insertProduct({ name: `${tag} CocaCola`, type: 'resale' });
+    await insertProduct({ name: `${tag} Bread`, type: 'finished' });
+
+    const res = await request(ctx.app)
+      .get(`/api/products?search=${tag}&type=resale&limit=50`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(200);
+    const body = res.body as { items: { type: string }[]; total: number };
+    expect(body.total).toBe(1);
+    expect(body.items.every((p) => p.type === 'resale')).toBe(true);
+  });
+
+  it('(c) category filter narrows by the enrich smart-category key', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const tag = uniqueTag();
+    // "Tort …" -> category 'cake'; "Napoleon …" -> 'pastry'.
+    await insertProduct({ name: `${tag} Tort Medovik`, type: 'finished' });
+    await insertProduct({ name: `${tag} Napoleon`, type: 'finished' });
+
+    const res = await request(ctx.app)
+      .get(`/api/products?search=${tag}&category=cake&limit=50`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(200);
+    const body = res.body as { items: { category: string; name: string }[]; total: number };
+    expect(body.total).toBe(1);
+    expect(body.items.every((p) => p.category === 'cake')).toBe(true);
+  });
+
+  it('(c) unit filter narrows (csv) by unit of measure', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const tag = uniqueTag();
+    await insertProduct({ name: `${tag} Milk`, type: 'raw', unit: 'l' });
+    await insertProduct({ name: `${tag} Flour`, type: 'raw', unit: 'kg' });
+    await insertProduct({ name: `${tag} Cocoa`, type: 'raw', unit: 'kg' });
+
+    const res = await request(ctx.app)
+      .get(`/api/products?search=${tag}&unit=kg&limit=50`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(200);
+    const body = res.body as { items: { unit: string }[]; total: number };
+    expect(body.total).toBe(2);
+    expect(body.items.every((p) => p.unit === 'kg')).toBe(true);
+  });
+
+  it('(c) workshop filter narrows by assigned workshop id and the literal "none"', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const tag = uniqueTag();
+    const sexName = `WS ${Math.random().toString(36).slice(2, 6)}`;
+    const sexId = await makeLocation(ctx.db, {
+      type: 'production',
+      name: sexName,
+      posterWorkshopId: 910000 + Math.floor(Math.random() * 80000),
+    });
+    const assigned = await insertProduct({ name: `${tag} Assigned`, type: 'finished' });
+    await insertProduct({ name: `${tag} Unassigned`, type: 'finished' });
+    await ctx.db.query(`UPDATE products SET workshop_location_id = $2 WHERE id = $1`, [
+      assigned,
+      sexId,
+    ]);
+
+    // Filter by the assigned workshop id -> only the assigned product.
+    const byId = await request(ctx.app)
+      .get(`/api/products?search=${tag}&workshop=${sexId}&limit=50`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(byId.status).toBe(200);
+    const byIdBody = byId.body as {
+      items: { id: number; workshop: { id: number } | null }[];
+      total: number;
+    };
+    expect(byIdBody.total).toBe(1);
+    expect(byIdBody.items[0]?.workshop?.id).toBe(sexId);
+
+    // Filter by 'none' -> only the unassigned product.
+    const none = await request(ctx.app)
+      .get(`/api/products?search=${tag}&workshop=none&limit=50`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    const noneBody = none.body as {
+      items: { workshop: { id: number } | null }[];
+      total: number;
+    };
+    expect(noneBody.total).toBe(1);
+    expect(noneBody.items[0]?.workshop).toBeNull();
+  });
+
+  it('(d) computed_cost is present for the returned items (recipe rollup)', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const tag = uniqueTag();
+    // finished cake -> 0.3 kg flour @ 7.5 -> computed_cost 2.25.
+    const cake = await insertProduct({ name: `${tag} Costed`, type: 'finished' });
+    const flour = await insertProduct({ name: `${tag} Flour`, type: 'raw', unit: 'kg' });
+    await ctx.db.query(`UPDATE products SET manual_cost_per_unit = 7.5 WHERE id = $1`, [flour]);
+    await request(ctx.app)
+      .put(`/api/products/${cake}/recipe`)
+      .set('Authorization', `Bearer ${pm.token}`)
+      .send({ recipe: [{ component_product_id: flour, qty_per_unit: 0.3 }] });
+
+    const res = await request(ctx.app)
+      .get(`/api/products?search=${tag}&type=finished&limit=50`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(200);
+    const items = (res.body as {
+      items: { id: number; computed_cost: number | null }[];
+    }).items;
+    const row = items.find((p) => Number(p.id) === cake);
+    expect(row).toBeDefined();
+    // The cost field exists AND is the off-page-component rollup (flour is not
+    // in this type=finished page, yet the cost still resolves).
+    expect(row).toHaveProperty('computed_cost');
+    expect(row?.computed_cost).toBeCloseTo(2.25, 2);
+  });
+
+  it('(e) facets reflect the type+search set (not the post-narrowing set)', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const tag = uniqueTag();
+    // Two cakes (kg + pcs) and one pastry (pcs), all finished + tagged.
+    await insertProduct({ name: `${tag} Tort A`, type: 'finished', unit: 'pcs' });
+    await insertProduct({ name: `${tag} Tort B`, type: 'finished', unit: 'kg' });
+    await insertProduct({ name: `${tag} Napoleon`, type: 'finished', unit: 'pcs' });
+
+    // Narrow by category=cake, but facets must still describe the whole
+    // type+search set (both cake AND pastry, both units).
+    const res = await request(ctx.app)
+      .get(`/api/products?search=${tag}&type=finished&category=cake&limit=50`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(200);
+    const body = res.body as {
+      items: { category: string }[];
+      total: number;
+      facets: {
+        categories: { value: string; label: string; count: number }[];
+        units: string[];
+        workshops: { id: number; name: string }[];
+      };
+    };
+    // Items are narrowed to cake only…
+    expect(body.total).toBe(2);
+    expect(body.items.every((p) => p.category === 'cake')).toBe(true);
+    // …but facets still offer BOTH categories present in the type+search set.
+    const facetCats = body.facets.categories.map((c) => c.value);
+    expect(facetCats).toContain('cake');
+    expect(facetCats).toContain('pastry');
+    const cakeFacet = body.facets.categories.find((c) => c.value === 'cake');
+    expect(cakeFacet?.count).toBe(2);
+    expect(cakeFacet?.label).toBe('Tort'); // server-sourced Uzbek label
+    const pastryFacet = body.facets.categories.find((c) => c.value === 'pastry');
+    expect(pastryFacet?.count).toBe(1);
+    // Units facet reflects both kg + pcs from the type+search set.
+    expect(body.facets.units).toContain('kg');
+    expect(body.facets.units).toContain('pcs');
+  });
+
+  it('clamps limit to the [1,200] range', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const tag = uniqueTag();
+    for (let i = 0; i < 3; i += 1) {
+      await insertProduct({ name: `${tag} Item ${i}`, type: 'finished' });
+    }
+    // limit far above the cap still works (clamped to 200, returns all 3).
+    const big = await request(ctx.app)
+      .get(`/api/products?search=${tag}&limit=99999`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(big.status).toBe(200);
+    expect((big.body as { items: unknown[]; total: number }).total).toBe(3);
+    expect((big.body as { items: unknown[] }).items).toHaveLength(3);
+  });
+
+  it('rejects an unknown ?type value in the paginated branch (422)', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const res = await request(ctx.app)
+      .get('/api/products?type=bogus&limit=10')
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('a store manager can read the paginated list (RBAC unchanged)', async () => {
+    const mgr = await makeUser(ctx.db, {
+      role: 'store_manager',
+      locationId: await makeLocation(ctx.db, { type: 'store' }),
+    });
+    const res = await request(ctx.app)
+      .get('/api/products?limit=5')
+      .set('Authorization', `Bearer ${mgr.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('items');
+    expect(res.body).toHaveProperty('facets');
+  });
+});
+
 describe('product workshop (sex) assignment', () => {
   // A unique Poster workshop_id per call — the partial UNIQUE index on
   // locations.poster_workshop_id would otherwise collide within the suite.

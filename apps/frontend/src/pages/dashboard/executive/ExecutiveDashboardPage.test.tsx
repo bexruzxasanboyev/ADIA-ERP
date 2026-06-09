@@ -292,6 +292,43 @@ function mockAll() {
     if (url.includes('/api/dashboard/suppliers')) {
       return Promise.resolve(jsonResponse(200, { suppliers: [] }));
     }
+    if (url.includes('/api/dashboard/aging-alerts')) {
+      return Promise.resolve(jsonResponse(200, { items: [] }));
+    }
+    if (url.includes('/api/dashboard/brak-summary')) {
+      return Promise.resolve(
+        jsonResponse(200, {
+          brak_ratio: 0,
+          total_brak_qty: 0,
+          by_source: [],
+          top: [],
+        }),
+      );
+    }
+    if (url.includes('/api/discrepancies')) {
+      return Promise.resolve(
+        jsonResponse(200, {
+          items: [],
+          total: 0,
+          summary: {
+            open: 0,
+            acknowledged: 0,
+            resolved: 0,
+            wrong_keyed: 0,
+            negative_stock: 0,
+          },
+        }),
+      );
+    }
+    if (url.includes('/api/kpi/products')) {
+      return Promise.resolve(
+        jsonResponse(200, {
+          month: '2026-06',
+          totals: { salary: 0, units_produced: 0, salary_per_unit: null },
+          products: [],
+        }),
+      );
+    }
     return Promise.reject(new Error(`unexpected fetch: ${url}`));
   });
 }
@@ -339,8 +376,33 @@ describe('ExecutiveDashboardPage — Variant B', () => {
     await screen.findByTestId('hero-strip');
     expect(screen.queryByTestId('canvas-flow')).not.toBeInTheDocument();
     expect(screen.queryByTestId('ecosystem-canvas')).not.toBeInTheDocument();
-    // ZANJIR SALOMATLIGI (chain-health row) was removed per owner request.
-    expect(screen.queryByTestId('chain-health-row')).not.toBeInTheDocument();
+  });
+
+  it('renders the ZANJIR SALOMATLIGI chain-health row (Command Center)', async () => {
+    mockAll();
+    renderWithProviders(<ExecutiveDashboardPage />, { role: 'pm' });
+
+    expect(await screen.findByTestId('chain-health-row')).toBeInTheDocument();
+    // One status card per supply-chain stage, in order.
+    expect(screen.getByTestId('chain-node-raw_warehouse')).toBeInTheDocument();
+    expect(screen.getByTestId('chain-node-production')).toBeInTheDocument();
+    expect(screen.getByTestId('chain-node-supply')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('chain-node-central_warehouse'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('chain-node-store')).toBeInTheDocument();
+  });
+
+  it('renders the SIFAT & INTEGRITET quality tiles', async () => {
+    mockAll();
+    renderWithProviders(<ExecutiveDashboardPage />, { role: 'pm' });
+
+    expect(
+      await screen.findByTestId('quality-wrong-keyed'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('quality-negative-stock')).toBeInTheDocument();
+    expect(screen.getByTestId('quality-aging')).toBeInTheDocument();
+    expect(screen.getByTestId('quality-brak')).toBeInTheDocument();
   });
 
   it('lists the critical zero-stock item at the top of CriticalAlerts', async () => {

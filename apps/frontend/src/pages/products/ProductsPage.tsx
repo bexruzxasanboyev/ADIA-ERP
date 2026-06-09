@@ -26,6 +26,7 @@ import {
   PageHeader,
 } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
+import { ApiError, apiRequest } from '@/lib/api-client';
 import { useAuth } from '@/hooks/useAuth';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { PRODUCT_TYPE_LABELS, UNIT_LABELS, UNIT_OPTIONS } from '@/lib/labels';
@@ -45,8 +46,9 @@ import { WorkshopPicker, type WorkshopOption } from './WorkshopPicker';
 /**
  * The three filter dimensions all live inside the Filter popover now
  * (owner reversed the earlier "type tabs + category chips" layout). `type`
- * and `unit` are static option sets; `category` is derived per-render from
- * the loaded products — see FILTER_GROUPS in the component below.
+ * lives in a page-level segmented tab row; `category` / `unit` / `workshop`
+ * options come from the server FACETS in the paginated catalogue (or are
+ * derived from the loaded rows in the stock-aware section — see below).
  */
 
 /** Filter popover default — nothing pre-selected (each group empty). */
@@ -55,7 +57,8 @@ const DEFAULT_FILTER: FilterValue = { category: [], unit: [], workshop: [] };
 /**
  * Sentinel option value for the WORKSHOP filter that matches products with NO
  * assigned sex (`workshop == null`). A real workshop id can never collide with
- * it, so the `filtered` memo can branch on this string safely.
+ * it, so the server (`workshop=none`) and the legacy client filter both branch
+ * on this string safely.
  */
 const WORKSHOP_NONE = 'none';
 
@@ -68,11 +71,49 @@ const TYPE_TABS: { value: TypeTab; label: string }[] = [
   { value: 'raw', label: PRODUCT_TYPE_LABELS.raw },
 ];
 
-/** EPIC 1.4c — how many cards to mount per "scroll batch" (lazy render). */
-const PAGE_SIZE = 24;
+/**
+ * PERFORMANCE — server page size for the paginated catalogue. Each scroll
+ * batch fetches exactly this many products from the backend (true server-side
+ * pagination), instead of the old client-side lazy-render window over the
+ * whole ~1.7k-product set.
+ */
+const PAGE_SIZE = 50;
+
+/**
+ * Legacy (stock-aware section) lazy-render window. The `/api/products/yarim-tayyor`
+ * endpoint returns a small, already-отдел-scoped bare array (NO server
+ * pagination), so that mode keeps the original client-side incremental render.
+ */
+const LEGACY_RENDER_BATCH = 24;
 
 /** sessionStorage key — remembers the active type tab across navigation. */
 const TYPE_TAB_KEY = 'products.typeTab';
+
+/** Debounce (ms) before a keystroke in the search box triggers a server fetch. */
+const SEARCH_DEBOUNCE_MS = 300;
+
+/**
+ * The server FACETS envelope returned by `GET /api/products` when `limit` is
+ * passed (opt-in pagination). `categories` carry a display label + count;
+ * `units` are raw unit codes; `workshops` are the assignable sexes. These
+ * populate the filter popover — the page now holds only ONE partial page, so
+ * the options can NOT be derived from the loaded rows.
+ */
+interface ProductFacets {
+  categories: { value: string; label: string; count: number }[];
+  units: string[];
+  workshops: { id: number; name: string }[];
+}
+
+/** The paginated `GET /api/products?...&limit=&offset=` response envelope. */
+interface ProductsPageResponse {
+  items: Product[];
+  total: number;
+  facets: ProductFacets;
+}
+
+/** Empty facets — the initial value before the first page resolves. */
+const EMPTY_FACETS: ProductFacets = { categories: [], units: [], workshops: [] };
 
 /**
  * Small amber warn pill for a PRODUCED product that is missing its
@@ -247,15 +288,14 @@ interface ProductCardProps {
 }
 
 /**
- * EPIC 1.5 — a single desktop catalogue card, wrapped in {@link memo}.
+ * A single desktop catalogue card, wrapped in {@link memo}.
  *
- * Memoising the card is the key fix for the «slow catalogue» owner report:
- * the page mounts hundreds of cards and grows a lazy window (`visibleCount`)
- * on scroll. Without memo, every scroll-batch state bump re-rendered ALL
+ * Memoising the card keeps the «slow catalogue» fix honest: the page appends
+ * server pages on scroll, and without memo every append would re-render ALL
  * already-mounted cards. With stable callback props (the parent wraps its
  * handlers in `useCallback`), `memo`'s shallow prop compare lets a mounted
- * card skip re-render entirely when only the window counter changes — only
- * the newly-revealed cards render.
+ * card skip re-render entirely when only the accumulated list grows — only the
+ * newly-appended cards render.
  */
 const ProductCard = memo(function ProductCard({
   product: p,
@@ -398,16 +438,19 @@ const ProductCard = memo(function ProductCard({
 
 /**
  * M2 — products list. EPIC 1 redesign:
- *   1.1 a single multi-select filter popover carrying ALL three dimensions —
- *       Tur (type) · Kategoriya (searchable, derived) · Birlik (unit) — next
- *       to an always-visible translit-aware search box;
- *   1.2 translit-aware search (Latin ↔ Cyrillic);
+ *   1.1 a single multi-select filter popover carrying Kategoriya · Birlik ·
+ *       Sex next to an always-visible translit-aware search box (TYPE is a
+ *       page-level segmented tab row);
+ *   1.2 translit-aware search (Latin ↔ Cyrillic), now applied SERVER-side;
  *   1.3 smart category badge (Г/П → finished, name → sub-category);
- *   1.4 category-grouped cards with colour-coding + incremental scroll;
- *   1.5 read-only recipe view on a dedicated page (see RecipePage); the
- *       "Retsept" buttons navigate to /products/:productId/recipe. Recipes
- *       are Poster-sourced and not edited in-app (owner decision), so the
- *       button is available to everyone who can view products.
+ *   1.4 category-grouped cards with colour-coding + infinite scroll;
+ *   1.5 read-only recipe view on a dedicated page (see RecipePage).
+ *
+ * PERFORMANCE — the default catalogue (`GET /api/products`) now uses TRUE
+ * server-side pagination: each request returns ONE small page (`limit=50`)
+ * plus the server-computed FACETS for the filter popover. Type/search/filter
+ * changes reset the offset and replace the accumulated rows; the scroll
+ * sentinel fetches and appends the next page until `items.length >= total`.
  *
  * `pm` and `raw_warehouse_manager` may add products (§6).
  */
@@ -428,11 +471,12 @@ interface ProductsPageProps {
   description?: string;
   /**
    * API path to fetch the product list from. Defaults to the full catalogue
-   * `GET /api/products`. The «Yarim tayyor mahsulotlar» section points this
-   * at `GET /api/products/yarim-tayyor`, which returns ONLY the logged-in
-   * production_manager's отдел зг (same item shape PLUS a `qty` stock field),
-   * already type-scoped server-side. Both endpoints return a bare array OR a
-   * `{ products: [...] }` envelope — the fetch normalises either.
+   * `GET /api/products` (server-paginated). The «Yarim tayyor mahsulotlar»
+   * section points this at `GET /api/products/yarim-tayyor`, which returns
+   * ONLY the logged-in production_manager's отдел зг (same item shape PLUS a
+   * `qty` stock field) as a small, already-scoped BARE ARRAY (no server
+   * pagination). A non-default endpoint switches the page to the legacy
+   * client-side filter + incremental-render path.
    */
   dataEndpoint?: string;
   /**
@@ -443,11 +487,14 @@ interface ProductsPageProps {
   showStock?: boolean;
 }
 
+/** The default catalogue endpoint that supports server pagination + facets. */
+const CATALOGUE_ENDPOINT = '/api/products';
+
 export function ProductsPage({
   forcedType,
   title,
   description,
-  dataEndpoint = '/api/products',
+  dataEndpoint = CATALOGUE_ENDPOINT,
   showStock = false,
 }: ProductsPageProps = {}) {
   const navigate = useNavigate();
@@ -457,6 +504,12 @@ export function ProductsPage({
   const canEditCost =
     user?.role === 'pm' || user?.role === 'production_manager';
   const canEditWorkshop = canEditCost;
+
+  // PAGINATED MODE — the default catalogue uses true server pagination +
+  // server facets. A custom endpoint (the stock-aware /yarim-tayyor section,
+  // which returns a small already-scoped bare array) keeps the legacy
+  // client-side filter + incremental-render path.
+  const paginated = !showStock && dataEndpoint === CATALOGUE_ENDPOINT;
 
   // The product whose cost dialog is open (null = closed).
   const [costProduct, setCostProduct] = useState<Product | null>(null);
@@ -498,38 +551,35 @@ export function ProductsPage({
     }
   }, [typeTab, forcedType]);
 
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-
   // The recipe (BOM) opens as a dedicated, read-only page (not a modal).
   // Stable identities (useCallback) so the memoised ProductCard's props don't
   // change every render — that's what lets a mounted card skip re-render when
-  // only the lazy `visibleCount` window grows (EPIC 1.5 perf fix).
+  // only the accumulated list grows on scroll (perf fix).
   const openRecipe = useCallback(
     (p: Product) => navigate(`/products/${p.id}/recipe`),
     [navigate],
   );
-
-  // The list is fetched once from `dataEndpoint` (default: the full catalogue).
-  // The generic `?type=` server filter is replaced by richer client-side
-  // filtering (multi-type, unit, translit search). The «Yarim tayyor» section
-  // instead targets `/api/products/yarim-tayyor`, which is already type-scoped
-  // to the manager's отдел server-side — so the per-card stock (`qty`) rides
-  // along and NO extra client type filter is applied to it (see `filtered`).
-  // Both shapes are accepted: a bare array OR a `{ products: [...] }` envelope
-  // (sibling product endpoints return bare arrays; the new one may wrap).
-  const { data, isLoading, error, refetch } = useApiQuery<
-    StockProduct[] | { products: StockProduct[] }
-  >(dataEndpoint);
-  const onWorkshopAssigned = useCallback(() => refetch(), [refetch]);
   const onEditCost = useCallback((p: Product) => setCostProduct(p), []);
 
-  // Production workshops (sexes) for the workshop FILTER dimension and the
-  // inline sex-assign picker. `GET /api/products/workshops` is the SINGLE
-  // canonical source — it returns ONLY the 12 real Poster product workshops
-  // («Торт отдел», …), not the legacy stock-chain «… sexi» rows that
-  // `GET /api/locations?type=production` mixes in. pm + production_manager are
-  // authorised here; for any other (read-only) role the query is skipped
-  // (`null`) and the workshop filter group / assign control simply don't appear.
+  // ── DEBOUNCED SEARCH ──────────────────────────────────────────────────
+  // The query box updates `search` on every keystroke (instant input echo);
+  // `debouncedSearch` trails it by SEARCH_DEBOUNCE_MS and is what actually
+  // feeds the server query key, so typing doesn't fire a request per keypress.
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+  useEffect(() => {
+    const id = window.setTimeout(
+      () => setDebouncedSearch(search),
+      SEARCH_DEBOUNCE_MS,
+    );
+    return () => window.clearTimeout(id);
+  }, [search]);
+
+  // ── PRODUCTION WORKSHOPS (sexes) ──────────────────────────────────────
+  // Used by the inline sex-assign picker (and, in legacy mode, the workshop
+  // FILTER dimension). `GET /api/products/workshops` is the SINGLE canonical
+  // source. In paginated mode the filter's workshop options come from the
+  // server FACETS instead, but the picker still needs this list. pm +
+  // production_manager are authorised; for any other role the query is skipped.
   const { data: workshopData } = useApiQuery<WorkshopOption[]>(
     canEditWorkshop ? '/api/products/workshops' : null,
   );
@@ -540,101 +590,163 @@ export function ProductsPage({
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [workshopData]);
 
-  // `useApiQuery` returns a stable `data` reference between renders, so memoise
-  // on `data` itself (not a freshly-allocated `data ?? []`) to keep the
-  // dependency arrays below honest. Normalise the bare-array vs `{ products }`
-  // envelope here so the rest of the page always works with a flat list. Items
-  // are `StockProduct` (a `Product` that may carry `qty`); downstream code that
-  // only needs `Product` fields stays type-safe.
-  const allProducts = useMemo<StockProduct[]>(() => {
-    if (data == null) return [];
-    return Array.isArray(data) ? data : data.products;
-  }, [data]);
+  // ── SERVER-PAGINATED CATALOGUE STATE ──────────────────────────────────
+  // `useApiQuery` is single-shot (one fetch per path) and replaces on path
+  // change, so it can't accumulate offset pages — we drive the fetches by
+  // hand, accumulating `serverItems` across pages and tracking the
+  // server-reported `total` + `facets`.
+  const [serverItems, setServerItems] = useState<Product[]>([]);
+  const [serverTotal, setServerTotal] = useState(0);
+  const [facets, setFacets] = useState<ProductFacets>(EMPTY_FACETS);
+  // Distinguish the very first page (drives the skeleton / error state) from
+  // subsequent "load more" pages (drive the small bottom indicator).
+  const [isLoadingFirst, setIsLoadingFirst] = useState(paginated);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [serverError, setServerError] = useState<string | null>(null);
 
-  // Per-tab counts for the type segmented control badges (whole catalogue).
-  const typeCounts = useMemo(() => {
-    const c: Record<TypeTab, number> = {
-      all: allProducts.length,
-      finished: 0,
-      semi: 0,
-      raw: 0,
-    };
-    for (const p of allProducts) c[effectiveType(p)] += 1;
-    return c;
-  }, [allProducts]);
+  // Refs read inside the IntersectionObserver / fetch flow without forcing the
+  // observer to be re-created on every append (they hold the live values the
+  // closures would otherwise capture stale).
+  const loadedCountRef = useRef(0);
+  const totalRef = useRef(0);
+  const isFetchingRef = useRef(false);
+  const offsetRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
-  // Distinct Poster categories ACROSS all products, sorted by descending
-  // product count (most-populated first), then by name. Value === label ===
-  // the raw category name so the `filtered` memo can match on it directly.
-  const categoryOptions = useMemo<FilterOption[]>(() => {
-    const counts = new Map<string, number>();
-    for (const p of allProducts) {
-      const name = p.poster_category?.name;
-      if (name == null) continue;
-      counts.set(name, (counts.get(name) ?? 0) + 1);
-    }
-    return [...counts.entries()]
-      .sort((a, b) =>
-        b[1] !== a[1] ? b[1] - a[1] : a[0].localeCompare(b[0]),
-      )
-      .map(([name]) => ({ value: name, label: name }));
-  }, [allProducts]);
+  // STABLE query string (everything BUT offset) — the reset key. A change to
+  // the type tab, the debounced search, or any selected filter rebuilds this
+  // and triggers a fresh first-page load (offset reset + items replaced). Built
+  // with URLSearchParams so values are correctly encoded. `workshop=none`
+  // (the "Sexsiz" sentinel) flows straight through to the backend.
+  const queryKey = useMemo(() => {
+    const params = new URLSearchParams();
+    params.set('type', typeTab);
+    const s = debouncedSearch.trim();
+    if (s !== '') params.set('search', s);
+    const categories = filter.category ?? [];
+    if (categories.length > 0) params.set('category', categories.join(','));
+    const units = filter.unit ?? [];
+    if (units.length > 0) params.set('unit', units.join(','));
+    const ws = filter.workshop ?? [];
+    if (ws.length > 0) params.set('workshop', ws.join(','));
+    params.set('limit', String(PAGE_SIZE));
+    return params.toString();
+  }, [typeTab, debouncedSearch, filter]);
 
-  // The single Filter popover now carries all three dimensions, in order:
-  // Tur (type), Kategoriya (searchable, derived), Birlik (unit). The popover
-  // renders them as tabs and turns the category list into a searchable
-  // multi-select automatically (>6 options or `searchable`).
-  // Workshop (sex) filter options — every production workshop plus a leading
-  // "Sexsiz" pseudo-option so the owner can isolate products with no assigned
-  // sex. Only shown when the workshops list loaded (editors); for read-only
-  // roles the group is omitted entirely.
-  const workshopOptions = useMemo<FilterOption[]>(() => {
-    if (workshops.length === 0) return [];
-    return [
-      { value: WORKSHOP_NONE, label: 'Sexsiz' },
-      ...workshops.map((w) => ({ value: String(w.id), label: w.name })),
-    ];
-  }, [workshops]);
+  // Fetch ONE page and accumulate it. `reset === true` starts a fresh
+  // accumulation (first page after mount or any query-key change); otherwise it
+  // appends the next page. Guarded by `isFetchingRef` so overlapping scroll
+  // events / resets can't issue duplicate requests. Only runs in paginated mode.
+  const fetchPage = useCallback(
+    async (reset: boolean) => {
+      if (!paginated) return;
+      // A reset always supersedes an in-flight load — it aborts the previous
+      // request below, so it must not be blocked by the guard. Only a "load
+      // more" is debounced against a fetch already running. (Without this,
+      // React 18 StrictMode's double-invoke aborts the first fetch while the
+      // guard turns the second into a no-op → stuck loading.)
+      if (!reset && isFetchingRef.current) return;
+      isFetchingRef.current = true;
 
-  const FILTER_GROUPS = useMemo<FilterGroup[]>(() => {
-    const groups: FilterGroup[] = [
-      {
-        key: 'category',
-        label: 'Kategoriya',
-        searchable: true,
-        options: categoryOptions,
-      },
-      {
-        key: 'unit',
-        label: 'Birlik',
-        searchable: false,
-        options: UNIT_OPTIONS.map((u) => ({ value: u.value, label: u.label })),
-      },
-    ];
-    if (workshopOptions.length > 0) {
-      groups.push({
-        key: 'workshop',
-        label: 'Sex',
-        searchable: true,
-        options: workshopOptions,
-      });
-    }
-    return groups;
-  }, [categoryOptions, workshopOptions]);
+      // Cancel any previous in-flight request before starting a new one.
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
 
-  const filtered = useMemo(() => {
+      const offset = reset ? 0 : offsetRef.current;
+      if (reset) {
+        setIsLoadingFirst(true);
+        setServerError(null);
+      } else {
+        setIsLoadingMore(true);
+      }
+
+      try {
+        const res = await apiRequest<ProductsPageResponse>(
+          `${CATALOGUE_ENDPOINT}?${queryKey}&offset=${offset}`,
+          { signal: controller.signal },
+        );
+        if (controller.signal.aborted) return;
+
+        const pageItems = res.items ?? [];
+        offsetRef.current = offset + pageItems.length;
+        totalRef.current = res.total;
+        setServerTotal(res.total);
+        // Facets are recomputed by the server for the current type/filter
+        // context; refresh them from every page (cheap, keeps options honest).
+        setFacets(res.facets ?? EMPTY_FACETS);
+
+        if (reset) {
+          loadedCountRef.current = pageItems.length;
+          setServerItems(pageItems);
+        } else {
+          loadedCountRef.current += pageItems.length;
+          setServerItems((prev) => [...prev, ...pageItems]);
+        }
+      } catch (err: unknown) {
+        if (controller.signal.aborted) return;
+        const message =
+          err instanceof ApiError ? err.message : 'Ma’lumotni yuklab bo‘lmadi.';
+        // Only the first page surfaces a blocking error state; a failed
+        // "load more" leaves the already-loaded products visible.
+        if (reset) setServerError(message);
+      } finally {
+        if (!controller.signal.aborted) {
+          if (reset) setIsLoadingFirst(false);
+          else setIsLoadingMore(false);
+        }
+        isFetchingRef.current = false;
+      }
+    },
+    [paginated, queryKey],
+  );
+
+  // Reset + refetch the FIRST page on mount and whenever the query key changes
+  // (type tab / debounced search / any filter). The query key is the reset key.
+  useEffect(() => {
+    if (!paginated) return;
+    loadedCountRef.current = 0;
+    totalRef.current = 0;
+    offsetRef.current = 0;
+    setServerItems([]);
+    setServerTotal(0);
+    void fetchPage(true);
+    return () => abortRef.current?.abort();
+  }, [paginated, fetchPage]);
+
+  // ── STOCK-AWARE (legacy) MODE ─────────────────────────────────────────
+  // The non-paginated endpoint (/api/products/yarim-tayyor) returns a small,
+  // already-отдел-scoped bare array OR a `{ products: [...] }` envelope. Fetch
+  // it once and filter/render client-side as before. The query is SKIPPED in
+  // paginated mode (`null`) so the catalogue makes only its own paged calls.
+  const { data: legacyData, isLoading: legacyLoading, error: legacyError, refetch: legacyRefetch } =
+    useApiQuery<StockProduct[] | { products: StockProduct[] }>(
+      paginated ? null : dataEndpoint,
+    );
+
+  // A workshop assignment / cost edit must refresh whichever data path is live.
+  const onWorkshopAssigned = useCallback(() => {
+    if (paginated) void fetchPage(true);
+    else legacyRefetch();
+  }, [paginated, fetchPage, legacyRefetch]);
+  const refetchAll = useCallback(() => {
+    if (paginated) void fetchPage(true);
+    else legacyRefetch();
+  }, [paginated, fetchPage, legacyRefetch]);
+
+  const legacyProducts = useMemo<StockProduct[]>(() => {
+    if (legacyData == null) return [];
+    return Array.isArray(legacyData) ? legacyData : legacyData.products;
+  }, [legacyData]);
+
+  // Legacy client-side filter (type tab is fixed by `forcedType` in this mode,
+  // so the type leg is skipped — the endpoint already type-scoped the rows).
+  const legacyFiltered = useMemo(() => {
+    if (paginated) return [];
     const selectedCategories = filter.category ?? [];
     const selectedUnits = filter.unit ?? [];
     const selectedWorkshops = filter.workshop ?? [];
-    return allProducts.filter((p) => {
-      // EPIC 1.3 — Г/П-prefixed products are treated as finished.
-      // A stock-aware section (`showStock`) is fed an endpoint that ALREADY
-      // type-scoped the rows server-side (e.g. /api/products/yarim-tayyor →
-      // only this отдел's зг), so we must NOT re-filter by type here — the
-      // client `effectiveType` heuristic could wrongly drop a Г/П-named зг.
-      if (!showStock && typeTab !== 'all' && effectiveType(p) !== typeTab) {
-        return false;
-      }
+    return legacyProducts.filter((p) => {
       if (
         selectedCategories.length > 0 &&
         !(
@@ -648,7 +760,6 @@ export function ProductsPage({
         return false;
       }
       if (selectedWorkshops.length > 0) {
-        // "Sexsiz" matches a null workshop; otherwise match the assigned id.
         const key = p.workshop != null ? String(p.workshop.id) : WORKSHOP_NONE;
         if (!selectedWorkshops.includes(key)) {
           return false;
@@ -659,27 +770,115 @@ export function ProductsPage({
       }
       return true;
     });
-  }, [allProducts, filter, search, typeTab, showStock]);
+  }, [paginated, legacyProducts, filter, search]);
 
-  // EPIC 1.4c — incremental rendering. Reset the window whenever the result
-  // set changes so a fresh filter never starts mid-list.
+  // Legacy incremental-render window (only used in stock-aware mode).
+  const [legacyVisibleCount, setLegacyVisibleCount] = useState(LEGACY_RENDER_BATCH);
   useEffect(() => {
-    setVisibleCount(PAGE_SIZE);
-  }, [filtered.length]);
+    if (paginated) return;
+    setLegacyVisibleCount(LEGACY_RENDER_BATCH);
+  }, [paginated, legacyFiltered.length]);
 
-  const visible = filtered.slice(0, visibleCount);
-  const hasMore = visible.length < filtered.length;
+  // ── UNIFIED VIEW MODEL ────────────────────────────────────────────────
+  // Both modes resolve to the SAME downstream shape so the render tree (card
+  // grid groups, mobile list, sentinel, states) is written once.
+  const items: StockProduct[] = paginated
+    ? (serverItems as StockProduct[])
+    : legacyFiltered.slice(0, legacyVisibleCount);
+  const total = paginated ? serverTotal : legacyFiltered.length;
+  const isLoading = paginated ? isLoadingFirst : legacyLoading;
+  const error = paginated ? serverError : legacyError;
+  // Paginated: more pages remain on the server. Legacy: more rows to reveal.
+  const hasMore = paginated
+    ? items.length < total
+    : legacyFiltered.length > items.length;
 
-  // Group the currently-visible products by their real Poster category.
-  // Products without one fall into a trailing "Kategoriyasiz" group.
-  // Grouping the *windowed* slice (not the full list) keeps the incremental
-  // scroll batching honest — a half-loaded category simply shows fewer cards.
-  // Groups are sorted by descending product count (largest first), then by
-  // name for a stable order; the null group is always pinned last.
+  // ── FILTER OPTIONS ────────────────────────────────────────────────────
+  // Paginated: options come from the server FACETS (the page is partial, so
+  // they CAN'T be derived from the loaded rows). Legacy: derive from the small
+  // already-loaded set, as before.
+  const categoryOptions = useMemo<FilterOption[]>(() => {
+    if (paginated) {
+      return facets.categories.map((c) => ({ value: c.value, label: c.label }));
+    }
+    const counts = new Map<string, number>();
+    for (const p of legacyProducts) {
+      const name = p.poster_category?.name;
+      if (name == null) continue;
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .sort((a, b) => (b[1] !== a[1] ? b[1] - a[1] : a[0].localeCompare(b[0])))
+      .map(([name]) => ({ value: name, label: name }));
+  }, [paginated, facets.categories, legacyProducts]);
+
+  const unitOptions = useMemo<FilterOption[]>(() => {
+    if (paginated) {
+      // Map the server's raw unit codes to their Uzbek labels, preserving the
+      // canonical UNIT_OPTIONS order (kg · l · pcs) for any present unit.
+      const present = new Set(facets.units);
+      return UNIT_OPTIONS.filter((u) => present.has(u.value)).map((u) => ({
+        value: u.value,
+        label: u.label,
+      }));
+    }
+    return UNIT_OPTIONS.map((u) => ({ value: u.value, label: u.label }));
+  }, [paginated, facets.units]);
+
+  // Workshop (sex) filter options — a leading "Sexsiz" pseudo-option so the
+  // owner can isolate products with no assigned sex, then every workshop.
+  // Source: server FACETS in paginated mode; the canonical workshops list in
+  // legacy mode. Empty (read-only roles in legacy mode) → group omitted.
+  const workshopOptions = useMemo<FilterOption[]>(() => {
+    const rows = paginated ? facets.workshops : workshops;
+    if (rows.length === 0) return [];
+    return [
+      { value: WORKSHOP_NONE, label: 'Sexsiz' },
+      ...rows.map((w) => ({ value: String(w.id), label: w.name })),
+    ];
+  }, [paginated, facets.workshops, workshops]);
+
+  const FILTER_GROUPS = useMemo<FilterGroup[]>(() => {
+    const groups: FilterGroup[] = [
+      {
+        key: 'category',
+        label: 'Kategoriya',
+        searchable: true,
+        options: categoryOptions,
+      },
+      {
+        key: 'unit',
+        label: 'Birlik',
+        searchable: false,
+        options: unitOptions,
+      },
+    ];
+    if (workshopOptions.length > 0) {
+      groups.push({
+        key: 'workshop',
+        label: 'Sex',
+        searchable: true,
+        options: workshopOptions,
+      });
+    }
+    return groups;
+  }, [categoryOptions, unitOptions, workshopOptions]);
+
+  // Per-tab counts for the type segmented control. In paginated mode the page
+  // holds only a partial set, so a precise whole-catalogue count per tab is not
+  // available client-side; the badge shows the server `total` for the ACTIVE
+  // tab only (others render no badge). In legacy mode the tabs are hidden
+  // (forcedType), so this is irrelevant there.
+  const activeTabCount = paginated ? total : items.length;
+
+  // ── CARD GROUPS (by Poster category) ──────────────────────────────────
+  // Group the loaded products by their real Poster category. Products without
+  // one fall into a trailing "Kategoriyasiz" group. Groups are sorted by
+  // descending size (largest first), then by name; the null group is last.
   const cardGroups = useMemo(() => {
-    const NULL_KEY = ' '; // sorts/identifies the "Kategoriyasiz" bucket
+    const NULL_KEY = ' '; // sorts/identifies the "Kategoriyasiz" bucket
     const buckets = new Map<string, { name: string; items: StockProduct[] }>();
-    for (const p of filtered) {
+    for (const p of items) {
       const key = p.poster_category?.name ?? NULL_KEY;
       const name = p.poster_category?.name ?? 'Kategoriyasiz';
       const bucket = buckets.get(key);
@@ -687,7 +886,7 @@ export function ProductsPage({
       else buckets.set(key, { name, items: [p] });
     }
     return [...buckets.entries()]
-      .map(([key, { name, items }]) => ({ key, name, items }))
+      .map(([key, { name, items: groupItems }]) => ({ key, name, items: groupItems }))
       .sort((a, b) => {
         if (a.key === NULL_KEY) return 1;
         if (b.key === NULL_KEY) return -1;
@@ -696,46 +895,36 @@ export function ProductsPage({
         }
         return a.name.localeCompare(b.name);
       });
-  }, [filtered]);
+  }, [items]);
 
-  // Apply the incremental window ACROSS the stable group order: walk groups in
-  // order and hand out `visibleCount` cards in total. Each group keeps its
-  // full `total` for the header badge; only the number of cards rendered grows
-  // as the sentinel scrolls into view — groups never re-order or reshuffle.
-  const visibleGroups = useMemo(() => {
-    let budget = visibleCount;
-    const out: {
-      key: string;
-      name: string;
-      total: number;
-      items: StockProduct[];
-    }[] = [];
-    for (const g of cardGroups) {
-      if (budget <= 0) break;
-      const items = g.items.slice(0, budget);
-      budget -= items.length;
-      out.push({ key: g.key, name: g.name, total: g.items.length, items });
-    }
-    return out;
-  }, [cardGroups, visibleCount]);
-
-  // Infinite-scroll sentinel — grows the window as it scrolls into view.
+  // ── INFINITE-SCROLL SENTINEL ──────────────────────────────────────────
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    if (!hasMore) return;
     const el = sentinelRef.current;
     if (el === null) return;
     const obs = new IntersectionObserver(
       (entries) => {
-        if (entries.some((e) => e.isIntersecting)) {
-          setVisibleCount((c) => c + PAGE_SIZE);
+        const entry = entries[0];
+        if (entry === undefined || !entry.isIntersecting) return;
+        if (paginated) {
+          // Server pagination: fetch the next offset page when more remain and
+          // nothing is in flight (refs hold the live counts so the observer
+          // need not be re-created per append).
+          if (isFetchingRef.current) return;
+          if (loadedCountRef.current >= totalRef.current) return;
+          void fetchPage(false);
+        } else {
+          // Legacy client window: just reveal more already-loaded rows.
+          setLegacyVisibleCount((c) => c + LEGACY_RENDER_BATCH);
         }
       },
       { rootMargin: '400px' },
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, [hasMore, visible.length]);
+    // Re-bind when the mode or the fetcher changes, or when the sentinel
+    // toggles in/out via `hasMore` below (mount/unmount of the node).
+  }, [paginated, fetchPage, hasMore]);
 
   return (
     <div className="mx-auto max-w-[120rem] space-y-6">
@@ -771,14 +960,14 @@ export function ProductsPage({
               )}
             >
               {t.label}
-              <span
-                className={cn(
-                  'rounded-full px-1.5 text-xs tabular-nums',
-                  active ? 'bg-primary-foreground/20' : 'bg-muted',
-                )}
-              >
-                {typeCounts[t.value]}
-              </span>
+              {/* Only the ACTIVE tab carries a count — in server-paginated mode
+                  the page holds a partial set, so a per-tab whole-catalogue
+                  count is not known client-side. */}
+              {active && (
+                <span className="rounded-full bg-primary-foreground/20 px-1.5 text-xs tabular-nums">
+                  {activeTabCount}
+                </span>
+              )}
             </button>
           );
         })}
@@ -822,15 +1011,24 @@ export function ProductsPage({
       >
         {isLoading && <ProductsPageSkeleton />}
         {!isLoading && error && (
-          <ErrorState message={error} onRetry={refetch} />
+          <ErrorState message={error} onRetry={refetchAll} />
         )}
-        {!isLoading && !error && filtered.length === 0 && (
-          <EmptyState message="Mahsulotlar topilmadi." />
+        {!isLoading && !error && items.length === 0 && (
+          <EmptyState message="Mahsulot topilmadi." />
         )}
 
-        {!isLoading && !error && filtered.length > 0 && showMobileCards && (
+        {/* «Ko'rsatildi N / total» — how many of the matching products are
+            currently rendered. In paginated mode this counts up as pages are
+            appended; at the end items.length === total. */}
+        {!isLoading && !error && items.length > 0 && (
+          <p className="mb-3 text-xs text-muted-foreground tabular-nums">
+            Ko‘rsatildi {items.length} / {total}
+          </p>
+        )}
+
+        {!isLoading && !error && items.length > 0 && showMobileCards && (
           <MobileCardList
-            items={visible.map((p) => {
+            items={items.map((p) => {
               const type = effectiveType(p);
               return {
                 id: p.id,
@@ -959,17 +1157,17 @@ export function ProductsPage({
 
         {!isLoading &&
           !error &&
-          filtered.length > 0 &&
+          items.length > 0 &&
           !showMobileCards && (
             <div className="space-y-8">
-              {visibleGroups.map((group) => (
+              {cardGroups.map((group) => (
                 <section key={group.key} className="space-y-3">
                   <div className="flex items-center gap-2">
                     <h2 className="text-xs uppercase tracking-wide text-muted-foreground">
                       {group.name}
                     </h2>
                     <Badge variant="outline" className="tabular-nums">
-                      {group.total}
+                      {group.items.length}
                     </Badge>
                   </div>
                   <div className="grid grid-cols-1 items-stretch gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
@@ -993,12 +1191,15 @@ export function ProductsPage({
             </div>
           )}
 
+        {/* The scroll sentinel. Mounted whenever more rows remain (a server
+            page to fetch, or legacy rows to reveal); the observer above grows
+            the list as it enters the viewport. */}
         {!isLoading && !error && hasMore && (
           <div
             ref={sentinelRef}
             className="py-4 text-center text-xs text-muted-foreground"
           >
-            Yana yuklanmoqda…
+            {isLoadingMore ? 'Yana yuklanmoqda…' : ' '}
           </div>
         )}
       </Card>
@@ -1011,7 +1212,7 @@ export function ProductsPage({
             if (!open) setCostProduct(null);
           }}
           onSaved={() => {
-            refetch();
+            refetchAll();
           }}
         />
       )}

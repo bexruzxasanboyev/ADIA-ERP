@@ -30,6 +30,23 @@ export type ProductCategory =
 
 export type ProductType = 'raw' | 'semi' | 'finished';
 
+/**
+ * Human (Uzbek) labels for each smart category. MIRRORS the frontend
+ * `apps/frontend/src/lib/productCategory.ts` `PRODUCT_CATEGORY_LABELS` so the
+ * server-built `facets.categories[].label` reads identically to the client. The
+ * keys (English category identifiers) stay the value side of the facet.
+ */
+export const PRODUCT_CATEGORY_LABELS: Record<ProductCategory, string> = {
+  drink: 'Ichimlik',
+  decoration: 'Tort bezagi',
+  cake: 'Tort',
+  pastry: 'Qandolat',
+  bread: 'Non mahsuloti',
+  semi: 'Yarim tayyor',
+  raw: 'Xom-ashyo',
+  finished: 'Tayyor mahsulot',
+};
+
 /** Name substrings (lower-cased, Latin + Cyrillic) → category. Order matters. */
 const NAME_RULES: ReadonlyArray<[readonly string[], ProductCategory]> = [
   [

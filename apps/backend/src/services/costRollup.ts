@@ -48,11 +48,21 @@ type RecipeLine = {
 };
 
 /**
- * Compute the bottom-up `computed_cost` for EVERY product in two queries.
- * Returns a Map keyed by product id; the value is the rounded cost or null.
+ * Compute the bottom-up `computed_cost` for products in two queries. Returns a
+ * Map keyed by product id; the value is the rounded cost or null.
+ *
+ * `onlyIds` SCOPES THE RESULT to a subset (e.g. one page of a paginated list):
+ * when given, the returned Map contains ONLY those ids. The roll-up still loads
+ * the WHOLE recipe graph internally — a semi/finished's cost depends on
+ * components that may be outside the page, so restricting the graph would
+ * silently corrupt the cost. Scoping the OUTPUT keeps the numbers identical to
+ * the full pass while only materialising the ids the caller asked for. Omitted
+ * (or `undefined`) -> the full catalogue map (the original, unchanged behaviour
+ * the bare-array list path relies on).
  */
 export async function computeAllProductCosts(
   runner: Runner,
+  onlyIds?: ReadonlySet<number>,
 ): Promise<Map<number, number | null>> {
   // Query 1 — every product's leaf cost + yield. The CATALOG PRICE is now
   // app-owned and Poster-INDEPENDENT: the leaf unit cost is the MANUALLY
@@ -164,7 +174,18 @@ export async function computeAllProductCosts(
   }
 
   const out = new Map<number, number | null>();
-  for (const id of products.keys()) {
+  if (onlyIds === undefined) {
+    // Full catalogue — the original behaviour (the bare-array list path).
+    for (const id of products.keys()) {
+      out.set(id, round2OrNull(unitCost(id, new Set([id]), 0)));
+    }
+    return out;
+  }
+  // Scoped — only the requested ids. The cost of each is still computed against
+  // the FULL graph loaded above (so a page row whose components are off-page
+  // still rolls up correctly); we just emit the subset.
+  for (const id of onlyIds) {
+    // An id with no product row resolves to null (mirrors unitCost's leaf path).
     out.set(id, round2OrNull(unitCost(id, new Set([id]), 0)));
   }
   return out;

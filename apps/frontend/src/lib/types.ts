@@ -1662,6 +1662,42 @@ export interface DashboardEcosystem {
   };
 }
 
+/**
+ * `GET /api/dashboard/brak-summary?range=…` envelope — the PM dashboard's
+ * "Sifat & integritet" (quality) row. Mirrors `BrakSummaryResponse` in
+ * `apps/backend/src/routes/dashboard.ts`.
+ *
+ * Aggregates defective ("brak") qty captured on goods-receipt across the chain
+ * for the resolved date range, from two authoritative sources:
+ *   - purchase:      `purchase_orders.brak_qty` (raw-warehouse PO receive).
+ *   - replenishment: `replenishment_requests.brak_qty` (shipment receive).
+ * `total_received_qty` is the GOOD qty received in the same range (PO ordered
+ * qty + replenishment accepted qty), so `brak_ratio = brak / (good + brak)`.
+ */
+export interface BrakSummaryResponse {
+  /** ISO `YYYY-MM-DD` — resolved range start. */
+  from: string;
+  /** ISO `YYYY-MM-DD` — resolved (inclusive) range end. */
+  to: string;
+  /** Good qty received in range (denominator base). */
+  total_received_qty: number;
+  /** Defective qty in range. */
+  total_brak_qty: number;
+  /** `total_brak_qty / (total_received_qty + total_brak_qty)`, 0..1; 0 when the denominator is 0. */
+  brak_ratio: number;
+  /** Brak qty split by origin. */
+  by_source: { purchase: number; replenishment: number };
+  /** Top 5 products by brak qty, descending. Empty when there is no brak data. */
+  top: Array<{
+    product_id: number;
+    product_name: string;
+    unit: string;
+    brak_qty: number;
+    /** Most-recent brak reason for the product; `null` when none was recorded. */
+    reason: string | null;
+  }>;
+}
+
 export interface PurchaseOrder {
   id: number;
   product_id: number;

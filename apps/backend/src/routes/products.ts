@@ -37,6 +37,7 @@ import { matchesSearch } from '../lib/translit.js';
 import {
   deriveCategory,
   effectiveType,
+  PRODUCT_CATEGORY_LABELS,
   type ProductCategory,
   type ProductType,
 } from '../lib/productCategory.js';
@@ -186,6 +187,99 @@ const PRODUCT_SELECT = `SELECT p.id, p.name, p.type, p.unit, p.sku,
 const PRODUCT_RETURNING = `id, name, type, unit, sku, poster_ingredient_id,
   poster_product_id, category_id, is_active, created_at, updated_at`;
 
+// -----------------------------------------------------------------------------
+// Opt-in pagination (server-side filtering) for GET /api/products.
+//
+// `?limit=` ABSENT -> the legacy bare-array path (untouched). PRESENT -> the
+// paginated `{ items, total, facets }` envelope. The helpers + constants below
+// power only the paginated branch.
+// -----------------------------------------------------------------------------
+
+/**
+ * The `?type=` whitelist for the PAGINATED branch. WIDER than `PRODUCT_TYPES`
+ * (which gates create + the legacy `?type=` filter): it adds `resale` (Poster
+ * materialises товары as `type='resale'` — migration 0057) and the `all`
+ * sentinel (no SQL type filter). The legacy bare-array path keeps validating
+ * against the narrow `PRODUCT_TYPES` so its behaviour is byte-for-byte stable.
+ */
+const PAGINATED_TYPE_FILTERS = ['all', 'finished', 'semi', 'raw', 'resale'] as const;
+type PaginatedTypeFilter = (typeof PAGINATED_TYPE_FILTERS)[number];
+
+/** Page-size guards — `limit` is clamped to [1, 200]; `offset` to [0, ∞). */
+const MAX_PRODUCTS_PAGE_SIZE = 200;
+const MIN_PRODUCTS_PAGE_SIZE = 1;
+
+/** One facet category option: the enrich `category` key + its label + count. */
+type CategoryFacet = { value: ProductCategory; label: string; count: number };
+
+/** The filter-popover facets computed over the type+search-filtered set. */
+type ProductFacets = {
+  categories: CategoryFacet[];
+  units: string[];
+  workshops: { id: number; name: string }[];
+};
+
+/** Parse an integer query value clamped to [min, max], else `fallback`. */
+function clampIntQuery(raw: unknown, fallback: number, min: number, max: number): number {
+  if (typeof raw !== 'string' || raw === '') {
+    return fallback;
+  }
+  const n = Number(raw);
+  if (!Number.isInteger(n)) {
+    return fallback;
+  }
+  return Math.min(Math.max(n, min), max);
+}
+
+/**
+ * Split a CSV query param into a trimmed, de-duplicated, non-empty token list.
+ * Absent / non-string / all-empty -> `[]` (meaning "no narrowing on this dim").
+ */
+function parseCsvQuery(raw: unknown): string[] {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return [];
+  }
+  const seen = new Set<string>();
+  for (const part of raw.split(',')) {
+    const t = part.trim();
+    if (t !== '') seen.add(t);
+  }
+  return [...seen];
+}
+
+/**
+ * Build the filter-popover facets over the ALREADY type+search-filtered rows
+ * (so the popover only ever offers choices that exist in the current view):
+ *   - categories: every distinct enrich `category`, with its count, sorted by
+ *     descending count then label (most-populated first);
+ *   - units:      every distinct unit, sorted ascending;
+ *   - workshops:  every distinct assigned workshop {id,name}, sorted by name.
+ * "Unassigned" workshop is represented by the literal `'none'` filter token on
+ * the request side — it is NOT a facet entry (there is no workshop to name).
+ */
+function computeFacets(rows: readonly EnrichedProductRow[]): ProductFacets {
+  const categoryCounts = new Map<ProductCategory, number>();
+  const units = new Set<string>();
+  const workshops = new Map<number, string>();
+  for (const r of rows) {
+    categoryCounts.set(r.category, (categoryCounts.get(r.category) ?? 0) + 1);
+    units.add(r.unit);
+    if (r.workshop !== null) {
+      workshops.set(r.workshop.id, r.workshop.name);
+    }
+  }
+  const categories: CategoryFacet[] = [...categoryCounts.entries()]
+    .map(([value, count]) => ({ value, label: PRODUCT_CATEGORY_LABELS[value], count }))
+    .sort((a, b) => (b.count !== a.count ? b.count - a.count : a.label.localeCompare(b.label)));
+  return {
+    categories,
+    units: [...units].sort((a, b) => a.localeCompare(b)),
+    workshops: [...workshops.entries()]
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+  };
+}
+
 // GET /api/products?type=
 productsRouter.get(
   '/',
@@ -199,6 +293,14 @@ productsRouter.get(
     'store_manager',
   ),
   asyncHandler(async (req, res) => {
+    // OPT-IN pagination switch: `?limit=` present -> the `{ items, total, facets }`
+    // envelope (paginated branch below). Absent -> the legacy bare-array path,
+    // kept byte-for-byte unchanged so existing consumers + tests do not break.
+    if (req.query.limit !== undefined) {
+      await handlePaginatedProductList(req, res);
+      return;
+    }
+
     const typeRaw = typeof req.query.type === 'string' ? req.query.type : undefined;
     if (typeRaw !== undefined && !(PRODUCT_TYPES as readonly string[]).includes(typeRaw)) {
       throw AppError.validation(`Query "type" must be one of: ${PRODUCT_TYPES.join(', ')}.`);
@@ -235,6 +337,114 @@ productsRouter.get(
     res.status(200).json(filtered.map((r) => enrich(r, costs.get(r.id) ?? null)));
   }),
 );
+
+/**
+ * The PAGINATED `GET /api/products` branch (active only when `?limit=` is
+ * present). Returns `{ items, total, facets }`. Pipeline (order is contractual):
+ *
+ *   1. load + enrich every candidate row (SQL `type` pre-filter; `all` = none);
+ *   2. apply the translit `search` filter -> the "type+search-filtered set";
+ *   3. compute `facets` over THAT set (so the popover offers valid choices);
+ *   4. narrow by `category` / `unit` / `workshop` (the popover selections);
+ *   5. `total` = narrowed length; slice [offset, offset+limit);
+ *   6. compute `computed_cost` for ONLY the sliced page's ids (scoped roll-up);
+ *   7. respond `{ items, total, facets }`.
+ *
+ * RBAC/auth is the caller's (same authorize gate as the bare-array path).
+ */
+async function handlePaginatedProductList(
+  req: import('express').Request,
+  res: import('express').Response,
+): Promise<void> {
+  // --- params -------------------------------------------------------------
+  const typeRaw = typeof req.query.type === 'string' ? req.query.type : 'all';
+  if (!(PAGINATED_TYPE_FILTERS as readonly string[]).includes(typeRaw)) {
+    throw AppError.validation(
+      `Query "type" must be one of: ${PAGINATED_TYPE_FILTERS.join(', ')}.`,
+    );
+  }
+  const typeFilter = typeRaw as PaginatedTypeFilter;
+
+  const searchRaw =
+    typeof req.query.search === 'string' ? req.query.search.trim() : '';
+  const categoryFilter = parseCsvQuery(req.query.category);
+  const unitFilter = parseCsvQuery(req.query.unit);
+  const workshopFilter = parseCsvQuery(req.query.workshop);
+
+  const limit = clampIntQuery(
+    req.query.limit,
+    MAX_PRODUCTS_PAGE_SIZE,
+    MIN_PRODUCTS_PAGE_SIZE,
+    MAX_PRODUCTS_PAGE_SIZE,
+  );
+  const offset = clampIntQuery(req.query.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+
+  // --- 1. load + enrich (SQL pre-filter by the concrete type) -------------
+  // `all` -> no SQL type predicate; a concrete type narrows in SQL first so the
+  // in-memory set is small. (`resale` is a valid value here — see the enum.)
+  const { rows } =
+    typeFilter === 'all'
+      ? await query<ProductRow>(`${PRODUCT_SELECT} ORDER BY p.id`)
+      : await query<ProductRow>(`${PRODUCT_SELECT} WHERE p.type = $1 ORDER BY p.id`, [
+          typeFilter,
+        ]);
+
+  // Enrich WITHOUT cost first (cost is scoped to the page later) — the
+  // category/effective_type/workshop fields drive both facets and narrowing.
+  const enriched = rows.map((r) => enrich(r));
+
+  // --- 2. translit search over name + sku ---------------------------------
+  const typeSearchSet =
+    searchRaw === ''
+      ? enriched
+      : enriched.filter((r) => matchesSearch(`${r.name} ${r.sku ?? ''}`, searchRaw));
+
+  // --- 3. facets over the type+search set ---------------------------------
+  const facets = computeFacets(typeSearchSet);
+
+  // --- 4. category / unit / workshop narrowing ----------------------------
+  const categorySet = new Set(categoryFilter);
+  const unitSet = new Set(unitFilter);
+  // Workshop tokens are stringified ids plus the literal 'none' (unassigned).
+  const wantNoWorkshop = workshopFilter.includes('none');
+  const workshopIdSet = new Set(
+    workshopFilter.filter((t) => t !== 'none').map((t) => Number(t)),
+  );
+  const narrowed = typeSearchSet.filter((r) => {
+    if (categorySet.size > 0 && !categorySet.has(r.category)) {
+      return false;
+    }
+    if (unitSet.size > 0 && !unitSet.has(r.unit)) {
+      return false;
+    }
+    if (wantNoWorkshop || workshopIdSet.size > 0) {
+      const matchesNone = wantNoWorkshop && r.workshop === null;
+      const matchesId = r.workshop !== null && workshopIdSet.has(r.workshop.id);
+      if (!matchesNone && !matchesId) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  // --- 5. total + slice ---------------------------------------------------
+  const total = narrowed.length;
+  const pageRows = narrowed.slice(offset, offset + limit);
+
+  // --- 6. computed_cost for ONLY the page ids -----------------------------
+  // The roll-up loads the whole recipe graph (so an off-page component still
+  // contributes) but materialises costs for the page ids alone — that is the
+  // win over the bare-array path's whole-catalogue map.
+  const pageIds = new Set(pageRows.map((r) => r.id));
+  const costs =
+    pageIds.size === 0
+      ? new Map<number, number | null>()
+      : await computeAllProductCosts(poolRunner, pageIds);
+
+  // --- 7. respond ---------------------------------------------------------
+  const items = pageRows.map((r) => ({ ...r, computed_cost: costs.get(r.id) ?? null }));
+  res.status(200).json({ items, total, facets });
+}
 
 // GET /api/products/workshops — the canonical product workshops (sexes).
 //

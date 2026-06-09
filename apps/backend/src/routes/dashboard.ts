@@ -4375,3 +4375,264 @@ async function fetchRequestsSeriesHourly(
   }
   return { granularity: 'hour', days };
 }
+
+// =============================================================================
+// GET /api/dashboard/brak-summary — PM "Sifat & integritet" (quality) row.
+// =============================================================================
+//
+// Aggregates brak (defective) quantities captured on goods-receipt across the
+// chain, for the requested `?range`. Brak is recorded in TWO authoritative
+// places (the `stock_movements` table has NO brak_qty column — confirmed
+// against migrations 0001/0045/0056, so it contributes nothing here):
+//
+//   - replenishment_requests.brak_qty (+ brak_reason) — captured when a
+//     requester (store / central) RECEIVES a shipment (migration 0045). The
+//     corresponding GOOD qty is `qty_accepted` (the sellable qty kept). The
+//     receipt timestamp is `closed_at` (set to now() on receive).
+//     Receiving location = `requester_location_id`.
+//
+//   - purchase_orders.brak_qty (+ brak_reason) — captured when a
+//     raw_warehouse_manager RECEIVES an approved purchase order (migration
+//     0056). The brak qty is written off the warehouse via an `adjust`
+//     movement, so the GOOD qty received is the ordered `qty`. The receipt
+//     timestamp is `updated_at` (the `trg_purchase_updated` trigger stamps it
+//     when status flips to 'received'). Receiving location = `target_location_id`.
+//
+// DENOMINATOR (assumption): `total_received_qty` is the GOOD qty received in
+// the range — replenishment `qty_accepted` + purchase ordered `qty` — and the
+// ratio is `brak / (good + brak)`. A NULL `qty_accepted` (older closed rows
+// with no partial-accept bookkeeping) coalesces to 0 so it never inflates the
+// denominator.
+//
+// RBAC mirrors /api/dashboard/aging-alerts (resolveEcosystemScope, M:N
+// locationIds): pm / ai_assistant -> chain-wide; a scoped principal is limited
+// to brak recorded at their assigned locations. An empty-scope principal gets
+// zeros (never a 500).
+// =============================================================================
+
+const BRAK_TOP_LIMIT = 5;
+
+type BrakAggregateRaw = {
+  source: 'purchase' | 'replenishment';
+  total_brak_qty: string | null;
+  total_received_qty: string | null;
+};
+
+type BrakTopRaw = {
+  product_id: string;
+  product_name: string;
+  unit: string;
+  brak_qty: string;
+  reason: string | null;
+};
+
+type BrakSummaryTopItem = {
+  product_id: number;
+  product_name: string;
+  unit: string;
+  brak_qty: number;
+  reason: string | null;
+};
+
+type BrakSummaryResponse = {
+  from: string;
+  to: string;
+  total_received_qty: number;
+  total_brak_qty: number;
+  brak_ratio: number;
+  by_source: { purchase: number; replenishment: number };
+  top: BrakSummaryTopItem[];
+};
+
+dashboardRouter.get(
+  '/brak-summary',
+  authenticate,
+  authorize(
+    'pm',
+    'raw_warehouse_manager',
+    'production_manager',
+    'supply_manager',
+    'central_warehouse_manager',
+    'store_manager',
+    'ai_assistant',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const scope = resolveEcosystemScope(principal);
+    const range = parseDateRange(req.query);
+
+    const fromIso = toIsoDate(range.from);
+    // `range.to` is exclusive (half-open [from, to)); the "to" the UI shows is
+    // the inclusive last day, so subtract 1ms before formatting.
+    const toIso = toIsoDate(new Date(range.to.getTime() - 1));
+
+    if (scope.kind === 'empty') {
+      res.status(200).json({
+        from: fromIso,
+        to: toIso,
+        total_received_qty: 0,
+        total_brak_qty: 0,
+        brak_ratio: 0,
+        by_source: { purchase: 0, replenishment: 0 },
+        top: [],
+      } satisfies BrakSummaryResponse);
+      return;
+    }
+
+    const [aggregates, top] = await Promise.all([
+      fetchBrakAggregates(scope, range),
+      fetchBrakTop(scope, range),
+    ]);
+
+    let purchaseBrak = 0;
+    let replenishmentBrak = 0;
+    let goodQty = 0;
+    for (const row of aggregates) {
+      const brak = Number(row.total_brak_qty ?? 0);
+      goodQty += Number(row.total_received_qty ?? 0);
+      if (row.source === 'purchase') purchaseBrak += brak;
+      else replenishmentBrak += brak;
+    }
+    const totalBrak = purchaseBrak + replenishmentBrak;
+    const denom = goodQty + totalBrak;
+    const ratio = denom === 0 ? 0 : totalBrak / denom;
+
+    res.status(200).json({
+      from: fromIso,
+      to: toIso,
+      total_received_qty: round4(goodQty),
+      total_brak_qty: round4(totalBrak),
+      brak_ratio: Math.round(ratio * 10000) / 10000,
+      by_source: {
+        purchase: round4(purchaseBrak),
+        replenishment: round4(replenishmentBrak),
+      },
+      top: top.map((r) => ({
+        product_id: Number(r.product_id),
+        product_name: r.product_name,
+        unit: r.unit,
+        brak_qty: round4(Number(r.brak_qty)),
+        reason: r.reason,
+      })),
+    } satisfies BrakSummaryResponse);
+  }),
+);
+
+/** Round a NUMERIC(14,4) total to 4 dp (kills float drift from summation). */
+function round4(n: number): number {
+  return Math.round(n * 10000) / 10000;
+}
+
+/**
+ * Brak + good-received qty per source, scoped + range-clipped. Two UNION-ed
+ * sub-aggregates so the route gets one round trip:
+ *   - purchase:      received POs with brak; good qty = ordered `qty`,
+ *                    timestamp = `updated_at`, location = `target_location_id`.
+ *   - replenishment: closed requests with brak; good qty = `qty_accepted`,
+ *                    timestamp = `closed_at`, location = `requester_location_id`.
+ * Half-open `[from, to)` window on the respective receipt timestamp.
+ */
+async function fetchBrakAggregates(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+  range: DateRange,
+): Promise<BrakAggregateRaw[]> {
+  const params: SqlParam[] = [range.from, range.to];
+  const fromIdx = 1;
+  const toIdx = 2;
+
+  let poLoc = '';
+  let rrLoc = '';
+  if (scope.kind === 'locations') {
+    params.push(scope.locationIds);
+    const locIdx = params.length;
+    poLoc = ` AND po.target_location_id = ANY($${locIdx}::bigint[])`;
+    rrLoc = ` AND rr.requester_location_id = ANY($${locIdx}::bigint[])`;
+  }
+
+  const { rows } = await query<BrakAggregateRaw>(
+    `SELECT 'purchase' AS source,
+            coalesce(sum(po.brak_qty), 0)              AS total_brak_qty,
+            coalesce(sum(po.qty), 0)                   AS total_received_qty
+       FROM purchase_orders po
+      WHERE po.status = 'received'
+        AND po.brak_qty IS NOT NULL AND po.brak_qty > 0
+        AND po.updated_at >= $${fromIdx} AND po.updated_at < $${toIdx}
+        ${poLoc}
+     UNION ALL
+     SELECT 'replenishment' AS source,
+            coalesce(sum(rr.brak_qty), 0)              AS total_brak_qty,
+            coalesce(sum(rr.qty_accepted), 0)          AS total_received_qty
+       FROM replenishment_requests rr
+      WHERE rr.brak_qty IS NOT NULL AND rr.brak_qty > 0
+        AND rr.closed_at IS NOT NULL
+        AND rr.closed_at >= $${fromIdx} AND rr.closed_at < $${toIdx}
+        ${rrLoc}`,
+    params,
+  );
+  return rows;
+}
+
+/**
+ * Top-N products by brak qty (descending), aggregated across BOTH sources for
+ * the range + scope. The `reason` is the most-recent brak_reason for that
+ * product (picked via DISTINCT ON over the unioned receipt rows). Good qty is
+ * irrelevant here — this list is purely "what broke the most".
+ */
+async function fetchBrakTop(
+  scope: Exclude<EcosystemScope, { kind: 'empty' }>,
+  range: DateRange,
+): Promise<BrakTopRaw[]> {
+  const params: SqlParam[] = [range.from, range.to];
+  const fromIdx = 1;
+  const toIdx = 2;
+
+  let poLoc = '';
+  let rrLoc = '';
+  if (scope.kind === 'locations') {
+    params.push(scope.locationIds);
+    const locIdx = params.length;
+    poLoc = ` AND po.target_location_id = ANY($${locIdx}::bigint[])`;
+    rrLoc = ` AND rr.requester_location_id = ANY($${locIdx}::bigint[])`;
+  }
+  params.push(BRAK_TOP_LIMIT);
+  const limitIdx = params.length;
+
+  const { rows } = await query<BrakTopRaw>(
+    `WITH brak_rows AS (
+       SELECT po.product_id, po.brak_qty AS brak_qty, po.brak_reason AS reason,
+              po.updated_at AS at
+         FROM purchase_orders po
+        WHERE po.status = 'received'
+          AND po.brak_qty IS NOT NULL AND po.brak_qty > 0
+          AND po.updated_at >= $${fromIdx} AND po.updated_at < $${toIdx}
+          ${poLoc}
+       UNION ALL
+       SELECT rr.product_id, rr.brak_qty AS brak_qty, rr.brak_reason AS reason,
+              rr.closed_at AS at
+         FROM replenishment_requests rr
+        WHERE rr.brak_qty IS NOT NULL AND rr.brak_qty > 0
+          AND rr.closed_at IS NOT NULL
+          AND rr.closed_at >= $${fromIdx} AND rr.closed_at < $${toIdx}
+          ${rrLoc}
+     ),
+     by_product AS (
+       SELECT product_id, sum(brak_qty) AS brak_qty
+         FROM brak_rows
+        GROUP BY product_id
+     ),
+     latest_reason AS (
+       SELECT DISTINCT ON (product_id) product_id, reason
+         FROM brak_rows
+        ORDER BY product_id, at DESC
+     )
+     SELECT bp.product_id, p.name AS product_name, p.unit::text AS unit,
+            bp.brak_qty, lr.reason
+       FROM by_product bp
+       JOIN products p     ON p.id = bp.product_id
+       LEFT JOIN latest_reason lr ON lr.product_id = bp.product_id
+      ORDER BY bp.brak_qty DESC, bp.product_id
+      LIMIT $${limitIdx}`,
+    params,
+  );
+  return rows;
+}
