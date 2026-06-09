@@ -93,15 +93,19 @@ describe('ReplenishmentPage — redesign', () => {
     mockList();
     renderWithProviders(<ReplenishmentPage />, { role: 'pm' });
     await screen.findByText('#1');
-    // 5 rows total; pending = NEW+PRODUCING (2); sent = SHIP (1); closed = CLOSED (1).
+    // 5 rows → stages: NEW=kutuvda(1), PRODUCING=soralgan(1),
+    // SHIP=yuborilgan(1), CLOSED+CANCELLED=yopilgan(2).
     expect(screen.getByRole('tab', { name: 'Hammasi (5)' })).toBeInTheDocument();
     expect(
-      screen.getByRole('tab', { name: 'Kutib turgan (2)' }),
+      screen.getByRole('tab', { name: 'Kutuvda (1)' }),
     ).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Yuborgan (1)' })).toBeInTheDocument();
     expect(
-      screen.getByRole('tab', { name: 'Qabul qilgan (1)' }),
+      screen.getByRole('tab', { name: 'Tayyorlanmoqda (1)' }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole('tab', { name: 'Jo‘natildi (1)' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Yopildi (2)' })).toBeInTheDocument();
   });
 
   it('filters rows to the active status bucket', async () => {
@@ -111,11 +115,11 @@ describe('ReplenishmentPage — redesign', () => {
     await screen.findByText('#1');
     // Default "Hammasi" shows all five (incl. CANCELLED #5).
     expect(screen.getByText('#5')).toBeInTheDocument();
-    // Switch to "Kutib turgan" → only NEW (#1) + PRODUCING (#2).
-    await user.click(screen.getByRole('tab', { name: 'Kutib turgan (2)' }));
+    // Switch to "Kutuvda" → only NEW (#1).
+    await user.click(screen.getByRole('tab', { name: 'Kutuvda (1)' }));
     await waitFor(() => expect(screen.queryByText('#5')).toBeNull());
     expect(screen.getByText('#1')).toBeInTheDocument();
-    expect(screen.getByText('#2')).toBeInTheDocument();
+    expect(screen.queryByText('#2')).toBeNull();
     expect(screen.queryByText('#3')).toBeNull();
   });
 
@@ -130,10 +134,10 @@ describe('ReplenishmentPage — redesign', () => {
     expect(screen.getByText('#1')).toBeInTheDocument();
     expect(screen.getByText('#3')).toBeInTheDocument();
     expect(screen.queryByText('#4')).toBeNull();
-    // Counts update to the my-filtered set: Hammasi (3), Kutib turgan (1).
+    // Counts update to the my-filtered set: Hammasi (3), Kutuvda (1).
     expect(screen.getByRole('tab', { name: 'Hammasi (3)' })).toBeInTheDocument();
     expect(
-      screen.getByRole('tab', { name: 'Kutib turgan (1)' }),
+      screen.getByRole('tab', { name: 'Kutuvda (1)' }),
     ).toBeInTheDocument();
   });
 

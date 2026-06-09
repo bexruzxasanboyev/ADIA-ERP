@@ -52,6 +52,8 @@ import type {
 } from '@/lib/types';
 import { StoreRequestsStatusDonut } from '@/pages/stores/StoreRequestsStatusDonut';
 import { StoreRequestsTrendChart } from '@/pages/stores/StoreRequestsTrendChart';
+import { RequestKanban } from '@/pages/replenishment/board/RequestKanban';
+import type { FlowRequest } from '@/lib/replenishmentFlow';
 import { ProductionReceiveDialog } from './ProductionReceiveDialog';
 import { FulfillmentModal } from './FulfillmentModal';
 
@@ -232,6 +234,14 @@ export function CentralRequestsTab({
   }, [allRequests.data, centralId, bounds]);
 
   const allRows = useMemo(() => allRequests.data ?? [], [allRequests.data]);
+
+  // 📤 CHIQGAN board — the requests the central RAISED toward production
+  // (requester = this central). PM (centralId null) sees them chain-wide.
+  const outgoing = useMemo<FlowRequest[]>(() => {
+    const rows = allRows as FlowRequest[];
+    if (centralId === null) return rows.filter((r) => r.route_to_production_manual);
+    return rows.filter((r) => r.requester_location_id === centralId);
+  }, [allRows, centralId]);
 
   // ----- Pipeline buckets ---------------------------------------------------
   // Kutuvda is NOT date-bound (an in-flight request must not drop off as the
@@ -660,6 +670,31 @@ export function CentralRequestsTab({
             yuqorida.
           </PipelineFootnote>
         </Card>
+      )}
+
+      {/* 📤 CHIQGAN — the canonical 5-column board of requests the central
+          RAISED toward production (cross-department-flow §9.2). The detailed
+          actionable «Kelgan» flow stays the pipeline tabs above; this board is
+          the outbound mirror so a request is visible from both sides. */}
+      {!listLoading && !listError && (
+        <section className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="flex items-center gap-2 text-base font-semibold">
+              <ArrowUpRight className="size-4 text-primary" aria-hidden="true" />
+              📤 Chiqgan
+            </h2>
+            <Badge variant="outline" className="tabular-nums">
+              {outgoing.length}
+            </Badge>
+            <p className="w-full text-xs text-muted-foreground sm:w-auto">
+              Markaz ishlab chiqarishga yuborgan so‘rovlar — har bosqich bo‘yicha.
+            </p>
+          </div>
+          <RequestKanban
+            requests={outgoing}
+            emptyLabel="Chiqgan so‘rov yo‘q."
+          />
+        </section>
       )}
 
       {/* "Qabul qilish" — partial-fulfilment modal for a store order. */}

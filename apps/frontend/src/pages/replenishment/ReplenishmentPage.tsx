@@ -187,20 +187,22 @@ export function ReplenishmentPage() {
   const bucketCounts = useMemo(() => {
     const counts: Record<ReplenishmentBucket, number> = {
       all: 0,
-      pending: 0,
-      sent: 0,
-      closed: 0,
+      kutuvda: 0,
+      soralgan: 0,
+      qabul_qilingan: 0,
+      yuborilgan: 0,
+      yopilgan: 0,
     };
     for (const row of baseRows) {
       for (const b of REPLENISHMENT_BUCKETS) {
-        if (statusInBucket(row.status, b.value)) counts[b.value] += 1;
+        if (statusInBucket(row, b.value)) counts[b.value] += 1;
       }
     }
     return counts;
   }, [baseRows]);
 
   const rows = useMemo(
-    () => baseRows.filter((row) => statusInBucket(row.status, bucket)),
+    () => baseRows.filter((row) => statusInBucket(row, bucket)),
     [baseRows, bucket],
   );
 

@@ -25,6 +25,7 @@ import type {
 import { TERMINAL_REPLENISHMENT_STATUSES } from '@/lib/types';
 import { CancelDialog } from './CancelDialog';
 import { TransitionTimeline } from './TransitionTimeline';
+import { RequestTreeSection } from './RequestTreeSection';
 import {
   RequestActionDialog,
   type RequestActionMode,
@@ -356,6 +357,10 @@ export function ReplenishmentDetailPage() {
         </div>
         <TransitionTimeline transitions={transitions} />
       </Card>
+
+      {/* So'rovlar daraxti — root + bolalar + nabiralar (F-D tree endpoint).
+          A 404 (endpoint not yet live) or a lone leaf hides the section. */}
+      {id && <RequestTreeSection requestId={id} />}
 
       {canCancel && (
         <CancelDialog

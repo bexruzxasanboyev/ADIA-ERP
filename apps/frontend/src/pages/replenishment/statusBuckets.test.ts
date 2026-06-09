@@ -4,7 +4,46 @@ import {
   statusInBucket,
   type ReplenishmentBucket,
 } from './statusBuckets';
-import type { ReplenishmentStatus } from '@/lib/types';
+import type { ReplenishmentRequest, ReplenishmentStatus } from '@/lib/types';
+
+/**
+ * `statusInBucket` now buckets on the canonical 5-stage `pipeline_stage`
+ * grammar (cross-department-flow §9.1) instead of the retired 4-bucket scheme.
+ * It takes the whole request so it can honour the backend's authoritative
+ * `pipeline_stage`, falling back to the status heuristic (`pipelineStageOf`)
+ * when that field is absent.
+ */
+
+/** A minimal request carrying just the fields the stage resolver reads. */
+function makeReq(
+  status: ReplenishmentStatus,
+  overrides: Partial<ReplenishmentRequest> = {},
+): ReplenishmentRequest {
+  return {
+    id: 1,
+    product_id: 1,
+    requester_location_id: 1,
+    target_location_id: null,
+    qty_needed: 1,
+    status,
+    production_order_id: null,
+    purchase_order_id: null,
+    shipment_movement_id: null,
+    note: null,
+    created_by: null,
+    created_at: '2026-06-10T00:00:00.000Z',
+    updated_at: '2026-06-10T00:00:00.000Z',
+    closed_at: null,
+    product_name: 'X',
+    product_unit: 'kg',
+    requester_location_name: 'A',
+    target_location_name: null,
+    production_location_name: null,
+    route_to_production_manual: false,
+    received_from_production_at: null,
+    ...overrides,
+  };
+}
 
 const ALL_STATUSES: ReplenishmentStatus[] = [
   'NEW',
@@ -19,73 +58,86 @@ const ALL_STATUSES: ReplenishmentStatus[] = [
   'CANCELLED',
 ];
 
-describe('statusInBucket', () => {
+const STAGE_BUCKETS: ReplenishmentBucket[] = [
+  'kutuvda',
+  'soralgan',
+  'qabul_qilingan',
+  'yuborilgan',
+  'yopilgan',
+];
+
+describe('statusInBucket (pipeline_stage)', () => {
   it('"all" matches every status, including CANCELLED', () => {
     for (const s of ALL_STATUSES) {
-      expect(statusInBucket(s, 'all')).toBe(true);
+      expect(statusInBucket(makeReq(s), 'all')).toBe(true);
     }
   });
 
-  it('"pending" = in-flight statuses (NEW … DONE_TO_WAREHOUSE), excludes shipped/closed/cancelled', () => {
-    const pending: ReplenishmentStatus[] = [
-      'NEW',
-      'CHECK_STORE_SUPPLIER',
+  it('prefers the backend pipeline_stage verbatim when present', () => {
+    // A SHIP_TO_REQUESTER row that the backend pins to `qabul_qilingan`.
+    const req = makeReq('SHIP_TO_REQUESTER', {
+      pipeline_stage: 'qabul_qilingan',
+    });
+    expect(statusInBucket(req, 'qabul_qilingan')).toBe(true);
+    expect(statusInBucket(req, 'yuborilgan')).toBe(false);
+  });
+
+  it('falls back to the status heuristic — Kutuvda', () => {
+    for (const s of ['NEW', 'CHECK_STORE_SUPPLIER', 'DONE_TO_WAREHOUSE'] as const) {
+      expect(statusInBucket(makeReq(s), 'kutuvda')).toBe(true);
+    }
+  });
+
+  it('falls back to the status heuristic — Tayyorlanmoqda (soralgan)', () => {
+    for (const s of [
       'CHECK_PRODUCTION_INPUT',
       'CREATE_PURCHASE_ORDER',
       'CREATE_PRODUCTION_ORDER',
       'PRODUCING',
-      'DONE_TO_WAREHOUSE',
-    ];
-    for (const s of pending) expect(statusInBucket(s, 'pending')).toBe(true);
-    for (const s of ['SHIP_TO_REQUESTER', 'CLOSED', 'CANCELLED'] as const) {
-      expect(statusInBucket(s, 'pending')).toBe(false);
+    ] as const) {
+      expect(statusInBucket(makeReq(s), 'soralgan')).toBe(true);
     }
   });
 
-  it('"sent" = SHIP_TO_REQUESTER only', () => {
-    expect(statusInBucket('SHIP_TO_REQUESTER', 'sent')).toBe(true);
-    for (const s of ALL_STATUSES.filter((x) => x !== 'SHIP_TO_REQUESTER')) {
-      expect(statusInBucket(s, 'sent')).toBe(false);
-    }
+  it('SHIP_TO_REQUESTER → yuborilgan (plain ship) / qabul_qilingan (from production)', () => {
+    expect(statusInBucket(makeReq('SHIP_TO_REQUESTER'), 'yuborilgan')).toBe(true);
+    const fromProd = makeReq('SHIP_TO_REQUESTER', {
+      received_from_production_at: '2026-06-10T01:00:00.000Z',
+    });
+    expect(statusInBucket(fromProd, 'qabul_qilingan')).toBe(true);
   });
 
-  it('"closed" = CLOSED only', () => {
-    expect(statusInBucket('CLOSED', 'closed')).toBe(true);
-    for (const s of ALL_STATUSES.filter((x) => x !== 'CLOSED')) {
-      expect(statusInBucket(s, 'closed')).toBe(false);
-    }
+  it('CLOSED and CANCELLED → yopilgan', () => {
+    expect(statusInBucket(makeReq('CLOSED'), 'yopilgan')).toBe(true);
+    expect(statusInBucket(makeReq('CANCELLED'), 'yopilgan')).toBe(true);
   });
 
-  it('CANCELLED appears ONLY under "all"', () => {
-    const buckets: ReplenishmentBucket[] = ['all', 'pending', 'sent', 'closed'];
-    for (const b of buckets) {
-      expect(statusInBucket('CANCELLED', b)).toBe(b === 'all');
-    }
-  });
-
-  it('every status maps to exactly one of pending/sent/closed, except CANCELLED (none)', () => {
+  it('every request resolves to exactly one stage bucket', () => {
     for (const s of ALL_STATUSES) {
-      const hits = (['pending', 'sent', 'closed'] as const).filter((b) =>
-        statusInBucket(s, b),
-      );
-      expect(hits.length).toBe(s === 'CANCELLED' ? 0 : 1);
+      const req = makeReq(s);
+      const hits = STAGE_BUCKETS.filter((b) => statusInBucket(req, b));
+      expect(hits.length).toBe(1);
     }
   });
 });
 
 describe('REPLENISHMENT_BUCKETS', () => {
-  it('exposes the four tabs in display order with Uzbek labels', () => {
+  it('exposes the six tabs in display order with the §9.1 Uzbek labels', () => {
     expect(REPLENISHMENT_BUCKETS.map((b) => b.value)).toEqual([
       'all',
-      'pending',
-      'sent',
-      'closed',
+      'kutuvda',
+      'soralgan',
+      'qabul_qilingan',
+      'yuborilgan',
+      'yopilgan',
     ]);
     expect(REPLENISHMENT_BUCKETS.map((b) => b.label)).toEqual([
       'Hammasi',
-      'Kutib turgan',
-      'Yuborgan',
-      'Qabul qilgan',
+      'Kutuvda',
+      'Tayyorlanmoqda',
+      'Tayyor',
+      'Jo‘natildi',
+      'Yopildi',
     ]);
   });
 });

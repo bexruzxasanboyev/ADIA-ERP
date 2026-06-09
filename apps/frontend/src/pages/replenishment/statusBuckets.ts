@@ -1,60 +1,61 @@
-import type { ReplenishmentStatus } from '@/lib/types';
+import type { ReplenishmentRequest } from '@/lib/types';
+import { pipelineStageOf } from '@/lib/pipeline';
 
 /**
- * The status sub-tab buckets of the replenishment workspace (owner feedback).
- * The 10-status state machine is collapsed into four user-facing groups:
+ * The status sub-tab buckets of the replenishment workspace — now bucketed on
+ * the canonical 5-stage `pipeline_stage` grammar (cross-department-flow §9.1),
+ * replacing the retired 4-bucket (all/pending/sent/closed) scheme.
  *
- *   - `all`     — every row (including CANCELLED);
- *   - `pending` — anything still in flight (NEW … DONE_TO_WAREHOUSE);
- *   - `sent`    — SHIP_TO_REQUESTER (on its way to the requester);
- *   - `closed`  — CLOSED (received).
+ * One unified Kanban grammar across every workspace: a request lives in exactly
+ * ONE stage column and moves to the next as it is acted on. The six buckets:
  *
- * CANCELLED is intentionally NOT in `pending`/`sent`/`closed`; it surfaces
- * only under `all`.
+ *   - `all`            — every row (incl. closed/cancelled history);
+ *   - `kutuvda`        — Kutuvda (awaiting the next step);
+ *   - `soralgan`       — Tayyorlanmoqda (being produced / in flight);
+ *   - `qabul_qilingan` — Tayyor (received, ready to forward);
+ *   - `yuborilgan`     — Jo'natildi / rezerv (shipped, awaiting acceptance);
+ *   - `yopilgan`       — Yopildi (closed / cancelled — with closure_reason badge).
+ *
+ * `statusInBucket` now takes the whole REQUEST (not just the status) because
+ * the authoritative stage is the backend's `pipeline_stage` field — resolved
+ * via {@link pipelineStageOf}, which prefers it and falls back to a status
+ * heuristic only when it is absent. The exported name is kept so the call site
+ * in `ReplenishmentPage` changes minimally.
  */
-export type ReplenishmentBucket = 'all' | 'pending' | 'sent' | 'closed';
-
-/** Statuses that count as "Kutib turgan" (in flight, not yet shipped). */
-const PENDING_STATUSES: readonly ReplenishmentStatus[] = [
-  'NEW',
-  'CHECK_STORE_SUPPLIER',
-  'CHECK_PRODUCTION_INPUT',
-  'CREATE_PURCHASE_ORDER',
-  'CREATE_PRODUCTION_ORDER',
-  'PRODUCING',
-  'DONE_TO_WAREHOUSE',
-];
+export type ReplenishmentBucket =
+  | 'all'
+  | 'kutuvda'
+  | 'soralgan'
+  | 'qabul_qilingan'
+  | 'yuborilgan'
+  | 'yopilgan';
 
 /**
- * True when `status` belongs to `bucket`. Pure — drives both the active-tab
- * filter and the per-tab counts. `all` matches everything; the other buckets
- * are mutually exclusive and exclude CANCELLED.
+ * True when `request` belongs to `bucket`. Pure — drives both the active-tab
+ * filter and the per-tab counts. `all` matches everything; the five stage
+ * buckets are mutually exclusive (every request resolves to exactly one stage).
  */
 export function statusInBucket(
-  status: ReplenishmentStatus,
+  request: ReplenishmentRequest,
   bucket: ReplenishmentBucket,
 ): boolean {
-  switch (bucket) {
-    case 'all':
-      return true;
-    case 'pending':
-      return PENDING_STATUSES.includes(status);
-    case 'sent':
-      return status === 'SHIP_TO_REQUESTER';
-    case 'closed':
-      return status === 'CLOSED';
-    default:
-      return false;
-  }
+  if (bucket === 'all') return true;
+  return pipelineStageOf(request) === bucket;
 }
 
-/** Tab order + Uzbek labels for the status sub-tab strip. */
+/**
+ * Tab order + Uzbek labels for the status sub-tab strip — the canonical 5
+ * columns (§9.1) plus a leading "Hammasi". Labels match the owner's wording:
+ * Kutuvda · Tayyorlanmoqda · Tayyor · Jo'natildi (rezerv) · Yopildi.
+ */
 export const REPLENISHMENT_BUCKETS: readonly {
   value: ReplenishmentBucket;
   label: string;
 }[] = [
   { value: 'all', label: 'Hammasi' },
-  { value: 'pending', label: 'Kutib turgan' },
-  { value: 'sent', label: 'Yuborgan' },
-  { value: 'closed', label: 'Qabul qilgan' },
+  { value: 'kutuvda', label: 'Kutuvda' },
+  { value: 'soralgan', label: 'Tayyorlanmoqda' },
+  { value: 'qabul_qilingan', label: 'Tayyor' },
+  { value: 'yuborilgan', label: "Jo‘natildi" },
+  { value: 'yopilgan', label: 'Yopildi' },
 ];

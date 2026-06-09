@@ -90,12 +90,14 @@ describe('RequestsPage (/sorovnomalar)', () => {
 
   it('routes a target request into "Menga keluvchi" and shows accept buttons', async () => {
     mockList([INCOMING, SENT, ARCHIVED]);
+    const user = userEvent.setup();
     renderWithProviders(<RequestsPage />, {
       role: 'central_warehouse_manager',
       locationId: 21,
       locationType: 'central_warehouse',
     });
-    // Default tab is "Menga keluvchi" — the incoming row is visible.
+    // Default tab is now "Doska" (📤 board) — switch to "Menga keluvchi".
+    await user.click(screen.getByRole('tab', { name: /menga keluvchi/i }));
     await screen.findByText('#100');
     // accept buttons are visible because canActOn(requester_location_id)
     // returns true (user is on location 21, requester is 99 — wait, this
@@ -147,7 +149,10 @@ describe('RequestsPage (/sorovnomalar)', () => {
 
   it('PMs see Arxiv (chain-wide) but no incoming/sent action buttons', async () => {
     mockList([INCOMING, SENT, ARCHIVED]);
+    const user = userEvent.setup();
     renderWithProviders(<RequestsPage />, { role: 'pm', locationId: null });
+    // Switch off the default "Doska" board to the incoming tab.
+    await user.click(screen.getByRole('tab', { name: /menga keluvchi/i }));
     // Incoming is filtered by user location membership, and the PM has
     // none — incoming list is empty.
     await screen.findByText(/sizga keluvchi so.rov yo.q/i);
@@ -183,6 +188,9 @@ describe('RequestsPage (/sorovnomalar)', () => {
       locationId: 21,
       locationType: 'store',
     });
+    // Switch off the default "Doska" board to the incoming tab where the
+    // accept buttons live.
+    await user.click(screen.getByRole('tab', { name: /menga keluvchi/i }));
     await screen.findByText('#100');
     await user.click(screen.getByRole('button', { name: /to.liq qabul/i }));
     // The dialog opens; submit it.

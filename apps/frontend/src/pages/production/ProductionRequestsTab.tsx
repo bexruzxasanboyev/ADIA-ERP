@@ -50,6 +50,12 @@ import type {
 } from '@/lib/types';
 import { StoreRequestsStatusDonut } from '@/pages/stores/StoreRequestsStatusDonut';
 import { StoreRequestsTrendChart } from '@/pages/stores/StoreRequestsTrendChart';
+import { Button } from '@/components/ui/button';
+import { Sparkles } from 'lucide-react';
+import { RequestKanban } from '@/pages/replenishment/board/RequestKanban';
+import { splitBoards } from '@/pages/replenishment/board/boardFilters';
+import type { FlowRequest } from '@/lib/replenishmentFlow';
+import { ManbaRejaModal } from './ManbaRejaModal';
 
 /**
  * Ishlab chiqarish bo'limi ish joyi — "So'rovlar" tab.
@@ -144,11 +150,25 @@ export function ProductionRequestsTab({
   /** The scoped production отдел id, or `null` for the PM chain-wide view. */
   productionId: number | null;
 }) {
-  const { user } = useAuth();
+  const { user, locations } = useAuth();
   const isPm = user?.role === 'pm';
+  // Only a scoped production manager may run a Manba reja; PM is read-only.
+  const canExecute = user?.role === 'production_manager';
 
   const [tab, setTab] = useState<PipelineTab>('kutuvda');
   const [dateRange, setDateRange] = useState<DateRangeValue>({ range: 'month' });
+  // The incoming production request whose "Manba reja" modal is open.
+  const [planTarget, setPlanTarget] = useState<FlowRequest | null>(null);
+
+  // Board scope — the отдел id PLUS every location the user is assigned to (so
+  // a request pinned to the отдел's sex_storage by the producer-override still
+  // lands on the right board). PM (productionId null) → null = chain-wide.
+  const scope = useMemo<ReadonlySet<number> | null>(() => {
+    if (productionId === null) return null;
+    const ids = new Set<number>([productionId]);
+    for (const loc of locations) ids.add(loc.id);
+    return ids;
+  }, [productionId, locations]);
 
   const allRequests = useApiQuery<ReplenishmentRequest[]>('/api/replenishment');
 
@@ -198,6 +218,12 @@ export function ProductionRequestsTab({
   const allRows = useMemo(
     () => (allRequests.data ?? []).filter(isProductionFlow),
     [allRequests.data],
+  );
+
+  // 📥 Kelgan (target = my scope) + 📤 Chiqgan (requester = my scope) boards.
+  const boards = useMemo(
+    () => splitBoards(allRows as FlowRequest[], scope),
+    [allRows, scope],
   );
 
   // ----- Pipeline buckets (reused central bucketing, отдел-scoped) ----------
@@ -299,6 +325,40 @@ export function ProductionRequestsTab({
         count={semiSummary.count}
         totals={semiSummary.totals}
       />
+
+      {/* TWO BOARDS — the canonical 5-column Kanban (cross-department-flow §9.2):
+          📥 Kelgan (markaz + boshqa sexlardan, krem!) and 📤 Chiqgan (homashyo +
+          producer-sexlarga). The incoming card carries the "Manba reja" action. */}
+      {!listLoading && !listError && (
+        <div className="space-y-6">
+          <ProductionBoard
+            title="📥 Kelgan"
+            description="Menga ta'minotchi sifatida kelgan so‘rovlar — markaz va boshqa sexlardan."
+            requests={boards.incoming}
+            emptyLabel="Kelgan so‘rov yo‘q."
+            renderAction={(req) => (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setPlanTarget(req);
+                }}
+              >
+                <Sparkles className="size-3.5" aria-hidden="true" />
+                Manba reja
+              </Button>
+            )}
+          />
+          <ProductionBoard
+            title="📤 Chiqgan"
+            description="Men mijoz sifatida yuborgan so‘rovlar — xom-ashyo va producer-sexlarga."
+            requests={boards.outgoing}
+            emptyLabel="Chiqgan so‘rov yo‘q."
+          />
+        </div>
+      )}
 
       {/* Section header + pipeline tabs. */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -570,7 +630,62 @@ export function ProductionRequestsTab({
           </PipelineFootnote>
         </Card>
       )}
+
+      {/* "Manba reja" — N-component source plan for an incoming production
+          request (opened from a 📥 Kelgan card). PM gets read-and-recommend. */}
+      <ManbaRejaModal
+        open={planTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setPlanTarget(null);
+        }}
+        request={planTarget}
+        locationId={productionId ?? planTarget?.target_location_id ?? 0}
+        canExecute={canExecute}
+        onDone={() => {
+          allRequests.refetch();
+          movements.refetch();
+          semi.refetch();
+        }}
+      />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ProductionBoard — one labelled Kanban board (📥 Kelgan / 📤 Chiqgan): a
+// header (title + description + count) over the canonical 5-column board.
+// ---------------------------------------------------------------------------
+
+function ProductionBoard({
+  title,
+  description,
+  requests,
+  emptyLabel,
+  renderAction,
+}: {
+  title: string;
+  description: string;
+  requests: FlowRequest[];
+  emptyLabel: string;
+  renderAction?: (req: FlowRequest) => React.ReactNode;
+}) {
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="text-sm font-semibold">{title}</h3>
+        <Badge variant="outline" className="tabular-nums">
+          {requests.length}
+        </Badge>
+        <p className="w-full text-xs text-muted-foreground sm:w-auto">
+          {description}
+        </p>
+      </div>
+      <RequestKanban
+        requests={requests}
+        emptyLabel={emptyLabel}
+        renderAction={renderAction}
+      />
+    </section>
   );
 }
 

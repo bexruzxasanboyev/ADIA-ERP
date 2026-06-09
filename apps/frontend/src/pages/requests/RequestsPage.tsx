@@ -33,6 +33,9 @@ import {
 import { describeStatus } from '@/pages/dashboard/executive/requestTracer';
 import type { ReplenishmentRequest } from '@/lib/types';
 import { TERMINAL_REPLENISHMENT_STATUSES } from '@/lib/types';
+import { RequestKanban } from '@/pages/replenishment/board/RequestKanban';
+import type { FlowRequest } from '@/lib/replenishmentFlow';
+import { useNavigate } from 'react-router-dom';
 import {
   RequestActionDialog,
   type RequestActionMode,
@@ -56,17 +59,18 @@ import {
  * endpoint is not yet wired on the backend the page degrades gracefully:
  * the user sees an Uzbek toast and the dialog stays open for retry.
  */
-type TabKey = 'incoming' | 'sent' | 'archive';
+type TabKey = 'board' | 'incoming' | 'sent' | 'archive';
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function RequestsPage() {
   const bp = useBreakpoint();
   const isMobile = bp === 'xs';
+  const navigate = useNavigate();
   const { user, locations } = useAuth();
   const { canActOn } = useCanAct();
   const { notify } = useToast();
-  const [tab, setTab] = useState<TabKey>('incoming');
+  const [tab, setTab] = useState<TabKey>('board');
 
   // Pull all visible requests (backend already RBAC-scopes the list).
   // Faza-1 volumes are small — client-side splitting into three tabs is
@@ -140,7 +144,18 @@ export function RequestsPage() {
     };
   }, [data, userLocationIds]);
 
+  // 📤 Doska — the single outbound board (cross-department-flow §9.2: a store
+  // has no «Kelgan», only the 5-column «Chiqgan»). Every request this user's
+  // bo'g'in RAISED, across ALL stages (so the Yopildi column is complete). PM
+  // (no location membership) sees the whole chain.
+  const boardRows = useMemo<FlowRequest[]>(() => {
+    const rows = (data ?? []) as FlowRequest[];
+    if (userLocationIds.size === 0) return rows;
+    return rows.filter((r) => userLocationIds.has(r.requester_location_id));
+  }, [data, userLocationIds]);
+
   const tabOptions: { value: TabKey; label: string }[] = [
+    { value: 'board', label: `Doska (${boardRows.length})` },
     { value: 'incoming', label: `Menga keluvchi (${incoming.length})` },
     { value: 'sent', label: `Men yuborganlar (${sent.length})` },
     { value: 'archive', label: `Arxiv (${archive.length})` },
@@ -269,6 +284,29 @@ export function RequestsPage() {
         ariaLabel="So'rovnomalar bo'limlari"
       />
 
+      {/* 📤 Doska — the single outbound 5-column Kanban for this bo'g'in. */}
+      {tab === 'board' &&
+        (isLoading ? (
+          <Card>
+            <LoadingState />
+          </Card>
+        ) : error !== null ? (
+          <Card>
+            <ErrorState message={error} onRetry={refetch} />
+          </Card>
+        ) : boardRows.length === 0 ? (
+          <Card>
+            <EmptyState message="Siz hech qanday so'rov yubormagansiz." />
+          </Card>
+        ) : (
+          <RequestKanban
+            requests={boardRows}
+            emptyLabel="—"
+            onOpen={(req) => navigate(`/replenishment/${req.id}`)}
+          />
+        ))}
+
+      {tab !== 'board' && (
       <Card>
         {isLoading && <LoadingState />}
         {!isLoading && error !== null && (
@@ -298,6 +336,7 @@ export function RequestsPage() {
           />
         )}
       </Card>
+      )}
 
       {active !== null && (
         <RequestActionDialog
