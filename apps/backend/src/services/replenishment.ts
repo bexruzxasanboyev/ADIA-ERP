@@ -153,6 +153,36 @@ export type ReplenishmentClosureReason =
   | 'cancelled_by_requester'
   | 'cancelled_by_fulfiller';
 
+/**
+ * 0065 / cross-dept-flow §8 — HOW a request was born. Drives the Kanban
+ * "recommendation card vs real request" framing and analytics; mirrors the
+ * `chk_replenishment_origin` CHECK constraint exactly (any drift would be a
+ * 23514 on insert).
+ *
+ *   scan      — the below-min cron raised it (an internal layer, NOT a store).
+ *   manual    — a human raised it (web form / API) — the conservative default.
+ *   voice     — a Telegram voice/menu cross-dept request (`crossDeptRequest`).
+ *   dialog    — emitted by the production dialog / "Manba reja" resolver.
+ *   shortfall — the leftover of a partial fulfil, routed to production.
+ *   buffer    — the B-cycle: a sex_storage з/г buffer fell to/below min.
+ */
+export type RequestOrigin =
+  | 'scan'
+  | 'manual'
+  | 'voice'
+  | 'dialog'
+  | 'shortfall'
+  | 'buffer';
+
+export const REQUEST_ORIGINS: readonly RequestOrigin[] = [
+  'scan',
+  'manual',
+  'voice',
+  'dialog',
+  'shortfall',
+  'buffer',
+];
+
 export type ReplenishmentRow = {
   id: number;
   product_id: number;
@@ -198,6 +228,14 @@ export type ReplenishmentRow = {
    * store. NULL = not yet received.
    */
   received_from_production_at: Date | null;
+  /** 0065 — the immediate parent request this one was spawned for (NULL = root). */
+  parent_request_id: number | null;
+  /** 0065 — the top of the request tree (NULL/self for a root). */
+  root_request_id: number | null;
+  /** 0065 — distance from the root (0 = root); capped at 12. */
+  depth: number;
+  /** 0065 — how the request was born (origin domain). */
+  origin: RequestOrigin;
 };
 
 export const REPLENISHMENT_COLUMNS = `id, product_id, requester_location_id,
@@ -205,7 +243,8 @@ export const REPLENISHMENT_COLUMNS = `id, product_id, requester_location_id,
   shipment_movement_id, note, created_by, created_at, updated_at, closed_at,
   assigned_to_user_id, qty_accepted, qty_returned, accept_note, reject_reason,
   closure_reason, brak_qty, brak_reason, batch_id,
-  route_to_production_manual, received_from_production_at`;
+  route_to_production_manual, received_from_production_at,
+  parent_request_id, root_request_id, depth, origin`;
 
 /**
  * Possible outcomes of one `advance()` call. `advanced=false` means a wait
@@ -266,53 +305,36 @@ export async function createRequest(opts: {
    * whole basket as one grouped order. NULL = legacy / individual request.
    */
   batchId?: number | null;
+  /**
+   * 0065 / cross-dept-flow §8 — request-tree links. A resolver-emitted
+   * sub-request passes the parent it was raised for; `rootRequestId` /
+   * `depth` are derived from the parent when omitted (root = parent's root ??
+   * parent id; the caller normally passes both, but the derivation keeps a
+   * lone `parentRequestId` correct). `origin` records how the request was born
+   * (default 'manual' — the legacy value). depth is capped at 12.
+   */
+  parentRequestId?: number | null;
+  rootRequestId?: number | null;
+  depth?: number;
+  origin?: RequestOrigin;
 }): Promise<ReplenishmentRow> {
   if (!Number.isFinite(opts.qtyNeeded) || opts.qtyNeeded <= 0) {
     throw AppError.validation('qty_needed must be a number greater than zero.');
   }
 
+  const parentRequestId = opts.parentRequestId ?? null;
+  const depth = opts.depth ?? 0;
+  // Defence in depth — the DB CHECK is the last line, but a >12 chain is a
+  // recipe-cycle / runaway-tree smell the caller should hear about loudly.
+  if (!Number.isInteger(depth) || depth < 0 || depth > 12) {
+    throw AppError.validation('depth must be an integer between 0 and 12.');
+  }
+  const origin = opts.origin ?? 'manual';
+
   try {
-    return await withTransaction(async (tx) => {
-      const { rows } = await tx.query<ReplenishmentRow>(
-        `INSERT INTO replenishment_requests
-           (product_id, requester_location_id, qty_needed, status, note, created_by, batch_id)
-         VALUES ($1, $2, $3, 'NEW', $4, $5, $6)
-         RETURNING ${REPLENISHMENT_COLUMNS}`,
-        [
-          opts.productId,
-          opts.requesterLocationId,
-          opts.qtyNeeded,
-          opts.note ?? null,
-          opts.actorUserId,
-          opts.batchId ?? null,
-        ],
-      );
-      const row = rows[0];
-      if (row === undefined) {
-        throw AppError.internal('Replenishment insert returned no row.');
-      }
-      await recordTransition(tx, row.id, null, 'NEW', 'created', opts.actorUserId);
-      await writeAudit(tx, {
-        actorUserId: opts.actorUserId,
-        action: 'replenishment.create',
-        entity: 'replenishment_requests',
-        entityId: row.id,
-        payload: {
-          product_id: opts.productId,
-          requester_location_id: opts.requesterLocationId,
-          qty_needed: opts.qtyNeeded,
-        },
-      });
-      // M9 — replenishment_created notification (spec §7). The requester
-      // location manager is the primary owner of the request; the target
-      // location is not yet resolved here (NEW state — `advanceNew` fills
-      // `target_location_id`), so the target manager nudge is sent at the
-      // first transition (CHECK_STORE_SUPPLIER). The optional `actorUserId`
-      // is also notified when it is NOT the location manager (a `pm` raising
-      // a manual request gets visibility on it).
-      await notifyReplenishmentCreated(tx, row, opts.actorUserId);
-      return row;
-    });
+    return await withTransaction((tx) =>
+      createRequestInTx(tx, { ...opts, parentRequestId, depth, origin }),
+    );
   } catch (err) {
     // 23505 is the PostgreSQL unique-violation SQLSTATE — only our partial
     // index can fire here. Surface the spec-defined OPEN_REQUEST_EXISTS code.
@@ -326,10 +348,197 @@ export async function createRequest(opts: {
   }
 }
 
+/**
+ * tx-scoped core of `createRequest` — the actual INSERT + transition + audit +
+ * created-notification, running inside the CALLER's transaction.
+ *
+ * `createRequest` (above) wraps this in its own `withTransaction` and maps the
+ * 23505 unique-violation to the friendly `OPEN_REQUEST_EXISTS` code. A caller
+ * that already owns a transaction and wants the SAME insert to be part of its
+ * all-or-nothing unit (cross-dept-flow F-B: `createCrossDeptRequestInTx`, the
+ * "Manba reja" resolver's `'order'` action) calls THIS directly so the new
+ * row, the producer-target pin, and the rest of the resolver commit together.
+ *
+ * Validation (qty/depth) is done by `createRequest`; this core assumes its
+ * inputs are already normalised (parentRequestId/depth/origin resolved to their
+ * final values). It does NOT translate 23505 — the raw unique violation bubbles
+ * up so the in-tx caller can branch on it (waiter-link, §8) WITHOUT the friendly
+ * AppError wrapping that would lose the "which open child" context.
+ */
+export async function createRequestInTx(
+  tx: TxClient,
+  opts: {
+    productId: number;
+    requesterLocationId: number;
+    qtyNeeded: number;
+    actorUserId: number | null;
+    note?: string | null;
+    batchId?: number | null;
+    parentRequestId: number | null;
+    depth: number;
+    origin: RequestOrigin;
+    rootRequestId?: number | null;
+  },
+): Promise<ReplenishmentRow> {
+  const parentRequestId = opts.parentRequestId;
+  const depth = opts.depth;
+  const origin = opts.origin;
+  // Root derivation: an explicit rootRequestId wins; otherwise, when a
+  // parent is given, the root is the parent's own root (or the parent
+  // itself when the parent is a root). A bare request (no parent) keeps a
+  // NULL root — it IS its own root, surfaced by the tree reader as self.
+  let rootRequestId = opts.rootRequestId ?? null;
+  if (rootRequestId === null && parentRequestId !== null) {
+    const { rows: parentRows } = await tx.query<{ root_request_id: number | null }>(
+      'SELECT root_request_id FROM replenishment_requests WHERE id = $1',
+      [parentRequestId],
+    );
+    const parent = parentRows[0];
+    if (parent === undefined) {
+      throw AppError.validation(`parent_request_id ${parentRequestId} does not exist.`);
+    }
+    rootRequestId =
+      parent.root_request_id === null ? parentRequestId : Number(parent.root_request_id);
+  }
+
+  const { rows } = await tx.query<ReplenishmentRow>(
+    `INSERT INTO replenishment_requests
+       (product_id, requester_location_id, qty_needed, status, note, created_by, batch_id,
+        parent_request_id, root_request_id, depth, origin)
+     VALUES ($1, $2, $3, 'NEW', $4, $5, $6, $7, $8, $9, $10)
+     RETURNING ${REPLENISHMENT_COLUMNS}`,
+    [
+      opts.productId,
+      opts.requesterLocationId,
+      opts.qtyNeeded,
+      opts.note ?? null,
+      opts.actorUserId,
+      opts.batchId ?? null,
+      parentRequestId,
+      rootRequestId,
+      depth,
+      origin,
+    ],
+  );
+  const row = rows[0];
+  if (row === undefined) {
+    throw AppError.internal('Replenishment insert returned no row.');
+  }
+  await recordTransition(tx, row.id, null, 'NEW', 'created', opts.actorUserId);
+  await writeAudit(tx, {
+    actorUserId: opts.actorUserId,
+    action: 'replenishment.create',
+    entity: 'replenishment_requests',
+    entityId: row.id,
+    payload: {
+      product_id: opts.productId,
+      requester_location_id: opts.requesterLocationId,
+      qty_needed: opts.qtyNeeded,
+      // 0065 — record the tree placement + origin in the audit trail.
+      parent_request_id: parentRequestId,
+      root_request_id: rootRequestId,
+      depth,
+      origin,
+    },
+  });
+  // M9 — replenishment_created notification (spec §7). The requester
+  // location manager is the primary owner of the request; the target
+  // location is not yet resolved here (NEW state — `advanceNew` fills
+  // `target_location_id`), so the target manager nudge is sent at the
+  // first transition (CHECK_STORE_SUPPLIER). The optional `actorUserId`
+  // is also notified when it is NOT the location manager (a `pm` raising
+  // a manual request gets visibility on it).
+  await notifyReplenishmentCreated(tx, row, opts.actorUserId);
+  return row;
+}
+
 function isUniqueViolation(err: unknown): boolean {
   return (
     typeof err === 'object' && err !== null && 'code' in err && (err as { code: unknown }).code === '23505'
   );
+}
+
+// -----------------------------------------------------------------------------
+// 0065 / cross-dept-flow §8 — request-tree waiters + pre-accept qty top-up
+// -----------------------------------------------------------------------------
+
+/**
+ * Attach `waiterRequestId` (a root) to `childRequestId` (a shared open child) in
+ * `request_waiters` — invariant-2 coexistence (§8). When two roots both need the
+ * same semi from the same producer, the SECOND root must NOT open a duplicate
+ * (invariant 2 forbids it); it links here instead, so the child closing later
+ * fans out to EVERY waiter (F-D), not just its single `parent_request_id`.
+ *
+ * Idempotent — `ON CONFLICT DO NOTHING` on the (child, waiter) PK, so a re-run
+ * (e.g. the same execute() retried) never errors. A self-wait (child == waiter)
+ * is refused by the table CHECK; we skip it here too so the caller need not.
+ * tx-scoped: the caller owns the transaction (one execute() stays atomic).
+ *
+ * @returns true when a NEW waiter row was inserted (false on conflict / skip).
+ */
+export async function linkWaiter(
+  tx: TxClient,
+  childRequestId: number,
+  waiterRequestId: number,
+): Promise<boolean> {
+  if (childRequestId === waiterRequestId) {
+    // A root never waits on itself — nothing to record.
+    return false;
+  }
+  const { rowCount } = await tx.query(
+    `INSERT INTO request_waiters (child_request_id, waiter_request_id)
+     VALUES ($1, $2)
+     ON CONFLICT (child_request_id, waiter_request_id) DO NOTHING`,
+    [childRequestId, waiterRequestId],
+  );
+  return rowCount > 0;
+}
+
+/**
+ * Increase a child request's `qty_needed` by `extraQty` — but ONLY while it is
+ * still `status='NEW'` (decision #9: top-up is allowed only BEFORE the fulfiller
+ * accepts; once accepted/advanced the qty is frozen and a shortfall becomes a
+ * follow-up request instead). Used when a second root attaches to an already-open
+ * child (`linkWaiter`) and needs MORE than the child currently asks for.
+ *
+ * Atomic + race-safe: the `WHERE id=$1 AND status='NEW'` guard means a
+ * concurrent advance that flips the child out of NEW makes this a no-op (0 rows)
+ * — no lost-update, no top-up after accept. Writes an audit row when it applies.
+ * tx-scoped: shares the caller's transaction.
+ *
+ * @returns true when the qty was topped up; false when the child was no longer
+ *          NEW (caller then opens a follow-up after the child closes — §8).
+ */
+export async function topUpQtyIfPreAccept(
+  tx: TxClient,
+  childRequestId: number,
+  extraQty: number,
+  actorUserId: number | null,
+): Promise<boolean> {
+  if (!Number.isFinite(extraQty) || extraQty <= 0) {
+    // Nothing to add — not an error (the caller may have computed a 0 shortfall).
+    return false;
+  }
+  const { rows } = await tx.query<{ qty_needed: string }>(
+    `UPDATE replenishment_requests
+        SET qty_needed = qty_needed + $2
+      WHERE id = $1 AND status = 'NEW'
+      RETURNING qty_needed`,
+    [childRequestId, extraQty],
+  );
+  const updated = rows[0];
+  if (updated === undefined) {
+    // Child is no longer NEW (accepted / advanced / terminal) — qty frozen (#9).
+    return false;
+  }
+  await writeAudit(tx, {
+    actorUserId,
+    action: 'replenishment.qty_top_up',
+    entity: 'replenishment_requests',
+    entityId: childRequestId,
+    payload: { extra_qty: extraQty, new_qty_needed: Number(updated.qty_needed) },
+  });
+  return true;
 }
 
 /**
@@ -2622,9 +2831,11 @@ async function insertShortfallRequest(
   let row: ReplenishmentRow;
   try {
     const { rows } = await tx.query<ReplenishmentRow>(
+      // 0065 — origin='shortfall': this row is the leftover of a partial fulfil
+      // routed to production (it is a fresh root, so parent/root stay NULL).
       `INSERT INTO replenishment_requests
-         (product_id, requester_location_id, qty_needed, status, note, created_by, batch_id)
-       VALUES ($1, $2, $3, 'NEW', $4, $5, $6)
+         (product_id, requester_location_id, qty_needed, status, note, created_by, batch_id, origin)
+       VALUES ($1, $2, $3, 'NEW', $4, $5, $6, 'shortfall')
        RETURNING ${REPLENISHMENT_COLUMNS}`,
       [
         opts.productId,
@@ -2677,6 +2888,13 @@ export type BelowMinRow = {
   qty: number;
   min_level: number;
   max_level: number;
+  /**
+   * 0065 — the requester location's type, carried so `runEngineCycle` can stamp
+   * the correct origin without a second query: a `sex_storage` below-min is the
+   * B-cycle buffer top-up (`origin='buffer'`); every other internal layer is a
+   * plain scan (`origin='scan'`). Cheap — the scan already JOINs `locations`.
+   */
+  location_type: string;
 };
 
 /** All `(location, product)` rows where `qty <= min_level` and `max > 0`. */
@@ -2687,12 +2905,14 @@ export async function scanBelowMin(): Promise<BelowMinRow[]> {
     qty: number;
     min_level: number;
     max_level: number;
+    location_type: string;
   }>(
     // STORES are EXCLUDED from auto-creation: per owner spec the store flow is
     // AI-propose → boss-approve (GET /proposals + POST /proposals/approve), so a
     // store never auto-raises a replenishment request. Internal layers
     // (production sex_storage, central warehouse, raw) keep auto-replenishment.
-    `SELECT s.location_id, s.product_id, s.qty, s.min_level, s.max_level
+    `SELECT s.location_id, s.product_id, s.qty, s.min_level, s.max_level,
+            l.type::text AS location_type
      FROM stock s
      JOIN locations l ON l.id = s.location_id
      WHERE s.qty <= s.min_level AND s.max_level > 0
@@ -2704,6 +2924,7 @@ export async function scanBelowMin(): Promise<BelowMinRow[]> {
     qty: Number(r.qty),
     min_level: Number(r.min_level),
     max_level: Number(r.max_level),
+    location_type: r.location_type,
   }));
 }
 
@@ -2757,6 +2978,9 @@ export async function runEngineCycle(opts: { actorUserId?: number | null } = {})
         requesterLocationId: row.location_id,
         qtyNeeded,
         actorUserId: actor,
+        // 0065 — a sex_storage below-min is the B-cycle buffer top-up; every
+        // other internal layer (central / raw / production) is a plain scan.
+        origin: row.location_type === 'sex_storage' ? 'buffer' : 'scan',
       });
       created += 1;
     } catch (err) {
