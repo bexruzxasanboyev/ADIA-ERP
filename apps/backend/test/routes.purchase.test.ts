@@ -137,7 +137,10 @@ describe('POST /api/purchase-orders — validation + RBAC', () => {
     expect(res.body.error?.code).toBe('FORBIDDEN');
   });
 
-  it('a raw_warehouse_manager cannot create a PO (403)', async () => {
+  it('a raw_warehouse_manager creates a draft PO (F-F purchase signals)', async () => {
+    // cross-dept-flow §17 F-F (2026-06-10) supersedes the 2026-05-28
+    // supply-manager-only rule: the raw-warehouse boss raises a DRAFT from a
+    // "Xarid signali" card; the two-step approval gate is untouched.
     const rawWh = await makeLocation(ctx.db, { type: 'raw_warehouse' });
     const rwm = await makeUser(ctx.db, { role: 'raw_warehouse_manager', locationId: rawWh });
     const product = await makeProduct(ctx.db, { type: 'raw' });
@@ -145,7 +148,8 @@ describe('POST /api/purchase-orders — validation + RBAC', () => {
       .post('/api/purchase-orders')
       .set('Authorization', `Bearer ${rwm.token}`)
       .send({ product_id: product, qty: 5, target_location_id: rawWh });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(201);
+    expect(res.body.purchase_order?.status).toBe('draft');
   });
 
   it('supply_manager creates a PO and the row carries supplier_id when provided', async () => {

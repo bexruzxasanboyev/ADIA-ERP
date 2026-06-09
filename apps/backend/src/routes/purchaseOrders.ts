@@ -309,12 +309,16 @@ purchaseOrdersRouter.get(
 
 // POST /api/purchase-orders
 //
-// Owner-approved 2026-05-28: PM is read-and-recommend; only a supply
-// manager raises a purchase request.
+// Owner-approved 2026-05-28: PM is read-and-recommend; a supply manager
+// raises a purchase request. Extended by cross-dept-flow §17 F-F
+// (owner-approved 2026-06-10): the raw-warehouse manager may also raise a
+// DRAFT — the "Xarid signallari" cards open this create flow prefilled.
+// The two-step approval (manager + keeper, invariant 7) is unchanged, so
+// widening the draft entry point does not weaken the gate.
 purchaseOrdersRouter.post(
   '/',
   authenticate,
-  authorizeWrite('supply_manager'),
+  authorizeWrite('supply_manager', 'raw_warehouse_manager'),
   asyncHandler(async (req, res) => {
     const principal = getPrincipal(req);
     const body = asObject(req.body);
