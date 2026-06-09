@@ -26,6 +26,7 @@ import { authorize, authorizeWrite } from '../middleware/authorize.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { writeAudit, poolRunner } from '../lib/audit.js';
 import {
+  getEffectiveLocationIds,
   getPrincipal,
   isSuperAdmin,
   requireLocationOperator,
@@ -169,6 +170,140 @@ purchaseOrdersRouter.get(
       params,
     );
     res.status(200).json(rows);
+  }),
+);
+
+// GET /api/purchase-orders/signals  — F-F "Xarid signallari" (spec §12/§14/§17)
+//
+// The raw-warehouse "buy needed" surface. Poster stays read-only — we only
+// SIGNAL. One row per below-min stock line at a `raw_warehouse`-type location:
+//   qty <= min_level AND max_level > 0
+// (a max_level=0 line is an unconfigured product — never a signal, mirroring
+// the same guard the scan worker uses). Each row is enriched with the product
+// name/unit, a `suggested_qty = max_level - qty` top-up, and two debounce
+// hooks so the UI can grey an already-actioned line WITHOUT dropping it:
+//   - `open_purchase_order_id` — the lowest-id purchase order for that
+//     (product, raw location) that is NOT yet received/cancelled/rejected
+//     (status IN ('draft','approved') — the only "open" PO states after the
+//     0004 enum cleanup), else null.
+//   - `open_request_id` — the lowest-id replenishment request for (product,
+//     that raw location as requester) whose status is NOT terminal
+//     (NOT IN ('CLOSED','CANCELLED')), else null.
+//
+// RBAC mirrors GET `/` reads: `pm` / `ai_assistant` / `central_warehouse_manager`
+// see every raw warehouse; a scoped `raw_warehouse_manager` sees only the
+// signals for the location(s) they operate (`getEffectiveLocationIds`).
+// Ordered most-starved first: qty/min_level ascending (a min_level=0 starved
+// line sorts FIRST via NULLS FIRST), then product name. Single query, no N+1.
+purchaseOrdersRouter.get(
+  '/signals',
+  authenticate,
+  authorize(
+    'pm',
+    'raw_warehouse_manager',
+    'central_warehouse_manager',
+    'ai_assistant',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+
+    const conditions: string[] = [
+      `l.type = 'raw_warehouse'`,
+      `s.qty <= s.min_level`,
+      `s.max_level > 0`,
+    ];
+    const params: (number[] | number)[] = [];
+
+    // RBAC scope mirrors GET `/` reads: `pm` / `ai_assistant` /
+    // `central_warehouse_manager` are chain-wide (see every raw warehouse);
+    // only a scoped `raw_warehouse_manager` is clamped to its assigned
+    // location(s) via `getEffectiveLocationIds`. The DB
+    // `chk_users_location_required` CHECK guarantees a raw_warehouse_manager
+    // always has at least one location, but the empty-scope guard is kept as
+    // defence-in-depth (an operator with no assignment matches nothing).
+    const chainWide =
+      isSuperAdmin(principal) ||
+      principal.role === 'ai_assistant' ||
+      principal.role === 'central_warehouse_manager';
+    if (!chainWide) {
+      const scopeIds = getEffectiveLocationIds(principal) ?? [];
+      if (scopeIds.length === 0) {
+        res.status(200).json({ signals: [] });
+        return;
+      }
+      params.push(scopeIds);
+      conditions.push(`s.location_id = ANY($${params.length}::bigint[])`);
+    }
+
+    const where = conditions.join(' AND ');
+    const { rows } = await query<{
+      product_id: number;
+      name: string;
+      unit: string;
+      poster_product_id: number | null;
+      poster_ingredient_id: number | null;
+      location_id: number;
+      location_name: string;
+      qty: string;
+      min_level: string;
+      max_level: string;
+      suggested_qty: string;
+      open_purchase_order_id: string | null;
+      open_request_id: string | null;
+    }>(
+      `SELECT p.id                     AS product_id,
+              p.name                   AS name,
+              p.unit::text             AS unit,
+              p.poster_product_id      AS poster_product_id,
+              p.poster_ingredient_id   AS poster_ingredient_id,
+              l.id                     AS location_id,
+              l.name                   AS location_name,
+              s.qty                    AS qty,
+              s.min_level              AS min_level,
+              s.max_level              AS max_level,
+              (s.max_level - s.qty)    AS suggested_qty,
+              (SELECT po.id
+                 FROM purchase_orders po
+                WHERE po.product_id = s.product_id
+                  AND po.target_location_id = s.location_id
+                  AND po.status IN ('draft', 'approved')
+                ORDER BY po.id ASC
+                LIMIT 1)               AS open_purchase_order_id,
+              (SELECT rr.id
+                 FROM replenishment_requests rr
+                WHERE rr.product_id = s.product_id
+                  AND rr.requester_location_id = s.location_id
+                  AND rr.status NOT IN ('CLOSED', 'CANCELLED')
+                ORDER BY rr.id ASC
+                LIMIT 1)               AS open_request_id
+         FROM stock s
+         JOIN locations l ON l.id = s.location_id
+         JOIN products p  ON p.id = s.product_id
+        WHERE ${where}
+        ORDER BY (s.qty / NULLIF(s.min_level, 0)) ASC NULLS FIRST, p.name ASC, p.id ASC`,
+      params,
+    );
+
+    // BIGINT / NUMERIC arrive as strings from pg — coerce to numbers so the
+    // pinned response shape (frontend builds against it) is numeric.
+    const signals = rows.map((r) => ({
+      product_id: Number(r.product_id),
+      name: r.name,
+      unit: r.unit,
+      location_id: Number(r.location_id),
+      location_name: r.location_name,
+      qty: Number(r.qty),
+      min_level: Number(r.min_level),
+      max_level: Number(r.max_level),
+      suggested_qty: Number(r.suggested_qty),
+      poster_product_id: r.poster_product_id === null ? null : Number(r.poster_product_id),
+      poster_ingredient_id:
+        r.poster_ingredient_id === null ? null : Number(r.poster_ingredient_id),
+      open_purchase_order_id:
+        r.open_purchase_order_id === null ? null : Number(r.open_purchase_order_id),
+      open_request_id: r.open_request_id === null ? null : Number(r.open_request_id),
+    }));
+    res.status(200).json({ signals });
   }),
 );
 
