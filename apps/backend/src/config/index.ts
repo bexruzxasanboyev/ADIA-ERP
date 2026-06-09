@@ -59,6 +59,16 @@ export type AppConfig = {
      * Poster. Set `POSTER_WRITE_TOKEN` in `.env` to activate the live path.
      */
     readonly writeToken: string;
+    /**
+     * 0058 — MASTER SAFETY GATE for every LIVE Poster write (owner authorized
+     * Poster writes 2026-06-08, but a real write to the live `adia` account is
+     * a high-stakes irreversible op). Default **false -> DRY-RUN**: the
+     * write-back paths log the intended Poster call + payload and enqueue the
+     * intent, but NEVER call the live Poster API. A live write happens ONLY when
+     * BOTH `POSTER_WRITE_ENABLED=true` AND a write-scope token (`writeToken`) is
+     * configured. We flip this on only with the owner's explicit go-ahead.
+     */
+    readonly writeEnabled: boolean;
   };
   /**
    * Telegram bot identity used by the M9 outbox worker. Optional — when
@@ -160,6 +170,19 @@ function parsePositiveInt(key: string, raw: string): number {
   return n;
 }
 
+/**
+ * Parse a boolean-ish env var. Truthy: "1", "true", "yes", "on"
+ * (case-insensitive). Everything else (including unset / empty) -> the given
+ * default. Used by the Poster write SAFETY gate, which MUST default to false.
+ */
+function parseBool(key: string, fallback: boolean): boolean {
+  const raw = process.env[key];
+  if (raw === undefined || raw.trim() === '') {
+    return fallback;
+  }
+  return /^(1|true|yes|on)$/i.test(raw.trim());
+}
+
 function parseNodeEnv(raw: string): AppConfig['nodeEnv'] {
   if (raw === 'development' || raw === 'test' || raw === 'production') {
     return raw;
@@ -241,6 +264,11 @@ export function loadConfig(): AppConfig {
       webhookSecret: optional('POSTER_WEBHOOK_SECRET', ''),
       // 0046 — write-scope token; empty -> write-back queued, not sent live.
       writeToken: optional('POSTER_WRITE_TOKEN', ''),
+      // 0058 — master safety gate for LIVE Poster writes. Default false ->
+      // DRY-RUN (log the intended payload, never call live Poster). A live
+      // write needs this true AND a writeToken set. NODE_ENV=test forces it
+      // off so a unit test can never reach the live `adia` account by accident.
+      writeEnabled: parseBool('POSTER_WRITE_ENABLED', false) && nodeEnv !== 'test',
     }),
     bot: Object.freeze({
       // M9 — Grammy bot token / username (see `.env` BOT_TOKEN / BOT_USERNAME).

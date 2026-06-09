@@ -20,6 +20,8 @@
 import { Type, type FunctionDeclaration, type Tool } from '@google/genai';
 import type { AuthPrincipal } from '../../auth/jwt.js';
 import { query, type SqlParam } from '../../db/index.js';
+import { matchesSearch } from '../../lib/translit.js';
+import { bareNameRank } from '../../lib/productNameRank.js';
 
 // ---------------------------------------------------------------------------
 // Tool registry types
@@ -348,9 +350,13 @@ const listProducts: ToolExecutor = {
     name: 'list_products',
     description:
       'Lists products as {id, name, type, unit}. Use this BEFORE any other tool when the ' +
-      'user mentions a product by name (e.g. "tort", "un") so you can map the name to a ' +
-      'numeric `product_id`. Optionally filter by `type` (raw, semi, finished) or a ' +
-      'case-insensitive `name_contains` substring. Default limit 50, max 200.',
+      'user mentions a product by name (e.g. "tort", "un", "napoleon") so you can map the ' +
+      'name to a numeric `product_id`. Optionally filter by `type` (raw, semi, finished) or ' +
+      'a `name_contains` substring. The `name_contains` match is transliteration-aware: a ' +
+      'Latin query ("napoleon") matches the Cyrillic product name ("НАПОЛЕОН") and vice ' +
+      'versa. Results are ranked so a bare product name surfaces the canonical whole variant ' +
+      '("(ЦЕЛЫЙ)") FIRST — pick the first row unless the user asked for a specific flavour or ' +
+      'portion. Default limit 50, max 200.',
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -382,24 +388,69 @@ const listProducts: ToolExecutor = {
         conditions.push(`p.type::text = $${params.length}`);
       }
     }
-    const nameLike = parseNameContains(args.name_contains);
-    if (nameLike !== null) {
-      params.push(`%${nameLike}%`);
-      conditions.push(`p.name ILIKE $${params.length}`);
-    }
-    const where = `WHERE ${conditions.join(' AND ')}`;
+
     const limit = clampLimit(args.limit, 50, 200);
-    params.push(limit);
-    const limitIdx = params.length;
-    const { rows } = await query<Record<string, unknown>>(
+
+    // EPIC — translit-aware product search. Plain SQL ILIKE cannot bridge a
+    // Latin query ("napoleon") and a Cyrillic name ("НАПОЛЕОН"), so when the
+    // model passes `name_contains` we do NOT filter on it in SQL. Instead we
+    // fetch the candidate set (active rows, narrowed by `type`) and match in
+    // application code with the phonetic Latin↔Cyrillic key (see lib/translit),
+    // mirroring GET /api/products `?search=`. Counts are modest and these calls
+    // are infrequent, so an in-memory filter is fine.
+    const nameRaw =
+      typeof args.name_contains === 'string' ? args.name_contains.trim() : '';
+    const hasNameQuery = nameRaw !== '';
+
+    const where = `WHERE ${conditions.join(' AND ')}`;
+
+    if (!hasNameQuery) {
+      // No name filter — keep the cheap SQL path (LIMIT in the query) so a
+      // general listing never loads the whole catalogue into memory.
+      params.push(limit);
+      const limitIdx = params.length;
+      const { rows } = await query<Record<string, unknown>>(
+        `SELECT p.id, p.name, p.type::text AS type, p.unit::text AS unit
+           FROM products p
+           ${where}
+           ORDER BY p.name
+           LIMIT $${limitIdx}`,
+        params,
+      );
+      return rows.map(numerify);
+    }
+
+    // Name filter present — fetch the (type-narrowed) candidate rows ordered by
+    // name, then filter + rank in JS. The fetch is capped so a degenerate query
+    // can't pull an unbounded set; the catalogue is small (a few thousand rows).
+    const FETCH_CAP = 5000;
+    const { rows } = await query<{
+      id: string;
+      name: string;
+      type: string;
+      unit: string;
+    }>(
       `SELECT p.id, p.name, p.type::text AS type, p.unit::text AS unit
          FROM products p
          ${where}
          ORDER BY p.name
-         LIMIT $${limitIdx}`,
+         LIMIT ${FETCH_CAP}`,
       params,
     );
-    return rows.map(numerify);
+
+    const matched = rows.filter((r) => matchesSearch(r.name, nameRaw));
+    // Stable sort by the bare-name rank: a query that equals a product's CORE
+    // and whose qualifier is the whole portion «(ЦЕЛЫЙ)» wins, so a bare
+    // "napoleon" surfaces «Г/П НАПОЛЕОН (ЦЕЛЫЙ)» ahead of flavour / half / other
+    // cakes. `Array.prototype.sort` is stable in Node, so equal ranks keep the
+    // SQL `ORDER BY name` ordering.
+    const ranked = matched
+      .map((r, i) => ({ r, i, rank: bareNameRank(r.name, nameRaw) }))
+      .sort((a, b) => (a.rank !== b.rank ? a.rank - b.rank : a.i - b.i))
+      .slice(0, limit)
+      .map((x) => x.r);
+
+    return ranked.map(numerify);
   },
 };
 

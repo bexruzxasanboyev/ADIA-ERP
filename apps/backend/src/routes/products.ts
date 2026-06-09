@@ -22,11 +22,13 @@ import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { writeAudit, poolRunner } from '../lib/audit.js';
-import { getPrincipal } from '../lib/principal.js';
+import { getEffectiveLocationIds, getPrincipal, isSuperAdmin } from '../lib/principal.js';
 import {
   asObject,
   optionalId,
   parseIdParam,
+  parseNullablePositive,
+  parseOptionalIdParam,
   requireEnum,
   requirePositiveNumber,
   requireString,
@@ -76,6 +78,14 @@ type ProductRow = {
    * non-null it WINS over `cost_per_unit` everywhere and survives re-sync.
    */
   manual_cost_per_unit: string | number | null;
+  /**
+   * TZ-11 — kg of one complete WHOLE cake (butun). NULL = not whole-and-sliced
+   * (the end-of-day inventory converter skips it). Inventory-counting only;
+   * distinct from `recipe_yield` (cost/BOM).
+   */
+  weight_per_whole: string | number | null;
+  /** TZ-11 — slices (bo'lak) one whole is cut into. NULL = not whole-and-sliced. */
+  pieces_per_whole: string | number | null;
   is_active: boolean;
   created_at: Date;
   updated_at: Date;
@@ -90,9 +100,16 @@ type PosterCategoryDto = { id: number; name: string } | null;
  * names to `finished`. The frontend prefers these over its own client-side
  * derivation.
  */
-type EnrichedProductRow = Omit<ProductRow, 'category_name' | 'workshop_name'> & {
+type EnrichedProductRow = Omit<
+  ProductRow,
+  'category_name' | 'workshop_name' | 'weight_per_whole' | 'pieces_per_whole'
+> & {
   category: ProductCategory;
   effective_type: ProductType;
+  /** TZ-11 — kg per whole cake, or null when not whole-and-sliced. */
+  weight_per_whole: number | null;
+  /** TZ-11 — slices per whole, or null when not whole-and-sliced. */
+  pieces_per_whole: number | null;
   /**
    * The REAL Poster category (menu.getCategories). `{ id, name }` or `null`.
    * Distinct from `category` above (which is the EPIC 1.3 heuristic string
@@ -121,9 +138,13 @@ type EnrichedProductRow = Omit<ProductRow, 'category_name' | 'workshop_name'> & 
  */
 function enrich(row: ProductRow, computedCost: number | null = null): EnrichedProductRow {
   const type = row.type as ProductType;
-  const { category_name, workshop_name, ...rest } = row;
+  const { category_name, workshop_name, weight_per_whole, pieces_per_whole, ...rest } = row;
   return {
     ...rest,
+    // TZ-11 — surface the whole↔piece coefficients as clean numbers (pg returns
+    // NUMERIC as a string), NULL when the product is not whole-and-sliced.
+    weight_per_whole: weight_per_whole === null ? null : Number(weight_per_whole),
+    pieces_per_whole: pieces_per_whole === null ? null : Number(pieces_per_whole),
     category: deriveCategory(row.name, type),
     effective_type: effectiveType(row.name, type),
     poster_category:
@@ -155,6 +176,7 @@ const PRODUCT_SELECT = `SELECT p.id, p.name, p.type, p.unit, p.sku,
     w.name AS workshop_name,
     EXISTS (SELECT 1 FROM recipes r WHERE r.product_id = p.id) AS has_recipe,
     p.cost_per_unit, p.manual_cost_per_unit,
+    p.weight_per_whole, p.pieces_per_whole,
     p.is_active, p.created_at, p.updated_at
   FROM products p
   LEFT JOIN categories c ON c.id = p.category_id
@@ -245,6 +267,147 @@ productsRouter.get(
   }),
 );
 
+// Hard cap on recursion depth for the BOM walk below. Mirrors
+// MAX_RECIPE_DEPTH in services/costRollup.ts + bom.ts: a sane bakery recipe is
+// never this deep, so any path that reaches it is a cycle and is cut off. The
+// `UNION` in the CTE already dedups rows (so a finite acyclic graph terminates
+// on its own), but the depth guard is the belt-and-suspenders defence the spec
+// requires against CYCLES in the semi→semi graph (566 nested links exist).
+const YARIM_TAYYOR_MAX_DEPTH = 64;
+
+/**
+ * Resolve the set of `type='semi'` (yarim tayyor / зг / заготовка) product ids
+ * that "belong to" one or more отдел (production workshop) locations.
+ *
+ * A зг belongs to отдел X if EITHER:
+ *   - it is DIRECTLY produced by X (`semi.workshop_location_id = X` — the TZ §6
+ *     cream отдел case, which makes a зг but no finished product); OR
+ *   - it appears — DIRECTLY or TRANSITIVELY through the recipe (BOM) graph — as
+ *     a component of any FINISHED product whose `workshop_location_id` is X.
+ *
+ * Implementation: a recursive CTE seeded from BOTH the finished AND the semi
+ * products made in those отделы, walking `recipes.product_id ->
+ * component_product_id`, then the final reachable set is filtered down to
+ * `type='semi'`. Cycle-safe (UNION dedups + a depth cap — YARIM_TAYYOR_MAX_DEPTH).
+ *
+ * Returns the matching semi product ids (possibly empty).
+ */
+async function resolveYarimTayyorSemiIds(
+  workshopLocationIds: readonly number[],
+): Promise<number[]> {
+  if (workshopLocationIds.length === 0) {
+    return [];
+  }
+  const { rows } = await query<{ id: string | number }>(
+    `WITH RECURSIVE reachable(product_id, depth) AS (
+       -- Seed: products MADE IN the отдел — both its finished goods (whose зг we
+       -- walk the BOM for) AND any зг it DIRECTLY produces. The latter covers
+       -- the TZ §6 cream отдел (Qaymoq sexi), which makes a semi but no finished
+       -- product, so a finished-only seed would leave its зг tab empty.
+       SELECT p.id, 0
+         FROM products p
+        WHERE p.type IN ('finished', 'semi')
+          AND p.workshop_location_id = ANY($1::bigint[])
+       UNION
+       SELECT r.component_product_id, rr.depth + 1
+         FROM reachable rr
+         JOIN recipes r ON r.product_id = rr.product_id
+        WHERE rr.depth < $2
+     )
+     SELECT DISTINCT reachable.product_id AS id
+       FROM reachable
+       JOIN products p ON p.id = reachable.product_id
+      WHERE p.type = 'semi'`,
+    [[...workshopLocationIds], YARIM_TAYYOR_MAX_DEPTH],
+  );
+  return rows.map((r) => Number(r.id));
+}
+
+// GET /api/products/yarim-tayyor — the semi-finished (зг / заготовка) products
+// that belong to an отдел, derived from the recipe (BOM) graph.
+//
+// Scope by role:
+//   - production_manager: ALWAYS their OWN отдел(s) — the recursive зг reachable
+//                         from finished products made in their assigned
+//                         production location(s) (getEffectiveLocationIds). A
+//                         `?workshop_location_id=` query param is IGNORED (they
+//                         cannot widen their scope).
+//   - pm: optional `?workshop_location_id=N` → same recursive scope for that
+//         one отдел; omitted → the WHOLE catalogue of `type='semi'` products.
+//   - any other role → 403 (the authorize() gate below).
+//
+// Each item is EXACTLY what GET /api/products returns per product (same
+// PRODUCT_SELECT + enrich + batched computed_cost), PLUS `qty` — the зг's
+// current total on-hand stock summed across ALL locations (COALESCE(SUM,0);
+// mostly 0 today, which is expected). Returns a bare array (matches the sibling
+// product list endpoints).
+productsRouter.get(
+  '/yarim-tayyor',
+  authenticate,
+  authorize('pm', 'production_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+
+    // Resolve the candidate semi ids by role/scope.
+    //   - PM with no workshop filter -> `null` means "no отдел filter" (every
+    //     type='semi' product). PM with ?workshop_location_id -> just that отдел.
+    //   - production_manager -> ALWAYS their own assigned отдел(s); the query
+    //     param cannot widen scope (RBAC invariant 6 — own link only).
+    let semiIds: number[] | null;
+    if (isSuperAdmin(principal)) {
+      const workshopId = parseOptionalIdParam(
+        typeof req.query.workshop_location_id === 'string'
+          ? req.query.workshop_location_id
+          : undefined,
+        'workshop_location_id',
+      );
+      semiIds =
+        workshopId === undefined ? null : await resolveYarimTayyorSemiIds([workshopId]);
+    } else {
+      // Location-scoped production_manager: getEffectiveLocationIds returns the
+      // active отдел (X-Active-Location) or every assigned отдел. Empty -> [].
+      const scopedIds = getEffectiveLocationIds(principal) ?? [];
+      semiIds = await resolveYarimTayyorSemiIds(scopedIds);
+    }
+
+    // Fetch the full enriched product rows for the resolved set. `qty` is the
+    // total on-hand across ALL locations (one correlated SUM per row). When
+    // `semiIds` is `null` (PM, no filter) we return every type='semi' product;
+    // otherwise we filter to the resolved ids (an empty `[]` -> `ANY('{}')` ->
+    // zero rows, exactly the desired "this отдел has no зг" result).
+    const PRODUCT_SELECT_WITH_QTY = PRODUCT_SELECT.replace(
+      'p.is_active, p.created_at, p.updated_at',
+      `p.is_active, p.created_at, p.updated_at,
+    (SELECT COALESCE(SUM(s.qty), 0) FROM stock s WHERE s.product_id = p.id) AS qty`,
+    );
+    const { rows } =
+      semiIds === null
+        ? await query<ProductRow & { qty: string | number }>(
+            `${PRODUCT_SELECT_WITH_QTY} WHERE p.type = 'semi' ORDER BY p.id`,
+          )
+        : await query<ProductRow & { qty: string | number }>(
+            `${PRODUCT_SELECT_WITH_QTY} WHERE p.id = ANY($1::bigint[]) ORDER BY p.id`,
+            [semiIds],
+          );
+
+    // Bottom-up computed cost for EVERY product in ONE batched pass — identical
+    // to GET /api/products, so a зг card renders the same Себестоимость. (The
+    // map is built over the whole catalogue because a semi's cost can depend on
+    // components outside the returned set; we just read the ids we need.)
+    const costs = await computeAllProductCosts(poolRunner);
+
+    res.status(200).json(
+      rows.map((r) => {
+        const { qty, ...productRow } = r;
+        return {
+          ...enrich(productRow, costs.get(productRow.id) ?? null),
+          qty: Number(qty),
+        };
+      }),
+    );
+  }),
+);
+
 // POST /api/products  — pm, raw_warehouse_manager.
 productsRouter.post(
   '/',
@@ -271,7 +434,13 @@ productsRouter.post(
     const { rows } = await query<
       Omit<
         ProductRow,
-        'category_name' | 'has_recipe' | 'image_url' | 'workshop_location_id' | 'workshop_name'
+        | 'category_name'
+        | 'has_recipe'
+        | 'image_url'
+        | 'workshop_location_id'
+        | 'workshop_name'
+        | 'weight_per_whole'
+        | 'pieces_per_whole'
       >
     >(
       `INSERT INTO products (name, type, unit, sku, poster_ingredient_id, poster_product_id)
@@ -297,6 +466,9 @@ productsRouter.post(
       has_recipe: false,
       cost_per_unit: null,
       manual_cost_per_unit: null,
+      // A brand-new product is not whole-and-sliced until the PM sets it.
+      weight_per_whole: null,
+      pieces_per_whole: null,
     };
     await writeAudit(poolRunner, {
       actorUserId: principal.userId,
@@ -374,6 +546,62 @@ productsRouter.patch(
     res
       .status(200)
       .json({ id: productId, recipe_yield: Number(rows[0]!.recipe_yield) });
+  }),
+);
+
+// PATCH /api/products/:id/whole-piece  — TZ Module 11 (bo'lak ↔ butun).
+//
+// Set (or clear) the two inventory whole↔piece coefficients for a product:
+//   - weight_per_whole — kg of one complete whole cake (butun);
+//   - pieces_per_whole — slices (bo'lak) one whole is cut into.
+// Body `{ weight_per_whole, pieces_per_whole }`. EITHER may be `null` to clear
+// it (both null = the product is NOT whole-and-sliced and the end-of-day
+// converter skips it). A provided value must be a finite number > 0. These are
+// an INVENTORY-COUNTING concept — NOT `recipe_yield` (cost/BOM). pm +
+// production_manager only (config-style; mirrors the recipe-yield / cost edits).
+productsRouter.patch(
+  '/:id/whole-piece',
+  authenticate,
+  authorize('pm', 'production_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const productId = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+
+    // Each coefficient is REQUIRED in the body but may be `null` (clear) or a
+    // finite number strictly greater than zero. Anything else is a 422.
+    const weightPerWhole = parseNullablePositive(body, 'weight_per_whole');
+    const piecesPerWhole = parseNullablePositive(body, 'pieces_per_whole');
+
+    const { rows } = await query<{
+      weight_per_whole: string | null;
+      pieces_per_whole: string | null;
+    }>(
+      `UPDATE products
+          SET weight_per_whole = $2, pieces_per_whole = $3, updated_at = now()
+        WHERE id = $1
+      RETURNING weight_per_whole, pieces_per_whole`,
+      [productId, weightPerWhole, piecesPerWhole],
+    );
+    if (rows.length === 0) {
+      throw AppError.notFound('Product not found.');
+    }
+
+    await writeAudit(poolRunner, {
+      actorUserId: principal.userId,
+      action: 'product.whole_piece.set',
+      entity: 'products',
+      entityId: productId,
+      payload: { weight_per_whole: weightPerWhole, pieces_per_whole: piecesPerWhole },
+    });
+
+    // Return the full enriched product (same shape the list/other PATCHes use).
+    const updated = await query<ProductRow>(`${PRODUCT_SELECT} WHERE p.id = $1`, [productId]);
+    const row = updated.rows[0];
+    if (row === undefined) {
+      throw AppError.internal('Product disappeared after whole-piece update.');
+    }
+    res.status(200).json({ product: enrich(row) });
   }),
 );
 

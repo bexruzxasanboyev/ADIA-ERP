@@ -35,7 +35,7 @@ import {
   effectiveType,
   isResaleCategory,
 } from '@/lib/productCategory';
-import { formatSom } from '@/lib/format';
+import { formatQty, formatSom } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import type { Product, Unit } from '@/lib/types';
 import { ProductCostDialog } from './ProductCostDialog';
@@ -208,8 +208,30 @@ function WorkshopLine({
   );
 }
 
+/**
+ * «Yarim tayyor mahsulotlar» section row — the catalogue `Product` shape PLUS
+ * the зг's on-hand stock. `GET /api/products/yarim-tayyor` returns this
+ * (auto-scoped to the production_manager's отдел server-side). `qty` is the
+ * current ostatka (qoldiq); 0 is a valid, expected value (not "no data").
+ */
+interface StockProduct extends Product {
+  qty: number;
+}
+
 interface ProductCardProps {
   product: Product;
+  /**
+   * The зг's on-hand stock (qoldiq), rendered as a «Qoldiq» line. Passed only
+   * by a stock-aware section (e.g. /yarim-tayyor); `undefined` on the generic
+   * /products catalogue, where the card shows no stock line.
+   */
+  stockQty?: number;
+  /**
+   * Whether to render the per-card product-TYPE badge. `true` on the generic
+   * /products page; the «Yarim tayyor» section passes `false` because every
+   * card there is already yarim tayyor (the badge would be redundant).
+   */
+  showTypeBadge: boolean;
   /** May the current user assign / change the producing sex? (pm/prod-mgr) */
   canEditWorkshop: boolean;
   /** May the current user edit a RAW product's manual cost? (pm/prod-mgr) */
@@ -237,6 +259,8 @@ interface ProductCardProps {
  */
 const ProductCard = memo(function ProductCard({
   product: p,
+  stockQty,
+  showTypeBadge,
   canEditWorkshop,
   canEditCost,
   workshops,
@@ -300,9 +324,11 @@ const ProductCard = memo(function ProductCard({
           </div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
-          <Badge variant={style.badge} className="whitespace-nowrap">
-            {PRODUCT_TYPE_LABELS[type]}
-          </Badge>
+          {showTypeBadge && (
+            <Badge variant={style.badge} className="whitespace-nowrap">
+              {PRODUCT_TYPE_LABELS[type]}
+            </Badge>
+          )}
           {needsRecipeWarn(p) && <RecipelessBadge />}
         </div>
       </div>
@@ -326,6 +352,16 @@ const ProductCard = memo(function ProductCard({
             )}
           </dd>
         </div>
+        {/* «Qoldiq» (ostatka) — the зг's on-hand stock. Shown only in a
+            stock-aware section; 0 is a valid value and renders as "0 dona". */}
+        {stockQty !== undefined && (
+          <div className="min-w-0">
+            <dt className="text-muted-foreground">Qoldiq</dt>
+            <dd className="truncate tabular-nums">
+              {formatQty(stockQty)} {UNIT_LABELS[p.unit]}
+            </dd>
+          </div>
+        )}
       </dl>
       {/* Narx (edit, RAW only) + Retsept (view, non-raw) side by side at the
           card foot. Only xom-ashyo price is editable; semi/finished show a
@@ -375,7 +411,45 @@ const ProductCard = memo(function ProductCard({
  *
  * `pm` and `raw_warehouse_manager` may add products (§6).
  */
-export function ProductsPage() {
+/**
+ * Optional props — with none, ProductsPage is the full catalogue at
+ * /products. A dedicated SECTION (e.g. «Yarim tayyor mahsulotlar» at
+ * /yarim-tayyor) renders the SAME page pinned to one product type.
+ */
+interface ProductsPageProps {
+  /**
+   * Lock the catalogue to ONE product type and hide the type-tab row. The
+   * shared sessionStorage tab memory is bypassed so a pinned section never
+   * clobbers the user's /products tab choice.
+   */
+  forcedType?: TypeTab;
+  /** Heading overrides (default: the generic catalogue copy). */
+  title?: string;
+  description?: string;
+  /**
+   * API path to fetch the product list from. Defaults to the full catalogue
+   * `GET /api/products`. The «Yarim tayyor mahsulotlar» section points this
+   * at `GET /api/products/yarim-tayyor`, which returns ONLY the logged-in
+   * production_manager's отдел зг (same item shape PLUS a `qty` stock field),
+   * already type-scoped server-side. Both endpoints return a bare array OR a
+   * `{ products: [...] }` envelope — the fetch normalises either.
+   */
+  dataEndpoint?: string;
+  /**
+   * Render the зг's on-hand stock (`qty`) as a «Qoldiq» line on each card AND
+   * drop the redundant per-card type badge. Paired with `dataEndpoint`
+   * pointing at the stock-aware endpoint. Off (generic catalogue) by default.
+   */
+  showStock?: boolean;
+}
+
+export function ProductsPage({
+  forcedType,
+  title,
+  description,
+  dataEndpoint = '/api/products',
+  showStock = false,
+}: ProductsPageProps = {}) {
   const navigate = useNavigate();
   const { user } = useAuth();
   // FEATURE A — only pm / production_manager may edit the manual cost. The
@@ -394,6 +468,11 @@ export function ProductsPage() {
   // Persist the active type tab so returning from the recipe page (or any
   // navigation) restores the tab the user was on — not a reset to "Hammasi".
   const [typeTab, setTypeTab] = useState<TypeTab>(() => {
+    // A pinned section (e.g. /yarim-tayyor → 'semi') fixes the type and never
+    // reads the shared tab memory.
+    if (forcedType) {
+      return forcedType;
+    }
     try {
       const v = sessionStorage.getItem(TYPE_TAB_KEY);
       if (v === 'all' || v === 'finished' || v === 'semi' || v === 'raw') {
@@ -408,12 +487,16 @@ export function ProductsPage() {
     return 'finished';
   });
   useEffect(() => {
+    // Pinned sections must not write (or restore) the shared tab memory.
+    if (forcedType) {
+      return;
+    }
     try {
       sessionStorage.setItem(TYPE_TAB_KEY, typeTab);
     } catch {
       // best-effort
     }
-  }, [typeTab]);
+  }, [typeTab, forcedType]);
 
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
@@ -426,10 +509,17 @@ export function ProductsPage() {
     [navigate],
   );
 
-  // The full list is fetched once (the backend `?type=` filter is replaced by
-  // richer client-side filtering: multi-type, unit, and translit search).
-  const { data, isLoading, error, refetch } =
-    useApiQuery<Product[]>('/api/products');
+  // The list is fetched once from `dataEndpoint` (default: the full catalogue).
+  // The generic `?type=` server filter is replaced by richer client-side
+  // filtering (multi-type, unit, translit search). The «Yarim tayyor» section
+  // instead targets `/api/products/yarim-tayyor`, which is already type-scoped
+  // to the manager's отдел server-side — so the per-card stock (`qty`) rides
+  // along and NO extra client type filter is applied to it (see `filtered`).
+  // Both shapes are accepted: a bare array OR a `{ products: [...] }` envelope
+  // (sibling product endpoints return bare arrays; the new one may wrap).
+  const { data, isLoading, error, refetch } = useApiQuery<
+    StockProduct[] | { products: StockProduct[] }
+  >(dataEndpoint);
   const onWorkshopAssigned = useCallback(() => refetch(), [refetch]);
   const onEditCost = useCallback((p: Product) => setCostProduct(p), []);
 
@@ -452,8 +542,14 @@ export function ProductsPage() {
 
   // `useApiQuery` returns a stable `data` reference between renders, so memoise
   // on `data` itself (not a freshly-allocated `data ?? []`) to keep the
-  // dependency arrays below honest.
-  const allProducts = useMemo(() => data ?? [], [data]);
+  // dependency arrays below honest. Normalise the bare-array vs `{ products }`
+  // envelope here so the rest of the page always works with a flat list. Items
+  // are `StockProduct` (a `Product` that may carry `qty`); downstream code that
+  // only needs `Product` fields stays type-safe.
+  const allProducts = useMemo<StockProduct[]>(() => {
+    if (data == null) return [];
+    return Array.isArray(data) ? data : data.products;
+  }, [data]);
 
   // Per-tab counts for the type segmented control badges (whole catalogue).
   const typeCounts = useMemo(() => {
@@ -532,7 +628,11 @@ export function ProductsPage() {
     const selectedWorkshops = filter.workshop ?? [];
     return allProducts.filter((p) => {
       // EPIC 1.3 — Г/П-prefixed products are treated as finished.
-      if (typeTab !== 'all' && effectiveType(p) !== typeTab) {
+      // A stock-aware section (`showStock`) is fed an endpoint that ALREADY
+      // type-scoped the rows server-side (e.g. /api/products/yarim-tayyor →
+      // only this отдел's зг), so we must NOT re-filter by type here — the
+      // client `effectiveType` heuristic could wrongly drop a Г/П-named зг.
+      if (!showStock && typeTab !== 'all' && effectiveType(p) !== typeTab) {
         return false;
       }
       if (
@@ -559,7 +659,7 @@ export function ProductsPage() {
       }
       return true;
     });
-  }, [allProducts, filter, search, typeTab]);
+  }, [allProducts, filter, search, typeTab, showStock]);
 
   // EPIC 1.4c — incremental rendering. Reset the window whenever the result
   // set changes so a fresh filter never starts mid-list.
@@ -578,7 +678,7 @@ export function ProductsPage() {
   // name for a stable order; the null group is always pinned last.
   const cardGroups = useMemo(() => {
     const NULL_KEY = ' '; // sorts/identifies the "Kategoriyasiz" bucket
-    const buckets = new Map<string, { name: string; items: Product[] }>();
+    const buckets = new Map<string, { name: string; items: StockProduct[] }>();
     for (const p of filtered) {
       const key = p.poster_category?.name ?? NULL_KEY;
       const name = p.poster_category?.name ?? 'Kategoriyasiz';
@@ -608,7 +708,7 @@ export function ProductsPage() {
       key: string;
       name: string;
       total: number;
-      items: Product[];
+      items: StockProduct[];
     }[] = [];
     for (const g of cardGroups) {
       if (budget <= 0) break;
@@ -640,11 +740,14 @@ export function ProductsPage() {
   return (
     <div className="mx-auto max-w-[120rem] space-y-6">
       <PageHeader
-        title="Mahsulotlar"
-        description="Xom-ashyo, yarim tayyor va tayyor mahsulotlar."
+        title={title ?? 'Mahsulotlar'}
+        description={
+          description ?? 'Xom-ashyo, yarim tayyor va tayyor mahsulotlar.'
+        }
       />
 
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        {!forcedType && (
         <div
           role="tablist"
           aria-label="Mahsulot turi"
@@ -680,6 +783,7 @@ export function ProductsPage() {
           );
         })}
       </div>
+        )}
 
         <div className="flex items-center gap-3">
           <div className="relative w-full sm:w-72">
@@ -749,6 +853,7 @@ export function ProductsPage() {
                       workshop={p.workshop}
                       edit={
                         canEditWorkshop &&
+                        !showStock &&
                         (type === 'finished' || type === 'semi') &&
                         p.workshop != null ? (
                           <WorkshopPicker
@@ -762,6 +867,7 @@ export function ProductsPage() {
                       }
                     />
                     {canEditWorkshop &&
+                      !showStock &&
                       (type === 'finished' || type === 'semi') &&
                       p.workshop == null && (
                         <span className="mt-1 inline-flex">
@@ -778,14 +884,31 @@ export function ProductsPage() {
                 ),
                 badge: (
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <Badge variant={PRODUCT_CATEGORY_STYLE[type].badge}>
-                      {PRODUCT_TYPE_LABELS[type]}
-                    </Badge>
+                    {/* «Yarim tayyor» section (showStock): drop the redundant
+                        type badge; keep the retseptsiz warn. */}
+                    {!showStock && (
+                      <Badge variant={PRODUCT_CATEGORY_STYLE[type].badge}>
+                        {PRODUCT_TYPE_LABELS[type]}
+                      </Badge>
+                    )}
                     {needsRecipeWarn(p) && <RecipelessBadge />}
                   </div>
                 ),
                 fields: [
                   { label: 'Birlik', value: UNIT_LABELS[p.unit] },
+                  // «Qoldiq» (ostatka) — stock-aware section only; 0 is valid.
+                  ...(showStock
+                    ? [
+                        {
+                          label: 'Qoldiq',
+                          value: (
+                            <span className="tabular-nums">
+                              {formatQty(p.qty)} {UNIT_LABELS[p.unit]}
+                            </span>
+                          ),
+                        },
+                      ]
+                    : []),
                   {
                     label: 'Narx',
                     value: (
@@ -854,7 +977,9 @@ export function ProductsPage() {
                       <ProductCard
                         key={p.id}
                         product={p}
-                        canEditWorkshop={canEditWorkshop}
+                        stockQty={showStock ? p.qty : undefined}
+                        showTypeBadge={!showStock}
+                        canEditWorkshop={canEditWorkshop && !showStock}
                         canEditCost={canEditCost}
                         workshops={workshops}
                         onOpenRecipe={openRecipe}

@@ -202,8 +202,26 @@ export type PosterPrepack = {
 export type PosterTransactionLine = {
   product_id: string;
   modification_id?: string;
+  /**
+   * Quantity sold. For PIECE products this is an integer count; for WEIGHTED
+   * ("КГ") products Poster reports the weight in a sub-unit (e.g. 100g steps),
+   * so `num` is NOT a count and MUST NOT be multiplied by `product_price` —
+   * doing so over-states revenue ~Nx. See `salesSync.ingestTransaction`.
+   */
   num: string;
+  /**
+   * LINE TOTAL (gross, before discounts) in TIYIN — verified live against the
+   * `adia` account 2026-06-08: `sum(product_price)` over a check's lines equals
+   * the check's `sum` field exactly. It is NOT a per-unit price. Divide by 100
+   * for so'm.
+   */
   product_price: string;
+  /**
+   * LINE TOTAL (NET, after discounts/bonus) in TIYIN — verified live 2026-06-08:
+   * `sum(payed_sum)` over a store's closed checks reconciles EXACTLY to that
+   * store's `dash.getTransactions` revenue-breakdown total. This is the
+   * authoritative per-line money source. Divide by 100 for so'm.
+   */
   payed_sum?: string;
 };
 
@@ -419,6 +437,49 @@ export type PosterCashShift = {
 };
 
 /**
+ * TZ Module 15 / P8 — one spot row nested under a `finance.getAccounts`
+ * account. Verified live against the `adia` account (2026-06-09): every
+ * account carries a `spots[]` array linking it to the retail spots it serves;
+ * `account_cash`/`account_bank`/`account_collection` are the per-spot money
+ * account ids (cash box / bank / collection). We read `account_cash` to resolve
+ * a store's safe (cash-box) balance from its `spot_id`. Numeric fields arrive
+ * as numbers here (unlike most Poster string fields).
+ */
+export type PosterAccountSpot = {
+  spot_id: string | number;
+  spot_name?: string;
+  /** The cash-box account id that backs this spot's till. */
+  account_cash?: string | number;
+  account_bank?: string | number;
+  account_collection?: string | number;
+};
+
+/**
+ * TZ Module 15 / P8 — `finance.getAccounts` row ("Hisob raqamlar"). One money
+ * account (cash box / safe / supplier ledger). Verified live against the `adia`
+ * account (2026-06-09): 64 accounts. Money is in TIYIN (string, MAY be
+ * negative — supplier ledgers run negative). `type` is Poster's account-kind
+ * code as a string: "1" = non-cash / supplier ledger, "3" = cash-box / safe
+ * (Сейф, Денежный ящик …). All numeric-looking fields may arrive as string or
+ * number; the client normalises `balance` to so'm and keeps `type` as a string.
+ *
+ *   account_id  — account id.
+ *   name        — account label ("Сейф", "Денежный ящик Кукча"…).
+ *   type        — account-kind code ("1" non-cash, "3" cash box).
+ *   balance     — current balance in TIYIN (may be negative).
+ *   spots       — the retail spots this account serves (→ per-spot cash account).
+ */
+export type PosterAccount = {
+  account_id: string | number;
+  name?: string;
+  type?: string | number;
+  balance?: string | number;
+  balance_start?: string | number;
+  currency_code_iso?: string;
+  spots?: PosterAccountSpot[];
+};
+
+/**
  * EPIC 8.7 / P8 — `finance.getTransactions` row (moliyaviy operatsiya). A safe
  * (seyf) income/expense entry. `type` 0 = expense (rasxod), 1 = income; we
  * surface expenses for the safe-expense view. `amount` is in TIYIN.
@@ -443,6 +504,31 @@ export type PosterFinanceTransaction = {
   date?: string;
   user_id?: string | number;
   comment?: string | null;
+};
+
+/**
+ * TZ Module 8 (seller KPI) — one row from `dash.getWaitersSales` ("Ofitsiantlar
+ * reytingi"). HISTORICAL per-waiter (seller) revenue for the date range,
+ * filterable by `spot_id`. Verified live against the `adia` account
+ * (2026-06-09):
+ *
+ *   { user_id:"5", name:"Муяссар Икромова", profit:"60911440404",
+ *     revenue:"84799376770", clients:"5793", ... }
+ *
+ * THE UNIT — `revenue` is in TIYIN (string). SUM(revenue) over all waiters for
+ * a month divided by `dash.getAnalytics.counters.revenue` (known so'm) for the
+ * SAME window is EXACTLY 100, so the client divides by 100 (`tiyinToSom`)
+ * before it reconciles with every other so'm figure in the app. A per-spot
+ * call partitions revenue cleanly (a waiter shows non-zero revenue only on the
+ * spot(s) they actually sold at) — that is how we attribute a seller to a
+ * store. `user_id` is Poster's waiter id (kept as a string).
+ */
+export type PosterWaiterSales = {
+  user_id: string;
+  name: string;
+  revenue: string;
+  profit?: string;
+  clients?: string;
 };
 
 // -----------------------------------------------------------------------------
@@ -813,6 +899,41 @@ export class PosterClient {
   }
 
   /**
+   * TZ Module 8 (seller KPI) — per-waiter (seller) revenue in a date range via
+   * `dash.getWaitersSales`. Date strings follow Poster's `YYYYMMDD` convention.
+   * When `spotId` is set the revenue is the waiter's revenue AT THAT SPOT only
+   * (Poster partitions it), which is how we attribute a seller to a store.
+   *
+   * Rows are normalised so every entry has `user_id`/`name`/`revenue` as
+   * strings (Poster numeric fields arrive as strings). `revenue` is left in
+   * TIYIN — the caller divides by 100 (`tiyinToSom`). Returns `[]` when Poster
+   * yields nothing; a method-level failure is left to the caller to degrade.
+   */
+  async getWaiterSales(params: {
+    dateFrom: string; // YYYYMMDD
+    dateTo: string; // YYYYMMDD
+    spotId?: number;
+  }): Promise<PosterWaiterSales[]> {
+    const qs: Record<string, string> = {
+      dateFrom: params.dateFrom,
+      dateTo: params.dateTo,
+    };
+    if (params.spotId !== undefined) qs.spot_id = String(params.spotId);
+    const r = await this.call<PosterWaiterSales[]>('dash.getWaitersSales', qs);
+    if (!Array.isArray(r)) return [];
+    return r.map((row) => {
+      const out: PosterWaiterSales = {
+        user_id: String(row.user_id ?? ''),
+        name: String(row.name ?? ''),
+        revenue: String(row.revenue ?? '0'),
+      };
+      if (row.profit !== undefined) out.profit = String(row.profit);
+      if (row.clients !== undefined) out.clients = String(row.clients);
+      return out;
+    });
+  }
+
+  /**
    * EPIC 8.7 — finance transactions (safe income/expense) in a date range
    * (read-only). Date strings follow Poster's `YYYYMMDD` convention.
    */
@@ -827,6 +948,18 @@ export class PosterClient {
     };
     if (params.accountId !== undefined) qs.account_id = String(params.accountId);
     const r = await this.call<PosterFinanceTransaction[]>('finance.getTransactions', qs);
+    return r ?? [];
+  }
+
+  /**
+   * TZ Module 15 — money accounts ("Hisob raqamlar", `finance.getAccounts`),
+   * read-only. Returns every account with its TIYIN balance and the spots it
+   * serves — used to read a store's safe (cash-box) balance for the kassir
+   * reconciliation. Returns `[]` when Poster yields nothing. Takes no
+   * parameters (Poster ignores any). Verified live shape 2026-06-09.
+   */
+  async getAccounts(): Promise<PosterAccount[]> {
+    const r = await this.call<PosterAccount[]>('finance.getAccounts');
     return r ?? [];
   }
 

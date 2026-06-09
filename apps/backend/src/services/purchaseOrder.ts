@@ -43,6 +43,10 @@ export type PurchaseOrderRow = {
   note: string | null;
   created_by: number | null;
   initiated_by_admin: boolean;
+  /** 0056 — defective qty refused on receipt (NULL when none recorded). */
+  brak_qty: number | null;
+  /** 0056 — free-form reason for the brak (NULL when no brak). */
+  brak_reason: string | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -51,7 +55,7 @@ export const PURCHASE_ORDER_COLUMNS = `id, product_id, qty, supplier_id,
   target_location_id, status, replenishment_id, manager_approved_by,
   manager_approved_at, keeper_approved_by, keeper_approved_at,
   received_movement_id, note, created_by, initiated_by_admin,
-  created_at, updated_at`;
+  brak_qty, brak_reason, created_at, updated_at`;
 
 /** Which approval step is being taken. */
 export type ApprovalStep = 'manager' | 'keeper';
@@ -289,16 +293,47 @@ export async function createAdminPurchaseOrder(
   return tx !== undefined ? run(tx) : withTransaction(run);
 }
 
+/** Optional brak (defect) split recorded when a purchase order is received. */
+export type ReceivePurchaseOrderOptions = {
+  /** Defective qty refused on receipt (default 0). Must be <= ordered qty. */
+  readonly brakQty?: number;
+  /** Reason for the brak — required when `brakQty > 0`. */
+  readonly brakReason?: string | null;
+};
+
 /**
  * Receive a purchase order: `approved -> received`. The purchased qty enters
  * the raw warehouse (`target_location_id`) as one atomic `purchase` movement
  * (AC6.3). Idempotent — a `received` order is returned unchanged.
+ *
+ * 0056 — optional brak (defect) split. The receiver may record a defective
+ * qty + reason. Stock model (NO double-count): the FULL ordered qty is first
+ * credited to the raw warehouse via the `purchase` movement (unchanged); then,
+ * if `brakQty > 0`, that defective qty is written OFF the raw warehouse via an
+ * `adjust` movement so only the sound qty remains. Both movements (and the
+ * audit rows) share `client`, so they commit or roll back together
+ * (invariant 1). The guarded decrement inside `applyMovement` keeps the
+ * write-off from driving stock negative (invariant 3).
  */
 export async function receivePurchaseOrder(
   orderId: number,
   actorUserId: number | null,
   tx?: TxClient,
+  options: ReceivePurchaseOrderOptions = {},
 ): Promise<PurchaseOrderRow> {
+  // Validate the brak split before any SQL runs.
+  const brakQty = options.brakQty ?? 0;
+  if (!Number.isFinite(brakQty) || brakQty < 0) {
+    throw AppError.validation('brak_qty must be a number >= 0.');
+  }
+  const brakReasonClean =
+    typeof options.brakReason === 'string' && options.brakReason.trim() !== ''
+      ? options.brakReason.trim()
+      : null;
+  if (brakQty > 0 && brakReasonClean === null) {
+    throw AppError.validation('brak_reason is required when brak_qty > 0.');
+  }
+
   const run = async (client: TxClient): Promise<PurchaseOrderRow> => {
     const { rows } = await client.query<PurchaseOrderRow>(
       `SELECT ${PURCHASE_ORDER_COLUMNS} FROM purchase_orders WHERE id = $1 FOR UPDATE`,
@@ -317,13 +352,20 @@ export async function receivePurchaseOrder(
       );
     }
 
+    const orderedQty = Number(order.qty);
+    if (brakQty > orderedQty) {
+      throw AppError.validation(
+        `brak_qty (${brakQty}) cannot exceed the received qty (${orderedQty}).`,
+      );
+    }
+
     // The purchased goods enter the raw warehouse — one atomic movement.
     const { movementId } = await applyMovement(
       {
         productId: order.product_id,
         fromLocationId: null,
         toLocationId: order.target_location_id,
-        qty: Number(order.qty),
+        qty: orderedQty,
         reason: 'purchase',
         actorUserId,
         purchaseOrderId: order.id,
@@ -331,11 +373,31 @@ export async function receivePurchaseOrder(
       client,
     );
 
+    // 0056 — write off the defective qty from the raw warehouse so only the
+    // sound qty remains (no double count). reason='adjust', linked to this PO.
+    if (brakQty > 0) {
+      await applyMovement(
+        {
+          productId: order.product_id,
+          fromLocationId: order.target_location_id,
+          toLocationId: null,
+          qty: brakQty,
+          reason: 'adjust',
+          actorUserId,
+          purchaseOrderId: order.id,
+          note: `receive brak: ${brakReasonClean}`,
+        },
+        client,
+      );
+    }
+
     const { rows: updated } = await client.query<PurchaseOrderRow>(
-      `UPDATE purchase_orders SET status = 'received', received_movement_id = $2
+      `UPDATE purchase_orders
+         SET status = 'received', received_movement_id = $2,
+             brak_qty = $3, brak_reason = $4
        WHERE id = $1
        RETURNING ${PURCHASE_ORDER_COLUMNS}`,
-      [orderId, movementId],
+      [orderId, movementId, brakQty, brakReasonClean],
     );
     const result = updated[0];
     if (result === undefined) {
@@ -347,7 +409,12 @@ export async function receivePurchaseOrder(
       action: 'purchase_order.received',
       entity: 'purchase_orders',
       entityId: orderId,
-      payload: { product_id: order.product_id, qty: Number(order.qty) },
+      payload: {
+        product_id: order.product_id,
+        qty: orderedQty,
+        brak_qty: brakQty,
+        brak_reason: brakReasonClean,
+      },
     });
 
     return result;

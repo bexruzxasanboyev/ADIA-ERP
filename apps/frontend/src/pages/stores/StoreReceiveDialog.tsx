@@ -74,6 +74,19 @@ export function StoreReceiveDialog({
   const unit = UNIT_LABELS[request.product_unit];
   const brakValue = brakQty ?? 0;
   const showBrakReason = brakValue > 0;
+  // Brak can never exceed what physically arrived (the received qty) — the
+  // modal must not allow e.g. 21M kg on a 3 kg item (owner bug). Clamp on entry
+  // against the current received value so the field can't hold an over-cap
+  // number; submit re-checks as a backstop.
+  const brakMax = receivedQty ?? 0;
+  function handleBrakChange(next: number | null) {
+    if (next != null && next > brakMax) {
+      setBrakQty(brakMax > 0 ? brakMax : 0);
+      return;
+    }
+    setBrakQty(next);
+  }
+  const brakOverMax = brakValue > brakMax;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -153,7 +166,14 @@ export function StoreReceiveDialog({
                 decimals
                 min={0}
                 value={receivedQty}
-                onValueChange={setReceivedQty}
+                onValueChange={(next) => {
+                  setReceivedQty(next);
+                  // Lowering received below an entered brak must reclamp brak.
+                  const cap = next ?? 0;
+                  if (brakQty != null && brakQty > cap) {
+                    setBrakQty(cap > 0 ? cap : 0);
+                  }
+                }}
                 disabled={isSubmitting}
                 required
               />
@@ -168,13 +188,20 @@ export function StoreReceiveDialog({
                 id="receive-brak"
                 decimals
                 min={0}
+                max={brakMax}
                 value={brakQty}
-                onValueChange={setBrakQty}
+                onValueChange={handleBrakChange}
                 placeholder="0"
                 disabled={isSubmitting}
               />
               <span className="shrink-0 text-xs text-muted-foreground">{unit}</span>
             </div>
+            {brakOverMax && (
+              <p className="text-xs text-destructive">
+                Brak qabul qilingan sonidan oshmasligi kerak — eng ko‘pi{' '}
+                {formatQty(brakMax)} {unit}.
+              </p>
+            )}
           </div>
 
           {showBrakReason && (

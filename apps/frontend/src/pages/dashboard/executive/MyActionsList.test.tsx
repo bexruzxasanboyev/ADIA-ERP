@@ -52,6 +52,8 @@ const REP: ReplenishmentRequest = {
   updated_at: '2026-05-24T08:30:00.000Z',
   closed_at: null,
   production_location_name: null,
+  route_to_production_manual: false,
+  received_from_production_at: null,
 };
 
 describe('MyActionsList', () => {

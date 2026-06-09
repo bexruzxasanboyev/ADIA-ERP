@@ -83,6 +83,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         persistActiveLocation(null);
         setActiveLocationIdState(null);
       }
+      // The mount-time `/api/auth/me` effect only runs once and does NOT
+      // re-fire after a fresh login, so `locations` would stay empty until
+      // the next reload — leaving the header / LocationSwitcher without the
+      // user's real location name. Hydrate it here, best-effort, so the
+      // location-scoped UI is correct immediately after sign-in.
+      apiRequest<MeResponse>('/api/auth/me')
+        .then((me) => {
+          setLocations(me.locations ?? []);
+          if (me.active_location_id !== null && me.active_location_id !== undefined) {
+            persistActiveLocation(me.active_location_id);
+            setActiveLocationIdState(me.active_location_id);
+          }
+        })
+        .catch(() => {
+          /* best-effort — a reload re-runs the mount hydration */
+        });
     },
     [],
   );

@@ -144,15 +144,19 @@ posterIntegrationRouter.post(
   authenticate,
   authorize('pm'),
   asyncHandler(async (req, res) => {
-    // Validate token exists upfront so we return a clean error instead of a
-    // raw Poster error code 10.
-    const cfg = loadConfig();
-    if (cfg.poster.token === '') {
-      throw AppError.internal('POSTER_TOKEN is not configured — cannot run sync.');
-    }
+    // Validate the client-supplied request FIRST: a bad `entity` is a client
+    // error (422) and must be reported as such regardless of server config.
+    // Checking the server-side `POSTER_TOKEN` precondition before this would
+    // mask an invalid `entity` behind a 500 whenever the token is unset.
     const entityRaw = typeof req.query.entity === 'string' ? req.query.entity : 'all';
     if (!ENTITY_VALUES.includes(entityRaw as (typeof ENTITY_VALUES)[number])) {
       throw AppError.validation(`Query "entity" must be one of: ${ENTITY_VALUES.join(', ')}.`);
+    }
+    // Then the server-side precondition: token must be configured so we return
+    // a clean error instead of a raw Poster error code 10.
+    const cfg = loadConfig();
+    if (cfg.poster.token === '') {
+      throw AppError.internal('POSTER_TOKEN is not configured — cannot run sync.');
     }
     const client = createPosterClientFromConfig();
     const out: unknown[] = [];

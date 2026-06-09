@@ -271,7 +271,11 @@ describe('telegram callbackHandler', () => {
 
     expect(m.answer).toHaveBeenCalledTimes(1);
     expect(m.sendMessage).toHaveBeenCalledTimes(1);
-    expect(String(m.sendMessage.mock.calls[0]![0])).toMatch(/Status: NEW/);
+    // Owner feedback (2026-06-08) — a NEW request reads in requester-friendly
+    // domain terms ("awaiting central warehouse"), not a bare "Status: NEW".
+    expect(String(m.sendMessage.mock.calls[0]![0])).toMatch(
+      /Markaziy sklad qabul qilishini kutmoqda/,
+    );
 
     // No buttons stripped on a `view` outcome.
     expect(m.editReplyMarkup).not.toHaveBeenCalled();

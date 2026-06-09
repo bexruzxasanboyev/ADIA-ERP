@@ -37,6 +37,8 @@ const BASE: Omit<
   requester_location_name: "Yunusobod do'koni",
   target_location_name: 'Markaziy sklad',
   production_location_name: null,
+  route_to_production_manual: false,
+  received_from_production_at: null,
 };
 
 const INCOMING: ReplenishmentRequest = {

@@ -1006,20 +1006,22 @@ type DishEnrichment = {
 
 /**
  * Enrich prepack products (semi + finished) from Poster dishes (тех.карты), then
- * DROP the legacy menu-product rows.
+ * build the sales-resolution map for EVERY sellable menu product.
  *
- * Owner rework (2026-06-08): `menu.getProducts` no longer CREATES products.
- * Товары (Coca Cola, Borjomi…) and dish-as-product rows are NOT products. The
- * dishes are used ONLY as an enrichment source — matched BY NORMALISED NAME to a
- * prepack — to supply three fields: menu `category_id`, `image_url`, and the
- * production `workshop_location_id`. Anything that does not match a prepack
- * (i.e. every товар) is simply ignored. After enrichment we delete the 294
- * legacy menu-product rows the OLD `syncMenuProducts` created (see
- * `dropMenuProducts`).
+ * `menu.getProducts` rows serve two jobs:
+ *   1. ENRICHMENT — matched BY NORMALISED NAME to a prepack to supply three
+ *      fields: menu `category_id`, `image_url`, production `workshop_location_id`.
+ *   2. SALES RESOLUTION (2026-06-08 root-cause fix) — every menu product is made
+ *      resolvable so `ingestTransaction` can write its sale line into `sales`:
+ *        - a name-matched prepack -> `poster_menu_product_map` alias;
+ *        - an unmatched товар (Coca Cola, Borjomi, candles…) -> a new
+ *          `products(type='resale')` row + alias. товары show in sales analytics
+ *          but stay OUT of stock / recipe / production (they are not made by ADIA).
  *
- * Keeps the historic `syncMenuProducts` export name so the route + orchestrator
- * entry points are unchanged. MUST run AFTER `syncWorkshops` (workshop link) and
- * `syncPrepacks` (the rows being enriched).
+ * Prepack rows + their `poster_product_id` are NEVER mutated — recipe / stock
+ * sync depend on them. Keeps the historic `syncMenuProducts` export name so the
+ * route + orchestrator entry points are unchanged. MUST run AFTER `syncWorkshops`
+ * (workshop link) and `syncPrepacks` (the rows being enriched).
  */
 export async function syncMenuProducts(
   client: PosterClient,
@@ -1092,23 +1094,30 @@ export async function syncMenuProducts(
       if (workshopLocId !== null) enrichedWorkshop += 1;
     }
 
-    // Drop the legacy menu-product rows (товары + dish-as-product). The set is
-    // every local product whose poster_product_id is a menu product_id — these
-    // never overlap prepack product_ids (verified live 2026-06-08).
-    const menuPids = list
-      .map((p) => Number(p.product_id))
-      .filter((id) => Number.isInteger(id) && id > 0);
-    const dropped = await dropMenuProducts(menuPids);
+    // SALES RESOLUTION (2026-06-08 root-cause fix). Every sellable menu product
+    // must resolve to an ADIA product so `ingestTransaction` can write the sale
+    // line. Build that resolution here:
+    //   - a menu product that name-matches a prepack (semi/finished) -> MAP its
+    //     menu id to that prepack in `poster_menu_product_map`;
+    //   - a menu product with no catalogue match (a pure товар — Coca Cola,
+    //     candles, …) -> upsert a `products(type='resale')` row keyed by the menu
+    //     product_id, then MAP the menu id to it.
+    // The prepack rows + their poster_product_id are NEVER touched (recipe /
+    // stock sync depend on them). Idempotent — a re-run upserts the same rows.
+    const mapResult = await buildMenuProductMap(list, prepacks);
 
     const summary =
       `dishes=${list.length} enrich(matched=${matched}, cat=${enrichedCategory}, ` +
-      `img=${enrichedImage}, ws=${enrichedWorkshop}) dropped_menu_products=${dropped}`;
-    await finishSyncRun(runId, 'ok', { recordsIn: total, recordsApplied: matched }, summary);
+      `img=${enrichedImage}, ws=${enrichedWorkshop}) ` +
+      `sales_map(prepack=${mapResult.mappedToPrepack}, resale=${mapResult.resaleProducts}, ` +
+      `unresolved=${mapResult.unresolved})`;
+    const mapped = mapResult.mappedToPrepack + mapResult.resaleProducts;
+    await finishSyncRun(runId, 'ok', { recordsIn: total, recordsApplied: mapped }, summary);
     return {
       entity: 'products',
       status: 'ok',
       recordsIn: total,
-      recordsApplied: matched,
+      recordsApplied: mapped,
       errorDetail: summary,
     };
   } catch (err) {
@@ -1125,63 +1134,131 @@ export async function syncMenuProducts(
   }
 }
 
-/**
- * Delete the legacy menu-product rows (товары + dish-as-product) the OLD
- * `syncMenuProducts` created, by `poster_product_id`. Wrapped in ONE
- * transaction; all dependent rows that reference these products with
- * `ON DELETE RESTRICT` (stock, movements, sales, replenishment, production /
- * purchase orders, nakladnoy lines, writeback queue, dialog sessions, recipes
- * as a component) are removed first in FK-safe order so the final
- * `DELETE FROM products` cannot raise 23503. Raw/semi/finished prepacks and
- * their stock are NEVER touched — only rows whose poster_product_id is in the
- * menu-product id set (which is disjoint from prepack ids).
- *
- * Idempotent: a re-run finds no matching rows (the old menu-products are gone)
- * and deletes nothing. Returns the number of product rows removed.
- */
-async function dropMenuProducts(menuProductIds: readonly number[]): Promise<number> {
-  if (menuProductIds.length === 0) return 0;
-  return withTransaction(async (tx) => {
-    // Resolve the local product ids to delete (menu product_ids only; disjoint
-    // from prepack ids so no prepack is ever caught here).
-    const { rows: targets } = await tx.query<{ id: number }>(
-      `SELECT id FROM products WHERE poster_product_id = ANY($1::bigint[])`,
-      [menuProductIds],
-    );
-    const ids = targets.map((r) => Number(r.id));
-    if (ids.length === 0) return 0;
+/** Outcome of {@link buildMenuProductMap}. */
+type MenuMapResult = {
+  /** Menu products mapped to an existing prepack (name match). */
+  readonly mappedToPrepack: number;
+  /** Menu products materialised as a `type='resale'` product (no catalogue match). */
+  readonly resaleProducts: number;
+  /** Menu products that resolved to NOTHING (should be 0 — товары all materialise). */
+  readonly unresolved: number;
+};
 
-    // FK-safe dependent deletes (children of these tables cascade / set-null).
-    const deps: readonly [string, string][] = [
-      ['purchase_orders', 'product_id'],
-      ['production_orders', 'product_id'],
-      ['replenishment_requests', 'product_id'],
-      ['stock_movements', 'product_id'],
-      ['sales', 'product_id'],
-      ['stock', 'product_id'],
-      ['nakladnoy_lines', 'component_product_id'],
-      ['poster_writeback_queue', 'product_id'],
-      ['production_dialog_sessions', 'product_id'],
-      ['recipes', 'component_product_id'],
-    ];
-    for (const [table, col] of deps) {
-      // table/col are server-side constants (never user input) — safe to inline.
-      await tx.query(`DELETE FROM ${table} WHERE ${col} = ANY($1::bigint[])`, [ids]);
+/**
+ * Build/refresh `poster_menu_product_map` so EVERY sellable menu product resolves
+ * to an ADIA product (root-cause fix for the empty `sales` table). For each menu
+ * product:
+ *   1. name-match (via `normalizeMatchName`) to a prepack (semi/finished) the
+ *      enrichment pass already loaded -> map the menu id to that prepack;
+ *   2. no match -> upsert a `products(type='resale')` row keyed by the menu
+ *      product_id (its only natural key — disjoint from prepack product_ids),
+ *      then map the menu id to it.
+ *
+ * Each menu id is upserted into the map in its OWN statement (PK on
+ * poster_menu_product_id), so a re-run with the same Poster catalogue is a no-op
+ * for already-mapped ids and a cheap UPDATE for a re-pointed one. Prepack rows
+ * and their `poster_product_id` are never touched.
+ *
+ * A `resale` upsert is keyed on `poster_product_id` (the menu id). The partial
+ * UNIQUE `uq_products_poster_product` guarantees one row per menu id; a prepack
+ * can never collide here because prepack product_ids and menu product_ids are
+ * disjoint id-spaces (verified live 2026-06-08).
+ */
+async function buildMenuProductMap(
+  list: readonly { product_id: string; product_name?: string }[],
+  prepacks: readonly { id: number; name: string }[],
+): Promise<MenuMapResult> {
+  // Normalised-name -> prepack id (later rows win on the rare name collision).
+  const prepackByName = new Map<string, number>();
+  for (const pk of prepacks) {
+    const key = normalizeMatchName(pk.name);
+    if (key !== '') prepackByName.set(key, pk.id);
+  }
+
+  let mappedToPrepack = 0;
+  let resaleProducts = 0;
+  let unresolved = 0;
+
+  for (const m of list) {
+    const menuId = Number(m.product_id);
+    if (!Number.isInteger(menuId) || menuId <= 0) continue;
+    const name = String(m.product_name ?? '').trim();
+    const key = normalizeMatchName(name);
+
+    const prepackId = key !== '' ? prepackByName.get(key) : undefined;
+    if (prepackId !== undefined) {
+      await upsertMenuProductMap(menuId, prepackId);
+      mappedToPrepack += 1;
+      continue;
     }
 
-    // Now the products themselves. recipes.product_id, sales_stats_daily,
-    // forecasts, poster_product_writeback cascade automatically.
-    const del = await tx.query(`DELETE FROM products WHERE id = ANY($1::bigint[])`, [ids]);
+    // No catalogue match -> a pure resale товар. Materialise (or refresh) it and
+    // map the menu id to it. A товар with a blank name is still ingestible — we
+    // give it a stable fallback label so the sale line is never dropped.
+    const resaleId = await upsertResaleProduct(menuId, name || `Tovar ${menuId}`);
+    if (resaleId === null) {
+      unresolved += 1;
+      continue;
+    }
+    await upsertMenuProductMap(menuId, resaleId);
+    resaleProducts += 1;
+  }
 
-    await writeAudit(tx, {
-      actorUserId: null,
-      action: 'poster.menu_products.drop',
-      entity: 'products',
-      entityId: null,
-      payload: { dropped: del.rowCount ?? ids.length, product_ids: ids.slice(0, 50) },
-    });
-    return del.rowCount ?? ids.length;
-  });
+  return { mappedToPrepack, resaleProducts, unresolved };
+}
+
+/**
+ * Insert/update one menu-id -> ADIA-product mapping. Keyed on the menu id (PK):
+ * a re-run re-points it only when the target product changed (idempotent).
+ */
+async function upsertMenuProductMap(menuProductId: number, productId: number): Promise<void> {
+  await query(
+    `INSERT INTO poster_menu_product_map (poster_menu_product_id, product_id)
+     VALUES ($1, $2)
+     ON CONFLICT (poster_menu_product_id)
+       DO UPDATE SET product_id = EXCLUDED.product_id, updated_at = now()`,
+    [menuProductId, productId],
+  );
+}
+
+/**
+ * Insert/update a resale товар as `products(type='resale')`, keyed by the Poster
+ * MENU product_id (stored in `poster_product_id` — товары have no prepack id, and
+ * the menu id-space is disjoint from prepack product_ids so there is no
+ * collision). Resale rows are sold but never produced or stocked by ADIA, so they
+ * stay out of every stock / recipe / production query (which filter on
+ * raw/semi/finished). Idempotent — a re-run refreshes only the name. `unit` is a
+ * nominal 'pcs' (товары are counted, never weighed by ADIA). Returns the local id.
+ *
+ * A guard: if a row with this `poster_product_id` already exists as a PREPACK
+ * (it never should — disjoint id-spaces — but be defensive), we DO NOT demote it
+ * to resale; we just return its id so the map points at the right product.
+ */
+async function upsertResaleProduct(menuProductId: number, name: string): Promise<number | null> {
+  const existing = await query<{ id: number; type: string }>(
+    `SELECT id, type FROM products WHERE poster_product_id = $1`,
+    [menuProductId],
+  );
+  const found = existing.rows[0];
+  if (found !== undefined) {
+    if (found.type === 'resale') {
+      await query(
+        `UPDATE products SET name = $2, updated_at = now() WHERE id = $1`,
+        [found.id, name],
+      );
+    }
+    // A non-resale collision (defensive): leave the row untouched, just map to it.
+    return found.id;
+  }
+  const { rows } = await query<{ id: number }>(
+    `INSERT INTO products (name, type, unit, poster_product_id)
+     VALUES ($1, 'resale', 'pcs', $2)
+     ON CONFLICT (poster_product_id) WHERE poster_product_id IS NOT NULL
+       DO UPDATE SET name = EXCLUDED.name, updated_at = now()
+     RETURNING id`,
+    [name, menuProductId],
+  );
+  return rows[0]?.id ?? null;
 }
 
 /**

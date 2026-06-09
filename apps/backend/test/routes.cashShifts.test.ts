@@ -212,3 +212,149 @@ describe('GET /api/cash-shifts', () => {
     expect(res.body.items).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// TZ Module 15 — GET /api/cash-shifts/reconciliations
+// ---------------------------------------------------------------------------
+
+/** Insert a cash_shift_reconciliation row directly; returns its id. */
+async function makeReconciliation(opts: {
+  locationId: number;
+  shiftDate: string; // YYYY-MM-DD
+  status: 'matched' | 'discrepancy' | 'no_poster_data';
+  posterCashShiftId?: string | null;
+}): Promise<{ id: number; nakladnoyId: number }> {
+  const { rows: nak } = await ctx.db.query<{ id: string }>(
+    `INSERT INTO nakladnoy (source, source_ref, qty, location_id, total_amount)
+     VALUES ('cash_shift', $1, 0, $2, 0) RETURNING id`,
+    [`loc:${opts.locationId}`, opts.locationId],
+  );
+  const nakladnoyId = Number(nak[0]!.id);
+  const hasPoster = opts.status !== 'no_poster_data';
+  const { rows } = await ctx.db.query<{ id: string }>(
+    `INSERT INTO cash_shift_reconciliation
+       (nakladnoy_id, location_id, shift_date, poster_cash_shift_id,
+        submitted_cash, submitted_card, submitted_expense,
+        poster_cash, poster_card, poster_expense, poster_safe_balance,
+        cash_diff, card_diff, expense_diff, status)
+     VALUES ($1, $2, $3::date, $4,
+             3000000, 2000000, 500000,
+             $5, $6, $7, $8,
+             $9, $10, $11, $12)
+     RETURNING id`,
+    [
+      nakladnoyId,
+      opts.locationId,
+      opts.shiftDate,
+      opts.posterCashShiftId ?? (hasPoster ? '9000' : null),
+      hasPoster ? 2000000 : null,
+      hasPoster ? 2000000 : null,
+      hasPoster ? 500000 : null,
+      hasPoster ? 3400 : null,
+      hasPoster ? 1000000 : null,
+      hasPoster ? 0 : null,
+      hasPoster ? 0 : null,
+      opts.status,
+    ],
+  );
+  return { id: Number(rows[0]!.id), nakladnoyId };
+}
+
+describe('GET /api/cash-shifts/reconciliations', () => {
+  it('PM sees all reconciliations joined with location_name + nakladnoy id, newest first', async () => {
+    const storeA = await makeStoreWithSpot(801, 'Recon Store A');
+    const storeB = await makeStoreWithSpot(802, 'Recon Store B');
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const older = await makeReconciliation({ locationId: storeA, shiftDate: '2026-06-01', status: 'matched' });
+    const newer = await makeReconciliation({ locationId: storeB, shiftDate: '2026-06-08', status: 'discrepancy' });
+
+    // Scope to storeB so the "newest first" assertion is deterministic even as
+    // other tests in this no-cleanup suite leave reconciliation rows behind.
+    const res = await request(ctx.app)
+      .get(`/api/cash-shifts/reconciliations?location_id=${storeB}`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(200);
+    const ids = res.body.items.map((r: { id: number }) => r.id);
+    expect(ids).toContain(newer.id);
+    expect(ids).not.toContain(older.id); // older belongs to storeA — filtered out.
+    // Newest (created last) first within storeB.
+    expect(res.body.items[0].id).toBe(newer.id);
+    const top = res.body.items[0];
+    expect(top.location_id).toBe(storeB);
+    expect(top.location_name).toBe('Recon Store B');
+    expect(top.nakladnoy_id).toBe(newer.nakladnoyId);
+    expect(top.status).toBe('discrepancy');
+    expect(top.shift_date).toBe('2026-06-08');
+    // Numeric fields are numbers, not strings.
+    expect(typeof top.submitted_cash).toBe('number');
+    expect(typeof top.cash_diff).toBe('number');
+  });
+
+  it('no_poster_data row carries null poster_* fields', async () => {
+    const store = await makeStoreWithSpot(803, 'Recon Store C');
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    await makeReconciliation({ locationId: store, shiftDate: '2026-06-05', status: 'no_poster_data' });
+    const res = await request(ctx.app)
+      .get('/api/cash-shifts/reconciliations?status=no_poster_data')
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.items).toHaveLength(1);
+    const item = res.body.items[0];
+    expect(item.poster_cash).toBeNull();
+    expect(item.cash_diff).toBeNull();
+    expect(item.poster_cash_shift_id).toBeNull();
+  });
+
+  it('store_manager sees ONLY its own location reconciliations', async () => {
+    const myStore = await makeStoreWithSpot(804, 'Mine');
+    const otherStore = await makeStoreWithSpot(805, 'Theirs');
+    const mgr = await makeUser(ctx.db, { role: 'store_manager', locationId: myStore });
+    const mine = await makeReconciliation({ locationId: myStore, shiftDate: '2026-06-07', status: 'matched' });
+    await makeReconciliation({ locationId: otherStore, shiftDate: '2026-06-07', status: 'matched' });
+
+    const res = await request(ctx.app)
+      .get('/api/cash-shifts/reconciliations')
+      .set('Authorization', `Bearer ${mgr.token}`);
+    expect(res.status).toBe(200);
+    const ids = res.body.items.map((r: { id: number }) => r.id);
+    expect(ids).toEqual([mine.id]);
+  });
+
+  it('store_manager requesting a foreign location_id -> 403', async () => {
+    const myStore = await makeStoreWithSpot(806, 'Mine2');
+    const otherStore = await makeStoreWithSpot(807, 'Theirs2');
+    const mgr = await makeUser(ctx.db, { role: 'store_manager', locationId: myStore });
+    const res = await request(ctx.app)
+      .get(`/api/cash-shifts/reconciliations?location_id=${otherStore}`)
+      .set('Authorization', `Bearer ${mgr.token}`);
+    expect(res.status).toBe(403);
+  });
+
+  it('filters by status and date window', async () => {
+    const store = await makeStoreWithSpot(808, 'Filter Store');
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    await makeReconciliation({ locationId: store, shiftDate: '2026-05-01', status: 'matched' });
+    const wanted = await makeReconciliation({ locationId: store, shiftDate: '2026-06-08', status: 'discrepancy' });
+
+    // Scope to this store (unique) so other suites' rows don't leak in.
+    const res = await request(ctx.app)
+      .get(`/api/cash-shifts/reconciliations?location_id=${store}&status=discrepancy&from=2026-06-01&to=2026-06-30`)
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(200);
+    const ids = res.body.items.map((r: { id: number }) => r.id);
+    expect(ids).toEqual([wanted.id]);
+  });
+
+  it('rejects an unknown status filter with 422', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const res = await request(ctx.app)
+      .get('/api/cash-shifts/reconciliations?status=bogus')
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(422);
+  });
+
+  it('unauthenticated -> 401', async () => {
+    const res = await request(ctx.app).get('/api/cash-shifts/reconciliations');
+    expect(res.status).toBe(401);
+  });
+});

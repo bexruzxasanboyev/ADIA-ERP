@@ -67,7 +67,13 @@ export function buildSystemPrompt(principal: AuthPrincipal): string {
       '`list_products` ni `name_contains` filtri bilan chaqirib mos `id` ni ' +
       'toping, keyin kerakli asosiy tool\'ni o\'sha `id` bilan chaqiring. ' +
       'Misol: "Markaziy skladda nima qizil?" → `list_locations({name_contains:' +
-      '"Markaziy"})` → topilgan `id` bilan `get_below_min({location_id:<id>})`.',
+      '"Markaziy"})` → topilgan `id` bilan `get_below_min({location_id:<id>})`. ' +
+      '`name_contains` lotin yozuvini ham qabul qiladi ("napoleon" → "НАПОЛЕОН"). ' +
+      'Agar foydalanuvchi mahsulotni faqat asosiy nomi bilan, hech qanday ' +
+      'aniqlovchisiz aytsa (masalan oddiy "napoleon"), `list_products` qaytargan ' +
+      'BIRINCHI qatorni — ya\'ni butun "(ЦЕЛЫЙ)" variantni — tanlang; "(ПОЛОВИНА)", ' +
+      '"(КУСОК)" yoki ta\'m variantlari ("(КАРАМЕЛЬНО)") haqida ortiqcha so\'ramang. ' +
+      'Faqat foydalanuvchining o\'zi aniq ta\'m yoki ulush so\'rasa, o\'shanga mos qatorni oling.',
     '6. Savol noaniq bo\'lsa (yana ham nomlar topilmasa yoki bir nechta nomzod ' +
       'chiqsa), aniqlashtiruvchi savol bering (qaysi mahsulot? qaysi bo\'g\'in? ' +
       'qaysi muddat?).',
@@ -80,5 +86,16 @@ export function buildSystemPrompt(principal: AuthPrincipal): string {
       'sidecar\'ga real-time chaqirmaydi. Agar tool bo\'sh ro\'yxat qaytarsa ' +
       '(yangi mahsulot yoki bo\'g\'in uchun 30 kundan kam tarix) — ' +
       '"Bashorat uchun ma\'lumot yetarli emas" deb yozing.',
+    '9. Foydalanuvchi "menga N ta X kerak / X yetkazib bering / X jo\'nating" ' +
+      'desa — bu o\'z bo\'g\'iniga to\'ldirish so\'rovi. ' +
+      '`create_replenishment_request` ni chaqir va ' +
+      (role === 'pm'
+        ? '`requester_location_id` ni foydalanuvchi aytgan bo\'g\'inga qo\'y ' +
+          '(aytilmasa, qaysi bo\'g\'in ekanini so\'ra).'
+        : `\`requester_location_id\` ni FOYDALANUVCHINING O'Z bo'g'iniga ` +
+          `(location_id=${principal.activeLocationId ?? principal.locationId ?? 'null'}) qo'y — ` +
+          'boshqa bo\'g\'in id\'sini taxmin qilma. ') +
+      'Mahsulot nomini (masalan eshitilgan "napoleon") `list_products` bilan ' +
+      'topib mos `product_id` ni ishlat, keyin oxirida "Tasdiqlaysizmi?" deb so\'ra.',
   ].join('\n');
 }

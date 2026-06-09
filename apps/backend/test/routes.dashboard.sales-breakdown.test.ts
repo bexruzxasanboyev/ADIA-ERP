@@ -5,10 +5,11 @@
  * the hourly/daily sales charts. Two dimensions:
  *
  *   - by=product : local `sales` JOIN `products`, grouped (bucket, product),
- *     line amount = sum(s.price). The `sales.price` column holds the LINE
- *     TOTAL (already qty-multiplied), NOT a per-unit price, so `qty * price`
- *     double-counts. Each bucket returns the top-N products by amount + a
- *     rolled-up "Boshqa" remainder.
+ *     line amount = sum(s.qty * s.price). After the 2026-06-08 ingest fix
+ *     `sales.price` is a TRUE per-unit price, so `qty * price` = the Poster
+ *     line total — the SAME formula /stores top_products and reports use, so
+ *     the two endpoints agree. Each bucket returns the top-N products by amount
+ *     + a rolled-up "Boshqa" remainder.
  *   - by=payment : Poster transactions bucketed by hour/date and payment
  *     method (cash/card/payme/click + named customs). Poster is mocked here —
  *     the test never hits live Poster.
@@ -122,9 +123,10 @@ function txn(over: Partial<PosterTransactionSummary>): PosterTransactionSummary 
 }
 
 /**
- * Insert one local sale line. `lineTotalSom` is the LINE TOTAL in so'm — the
- * `sales.price` column already holds the qty-multiplied amount (table
- * convention), so the breakdown's revenue is `sum(price)`, NOT `qty * price`.
+ * Insert one local sale line. `lineTotalSom` is the LINE TOTAL in so'm. After
+ * the 2026-06-08 ingest fix `sales.price` is a TRUE per-unit price, so we store
+ * `price = lineTotalSom / qty` and the breakdown's revenue is `sum(qty*price)`
+ * = the line total — the SAME formula every other revenue query uses.
  */
 let saleSeq = 0;
 async function insertSale(opts: {
@@ -143,7 +145,7 @@ async function insertSale(opts: {
       opts.storeId,
       opts.productId,
       opts.qty,
-      opts.lineTotalSom,
+      opts.lineTotalSom / opts.qty, // per-unit price (post-fix convention)
       opts.soldAt,
       900000 + saleSeq,
       saleSeq,
@@ -152,7 +154,7 @@ async function insertSale(opts: {
 }
 
 describe('GET /api/dashboard/sales-breakdown', () => {
-  it('by=product hourly: local-TZ hour buckets + sum(price) revenue + Boshqa rollup (PM scope)', async () => {
+  it('by=product hourly: local-TZ hour buckets + sum(qty*price) revenue + Boshqa rollup (PM scope)', async () => {
     const store = await makeLocation(ctx.db, { type: 'store', name: 'S1' });
     const cake = await makeProduct(ctx.db, { name: 'Tort', unit: 'pcs' });
     const bun = await makeProduct(ctx.db, { name: 'Bulochka', unit: 'pcs' });
@@ -166,7 +168,7 @@ describe('GET /api/dashboard/sales-breakdown', () => {
       `${tashToday}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00+05:00`;
 
     // Hour 8: 3 products. limit=2 -> top 2 by amount + Boshqa(remainder).
-    // `price` is the LINE TOTAL already; qty is units sold. amount = sum(price).
+    // `price` is per-unit; qty is units sold. amount = sum(qty*price) = line total.
     //   cake: line total 200000 (qty 2)  (top 1)
     //   bun : line total 150000 (qty 3)  (top 2)
     //   pie : line total  40000 (qty 1)  (-> Boshqa)
@@ -199,7 +201,7 @@ describe('GET /api/dashboard/sales-breakdown', () => {
     expect(h8).toBeDefined();
     if (h8 === undefined) throw new Error('missing hour-8 bucket');
     expect(h8.total_qty).toBe(6); // 2 + 3 + 1 units
-    // amount = sum(price) = LINE TOTALS, NOT qty*price.
+    // amount = sum(qty*price) = LINE TOTALS (price is now per-unit).
     expect(h8.total_amount).toBe(390000); // 200000 + 150000 + 40000
     // top 2 by amount, then a single rolled-up "Boshqa".
     expect(h8.items).toEqual([
@@ -295,6 +297,105 @@ describe('GET /api/dashboard/sales-breakdown', () => {
     expect(h9?.total_qty).toBe(1);
     expect(h9?.total_amount).toBe(7000);
     expect(h9?.items).toEqual([{ name: 'Karta', qty: 1, amount: 7000 }]);
+  });
+
+  it('by=payment auto-scopes a store_manager to their own store spot', async () => {
+    const tashToday = tashkentTodayIso();
+    const closeAt = (h: number, mm = 0): string =>
+      `${tashToday} ${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00`;
+
+    const myStore = await makeLocation(ctx.db, { type: 'store', name: 'Kukcha' });
+    await ctx.db.query(`UPDATE locations SET poster_spot_id = $1 WHERE id = $2`, [
+      1,
+      myStore,
+    ]);
+
+    // spot 1 = manager's store; spot 2 = another store that MUST be excluded.
+    const transactions: PosterTransactionSummary[] = [
+      txn({ transaction_id: '1', spot_id: '1', pay_type: '1', payment_method_id: '0', payed_cash: '500000', payed_sum: '500000', date_close: closeAt(8) }),
+      txn({ transaction_id: '2', spot_id: '2', pay_type: '1', payment_method_id: '0', payed_cash: '900000', payed_sum: '900000', date_close: closeAt(8) }),
+    ];
+    // Spot-aware stub so the filter genuinely drops other stores' rows.
+    setPosterClientForTests(
+      new PosterClient({
+        token: 'acc:test',
+        minIntervalMs: 0,
+        paymentMethodsTtlMs: 0,
+        fetcher: ((url: string | URL) => {
+          const u = typeof url === 'string' ? new URL(url) : url;
+          const m = u.pathname.split('/').pop();
+          if (m === 'settings.getPaymentMethods') {
+            return Promise.resolve(
+              new Response(JSON.stringify({ response: ADIA_METHODS }), { status: 200 }),
+            );
+          }
+          if (m === 'dash.getTransactions') {
+            const spot = u.searchParams.get('spot_id');
+            const offset = Number(u.searchParams.get('offset') ?? '0');
+            const num = Number(u.searchParams.get('num') ?? '1000');
+            const filtered =
+              spot === null
+                ? transactions
+                : transactions.filter((t) => String(t.spot_id) === spot);
+            return Promise.resolve(
+              new Response(
+                JSON.stringify({ response: filtered.slice(offset, offset + num) }),
+                { status: 200 },
+              ),
+            );
+          }
+          return Promise.resolve(
+            new Response(JSON.stringify({ error: { code: 30, message: 'NA' } }), {
+              status: 200,
+            }),
+          );
+        }) as unknown as typeof fetch,
+      }),
+    );
+    process.env.POSTER_TOKEN = 'acc:test';
+    const { resetConfigCache } = await import('../src/config/index.js');
+    resetConfigCache();
+
+    const manager = await makeUser(ctx.db, {
+      role: 'store_manager',
+      locationId: myStore,
+    });
+    const res = await request(ctx.app)
+      .get('/api/dashboard/sales-breakdown?range=today&by=payment')
+      .set('Authorization', `Bearer ${manager.token}`);
+
+    expect(res.status).toBe(200);
+    const h8 = (
+      res.body.buckets as Array<{ hour: number; total_qty: number; total_amount: number }>
+    ).find((b) => b.hour === 8);
+    expect(h8).toBeDefined();
+    // Only the manager's own store (5000 so'm), NOT the other store's 9000.
+    expect(h8?.total_qty).toBe(1);
+    expect(h8?.total_amount).toBe(5000);
+  });
+
+  it('by=payment returns empty for a store_manager whose store has no Poster spot', async () => {
+    const tashToday = tashkentTodayIso();
+    const closeAt = (h: number): string => `${tashToday} ${String(h).padStart(2, '0')}:00:00`;
+    stubPoster({
+      transactions: [
+        txn({ pay_type: '1', payment_method_id: '0', payed_cash: '900000', payed_sum: '900000', date_close: closeAt(8) }),
+      ],
+    });
+    const { resetConfigCache } = await import('../src/config/index.js');
+    resetConfigCache();
+    const store = await makeLocation(ctx.db, { type: 'store', name: 'NoSpot' });
+    const manager = await makeUser(ctx.db, {
+      role: 'store_manager',
+      locationId: store,
+    });
+
+    const res = await request(ctx.app)
+      .get('/api/dashboard/sales-breakdown?range=today&by=payment')
+      .set('Authorization', `Bearer ${manager.token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.buckets).toEqual([]);
   });
 
   it('rejects a malformed range with 422', async () => {

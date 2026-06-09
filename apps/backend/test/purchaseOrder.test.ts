@@ -140,6 +140,123 @@ describe('receivePurchaseOrder — AC6.3', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 0056 — receive with brak (defect) split
+// ---------------------------------------------------------------------------
+describe('receivePurchaseOrder — 0056 brak split', () => {
+  it('brak=0 is back-compatible (no brak columns set, full qty in raw)', async () => {
+    const orderId = await createDraft(40);
+    await approvePurchaseOrder(orderId, 'manager', managerId);
+    await approvePurchaseOrder(orderId, 'keeper', keeperId);
+
+    const received = await receivePurchaseOrder(orderId, keeperId);
+    expect(received.status).toBe('received');
+    // Default brak is 0 (the row records 0, not the legacy NULL).
+    expect(Number(received.brak_qty)).toBe(0);
+    expect(received.brak_reason).toBe(null);
+    expect(await getQty(ctx.db, rawWh, rawProduct)).toBe(40);
+    // Exactly one movement — no spurious adjust.
+    const ledger = await ctx.db.query<{ reason: string }>(
+      `SELECT reason FROM stock_movements WHERE purchase_order_id = $1`,
+      [orderId],
+    );
+    expect(ledger.rows.map((r) => r.reason)).toEqual(['purchase']);
+  });
+
+  it('brak>0 writes off the defect — net sound qty in raw + audit rows', async () => {
+    const orderId = await createDraft(40);
+    await approvePurchaseOrder(orderId, 'manager', managerId);
+    await approvePurchaseOrder(orderId, 'keeper', keeperId);
+
+    const received = await receivePurchaseOrder(orderId, keeperId, undefined, {
+      brakQty: 10,
+      brakReason: 'wet flour, torn sacks',
+    });
+    expect(received.status).toBe('received');
+    expect(Number(received.brak_qty)).toBe(10);
+    expect(received.brak_reason).toBe('wet flour, torn sacks');
+
+    // Net sound qty = 40 received - 10 brak = 30.
+    expect(await getQty(ctx.db, rawWh, rawProduct)).toBe(30);
+
+    // Two ledger rows: a purchase (+40) and an adjust (-10) write-off.
+    const ledger = await ctx.db.query<{ reason: string; qty: string; to: string | null; from: string | null }>(
+      `SELECT reason, qty, to_location_id AS to, from_location_id AS from
+         FROM stock_movements WHERE purchase_order_id = $1 ORDER BY id`,
+      [orderId],
+    );
+    expect(ledger.rows.length).toBe(2);
+    expect(ledger.rows[0]?.reason).toBe('purchase');
+    expect(Number(ledger.rows[0]?.qty)).toBe(40);
+    expect(Number(ledger.rows[0]?.to)).toBe(rawWh);
+    expect(ledger.rows[1]?.reason).toBe('adjust');
+    expect(Number(ledger.rows[1]?.qty)).toBe(10);
+    expect(Number(ledger.rows[1]?.from)).toBe(rawWh);
+    expect(ledger.rows[1]?.to).toBe(null);
+
+    // Audit: a stock_movement.create per movement + the receive row carrying brak.
+    const audit = await ctx.db.query<{ n: string }>(
+      `SELECT count(*) AS n FROM audit_log
+         WHERE action = 'purchase_order.received' AND entity_id = $1
+           AND payload->>'brak_qty' = '10'`,
+      [orderId],
+    );
+    expect(Number(audit.rows[0]?.n)).toBe(1);
+    const movAudit = await ctx.db.query<{ n: string }>(
+      `SELECT count(*) AS n FROM audit_log a
+         JOIN stock_movements m ON m.id = a.entity_id
+        WHERE a.action = 'stock_movement.create' AND m.purchase_order_id = $1`,
+      [orderId],
+    );
+    expect(Number(movAudit.rows[0]?.n)).toBe(2);
+  });
+
+  it('brak_reason is required when brak_qty > 0 (no stock change on reject)', async () => {
+    const orderId = await createDraft(40);
+    await approvePurchaseOrder(orderId, 'manager', managerId);
+    await approvePurchaseOrder(orderId, 'keeper', keeperId);
+
+    await expect(
+      receivePurchaseOrder(orderId, keeperId, undefined, { brakQty: 5 }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    // The whole transaction rolled back — still approved, no stock.
+    expect(await getQty(ctx.db, rawWh, rawProduct)).toBe(null);
+    const { rows } = await ctx.db.query<{ status: string }>(
+      `SELECT status FROM purchase_orders WHERE id = $1`,
+      [orderId],
+    );
+    expect(rows[0]?.status).toBe('approved');
+  });
+
+  it('brak_qty greater than the received qty is rejected', async () => {
+    const orderId = await createDraft(40);
+    await approvePurchaseOrder(orderId, 'manager', managerId);
+    await approvePurchaseOrder(orderId, 'keeper', keeperId);
+
+    await expect(
+      receivePurchaseOrder(orderId, keeperId, undefined, {
+        brakQty: 41,
+        brakReason: 'all spoiled',
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(await getQty(ctx.db, rawWh, rawProduct)).toBe(null);
+  });
+
+  it('brak == full qty leaves zero sound stock (no negative)', async () => {
+    const orderId = await createDraft(40);
+    await approvePurchaseOrder(orderId, 'manager', managerId);
+    await approvePurchaseOrder(orderId, 'keeper', keeperId);
+
+    const received = await receivePurchaseOrder(orderId, keeperId, undefined, {
+      brakQty: 40,
+      brakReason: 'entire pallet ruined',
+    });
+    expect(received.status).toBe('received');
+    expect(Number(received.brak_qty)).toBe(40);
+    expect(await getQty(ctx.db, rawWh, rawProduct)).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // I5 — GET /api/purchase-orders RBAC location scoping
 // ---------------------------------------------------------------------------
 describe('GET /api/purchase-orders — I5 location scoping (spec §6)', () => {

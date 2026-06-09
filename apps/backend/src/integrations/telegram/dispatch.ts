@@ -337,7 +337,10 @@ async function viewEntity(entity: CallbackEntity, id: number): Promise<DispatchO
       const r = rows[0]!;
       return {
         kind: 'ok',
-        message: `So'rov #${id} — ${r.product_name}\nStatus: ${r.status}\nQty: ${Number(r.qty_needed)}`,
+        message:
+          `So'rov #${id} — ${r.product_name}\n` +
+          `Holat: ${describeRequestStatus(r.status)}\n` +
+          `Miqdor: ${Number(r.qty_needed)}`,
       };
     }
     case 'mov': {
@@ -361,6 +364,36 @@ async function viewEntity(entity: CallbackEntity, id: number): Promise<DispatchO
     }
     default:
       return { kind: 'invalid', message: 'Noma\'lum entity' };
+  }
+}
+
+/**
+ * Human, requester-facing label for a replenishment status. The raw machine
+ * status (`NEW`, `CHECK_STORE_SUPPLIER`, …) is meaningless to a do'konchi —
+ * what they need to know is "where is my request in the pipeline". A do'konchi
+ * who taps "Ko'rish" on their just-sent request should read "Markaziy sklad
+ * qabul qilishini kutmoqda", not a bare "NEW".
+ */
+function describeRequestStatus(status: string): string {
+  switch (status) {
+    case 'NEW':
+    case 'CHECK_STORE_SUPPLIER':
+      return 'Markaziy sklad qabul qilishini kutmoqda';
+    case 'CHECK_PRODUCTION_INPUT':
+    case 'CREATE_PURCHASE_ORDER':
+    case 'CREATE_PRODUCTION_ORDER':
+    case 'PRODUCING':
+      return 'Ishlab chiqarilmoqda / tayyorlanmoqda';
+    case 'DONE_TO_WAREHOUSE':
+      return 'Markaziy skladda — jo\'natishga tayyor';
+    case 'SHIP_TO_REQUESTER':
+      return 'Sizga jo\'natilmoqda';
+    case 'CLOSED':
+      return 'Yakunlandi';
+    case 'CANCELLED':
+      return 'Bekor qilindi';
+    default:
+      return status;
   }
 }
 
@@ -969,9 +1002,18 @@ async function apprvActCallback(
   try {
     const auth = await toAuthPrincipal(principal);
     const { action } = await confirmAction(actionId, auth);
+    // Domain-clear post-confirm reply. A `create_replenishment_request`
+    // confirmed by a store manager (do'konchi) is an OUTGOING request to the
+    // central warehouse — the requester does NOT fulfil it, so the reply must
+    // read "sent to the central warehouse", not a generic "Bajarildi". Other
+    // tool types keep their own success phrasing.
+    const message =
+      action.tool_name === 'create_replenishment_request'
+        ? `✅ So'rovingiz markaziy skladga yuborildi.\n${action.summary}`
+        : `✅ Bajarildi: ${action.summary}`;
     return {
       kind: 'ok',
-      message: `✅ Bajarildi: ${action.summary}`,
+      message,
       result: {
         assistant_action_id: actionId,
         tool_name: action.tool_name,

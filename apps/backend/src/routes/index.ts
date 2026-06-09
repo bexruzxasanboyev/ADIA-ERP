@@ -33,6 +33,10 @@ import { nakladnoyRouter } from './nakladnoy.js';
 import { cashShiftsRouter } from './cashShifts.js';
 import { safeExpensesRouter } from './safeExpenses.js';
 import { kpiRouter } from './kpi.js';
+import { storeKpiRouter } from './storeKpi.js';
+import { sellerKpiRouter } from './sellerKpi.js';
+import { discrepanciesRouter } from './discrepancies.js';
+import { inventoryRouter } from './inventory.js';
 
 export const apiRouter: Router = Router();
 
@@ -66,6 +70,27 @@ apiRouter.use('/safe-expenses', safeExpensesRouter);
 // report. pm only. (The old /overhead pool API was removed once utilities
 // became a per-product manual value — see migration 0051.)
 apiRouter.use('/kpi', kpiRouter);
+// TZ M8 — Do'kon KPI (store-level): monthly sales plan, plan-vs-actual
+// achievement %, month-over-month growth, and the store leaderboard.
+// GET is pm/ai_assistant chain-wide + store_manager own-store; PUT /plan is
+// pm only (a planning input). Actual revenue reconciles with the Stores
+// dashboard's sum(qty*price) over `sales`.
+apiRouter.use('/store-kpi', storeKpiRouter);
+// TZ M8 — Do'kon KPI (SELLER-level): per-cashier/waiter monthly sales total,
+// target/plan, achievement %, MoM growth, ranking. ACTUAL revenue read LIVE
+// from Poster dash.getWaitersSales (Variant B — `sales` has no seller dim).
+// GET is pm/ai_assistant chain-wide + store_manager own-store; PUT /plan and
+// POST /sync are pm only. Poster stays read-only; degrades to empty on a
+// method-level Poster failure.
+apiRouter.use('/seller-kpi', sellerKpiRouter);
+// TZ M9 — kassa tafovuti / fors-major discrepancy log + report. pm/ai_assistant
+// chain-wide; location managers scoped to their own location(s).
+apiRouter.use('/discrepancies', discrepanciesRouter);
+// TZ M11 — inventarizatsiya (bo'lak ↔ butun converter + kun-oxiri count). The
+// end-of-day worksheet decomposes system qty into whole/pieces; POST /count
+// reconciles stock with one atomic 'adjust' movement. pm/ai_assistant read
+// chain-wide; managers scoped to their own location(s).
+apiRouter.use('/inventory', inventoryRouter);
 // EPIC 4.3 (2026-05-29) — the "Yetkazib berish" / delivery module was removed.
 // Departments now ship directly and the receiver accepts on arrival; there is
 // no separate courier-assignment surface. The replenishment state machine

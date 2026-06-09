@@ -25,6 +25,11 @@ import {
   parseCashShiftSubmission,
   createCashShiftNakladnoy,
 } from '../../services/cashShiftSubmission.js';
+import {
+  reconcileCashShift,
+  type ReconciliationResult,
+} from '../../services/cashShiftReconciliation.js';
+import { createPosterClientFromConfig } from '../../integrations/poster/client.js';
 
 /** Real Grammy `Context` ham, testdagi soxta obyekt ham mos keladigan surface. */
 export type CashShiftCtxLike = {
@@ -37,6 +42,11 @@ export type CashShiftHandleResult = {
   readonly handled: boolean;
   readonly nakladnoyId: number | null;
   readonly reason?: string;
+  /**
+   * TZ Module 15 — the Poster reconciliation outcome for this submission, when
+   * one ran. `null` when reconciliation did not run / failed (non-fatal).
+   */
+  readonly reconciliationStatus?: ReconciliationResult['status'] | null;
 };
 
 /**
@@ -114,28 +124,55 @@ export async function handleCashShiftMessage(
   }
 
   // 4. Money nakladnoy + bildirishnomalar.
+  let result: Awaited<ReturnType<typeof createCashShiftNakladnoy>>;
   try {
-    const result = await createCashShiftNakladnoy({
+    result = await createCashShiftNakladnoy({
       locationId,
       actorUserId: principal.userId,
       figures: parsed.figures,
       note: text.slice(0, 500),
     });
-    await safeReply(
-      ctx,
-      `✅ Smena topshirildi (Nakladnoy #${result.nakladnoyId}).\n` +
-        `Itogo savdo: ${fmt(result.totalSales)} so'm\n` +
-        `Qoldiq (naqd): ${fmt(result.cashRemainder)} so'm\n` +
-        `Qoldiq (karta): ${fmt(parsed.figures.card)} so'm\n` +
-        `Rasxod: ${fmt(parsed.figures.expense)} so'm\n\n` +
-        'Admin ham ko\'radi.',
-    );
-    return { handled: true, nakladnoyId: result.nakladnoyId };
   } catch (err) {
     console.error('[telegram-cashshift] create failed:', (err as Error).message);
     await safeReply(ctx, "Smena topshirig'ini saqlab bo'lmadi. Keyinroq urinib ko'ring.");
     return { handled: true, nakladnoyId: null, reason: 'failed' };
   }
+
+  // 5. TZ Module 15 — Poster solishtiruv (reconciliation). NON-FATAL: the
+  //    nakladnoy already exists, so a Poster/recon failure only means the reply
+  //    omits the comparison block — it never breaks the submission.
+  let reconStatus: ReconciliationResult['status'] | null = null;
+  let reconLine = '';
+  try {
+    const poster = createPosterClientFromConfig();
+    const outcome = await reconcileCashShift(poster, {
+      nakladnoyId: result.nakladnoyId,
+      locationId,
+      submittedCash: result.cashRemainder,
+      submittedCard: parsed.figures.card,
+      submittedExpense: parsed.figures.expense,
+    });
+    if (outcome !== null) {
+      reconStatus = outcome.result.status;
+      reconLine = `\n\n${reconciliationSummary(outcome.result)}`;
+    }
+  } catch (err) {
+    // createPosterClientFromConfig can throw when POSTER_TOKEN is unset — that
+    // must NOT break the cashier's confirmation.
+    console.warn('[telegram-cashshift] reconciliation skipped:', (err as Error).message);
+  }
+
+  await safeReply(
+    ctx,
+    `✅ Smena topshirildi (Nakladnoy #${result.nakladnoyId}).\n` +
+      `Itogo savdo: ${fmt(result.totalSales)} so'm\n` +
+      `Qoldiq (naqd): ${fmt(result.cashRemainder)} so'm\n` +
+      `Qoldiq (karta): ${fmt(parsed.figures.card)} so'm\n` +
+      `Rasxod: ${fmt(parsed.figures.expense)} so'm\n\n` +
+      "Admin ham ko'radi." +
+      reconLine,
+  );
+  return { handled: true, nakladnoyId: result.nakladnoyId, reconciliationStatus: reconStatus };
 }
 
 async function safeReply(
@@ -152,4 +189,30 @@ async function safeReply(
 
 function fmt(n: number): string {
   return new Intl.NumberFormat('ru-RU').format(Math.round(n));
+}
+
+/**
+ * TZ Module 15 — a short Poster reconciliation block for the cashier reply.
+ *   - no_poster_data → "Poster ma'lumoti topilmadi".
+ *   - matched        → "holat: Mos" + the (small) diffs.
+ *   - discrepancy    → "holat: Tafovut" + the diffs to investigate.
+ */
+function reconciliationSummary(r: ReconciliationResult): string {
+  if (r.status === 'no_poster_data') {
+    return "📊 Poster solishtiruv — Poster ma'lumoti topilmadi (solishtirib bo'lmadi).";
+  }
+  const head = r.status === 'matched' ? 'holat: Mos ✅' : 'holat: Tafovut ⚠️';
+  return (
+    `📊 Poster solishtiruv — ${head}\n` +
+    `Naqd farq: ${fmtDiff(r.cashDiff)} so'm\n` +
+    `Karta farq: ${fmtDiff(r.cardDiff)} so'm\n` +
+    `Rasxod farq: ${fmtDiff(r.expenseDiff)} so'm`
+  );
+}
+
+/** Signed money diff for the reconciliation block ("+1 000" / "−500" / "—"). */
+function fmtDiff(n: number | null): string {
+  if (n === null) return '—';
+  const sign = n > 0 ? '+' : n < 0 ? '−' : '';
+  return `${sign}${new Intl.NumberFormat('ru-RU').format(Math.abs(Math.round(n)))}`;
 }

@@ -26,6 +26,9 @@ beforeEach(async () => {
   await ctx.db.query('DELETE FROM stock');
   await ctx.db.query('DELETE FROM notifications');
   await ctx.db.query('DELETE FROM audit_log');
+  // M9 — the leftover sync now persists negative-stock discrepancies; clear
+  // them before products/locations (FK).
+  await ctx.db.query('DELETE FROM sales_discrepancies');
   await ctx.db.query('DELETE FROM products');
   await ctx.db.query('DELETE FROM locations');
   await ctx.db.query('DELETE FROM poster_sync_log');
@@ -187,6 +190,17 @@ describe('Poster stockSync', () => {
     expect(notes[0]?.dedupe_key).toMatch(
       new RegExp(`^negative_stock_digest:${locationId}:user:\\d+$`),
     );
+
+    // M9 — the run also PERSISTS one negative_stock discrepancy for this
+    // (location, product) with the shortfall MAGNITUDE (|−1.5| = 1.5).
+    const { rows: disc } = await ctx.db.query<{ shortfall: string; status: string }>(
+      `SELECT shortfall, status FROM sales_discrepancies
+        WHERE kind = 'negative_stock' AND location_id = $1`,
+      [locationId],
+    );
+    expect(disc).toHaveLength(1);
+    expect(Number(disc[0]!.shortfall)).toBeCloseTo(1.5, 3);
+    expect(disc[0]!.status).toBe('open');
   });
 
   it('emits ONE digest per location (not N per product) when many products go negative', async () => {

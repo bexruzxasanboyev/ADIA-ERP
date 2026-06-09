@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useState } from 'react';
-import { Plus, CheckCircle2, Circle } from 'lucide-react';
+import { Plus, CheckCircle2, Circle, AlertTriangle } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -222,6 +222,7 @@ export function PurchaseOrdersPage() {
               {rows.map((row) => {
                 const unit = row.product_unit ?? '';
                 const isOpen = expandedId === row.id;
+                const brakQty = row.brak_qty ?? 0;
                 return (
                   <Fragment key={row.id}>
                     <TableRow>
@@ -229,7 +230,22 @@ export function PurchaseOrdersPage() {
                         #{row.id}
                       </TableCell>
                       <TableCell className="font-medium">
-                        {row.product_name}
+                        <span>{row.product_name}</span>
+                        {brakQty > 0 && (
+                          <span
+                            className="mt-1 flex items-start gap-1 text-xs font-normal text-destructive"
+                            title={row.brak_reason ?? undefined}
+                          >
+                            <AlertTriangle
+                              className="mt-0.5 size-3 shrink-0"
+                              aria-hidden="true"
+                            />
+                            <span className="break-words">
+                              Brak: {formatQty(brakQty)} {unit}
+                              {row.brak_reason ? ` — ${row.brak_reason}` : ''}
+                            </span>
+                          </span>
+                        )}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
                         {formatQty(row.qty)} {unit}

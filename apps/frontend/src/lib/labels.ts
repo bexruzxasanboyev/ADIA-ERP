@@ -4,10 +4,14 @@
  */
 import type { DateRangePreset } from '@/components/DateRangeFilter';
 import type {
+  CashReconciliationStatus,
   DashboardAlertType,
+  DiscrepancyKind,
+  DiscrepancyStatus,
   FlowType,
   LocationType,
   MovementReason,
+  PipelineStage,
   PosterSyncStatus,
   ProductType,
   ProductionOrderStatus,
@@ -132,6 +136,37 @@ export const CASH_SHIFT_STATUS_LABELS: Record<
   closed: 'Yopilgan',
 };
 
+/** TZ Module 15 — kassa solishtiruvi holati (Uzbek labels). */
+export const CASH_RECONCILIATION_STATUS_LABELS: Record<
+  CashReconciliationStatus,
+  string
+> = {
+  matched: 'Mos',
+  discrepancy: 'Tafovut',
+  no_poster_data: 'Poster ma’lumoti yo‘q',
+};
+
+/** Badge variant per reconciliation status (matched=green, discrepancy=red). */
+export const CASH_RECONCILIATION_STATUS_VARIANT: Record<
+  CashReconciliationStatus,
+  'success' | 'danger' | 'secondary'
+> = {
+  matched: 'success',
+  discrepancy: 'danger',
+  no_poster_data: 'secondary',
+};
+
+/** Status filter options (leading "Barchasi" with an empty value). */
+export const CASH_RECONCILIATION_STATUS_OPTIONS: {
+  value: string;
+  label: string;
+}[] = [
+  { value: '', label: 'Barchasi' },
+  ...(Object.keys(CASH_RECONCILIATION_STATUS_LABELS) as CashReconciliationStatus[]).map(
+    (value) => ({ value, label: CASH_RECONCILIATION_STATUS_LABELS[value] }),
+  ),
+];
+
 // ---------------------------------------------------------------------------
 // Dashboard date-range copy (EPIC 0.4).
 //
@@ -181,6 +216,36 @@ export const MOVEMENT_REASON_LABELS: Record<MovementReason, string> = {
   purchase: 'Sotib olish',
   adjust: 'Qo‘lda tuzatuv',
 };
+
+/**
+ * Source / destination ("Manba / Manzil") column labels for a stock movement
+ * whose counterparty location is NULL. A `transfer` always carries a real
+ * counterparty location name (rendered directly), so it maps to a generic
+ * fallback here only for completeness. Every other reason has no counterparty
+ * location — instead of an unhelpful "—" the table shows where the stock came
+ * from / went (owner feedback: the Manba/Manzil column must always be
+ * meaningful).
+ */
+export const MOVEMENT_COUNTERPARTY_LABELS: Record<MovementReason, string> = {
+  production_output: 'Ishlab chiqarish',
+  production_input: 'Ishlab chiqarish',
+  purchase: 'Ta’minotchi (xarid)',
+  sale: 'Sotuv (POS)',
+  adjust: 'Tuzatish / Brak',
+  transfer: 'Ko‘chirish',
+};
+
+/**
+ * Resolve the "Manba / Manzil" cell for a movement: prefer the real
+ * counterparty location name when present, else a reason-based label so the
+ * cell is never an opaque "—".
+ */
+export function movementCounterpartyLabel(
+  counterpartyName: string | null,
+  reason: MovementReason,
+): string {
+  return counterpartyName ?? MOVEMENT_COUNTERPARTY_LABELS[reason];
+}
 
 /**
  * Role picker options for forms. Excludes `ai_assistant` because the AI
@@ -252,6 +317,21 @@ export const REPLENISHMENT_STATUS_OPTIONS: {
 }[] = (Object.keys(REPLENISHMENT_STATUS_LABELS) as ReplenishmentStatus[]).map(
   (value) => ({ value, label: REPLENISHMENT_STATUS_LABELS[value] }),
 );
+
+/**
+ * Central-warehouse pipeline stage labels (owner's corrected single-flow
+ * logic). These are the five So'rovlar tab titles in the markaziy sklad
+ * workspace; `yopilgan` (closed/cancelled history) is not a tab on its own —
+ * closed lines surface in Tranzaksiyalar — but the label is kept total so the
+ * map covers every `PipelineStage`.
+ */
+export const PIPELINE_STAGE_LABELS: Record<PipelineStage, string> = {
+  kutuvda: 'Kutuvda',
+  soralgan: 'So‘ralgan',
+  qabul_qilingan: 'Qabul qilingan',
+  yuborilgan: 'Yuborilgan',
+  yopilgan: 'Yopilgan',
+};
 
 /** Uzbek labels for production order statuses. */
 export const PRODUCTION_ORDER_STATUS_LABELS: Record<ProductionOrderStatus, string> = {
@@ -370,3 +450,121 @@ export function dashboardAlertTypeLabel(type: string): string {
     DASHBOARD_ALERT_TYPE_LABELS[type as DashboardAlertType] ?? type
   );
 }
+
+// ---------------------------------------------------------------------------
+// TZ Module 9 — Kassa tafovuti / fors-major ogohlantirishlar.
+// ---------------------------------------------------------------------------
+
+/** Uzbek labels for discrepancy kinds. */
+export const DISCREPANCY_KIND_LABELS: Record<DiscrepancyKind, string> = {
+  wrong_keyed: 'Ortiqcha sotuv',
+  negative_stock: 'Manfiy ostatka',
+};
+
+/** Badge variant per discrepancy kind. */
+export const DISCREPANCY_KIND_VARIANT: Record<
+  DiscrepancyKind,
+  'warning' | 'danger'
+> = {
+  wrong_keyed: 'warning',
+  negative_stock: 'danger',
+};
+
+/** Kind filter options (leading "Barchasi" with an empty value). */
+export const DISCREPANCY_KIND_OPTIONS: { value: string; label: string }[] = [
+  { value: '', label: 'Barchasi' },
+  ...(Object.keys(DISCREPANCY_KIND_LABELS) as DiscrepancyKind[]).map(
+    (value) => ({ value, label: DISCREPANCY_KIND_LABELS[value] }),
+  ),
+];
+
+/** Uzbek labels for discrepancy statuses. */
+export const DISCREPANCY_STATUS_LABELS: Record<DiscrepancyStatus, string> = {
+  open: 'Ochiq',
+  acknowledged: 'Tasdiqlangan',
+  resolved: 'Hal qilingan',
+};
+
+/** Badge variant per discrepancy status (visual hierarchy on the list). */
+export const DISCREPANCY_STATUS_VARIANT: Record<
+  DiscrepancyStatus,
+  'default' | 'outline' | 'success' | 'warning'
+> = {
+  open: 'warning',
+  acknowledged: 'default',
+  resolved: 'success',
+};
+
+/** Status filter options (leading "Barchasi" with an empty value). */
+export const DISCREPANCY_STATUS_OPTIONS: { value: string; label: string }[] = [
+  { value: '', label: 'Barchasi' },
+  ...(Object.keys(DISCREPANCY_STATUS_LABELS) as DiscrepancyStatus[]).map(
+    (value) => ({ value, label: DISCREPANCY_STATUS_LABELS[value] }),
+  ),
+];
+
+// ---------------------------------------------------------------------------
+// TZ Module 11 — Inventarizatsiya konverteri (bo'lak ↔ butun).
+// Shared Uzbek copy for the page header + the whole/piece/remnant columns so
+// the wording stays identical between the count table and the count history.
+// ---------------------------------------------------------------------------
+
+export const INVENTORY_LABELS = {
+  title: 'Inventarizatsiya',
+  description:
+    'Tortlar kg bo‘yicha sotiladi. Tizimdagi qoldiq «butun + bo‘lak + qoldiq» ko‘rinishida ko‘rsatiladi; kun oxirida fizik sanoq kiritib, qoldiqni solishtiring.',
+  whole: 'Butun',
+  piece: 'Bo‘lak',
+  remnant: 'Qoldiq (kg)',
+  system: 'Tizimda',
+  counted: 'Hisoblangan',
+  /** Hint shown for a product whose coefficients are not yet configured. */
+  coefficientNeeded: 'Koeffitsiyent kerak',
+  coefficientButton: 'Koeffitsiyent',
+} as const;
+
+/**
+ * Compose the "{whole} butun + {pieces} bo'lak" caption (with an optional
+ * "+ {remnant} kg qoldiq" tail). The single source for both the system
+ * decomposition cell and the history rows so the phrasing never drifts.
+ */
+export function formatWholePiece(
+  whole: number,
+  pieces: number,
+  remnantKg = 0,
+): string {
+  const base = `${whole} ${INVENTORY_LABELS.whole.toLowerCase()} + ${pieces} ${INVENTORY_LABELS.piece.toLowerCase()}`;
+  return remnantKg > 0 ? `${base} + ${remnantKg} kg qoldiq` : base;
+}
+
+// ---------------------------------------------------------------------------
+// TZ Module 8 — Sotuvchi KPI (seller-level monthly sales plan vs actual).
+// Shared Uzbek copy for the page header + table columns + summary cards so the
+// wording stays identical between the Do'kon KPI and Sotuvchi KPI pages.
+// ---------------------------------------------------------------------------
+
+export const SELLER_KPI_LABELS = {
+  title: 'Sotuvchi KPI',
+  description:
+    'Har bir sotuvchining oylik sotuv rejasi va haqiqiy sotuviga nisbatan bajarilishi. Reyting va o‘sish dinamikasi.',
+  /** Top summary cards. */
+  totalTarget: 'Jami reja (so‘m)',
+  totalActual: 'Jami haqiqiy (so‘m)',
+  totalAchievement: 'Umumiy bajarilish',
+  /** Table column headers. */
+  colRank: 'Reyting',
+  colSeller: 'Sotuvchi',
+  colStore: 'Do‘kon',
+  colPlan: 'Plan',
+  colActual: 'Haqiqiy',
+  colAchievement: 'Bajarilish %',
+  colGrowth: 'O‘sish',
+  colAction: 'Amal',
+  /** Controls + actions. */
+  monthLabel: 'Oyni tanlash',
+  storeFilterLabel: 'Do‘kon bo‘yicha filtr',
+  allStores: 'Barcha do‘konlar',
+  setPlan: 'Plan belgilash',
+  /** States. */
+  empty: 'Ma’lumot yo‘q',
+} as const;

@@ -37,6 +37,7 @@ import {
   parseIdParam,
   requireEnum,
   requireId,
+  requireNonNegativeNumber,
   requirePositiveNumber,
 } from '../lib/validate.js';
 import {
@@ -62,7 +63,14 @@ const STATUSES = ['draft', 'approved', 'received', 'cancelled', 'rejected'] as c
 purchaseOrdersRouter.get(
   '/',
   authenticate,
-  authorize('pm', 'supply_manager', 'raw_warehouse_manager', 'central_warehouse_manager', 'ai_assistant'),
+  authorize(
+    'pm',
+    'supply_manager',
+    'raw_warehouse_manager',
+    'central_warehouse_manager',
+    'production_manager',
+    'ai_assistant',
+  ),
   asyncHandler(async (req, res) => {
     const principal = getPrincipal(req);
     const statusRaw = typeof req.query.status === 'string' ? req.query.status : undefined;
@@ -81,7 +89,16 @@ purchaseOrdersRouter.get(
     //   - `raw_warehouse_manager` — only POs targeting their raw warehouse;
     //   - `supply_manager` — only POs they created (no target match is
     //     reliable; the supply manager raises the request and stays linked
-    //     via `created_by`).
+    //     via `created_by`);
+    //   - `production_manager` — only the raw-material POs the replenishment
+    //     engine raised FROM their OWN production requests. A PO's
+    //     `target_location_id` is the RAW WAREHOUSE (where raw is stocked),
+    //     not the production отдел, so the отдел does not OWN the target — it
+    //     TRIGGERED it. The link is the M:N `replenishment_purchase_orders`
+    //     join: a PO qualifies when it is attached to a replenishment request
+    //     whose product is produced at the caller's workshop
+    //     (`products.workshop_location_id`, the same key the engine resolves
+    //     production by — see `resolveWorkshopLocationId` in the engine).
     if (
       !isSuperAdmin(principal) &&
       principal.role !== 'ai_assistant' &&
@@ -97,6 +114,22 @@ purchaseOrdersRouter.get(
       } else if (principal.role === 'supply_manager') {
         params.push(principal.userId);
         conditions.push(`po.created_by = $${params.length}`);
+      } else if (principal.role === 'production_manager') {
+        if (principal.locationId === null) {
+          res.status(200).json([]);
+          return;
+        }
+        params.push(principal.locationId);
+        conditions.push(
+          `EXISTS (
+             SELECT 1
+               FROM replenishment_purchase_orders rpo
+               JOIN replenishment_requests rr ON rr.id = rpo.replenishment_id
+               JOIN products p ON p.id = rr.product_id
+              WHERE rpo.purchase_order_id = po.id
+                AND p.workshop_location_id = $${params.length}
+           )`,
+        );
       }
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -356,6 +389,17 @@ purchaseOrdersRouter.post(
     const principal = getPrincipal(req);
     const orderId = parseIdParam(req.params.id, 'id');
 
+    // 0056 — optional brak (defect) split. Body is fully optional and
+    // back-compatible: no body -> brak_qty 0, behaves exactly as before.
+    // `brak_reason` is required (and re-validated in the service) when
+    // `brak_qty > 0`; the service also enforces brak_qty <= received qty.
+    const body = asObject(req.body);
+    const brakQty =
+      body.brak_qty === undefined || body.brak_qty === null
+        ? 0
+        : requireNonNegativeNumber(body, 'brak_qty');
+    const brakReason = optionalString(body, 'brak_reason') ?? null;
+
     // The target raw warehouse must be in the operator's M:N set.
     const { rows: scopeRows } = await query<{ target_location_id: number }>(
       'SELECT target_location_id FROM purchase_orders WHERE id = $1',
@@ -370,9 +414,12 @@ purchaseOrdersRouter.post(
     // AC6.3 — the receive flow and the linked replenishment advance commit
     // together inside ONE transaction. `receivePurchaseOrder(tx)` and
     // `advance(id, actor, tx)` share the same client so both succeed or both
-    // roll back.
+    // roll back. The brak write-off (if any) also rides this single tx.
     const received = await withTransaction(async (tx) => {
-      const row = await receivePurchaseOrder(orderId, principal.userId, tx);
+      const row = await receivePurchaseOrder(orderId, principal.userId, tx, {
+        brakQty,
+        brakReason,
+      });
       if (row.replenishment_id !== null) {
         await advance(row.replenishment_id, principal.userId, tx);
       }

@@ -52,6 +52,75 @@ export type ReplenishmentStatus =
 export const TERMINAL_STATUSES: readonly ReplenishmentStatus[] = ['CLOSED', 'CANCELLED'];
 
 /**
+ * 0058 — the 5-status CENTRAL pipeline view (owner-corrected 2026-06-08). The
+ * frontend buckets requests into five tabs and trusts this single derived field
+ * — so the derivation is TOTAL (every request maps to exactly one stage) and
+ * lives in ONE place: this union + `derivePipelineStage` (TS, used by the single
+ * GET + tests) and `PIPELINE_STAGE_SQL` (the mirrored SQL CASE used by the list
+ * query — no N+1).
+ *
+ *   kutuvda        — store request not yet handled, OR a manual production
+ *                    delivery awaiting the central manager's receipt.
+ *   soralgan       — shortfall being produced / sourced (in-production states).
+ *   qabul_qilingan — received from production at central, ready to forward.
+ *   yuborilgan     — shipped to a store, RESERVED, store has NOT accepted yet.
+ *   yopilgan       — terminal: accepted / rejected / returned / cancelled.
+ */
+export type PipelineStage =
+  | 'kutuvda'
+  | 'soralgan'
+  | 'qabul_qilingan'
+  | 'yuborilgan'
+  | 'yopilgan';
+
+/** The subset of a request row `derivePipelineStage` needs. */
+export type PipelineStageInput = {
+  status: ReplenishmentStatus;
+  closure_reason: ReplenishmentClosureReason | null;
+  route_to_production_manual: boolean;
+  received_from_production_at: Date | string | null;
+};
+
+/**
+ * Derive the pipeline stage from a request row. Evaluated top-down, first match
+ * wins (the ordering is load-bearing — see the spec). MUST stay in lock-step
+ * with `PIPELINE_STAGE_SQL`.
+ */
+export function derivePipelineStage(row: PipelineStageInput): PipelineStage {
+  // 1. yopilgan — terminal. CANCELLED always; CLOSED only once the store has
+  //    acted (closure_reason set: accepted / rejected / returned / cancelled).
+  if (row.status === 'CANCELLED') return 'yopilgan';
+  if (row.status === 'CLOSED' && row.closure_reason !== null) return 'yopilgan';
+  // 2. yuborilgan — shipped (CLOSED) but the store has NOT accepted yet.
+  if (row.status === 'CLOSED' && row.closure_reason === null) return 'yuborilgan';
+  // 3. qabul_qilingan — received from production at central, ready to forward.
+  if (row.status === 'SHIP_TO_REQUESTER') return 'qabul_qilingan';
+  // 4. kutuvda — store request not yet handled, OR a manual production delivery
+  //    sitting at the warehouse awaiting the manager's explicit receipt.
+  if (row.status === 'NEW' || row.status === 'CHECK_STORE_SUPPLIER') return 'kutuvda';
+  if (row.status === 'DONE_TO_WAREHOUSE' && row.route_to_production_manual) return 'kutuvda';
+  // 5. soralgan — everything else still in flight: the in-production / sourcing
+  //    states, plus a non-manual DONE_TO_WAREHOUSE (internal auto-flow goods
+  //    pending the auto-ship hop).
+  return 'soralgan';
+}
+
+/**
+ * SQL mirror of `derivePipelineStage` — a single CASE expression for the list
+ * query so the stage is computed server-side without an N+1. `r` is the
+ * `replenishment_requests` alias. Keep in lock-step with the TS function above.
+ */
+export const PIPELINE_STAGE_SQL = `CASE
+  WHEN r.status = 'CANCELLED' THEN 'yopilgan'
+  WHEN r.status = 'CLOSED' AND r.closure_reason IS NOT NULL THEN 'yopilgan'
+  WHEN r.status = 'CLOSED' AND r.closure_reason IS NULL THEN 'yuborilgan'
+  WHEN r.status = 'SHIP_TO_REQUESTER' THEN 'qabul_qilingan'
+  WHEN r.status IN ('NEW', 'CHECK_STORE_SUPPLIER') THEN 'kutuvda'
+  WHEN r.status = 'DONE_TO_WAREHOUSE' AND r.route_to_production_manual THEN 'kutuvda'
+  ELSE 'soralgan'
+END`;
+
+/**
  * For skip-state chaining (SM-7) — the set of forward transitions that should
  * be retried inside the SAME `advance()` call after a successful step. If the
  * next state's guard happens to be satisfied (e.g. the linked production order
@@ -116,13 +185,27 @@ export type ReplenishmentRow = {
   brak_reason: string | null;
   /** 0052 — basket group id; lines created in one /batch call share it. NULL = individual. */
   batch_id: number | null;
+  /**
+   * 0055 — TRUE once a store request was explicitly routed to production by the
+   * central warehouse manager (POST /:id/to-production). Such a request STOPS at
+   * DONE_TO_WAREHOUSE and never auto-ships; the manager must receive + forward
+   * it by hand. FALSE for direct-ship and internal auto-replenishment paths.
+   */
+  route_to_production_manual: boolean;
+  /**
+   * 0055 — when the central warehouse manager confirmed receipt of the produced
+   * goods (POST /:id/receive-from-production). Gate for the final forward to the
+   * store. NULL = not yet received.
+   */
+  received_from_production_at: Date | null;
 };
 
 export const REPLENISHMENT_COLUMNS = `id, product_id, requester_location_id,
   target_location_id, qty_needed, status, production_order_id, purchase_order_id,
   shipment_movement_id, note, created_by, created_at, updated_at, closed_at,
   assigned_to_user_id, qty_accepted, qty_returned, accept_note, reject_reason,
-  closure_reason, brak_qty, brak_reason, batch_id`;
+  closure_reason, brak_qty, brak_reason, batch_id,
+  route_to_production_manual, received_from_production_at`;
 
 /**
  * Possible outcomes of one `advance()` call. `advanced=false` means a wait
@@ -987,8 +1070,19 @@ async function advanceCheckProductionInput(
   actorUserId: number | null,
 ): Promise<AdvanceResult> {
   const topology = await resolveTopology(tx, request.requester_location_id);
-  if (topology.productionLocationId === null) {
-    return { advanced: false, request, reason: 'no production location in chain' };
+
+  // 0054 / 0055 — prefer the product's explicit workshop link
+  // (`products.workshop_location_id`, seeded from the matched Poster dish's
+  // Цех) as the production target sex. Fall back to the topology-resolved
+  // production location only when the product has no workshop link. This is
+  // what makes a manually-routed store request (POST /:id/to-production) land
+  // at the CORRECT workshop even though the store chain itself may resolve a
+  // different / no production ancestor.
+  const workshopLocationId = await resolveWorkshopLocationId(tx, request.product_id);
+  const productionLocationId = workshopLocationId ?? topology.productionLocationId;
+
+  if (productionLocationId === null) {
+    return { advanced: false, request, reason: 'no production location resolved (workshop/chain)' };
   }
   if (topology.rawWarehouseLocationId === null) {
     return { advanced: false, request, reason: 'no raw warehouse in chain' };
@@ -1077,7 +1171,7 @@ async function advanceCheckProductionInput(
           {
             productId: line.componentId,
             fromLocationId: topology.sexStorageLocationId,
-            toLocationId: topology.productionLocationId,
+            toLocationId: productionLocationId,
             qty: line.sexTake,
             reason: 'transfer',
             actorUserId,
@@ -1092,7 +1186,7 @@ async function advanceCheckProductionInput(
           {
             productId: line.componentId,
             fromLocationId: topology.rawWarehouseLocationId,
-            toLocationId: topology.productionLocationId,
+            toLocationId: productionLocationId,
             qty: line.rawNeed,
             reason: 'transfer',
             actorUserId,
@@ -1105,7 +1199,7 @@ async function advanceCheckProductionInput(
     const productionOrderId = await createProductionOrderRow(tx, {
       productId: request.product_id,
       qty: qtyNeeded,
-      locationId: topology.productionLocationId,
+      locationId: productionLocationId,
       targetLocationId,
       replenishmentId: request.id,
       actorUserId,
@@ -1248,12 +1342,30 @@ async function advanceWaitingForProduction(
   return { advanced: false, request, reason: `production order is ${poStatus ?? 'missing'}` };
 }
 
-/** DONE_TO_WAREHOUSE -> SHIP_TO_REQUESTER (the goods are now at target). */
+/**
+ * DONE_TO_WAREHOUSE -> SHIP_TO_REQUESTER (the goods are now at target).
+ *
+ * 0055 — MANUAL gate: a STORE request that the central warehouse manager
+ * explicitly routed to production (`route_to_production_manual = TRUE`) must
+ * STOP here and WAIT. It only moves forward once the manager has explicitly
+ * confirmed receipt at the central warehouse (`received_from_production_at`
+ * set by `receiveFromProduction`). Until then this is a no-op wait state, so
+ * neither the generic `advance()` / `POST /:id/advance` nor any chaining can
+ * auto-ship the produced goods to the store. Direct-ship and internal
+ * auto-replenishment requests (flag FALSE) keep flowing through unchanged.
+ */
 async function advanceDoneToWarehouse(
   tx: TxClient,
   request: ReplenishmentRow,
   actorUserId: number | null,
 ): Promise<AdvanceResult> {
+  if (request.route_to_production_manual && request.received_from_production_at === null) {
+    return {
+      advanced: false,
+      request,
+      reason: 'awaiting manual receive at central (receive-from-production)',
+    };
+  }
   const next = await transitionStatus(
     tx,
     request,
@@ -1437,6 +1549,27 @@ async function recordTransition(
      VALUES ($1, $2, $3, $4, $5)`,
     [replenishmentId, from, to, reason, actorUserId],
   );
+}
+
+/**
+ * 0054 / 0055 — resolve the production workshop (sex) that makes a product
+ * from its explicit `products.workshop_location_id` link (seeded from the
+ * matched Poster dish's Цех). Returns the workshop location id ONLY when the
+ * linked location actually exists and is a `production` location; otherwise
+ * `null` so the caller falls back to the topology-resolved production location.
+ */
+async function resolveWorkshopLocationId(
+  tx: TxClient,
+  productId: number,
+): Promise<number | null> {
+  const { rows } = await tx.query<{ id: number }>(
+    `SELECT l.id
+       FROM products p
+       JOIN locations l ON l.id = p.workshop_location_id
+      WHERE p.id = $1 AND l.type = 'production'::location_type`,
+    [productId],
+  );
+  return rows[0] === undefined ? null : Number(rows[0].id);
 }
 
 /**
@@ -1697,17 +1830,21 @@ export async function getProposalsForLocation(
  * invariants (atomic, audit, no negative stock) are preserved by the engine.
  *
  * Returns the advanced request plus a flag indicating whether the ship landed.
- * If the central has no stock the engine holds at SHIP_TO_REQUESTER and
- * `shipped=false` is returned (the manager can produce/restock then retry).
+ *
+ * 0055 — MANUAL flow: accept-central ONLY ships when the central warehouse
+ * already holds enough stock. If the central is SHORT it HOLDS the request at
+ * CHECK_STORE_SUPPLIER and returns `shipped=false` — it no longer cascades
+ * into the production/purchase chain. Routing a short request to production is
+ * now a DELIBERATE, separate action (`sendToProduction` via POST
+ * /:id/to-production), so the manager explicitly decides to make the goods.
  */
 export async function acceptByCentral(opts: {
   requestId: number;
   centralLocationId: number;
   actorUserId: number | null;
 }): Promise<{ request: ReplenishmentRow; shipped: boolean; reason: string }> {
-  // Pin the target + advance to SHIP in ONE transaction, then ship in a second
-  // advance hop. We open the tx ourselves so the target-pin + the first hop are
-  // atomic; `advance(tx)` re-uses it.
+  // Pin the target + ship (when stock allows) in ONE transaction so the pin and
+  // the transfer are atomic.
   return withTransaction(async (tx) => {
     const order = await lockRequest(tx, opts.requestId);
     if (TERMINAL_STATUSES.includes(order.status)) {
@@ -1717,7 +1854,8 @@ export async function acceptByCentral(opts: {
     // Pin / verify the target. If a target is already set it must be the
     // acting central warehouse (the manager can only accept requests bound for
     // their own warehouse — the route enforces this too).
-    if (order.target_location_id === null) {
+    let current = order;
+    if (current.target_location_id === null) {
       const { rows } = await tx.query<ReplenishmentRow>(
         `UPDATE replenishment_requests
             SET target_location_id = $2
@@ -1729,8 +1867,8 @@ export async function acceptByCentral(opts: {
       if (pinned === undefined) {
         throw AppError.internal('Accept-by-central: target pin returned no row.');
       }
-      Object.assign(order, pinned);
-    } else if (Number(order.target_location_id) !== opts.centralLocationId) {
+      current = pinned;
+    } else if (Number(current.target_location_id) !== opts.centralLocationId) {
       throw AppError.forbidden(
         'This request targets a different warehouse; you may only accept requests bound for your own.',
       );
@@ -1743,35 +1881,46 @@ export async function acceptByCentral(opts: {
       entityId: opts.requestId,
       payload: {
         central_location_id: opts.centralLocationId,
-        from_status: order.status,
+        from_status: current.status,
       },
     });
 
-    // Drive the engine forward inside the SAME transaction. From NEW it needs a
-    // CHECK_STORE_SUPPLIER hop first; we loop a few times so a freshly-pinned
-    // request can reach SHIP_TO_REQUESTER and then CLOSED in one accept.
-    let result: AdvanceResult = { advanced: false, request: order, reason: 'init' };
-    let safety = 6;
-    let current = order;
-    while (safety > 0 && !TERMINAL_STATUSES.includes(current.status)) {
-      safety -= 1;
-      // NEW -> CHECK_STORE_SUPPLIER walks topology to find a central warehouse;
-      // store chains here have no parent, so we bypass NEW by stepping to
-      // CHECK_STORE_SUPPLIER directly (target is already pinned).
-      if (current.status === 'NEW') {
-        current = await transitionStatus(
-          tx,
-          current,
-          'CHECK_STORE_SUPPLIER',
-          'accepted by central — target pinned',
-          opts.actorUserId,
-        );
-        continue;
+    // NEW -> CHECK_STORE_SUPPLIER (target is pinned; bypass the topology-based
+    // central resolution in `advanceNew`).
+    if (current.status === 'NEW') {
+      current = await transitionStatus(
+        tx,
+        current,
+        'CHECK_STORE_SUPPLIER',
+        'accepted by central — target pinned',
+        opts.actorUserId,
+      );
+    }
+
+    // Ship ONLY if the central already has stock. If short, HOLD at
+    // CHECK_STORE_SUPPLIER — do NOT cascade into production/purchase. The
+    // manager decides whether to route to production via POST /:id/to-production.
+    if (current.status === 'CHECK_STORE_SUPPLIER') {
+      const qtyNeeded = Number(current.qty_needed);
+      const targetQty = await readStockQty(tx, opts.centralLocationId, current.product_id);
+      if (targetQty < qtyNeeded) {
+        return {
+          request: current,
+          shipped: false,
+          reason:
+            targetQty <= 0
+              ? 'central has no stock — route to production or restock'
+              : `central has ${targetQty} < needed ${qtyNeeded} — route to production or restock`,
+        };
       }
-      result = await advanceOne(tx, current, opts.actorUserId);
-      if (!result.advanced) {
-        break;
-      }
+      const toShip = await transitionStatus(
+        tx,
+        current,
+        'SHIP_TO_REQUESTER',
+        `central has ${targetQty} >= needed ${qtyNeeded}`,
+        opts.actorUserId,
+      );
+      const result = await advanceShipToRequester(tx, toShip, opts.actorUserId);
       current = result.request;
     }
 
@@ -1779,7 +1928,7 @@ export async function acceptByCentral(opts: {
     return {
       request: current,
       shipped,
-      reason: shipped ? 'shipped to store' : result.reason,
+      reason: shipped ? 'shipped to store' : `held at ${current.status}`,
     };
   });
 }
@@ -1894,6 +2043,627 @@ export async function acceptByFulfiller(opts: {
       reason: shipped ? 'shipped to requester' : `held at ${current.status}`,
     };
   });
+}
+
+// -----------------------------------------------------------------------------
+// 0055 — Manual central -> production flow (store requests)
+// -----------------------------------------------------------------------------
+
+/**
+ * MANUAL "Ishlab chiqarishga yuborish" — the central warehouse manager
+ * explicitly routes a SHORT store request to production.
+ *
+ * Pins the request's target to the acting central warehouse, marks it as a
+ * manual production route (`route_to_production_manual = TRUE` — so it will
+ * STOP at DONE_TO_WAREHOUSE and never auto-ship), then runs the existing
+ * production-input logic (`advanceCheckProductionInput`): sex_storage-first BOM
+ * sourcing, a purchase order on a raw shortage, else the production_order
+ * (target = central, workshop resolved via `products.workshop_location_id` →
+ * else topology). All of it commits in ONE transaction.
+ *
+ * Allowed from NEW / CHECK_STORE_SUPPLIER (the pre-fulfilment states) and from
+ * CHECK_PRODUCTION_INPUT — re-routing a request that stalled there (e.g. an
+ * earlier attempt before the topology was wired) re-runs the BOM/raw check. A
+ * request already in production / shipped / terminal is refused.
+ */
+export async function sendToProduction(opts: {
+  requestId: number;
+  centralLocationId: number;
+  actorUserId: number | null;
+}): Promise<{ request: ReplenishmentRow; advanced: boolean; reason: string }> {
+  return withTransaction(async (tx) => {
+    const order = await lockRequest(tx, opts.requestId);
+    return sendToProductionTx(tx, order, opts.centralLocationId, opts.actorUserId);
+  });
+}
+
+/**
+ * 0058 — tx-internal core of `sendToProduction`. Routes an already-locked
+ * request to production within the CALLER's transaction (so the partial-fulfill
+ * flow can ship the available portion AND route the shortfall to production in
+ * ONE atomic unit). The public `sendToProduction` is a thin lock + wrapper; the
+ * partial-fulfill path calls this directly on a freshly-created shortfall row.
+ *
+ * `order` MUST already be locked (`lockRequest` / `FOR UPDATE`) by the caller.
+ */
+async function sendToProductionTx(
+  tx: TxClient,
+  order: ReplenishmentRow,
+  centralLocationId: number,
+  actorUserId: number | null,
+): Promise<{ request: ReplenishmentRow; advanced: boolean; reason: string }> {
+  {
+    if (TERMINAL_STATUSES.includes(order.status)) {
+      return { request: order, advanced: false, reason: `request already ${order.status}` };
+    }
+    if (
+      order.status !== 'NEW' &&
+      order.status !== 'CHECK_STORE_SUPPLIER' &&
+      order.status !== 'CHECK_PRODUCTION_INPUT'
+    ) {
+      throw new AppError(
+        'INVALID_TRANSITION',
+        `Cannot route to production from status ${order.status} — only NEW / CHECK_STORE_SUPPLIER / CHECK_PRODUCTION_INPUT are allowed.`,
+      );
+    }
+    const opts = { requestId: order.id, centralLocationId, actorUserId };
+
+    // Pin / verify the target to the acting central warehouse and stamp the
+    // manual-route marker in the SAME UPDATE.
+    let current = order;
+    if (current.target_location_id === null) {
+      const { rows } = await tx.query<ReplenishmentRow>(
+        `UPDATE replenishment_requests
+            SET target_location_id = $2,
+                route_to_production_manual = TRUE
+          WHERE id = $1
+          RETURNING ${REPLENISHMENT_COLUMNS}`,
+        [opts.requestId, opts.centralLocationId],
+      );
+      const pinned = rows[0];
+      if (pinned === undefined) {
+        throw AppError.internal('Send-to-production: target pin returned no row.');
+      }
+      current = pinned;
+    } else if (Number(current.target_location_id) !== opts.centralLocationId) {
+      throw AppError.forbidden(
+        'This request targets a different warehouse; you may only route requests bound for your own.',
+      );
+    } else {
+      const { rows } = await tx.query<ReplenishmentRow>(
+        `UPDATE replenishment_requests
+            SET route_to_production_manual = TRUE
+          WHERE id = $1
+          RETURNING ${REPLENISHMENT_COLUMNS}`,
+        [opts.requestId],
+      );
+      const marked = rows[0];
+      if (marked === undefined) {
+        throw AppError.internal('Send-to-production: marker update returned no row.');
+      }
+      current = marked;
+    }
+
+    await writeAudit(tx, {
+      actorUserId: opts.actorUserId,
+      action: 'replenishment.send_to_production',
+      entity: 'replenishment_requests',
+      entityId: opts.requestId,
+      payload: {
+        central_location_id: opts.centralLocationId,
+        from_status: order.status,
+      },
+    });
+
+    // NEW -> CHECK_STORE_SUPPLIER (target is pinned).
+    if (current.status === 'NEW') {
+      current = await transitionStatus(
+        tx,
+        current,
+        'CHECK_STORE_SUPPLIER',
+        'routed to production — target pinned',
+        opts.actorUserId,
+      );
+    }
+    // CHECK_STORE_SUPPLIER -> CHECK_PRODUCTION_INPUT (skip the central-has-stock
+    // branch — the manager has DECIDED to produce regardless of central stock).
+    if (current.status === 'CHECK_STORE_SUPPLIER') {
+      current = await transitionStatus(
+        tx,
+        current,
+        'CHECK_PRODUCTION_INPUT',
+        'routed to production (manual)',
+        opts.actorUserId,
+      );
+    }
+
+    // Run the BOM/raw check -> creates the production order (or a purchase order
+    // on a raw shortage). Reuses every invariant (atomic transfers, no negative
+    // stock, audit) from the auto-replenishment path.
+    const result = await advanceCheckProductionInput(tx, current, opts.actorUserId);
+    return {
+      request: result.request,
+      advanced: result.advanced,
+      reason: result.reason,
+    };
+  }
+}
+
+/**
+ * MANUAL "Qabul qildim" — the central warehouse manager confirms receipt of
+ * the produced goods at the central warehouse, with an optional brak (defect)
+ * split. The request must be at DONE_TO_WAREHOUSE (production finished, the
+ * `production_output` already placed `qty_needed` into the central warehouse).
+ *
+ * Stock model (NO double-count — the production_output already credited the
+ * central warehouse):
+ *   * brak_qty == 0 — pure acknowledgement; no movement.
+ *   * brak_qty  > 0 — the defective qty is written OFF the central warehouse
+ *                     (reason='adjust' — it must not be forwarded to the store
+ *                     nor double-counted). Recorded in `brak_qty` / `brak_reason`.
+ *
+ * On success the request moves DONE_TO_WAREHOUSE -> SHIP_TO_REQUESTER (it is
+ * now "received at central, ready to forward") and stamps
+ * `received_from_production_at`. It does NOT ship — forwarding is the separate
+ * `shipToStore` action. Idempotent: a second call once `received_from_production_at`
+ * is set returns the row unchanged (no double write-off).
+ */
+export async function receiveFromProduction(opts: {
+  requestId: number;
+  brakQty?: number;
+  brakReason?: string | null;
+  actorUserId: number | null;
+}): Promise<ReplenishmentRow> {
+  const brakQty = opts.brakQty ?? 0;
+  if (!Number.isFinite(brakQty) || brakQty < 0) {
+    throw AppError.validation('brak_qty must be a number >= 0.');
+  }
+  const brakReasonClean =
+    typeof opts.brakReason === 'string' && opts.brakReason.trim() !== ''
+      ? opts.brakReason.trim()
+      : null;
+  if (brakQty > 0 && brakReasonClean === null) {
+    throw AppError.validation('brak_reason is required when brak_qty > 0.');
+  }
+  return withTransaction(async (tx) => {
+    const order = await lockRequest(tx, opts.requestId);
+    if (order.received_from_production_at !== null) {
+      // Already received — idempotent no-op (a double-tap cannot double-write-off).
+      return order;
+    }
+    if (order.status !== 'DONE_TO_WAREHOUSE') {
+      throw new AppError(
+        'INVALID_TRANSITION',
+        `Cannot receive-from-production in status ${order.status} — wait for the production order to finish (DONE_TO_WAREHOUSE).`,
+      );
+    }
+    if (order.target_location_id === null) {
+      throw AppError.internal('Cannot receive — request has no target_location_id.');
+    }
+    const qtyNeeded = Number(order.qty_needed);
+    if (brakQty > qtyNeeded) {
+      throw AppError.validation(
+        `brak_qty (${brakQty}) cannot exceed the produced qty (${qtyNeeded}).`,
+      );
+    }
+
+    // Write off the defective qty from the central warehouse so it is neither
+    // forwarded nor double-counted. The good remainder stays at central for the
+    // forward step. `applyMovement` keeps the guarded decrement + ledger + audit
+    // (invariant 1, no negative stock).
+    if (brakQty > 0) {
+      await applyMovement(
+        {
+          productId: order.product_id,
+          fromLocationId: order.target_location_id,
+          toLocationId: null,
+          qty: brakQty,
+          reason: 'adjust',
+          actorUserId: opts.actorUserId,
+          replenishmentId: order.id,
+          note: `receive-from-production brak: ${brakReasonClean}`,
+        },
+        tx,
+      );
+    }
+
+    // Stamp the receipt + brak, then move DONE_TO_WAREHOUSE -> SHIP_TO_REQUESTER
+    // (received at central, ready to forward — but NOT shipped yet).
+    const { rows } = await tx.query<ReplenishmentRow>(
+      `UPDATE replenishment_requests
+         SET brak_qty = $2,
+             brak_reason = $3,
+             received_from_production_at = now()
+       WHERE id = $1
+       RETURNING ${REPLENISHMENT_COLUMNS}`,
+      [opts.requestId, brakQty, brakReasonClean],
+    );
+    const stamped = rows[0];
+    if (stamped === undefined) {
+      throw AppError.internal('Replenishment receive-from-production returned no row.');
+    }
+    const next = await transitionStatus(
+      tx,
+      stamped,
+      'SHIP_TO_REQUESTER',
+      `received at central (brak ${brakQty})`,
+      opts.actorUserId,
+    );
+    await writeAudit(tx, {
+      actorUserId: opts.actorUserId,
+      action: 'replenishment.receive_from_production',
+      entity: 'replenishment_requests',
+      entityId: opts.requestId,
+      payload: { brak_qty: brakQty, brak_reason: brakReasonClean },
+    });
+    return next;
+  });
+}
+
+/**
+ * MANUAL "Do'konga yuborish" — the central warehouse manager forwards the
+ * received goods from the central warehouse to the requesting store. The
+ * request must be at SHIP_TO_REQUESTER AND (for a manual production route) have
+ * been received first (`received_from_production_at` set). Reuses
+ * `advanceShipToRequester`: an atomic central -> store transfer, then CLOSED.
+ *
+ * Ships `min(qty_needed, central.qty)` — after a brak write-off the central
+ * holds `qty_needed - brak`, so exactly the good qty is forwarded.
+ */
+export async function shipToStore(opts: {
+  requestId: number;
+  actorUserId: number | null;
+}): Promise<{ request: ReplenishmentRow; shipped: boolean; reason: string }> {
+  return withTransaction(async (tx) => {
+    const order = await lockRequest(tx, opts.requestId);
+    if (TERMINAL_STATUSES.includes(order.status)) {
+      return { request: order, shipped: false, reason: `request already ${order.status}` };
+    }
+    if (order.status !== 'SHIP_TO_REQUESTER') {
+      throw new AppError(
+        'INVALID_TRANSITION',
+        `Cannot ship-to-store in status ${order.status} — receive the production output first.`,
+      );
+    }
+    if (order.route_to_production_manual && order.received_from_production_at === null) {
+      throw new AppError(
+        'INVALID_TRANSITION',
+        'Cannot ship-to-store — confirm receipt at central first (receive-from-production).',
+      );
+    }
+    const result = await advanceShipToRequester(tx, order, opts.actorUserId);
+    return {
+      request: result.request,
+      shipped: result.request.status === 'CLOSED',
+      reason: result.reason,
+    };
+  });
+}
+
+// -----------------------------------------------------------------------------
+// 0058 — PARTIAL FULFILLMENT (central -> store, ship-available + produce-rest)
+// -----------------------------------------------------------------------------
+
+/** Result of `fulfillStoreRequest`. */
+export type FulfillResult = {
+  /** Qty actually shipped to the store now (0 when the central was empty). */
+  readonly shippedQty: number;
+  /** Remaining qty routed to production (0 when the central covered it all). */
+  readonly shortfallQty: number;
+  /**
+   * The id of the request that carries the shortfall to production. For a real
+   * partial (some shipped) this is a NEW grouped request; when nothing was
+   * shipped it is the ORIGINAL request id (routed in place). Absent when there
+   * was no shortfall.
+   */
+  readonly productionRequestId: number | null;
+  /** The ORIGINAL request row after the ship (enriched downstream). */
+  readonly request: ReplenishmentRow;
+};
+
+/**
+ * Ship an EXACT qty from the central (target) to the requester store, then close
+ * the request — the partial-fulfill controlled ship. Unlike
+ * `advanceShipToRequester` (which ships `min(qty_needed, targetQty)`), this ships
+ * precisely `shipQty` (already validated `0 < shipQty <= central on-hand` and
+ * `<= qty_needed` by the caller), so a deliberately-smaller partial honours the
+ * operator's chosen amount. The request is flipped to SHIP_TO_REQUESTER first
+ * (so the SM-2 transition guard accepts the CLOSED hop), then closed with the
+ * shipment movement linked. closure_reason stays NULL -> pipeline `yuborilgan`.
+ */
+async function shipPortionToStore(
+  tx: TxClient,
+  request: ReplenishmentRow,
+  shipQty: number,
+  actorUserId: number | null,
+): Promise<ReplenishmentRow> {
+  if (request.target_location_id === null) {
+    throw AppError.internal('Cannot ship portion — request has no target_location_id.');
+  }
+  // Flip NEW -> CHECK_STORE_SUPPLIER -> SHIP_TO_REQUESTER so the final CLOSED
+  // transition is reachable in the SM-2 graph.
+  let current = request;
+  if (current.status === 'NEW') {
+    current = await transitionStatus(
+      tx,
+      current,
+      'CHECK_STORE_SUPPLIER',
+      'fulfill — target pinned',
+      actorUserId,
+    );
+  }
+  if (current.status === 'CHECK_STORE_SUPPLIER') {
+    current = await transitionStatus(
+      tx,
+      current,
+      'SHIP_TO_REQUESTER',
+      `fulfill — shipping ${shipQty} of ${current.qty_needed}`,
+      actorUserId,
+    );
+  }
+  if (current.status !== 'SHIP_TO_REQUESTER') {
+    throw new AppError(
+      'INVALID_TRANSITION',
+      `Cannot ship portion from status ${current.status}.`,
+    );
+  }
+
+  const { movementId } = await applyMovement(
+    {
+      productId: current.product_id,
+      fromLocationId: current.target_location_id,
+      toLocationId: current.requester_location_id,
+      qty: shipQty,
+      reason: 'transfer',
+      actorUserId,
+      replenishmentId: current.id,
+      note: 'partial fulfill — available portion',
+    },
+    tx,
+  );
+
+  const { rows } = await tx.query<ReplenishmentRow>(
+    `UPDATE replenishment_requests
+       SET status = 'CLOSED', shipment_movement_id = $2, closed_at = now()
+     WHERE id = $1 AND status = 'SHIP_TO_REQUESTER'
+     RETURNING ${REPLENISHMENT_COLUMNS}`,
+    [current.id, movementId],
+  );
+  const updated = rows[0];
+  if (updated === undefined) {
+    throw AppError.internal('Partial fulfill close returned no row.');
+  }
+  await recordTransition(
+    tx,
+    current.id,
+    'SHIP_TO_REQUESTER',
+    'CLOSED',
+    `partial fulfill — shipped ${shipQty}`,
+    actorUserId,
+  );
+  await writeAudit(tx, {
+    actorUserId,
+    action: 'replenishment.fulfill_ship',
+    entity: 'replenishment_requests',
+    entityId: current.id,
+    payload: { shipped_qty: shipQty, movement_id: movementId },
+  });
+  await notifyShipmentCreated(tx, updated, shipQty, movementId);
+  return updated;
+}
+
+/**
+ * PARTIAL FULFILLMENT — the central warehouse manager fulfils a store request
+ * with whatever is on hand and routes the rest to production, in ONE atomic
+ * transaction (owner-corrected 2026-06-08). This replaces the old
+ * all-or-nothing accept for the modal flow (`acceptByCentral` stays for
+ * backward-compat).
+ *
+ * Behaviour (store request bound for the acting central):
+ *   available = central on-hand(product)
+ *   shipQty   = clamp(opts.shipQty ?? available, 0, min(qty_needed, available))
+ *   shortfall = qty_needed - shipQty
+ *
+ *   (a) if shipQty > 0 — ship exactly `shipQty` central -> store and CLOSE the
+ *       request (pipeline `yuborilgan` — the store has not accepted yet).
+ *   (b) if shortfall > 0 — produce the rest:
+ *         * shipQty > 0 (real partial) — create a NEW grouped production request
+ *           (requester = same store, qty = shortfall, same batch_id) and route
+ *           it to production via the shared `sendToProductionTx` path
+ *           (pipeline `soralgan`). Allowed because the original is now CLOSED
+ *           (terminal), so the partial-unique index permits the new open row.
+ *         * shipQty = 0 (central empty) — route the ORIGINAL request to
+ *           production in place; `productionRequestId = original id`.
+ *
+ * All invariants hold: invariant 1 (atomic movement + audit), invariant 2 (the
+ * original is closed BEFORE the shortfall row is created), invariant 3 (guarded
+ * `applyMovement` — no negative stock), audit on every change.
+ */
+export async function fulfillStoreRequest(opts: {
+  requestId: number;
+  centralLocationId: number;
+  shipQty?: number;
+  note?: string | null;
+  actorUserId: number | null;
+}): Promise<FulfillResult> {
+  if (
+    opts.shipQty !== undefined &&
+    (!Number.isFinite(opts.shipQty) || opts.shipQty < 0)
+  ) {
+    throw AppError.validation('ship_qty must be a number >= 0.');
+  }
+  return withTransaction(async (tx) => {
+    const order = await lockRequest(tx, opts.requestId);
+    if (TERMINAL_STATUSES.includes(order.status)) {
+      throw new AppError(
+        'INVALID_TRANSITION',
+        `Cannot fulfill a request already ${order.status}.`,
+      );
+    }
+    // Only the pre-fulfilment store states are eligible (mirrors the accept /
+    // to-production guards). A request already in production / shipped is refused.
+    if (order.status !== 'NEW' && order.status !== 'CHECK_STORE_SUPPLIER') {
+      throw new AppError(
+        'INVALID_TRANSITION',
+        `Cannot fulfill from status ${order.status} — only NEW / CHECK_STORE_SUPPLIER are allowed.`,
+      );
+    }
+
+    // Pin / verify the target to the acting central warehouse.
+    let current = order;
+    if (current.target_location_id === null) {
+      const { rows } = await tx.query<ReplenishmentRow>(
+        `UPDATE replenishment_requests SET target_location_id = $2
+          WHERE id = $1 RETURNING ${REPLENISHMENT_COLUMNS}`,
+        [opts.requestId, opts.centralLocationId],
+      );
+      const pinned = rows[0];
+      if (pinned === undefined) {
+        throw AppError.internal('Fulfill: target pin returned no row.');
+      }
+      current = pinned;
+    } else if (Number(current.target_location_id) !== opts.centralLocationId) {
+      throw AppError.forbidden(
+        'This request targets a different warehouse; you may only fulfill requests bound for your own.',
+      );
+    }
+
+    const qtyNeeded = Number(current.qty_needed);
+    const available = await readStockQty(tx, opts.centralLocationId, current.product_id);
+    const cap = Math.min(qtyNeeded, Math.max(available, 0));
+    // Default ship = everything we can; a provided ship_qty is capped at `cap`.
+    const shipQty = opts.shipQty === undefined ? cap : Math.min(opts.shipQty, cap);
+    const shortfall = qtyNeeded - shipQty;
+
+    await writeAudit(tx, {
+      actorUserId: opts.actorUserId,
+      action: 'replenishment.fulfill',
+      entity: 'replenishment_requests',
+      entityId: opts.requestId,
+      payload: {
+        central_location_id: opts.centralLocationId,
+        qty_needed: qtyNeeded,
+        available,
+        ship_qty: shipQty,
+        shortfall_qty: shortfall,
+        note: opts.note ?? null,
+      },
+    });
+
+    // (a) Ship the available portion (when any) and close the original request.
+    let originalAfter = current;
+    if (shipQty > 0) {
+      originalAfter = await shipPortionToStore(tx, current, shipQty, opts.actorUserId);
+    }
+
+    // (b) Route the shortfall to production (when any).
+    let productionRequestId: number | null = null;
+    if (shortfall > 0) {
+      if (shipQty > 0) {
+        // Real partial — the original is CLOSED; create a NEW grouped request
+        // for the shortfall, then route IT to production within this same tx.
+        const shortfallRow = await insertShortfallRequest(tx, {
+          productId: current.product_id,
+          requesterLocationId: current.requester_location_id,
+          qtyNeeded: shortfall,
+          actorUserId: opts.actorUserId,
+          batchId: current.batch_id,
+          note: opts.note ?? null,
+        });
+        const routed = await sendToProductionTx(
+          tx,
+          shortfallRow,
+          opts.centralLocationId,
+          opts.actorUserId,
+        );
+        productionRequestId = routed.request.id;
+      } else {
+        // Central empty — route the ORIGINAL request to production in place.
+        const routed = await sendToProductionTx(
+          tx,
+          current,
+          opts.centralLocationId,
+          opts.actorUserId,
+        );
+        originalAfter = routed.request;
+        productionRequestId = routed.request.id;
+      }
+    }
+
+    return {
+      shippedQty: shipQty,
+      shortfallQty: shortfall,
+      productionRequestId,
+      request: originalAfter,
+    };
+  });
+}
+
+/**
+ * Insert + lock a fresh replenishment request for the partial-fulfill shortfall.
+ * Bypasses the public `createRequest` (which opens its own transaction and fires
+ * the requester notification) — here the row must be created AND immediately
+ * `FOR UPDATE`-locked inside the caller's transaction so `sendToProductionTx`
+ * can route it. The partial-unique index still guards invariant 2; a conflict
+ * (an unrelated open request already exists for this product+store) surfaces as
+ * OPEN_REQUEST_EXISTS, rolling the whole fulfill back.
+ */
+async function insertShortfallRequest(
+  tx: TxClient,
+  opts: {
+    productId: number;
+    requesterLocationId: number;
+    qtyNeeded: number;
+    actorUserId: number | null;
+    batchId: number | null;
+    note: string | null;
+  },
+): Promise<ReplenishmentRow> {
+  let row: ReplenishmentRow;
+  try {
+    const { rows } = await tx.query<ReplenishmentRow>(
+      `INSERT INTO replenishment_requests
+         (product_id, requester_location_id, qty_needed, status, note, created_by, batch_id)
+       VALUES ($1, $2, $3, 'NEW', $4, $5, $6)
+       RETURNING ${REPLENISHMENT_COLUMNS}`,
+      [
+        opts.productId,
+        opts.requesterLocationId,
+        opts.qtyNeeded,
+        opts.note,
+        opts.actorUserId,
+        opts.batchId,
+      ],
+    );
+    const inserted = rows[0];
+    if (inserted === undefined) {
+      throw AppError.internal('Shortfall request insert returned no row.');
+    }
+    row = inserted;
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      throw new AppError(
+        'OPEN_REQUEST_EXISTS',
+        'An open replenishment request already exists for this (product, location) — cannot create the shortfall request.',
+      );
+    }
+    throw err;
+  }
+  await recordTransition(tx, row.id, null, 'NEW', 'created (fulfill shortfall)', opts.actorUserId);
+  await writeAudit(tx, {
+    actorUserId: opts.actorUserId,
+    action: 'replenishment.create',
+    entity: 'replenishment_requests',
+    entityId: row.id,
+    payload: {
+      product_id: opts.productId,
+      requester_location_id: opts.requesterLocationId,
+      qty_needed: opts.qtyNeeded,
+      source: 'fulfill_shortfall',
+    },
+  });
+  // Re-read FOR UPDATE so the row is locked for the rest of this transaction.
+  return lockRequest(tx, row.id);
 }
 
 // -----------------------------------------------------------------------------
@@ -2117,10 +2887,30 @@ async function notifyStockBelowMin(
 }
 
 /**
- * Send a `replenishment_created` notification to the requester's manager
- * (and to the actor when the actor is not the manager). The target manager
- * is notified by the SHIP_TO_REQUESTER hop, since the target is unknown
- * at NEW time.
+ * `replenishment_created` notification at NEW (createRequest) time.
+ *
+ * Two DISTINCT audiences with DIFFERENT framing (owner feedback 2026-06-08):
+ *
+ *   1. Requester manager (e.g. a do'konchi who raised a store→central request,
+ *      typically by voice) + the actor when different. They do NOT fulfil their
+ *      own outgoing request, so they get a "sent to the central warehouse,
+ *      awaiting receipt" card with ONLY a "Ko'rish" button — NO "Tezda
+ *      bajarish". Advancing/fulfilling is the fulfiller's job, and a pending-
+ *      looking action button on one's own request is exactly the confusion the
+ *      owner reported.
+ *
+ *   2. The FULFILLING manager — the manager of the request's target location.
+ *      For a bare store request the target is not yet pinned at NEW (the cron
+ *      gates store requests at NEW; `advanceNew` only runs on the central
+ *      accept path), so we resolve the central warehouse from the requester's
+ *      chain topology. THAT manager gets the actionable "Tezda bajarish"
+ *      (`fast:req`) nudge. We reuse the SAME dedupe key as
+ *      `notifyReplenishmentTargetSet` (`replenishment_created:target:<id>`) so
+ *      the central manager is nudged at most once, whether the request was
+ *      created here or later advanced past NEW.
+ *
+ * Best-effort: if the central warehouse / its manager cannot be resolved we
+ * simply skip the fulfiller nudge (the central pipeline UI still shows it).
  */
 async function notifyReplenishmentCreated(
   tx: TxClient,
@@ -2128,33 +2918,78 @@ async function notifyReplenishmentCreated(
   actorUserId: number | null,
 ): Promise<void> {
   const requesterManagerId = await getLocationManager(tx, request.requester_location_id);
-  const recipients: number[] = [];
-  if (requesterManagerId !== null) recipients.push(requesterManagerId);
-  if (actorUserId !== null && !recipients.includes(actorUserId)) {
-    recipients.push(actorUserId);
+  const requesterRecipients: number[] = [];
+  if (requesterManagerId !== null) requesterRecipients.push(requesterManagerId);
+  if (actorUserId !== null && !requesterRecipients.includes(actorUserId)) {
+    requesterRecipients.push(actorUserId);
   }
-  if (recipients.length === 0) return;
+
   const { productName, productUnit, locationName } = await fetchProductAndLocation(
     tx,
     request.product_id,
     request.requester_location_id,
   );
-  await createNotificationsForRecipients(tx, recipients, {
+
+  // 1. Requester-side card — informational only (no actionable button). The
+  //    requester's request has been SENT; it now waits on the central wh.
+  if (requesterRecipients.length > 0) {
+    await createNotificationsForRecipients(tx, requesterRecipients, {
+      type: 'replenishment_created',
+      title: `So'rovingiz yuborildi #${request.id}`,
+      body:
+        `So'rov #${request.id}: ${productName} ${request.qty_needed} ${productUnit} ` +
+        `— ${locationName} uchun markaziy skladga yuborildi. ` +
+        `Markaziy sklad qabul qilishini kuting.`,
+      payload: {
+        replenishment_id: request.id,
+        product_id: request.product_id,
+        qty_needed: request.qty_needed,
+        requester_location_id: request.requester_location_id,
+        role: 'requester',
+      },
+      // "Ko'rish" only — the requester must NOT advance their own request.
+      inlineCallback: {
+        buttons: [[{ text: "📋 Ko'rish", data: `view:req:${request.id}` }]],
+      },
+    });
+  }
+
+  // 2. Fulfiller-side nudge — the manager of the TARGET location gets the
+  //    actionable "Tezda bajarish". Resolve the central warehouse when the
+  //    target is not yet pinned (bare store request at NEW).
+  let fulfillerLocationId = request.target_location_id;
+  if (fulfillerLocationId === null) {
+    const topology = await resolveTopology(tx, request.requester_location_id);
+    fulfillerLocationId = topology.centralWarehouseLocationId;
+  }
+  if (fulfillerLocationId === null) return;
+  const fulfillerManagerId = await getLocationManager(tx, fulfillerLocationId);
+  if (fulfillerManagerId === null) return;
+  // Skip if the fulfiller manager is also a requester recipient (small chain) —
+  // they already got the requester-side card.
+  if (requesterRecipients.includes(fulfillerManagerId)) return;
+
+  await createNotification(tx, {
+    recipientUserId: fulfillerManagerId,
     type: 'replenishment_created',
     title: `Yangi to'ldirish so'rovi #${request.id}`,
     body:
-      `So'rov #${request.id}: ${productName} ${request.qty_needed} ${productUnit} ` +
+      `Sizning omborga so'rov #${request.id}: ${productName} ${request.qty_needed} ${productUnit} ` +
       `— ${locationName} uchun.`,
     payload: {
       replenishment_id: request.id,
       product_id: request.product_id,
       qty_needed: request.qty_needed,
       requester_location_id: request.requester_location_id,
+      target_location_id: fulfillerLocationId,
+      role: 'target',
     },
-    // F3.3 / ADR-0011 — "Tezda bajarish" advances the request one hop,
-    // "Ko'rish" sends a follow-up detail message. The dispatcher enforces
-    // RBAC (pm or target-loc manager) at press time, so the buttons are
-    // safe to attach for every recipient.
+    // Same dedupe key as notifyReplenishmentTargetSet so the central manager is
+    // nudged at most once across create + first advance.
+    dedupeKey: `replenishment_created:target:${request.id}`,
+    dedupeWindowMinutes: 24 * 60,
+    // F3.3 / ADR-0011 — "Tezda bajarish" advances the request one hop. The
+    // dispatcher re-checks RBAC (pm or target-loc manager) at press time.
     inlineCallback: {
       buttons: [
         [

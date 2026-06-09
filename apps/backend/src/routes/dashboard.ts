@@ -2722,22 +2722,19 @@ dashboardRouter.get(
     const range = parseDateRange(req.query);
     const spotIdParam = parseOptionalSpotId(req.query.spotId ?? req.query.spot_id);
 
-    // RBAC scoping for spotId: a scoped principal may only target a spot
-    // mapped to one of their assigned store locations.
-    if (
-      !isSuperAdmin(principal) &&
-      principal.role !== 'ai_assistant' &&
-      principal.role !== 'central_warehouse_manager' &&
-      principal.role !== 'supply_manager' &&
-      spotIdParam !== null
-    ) {
-      const ok = await isSpotAssignedToPrincipal(principal.locationIds, spotIdParam);
-      if (!ok) {
-        throw AppError.forbidden(
-          'You may only query revenue for spots in your assigned stores.',
-        );
-      }
-    }
+    // RBAC scoping (invariant 5): the per-transaction Poster window is chain-wide
+    // unless filtered by spot, so a location-scoped principal MUST be confined to
+    // their own store's spot(s) — server-side, never trusting the frontend.
+    //   - super-admin / pm / ai_assistant: chain-wide (effectiveSpotIds = null).
+    //   - central_warehouse_manager / supply_manager: chain-wide (their scope is
+    //     the whole supply chain, not a single POS spot) — UNCHANGED.
+    //   - store_manager (and any other location-scoped role): auto-scoped to the
+    //     Poster spot(s) of their assigned stores. An explicit `spotId` must be
+    //     one of those spots (else 403); when absent we query EVERY assigned spot.
+    const effectiveSpotIds = await resolveRevenueSpotScope(
+      principal,
+      spotIdParam,
+    );
 
     // EPIC 0.3 + money-fix (2026-06-06) — REAL Poster path.
     //
@@ -2769,28 +2766,72 @@ dashboardRouter.get(
     const dateFrom = toPosterDate(range.from);
     const dateTo = toPosterDate(lastDay);
 
-    // Analytics revenue (already so'm) is the authoritative period total — used
-    // purely as a reconciliation cross-check for the per-transaction buckets.
-    const [methods, transactions, analytics] = await Promise.all([
-      client.getPaymentMethods(),
-      client.getTransactions({
-        dateFrom,
-        dateTo,
-        paginate: true,
-        ...(spotIdParam !== null ? { spotId: spotIdParam } : {}),
-      }),
-      client
-        .getAnalytics({
-          dateFrom,
-          dateTo,
-          interpolate: 'day',
-          select: 'revenue',
-          ...(spotIdParam !== null ? { spotId: spotIdParam } : {}),
-        })
-        .catch(() => ({}) as Awaited<ReturnType<typeof client.getAnalytics>>),
-    ]);
+    // A location-scoped principal whose stores carry NO Poster spot must get an
+    // empty result — never the chain-wide window (which is what an unfiltered
+    // `getTransactions` would return).
+    if (effectiveSpotIds !== null && effectiveSpotIds.length === 0) {
+      const empty = transactionsToBuckets([], await client.getPaymentMethods());
+      res.status(200).json({
+        from: range.from.toISOString().slice(0, 10),
+        to: lastDay.toISOString().slice(0, 10),
+        spot_id: spotIdParam,
+        total: empty.total,
+        count: empty.closedCount,
+        byMethod: {
+          cash: empty.byMethod.cash,
+          card: empty.byMethod.card,
+          payme: empty.byMethod.payme,
+          click: empty.byMethod.click,
+          other: empty.byMethod.other,
+        },
+        methods: empty.methods.map((m) => ({
+          key: m.key,
+          label: m.label,
+          amount: m.amount,
+        })),
+      } satisfies RevenueBreakdownResponse);
+      return;
+    }
 
-    const expectedTotal = Number(analytics.counters?.revenue);
+    // `getTransactions` / `getAnalytics` accept a SINGLE spot, so a multi-store
+    // principal is served by fetching per spot and concatenating the rows; the
+    // breakdown is a pure function of the transaction list, so one pass over the
+    // union yields the same totals as the chain-wide call did per spot. A null
+    // scope (PM/ai/central/supply) makes a single unfiltered call as before.
+    const spotsToQuery: (number | undefined)[] =
+      effectiveSpotIds === null ? [undefined] : effectiveSpotIds;
+
+    const methods = await client.getPaymentMethods();
+    const perSpot = await Promise.all(
+      spotsToQuery.map(async (spotId) => {
+        const [transactions, analytics] = await Promise.all([
+          client.getTransactions({
+            dateFrom,
+            dateTo,
+            paginate: true,
+            ...(spotId !== undefined ? { spotId } : {}),
+          }),
+          client
+            .getAnalytics({
+              dateFrom,
+              dateTo,
+              interpolate: 'day',
+              select: 'revenue',
+              ...(spotId !== undefined ? { spotId } : {}),
+            })
+            .catch(() => ({}) as Awaited<ReturnType<typeof client.getAnalytics>>),
+        ]);
+        return { transactions, revenue: Number(analytics.counters?.revenue) };
+      }),
+    );
+    const transactions = perSpot.flatMap((p) => p.transactions);
+    // Reconciliation cross-check: sum each spot's analytics revenue. Skip the
+    // cross-check entirely if any spot's analytics was unavailable (NaN).
+    const revenues = perSpot.map((p) => p.revenue);
+    const expectedTotal = revenues.every((r) => Number.isFinite(r))
+      ? revenues.reduce((s, r) => s + r, 0)
+      : Number.NaN;
+
     const breakdown = transactionsToBuckets(
       transactions,
       methods,
@@ -2840,9 +2881,10 @@ dashboardRouter.get(
 //
 // Two dimensions via `?by=`:
 //   - product (default): local `sales` JOIN `products`, grouped by
-//     (bucket, product). Line amount = sum(s.price): the `sales.price` column
-//     holds the LINE TOTAL (already qty-multiplied), NOT a per-unit price, so
-//     `qty * price` double-counts (~63x inflated, verified live). `qty` stays
+//     (bucket, product). Line amount = sum(s.qty * s.price). After the
+//     2026-06-08 ingest fix `sales.price` is a TRUE per-unit price
+//     (lineTotalSom / num), so `qty * price` = the Poster line total and this
+//     endpoint agrees with /stores' top_products to the cheque. `qty` stays
 //     sum(s.qty) = units sold.
 //     NOTE: this local product revenue is sourced from the `sales` table and
 //     may differ slightly from the Poster-sourced `sales_chart` line amount
@@ -2934,9 +2976,15 @@ dashboardRouter.get(
     const granularity: SalesChartGranularity =
       range.preset === 'today' ? 'hour' : 'day';
 
-    // RBAC scoping for spotId — identical to /revenue-breakdown: a scoped
-    // store_manager may only target a spot mapped to one of their stores.
-    if (
+    // RBAC scoping for spotId — identical to /revenue-breakdown. The `by=product`
+    // path is store-scoped locally (buildProductBreakdown intersects storeIds),
+    // so it only needs the explicit-spot 403 guard. The `by=payment` path is
+    // Poster-backed and chain-wide unless filtered, so a location-scoped
+    // principal MUST be auto-scoped to their own store spot(s) — invariant 5.
+    let paymentSpotScope: number[] | null = null;
+    if (by === 'payment') {
+      paymentSpotScope = await resolveRevenueSpotScope(principal, spotIdParam);
+    } else if (
       !isSuperAdmin(principal) &&
       principal.role !== 'ai_assistant' &&
       principal.role !== 'central_warehouse_manager' &&
@@ -2958,7 +3006,7 @@ dashboardRouter.get(
     const buckets =
       by === 'product'
         ? await buildProductBreakdown(principal, range, granularity, limit, spotIdParam)
-        : await buildPaymentBreakdown(range, granularity, limit, spotIdParam);
+        : await buildPaymentBreakdown(range, granularity, limit, paymentSpotScope);
 
     const response: SalesBreakdownResponse = {
       from: fromIso,
@@ -3045,16 +3093,18 @@ async function buildProductBreakdown(
       ? `extract(hour FROM s.sold_at AT TIME ZONE $${tzIdx})`
       : `(s.sold_at AT TIME ZONE $${tzIdx})::date`;
 
-  // Bucket/item revenue = sum(s.price). The `sales.price` column already holds
-  // the LINE TOTAL (qty-multiplied), NOT a per-unit price — so `qty * price`
-  // double-counts (verified live: sum(price)=18.5M ≈ day revenue, whereas
-  // sum(qty*price)=1.17B, ~63x inflated). `qty` stays sum(s.qty) = units sold.
+  // Bucket/item revenue = sum(s.qty * s.price). After the 2026-06-08 ingest
+  // fix `sales.price` is a TRUE per-unit price (lineTotalSom / num), so
+  // `qty * price` equals the Poster line total (`payed_sum`) and reconciles to
+  // the revenue-breakdown. This is the SAME formula every other revenue query
+  // uses (dashboard/stores, reports, AI tools) — the two endpoints now agree.
+  // `qty` stays sum(s.qty) = units sold.
   const { rows } = await query<ProductBucketRaw>(
     `SELECT ${bucketSelect},
             s.product_id,
             p.name              AS product_name,
             sum(s.qty)          AS qty,
-            sum(s.price)        AS amount
+            sum(s.qty * s.price) AS amount
        FROM sales s
        JOIN products p ON p.id = s.product_id
        ${where}
@@ -3115,7 +3165,10 @@ async function buildPaymentBreakdown(
   range: DateRange,
   granularity: SalesChartGranularity,
   limit: number,
-  spotId: number | null,
+  // null = chain-wide (no spot filter); number[] = the exact spot(s) to query.
+  // An empty array means a location-scoped principal with no Poster-mapped store
+  // and yields an empty breakdown (never the chain-wide window).
+  spotScope: number[] | null,
 ): Promise<SalesBreakdownBucket[]> {
   const { tiyinToSom } = await import('../integrations/poster/posterMoney.js');
   const { buildMethodResolver } = await import(
@@ -3125,20 +3178,30 @@ async function buildPaymentBreakdown(
     '../integrations/poster/client.js'
   );
 
+  if (spotScope !== null && spotScope.length === 0) return [];
+
   const client = createPosterClientFromConfig();
   const lastDay = new Date(range.to.getTime() - 1);
   const dateFrom = toPosterDate(range.from);
   const dateTo = toPosterDate(lastDay);
 
-  const [methods, transactions] = await Promise.all([
-    client.getPaymentMethods(),
-    client.getTransactions({
-      dateFrom,
-      dateTo,
-      paginate: true, // 6-month windows can span many pages — see endpoint note.
-      ...(spotId !== null ? { spotId } : {}),
-    }),
-  ]);
+  // `getTransactions` takes a single spot, so multi-store scopes fetch per spot
+  // and concatenate; the bucketing below is a pure function of the row list.
+  const spotsToQuery: (number | undefined)[] =
+    spotScope === null ? [undefined] : spotScope;
+
+  const methods = await client.getPaymentMethods();
+  const transactionPages = await Promise.all(
+    spotsToQuery.map((spotId) =>
+      client.getTransactions({
+        dateFrom,
+        dateTo,
+        paginate: true, // 6-month windows can span many pages — see endpoint note.
+        ...(spotId !== undefined ? { spotId } : {}),
+      }),
+    ),
+  );
+  const transactions = transactionPages.flat();
   const resolve = buildMethodResolver(methods);
 
   // Fixed core labels (match /revenue-breakdown). Named customs carry their
@@ -3599,6 +3662,80 @@ function parseOptionalSpotId(raw: unknown): number | null {
     throw AppError.validation('"spotId" must be a positive integer.');
   }
   return n;
+}
+
+/**
+ * Resolve the Poster `spot_id`s that a location-scoped principal may read,
+ * derived from `locations.poster_spot_id` over their assigned store locations.
+ *
+ * Used to enforce server-side RBAC on Poster-backed endpoints (revenue /
+ * payment breakdowns) that the POS exposes only chain-wide: a `store_manager`
+ * with no explicit `spotId` is auto-scoped to their own store's spot(s) so the
+ * answer can never span the chain (invariant 5 — every role sees only its own
+ * link). The returned set is the principal's `store` locations that carry a
+ * `poster_spot_id`; stores with `poster_spot_id IS NULL` have no Poster spot
+ * and contribute nothing.
+ *
+ * Returns an empty array when the principal owns no spot-mapped store — the
+ * caller must then yield a zero/empty result (NOT a chain-wide one).
+ */
+async function spotIdsForPrincipal(
+  locationIds: readonly number[],
+): Promise<number[]> {
+  if (locationIds.length === 0) return [];
+  const { rows } = await query<{ poster_spot_id: string }>(
+    `SELECT DISTINCT poster_spot_id
+       FROM locations
+      WHERE id = ANY($1::int[])
+        AND type = 'store'
+        AND is_active = TRUE
+        AND poster_spot_id IS NOT NULL`,
+    [[...locationIds]],
+  );
+  return rows.map((r) => Number(r.poster_spot_id));
+}
+
+/**
+ * Resolve the Poster spot scope for the per-transaction breakdown endpoints
+ * (`/revenue-breakdown`, `/sales-breakdown?by=payment`).
+ *
+ * Returns:
+ *   - `null` -> chain-wide (no spot filter): super-admin, pm, ai_assistant, and
+ *     the chain-wide supply roles (central_warehouse_manager, supply_manager).
+ *   - `number[]` -> the exact spot(s) the location-scoped principal may read.
+ *     `[]` means "scoped but owns no Poster-mapped store" -> the caller must
+ *     return an EMPTY result, never widen to chain-wide.
+ *
+ * When a location-scoped principal passes an explicit `spotId`, it must belong
+ * to one of their assigned stores (403 otherwise); the scope is then that single
+ * spot. With no `spotId`, the scope is EVERY spot their stores map to.
+ */
+async function resolveRevenueSpotScope(
+  principal: AuthPrincipal,
+  spotIdParam: number | null,
+): Promise<number[] | null> {
+  // Chain-wide roles: no spot filter. They may optionally narrow by `spotId`.
+  if (
+    isSuperAdmin(principal) ||
+    principal.role === 'ai_assistant' ||
+    principal.role === 'central_warehouse_manager' ||
+    principal.role === 'supply_manager'
+  ) {
+    return spotIdParam === null ? null : [spotIdParam];
+  }
+
+  // Location-scoped principal (store_manager et al.).
+  if (spotIdParam !== null) {
+    const ok = await isSpotAssignedToPrincipal(principal.locationIds, spotIdParam);
+    if (!ok) {
+      throw AppError.forbidden(
+        'You may only query revenue for spots in your assigned stores.',
+      );
+    }
+    return [spotIdParam];
+  }
+  // No explicit spot -> auto-scope to the principal's own store spot(s).
+  return spotIdsForPrincipal(principal.locationIds);
 }
 
 /**

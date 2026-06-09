@@ -198,6 +198,8 @@ const SUPPLY_REPLEN: ReplenishmentRequest = {
   requester_location_name: 'Do‘kon #2',
   target_location_name: 'Tort bo‘limi',
   production_location_name: null,
+  route_to_production_manual: false,
+  received_from_production_at: null,
 };
 
 const CENTRAL_OVERVIEW: ChainLayerOverview = {

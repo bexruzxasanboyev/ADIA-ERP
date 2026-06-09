@@ -440,6 +440,55 @@ export const TERMINAL_REPLENISHMENT_STATUSES: readonly ReplenishmentStatus[] = [
 ];
 
 /**
+ * Central-warehouse PIPELINE stage — the bucket a request lives in inside the
+ * markaziy sklad So'rovlar pipeline (owner's corrected single-flow logic). A
+ * request sits in exactly ONE stage and MOVES to the next when the manager
+ * acts on it (no stale lingering action buttons).
+ *
+ *   - `kutuvda`        — awaiting the manager: a store request to fulfil, or a
+ *                        production delivery to confirm-receive.
+ *   - `soralgan`       — the shortfall is being PRODUCED (auto production
+ *                        request raised after a partial fulfilment).
+ *   - `qabul_qilingan` — received from production, ready to forward to the store.
+ *   - `yuborilgan`     — shipped to a store, awaiting the store's acceptance.
+ *   - `yopilgan`       — closed / cancelled (history).
+ *
+ * The backend is adding this field in parallel; until it is live every UI
+ * surface FALLS BACK to a status-based heuristic (see `pipelineStageOf` in
+ * `lib/pipeline.ts`). Optional on the wire so older payloads stay strict-safe;
+ * absent (`undefined`) means "derive from status".
+ */
+export type PipelineStage =
+  | 'kutuvda'
+  | 'soralgan'
+  | 'qabul_qilingan'
+  | 'yuborilgan'
+  | 'yopilgan';
+
+/**
+ * Statuses an incoming store request is still ACTIONABLE in the central
+ * warehouse «Kiruvchi» inbox — i.e. not yet handled by the manager. A request
+ * here can be accepted (`accept-central`), routed to production
+ * (`to-production`), or rejected (`reject-central`).
+ *
+ * Once a request advances past these (it has been accepted, routed into the
+ * production pipeline — `CHECK_PRODUCTION_INPUT` / `CREATE_PRODUCTION_ORDER` /
+ * `CREATE_PURCHASE_ORDER` / `PRODUCING` / `DONE_TO_WAREHOUSE` — shipped via
+ * `SHIP_TO_REQUESTER`, or closed/cancelled) it MUST leave the inbox: it now
+ * lives in the «Chiqgan» tracker / «Qabul qilingan» history. Filtering the
+ * inbox to this set is what makes the accept / send / reject buttons disappear
+ * after a successful action (the handled row drops out of the list), so the
+ * manager can never double-accept or double-route the same request.
+ */
+export const CENTRAL_INBOX_ACTIONABLE_STATUSES: readonly ReplenishmentStatus[] =
+  ['NEW', 'CHECK_STORE_SUPPLIER'];
+
+/** True when an incoming request is still actionable in the central inbox. */
+export function isCentralInboxActionable(status: ReplenishmentStatus): boolean {
+  return CENTRAL_INBOX_ACTIONABLE_STATUSES.includes(status);
+}
+
+/**
  * A single replenishment_requests row.
  * `qty_needed` is a JS `number`: the backend pool (`apps/backend/src/db/pool.ts`)
  * registers a NUMERIC (OID 1700) type parser that calls `parseFloat`, so every
@@ -472,6 +521,15 @@ export interface ReplenishmentRequest {
    */
   batch_id?: number | null;
   /**
+   * Central-warehouse PIPELINE bucket (owner's corrected single-flow logic).
+   * The backend adds this field in parallel; when present the markaziy sklad
+   * So'rovlar pipeline buckets the request by it directly. When absent
+   * (`undefined`) the UI derives the stage from `status` + the manual-flow
+   * flags via `pipelineStageOf` (`lib/pipeline.ts`). Optional on the wire so
+   * older payloads stay strict-type-safe.
+   */
+  pipeline_stage?: PipelineStage | null;
+  /**
    * Embedded by the backend for display — `GET /api/replenishment` and
    * `GET /api/replenishment/:id` always send these (JOIN products /
    * locations). `target_location_name` is nullable because the column
@@ -489,6 +547,30 @@ export interface ReplenishmentRequest {
    * CREATE_PRODUCTION_ORDER ("Tort sexi ishlab chiqarmoqda").
    */
   production_location_name: string | null;
+  /**
+   * MANUAL central→production routing flag. The central warehouse manager
+   * pressed "Ishlab chiqarishga yuborish" (`POST /:id/to-production`), so this
+   * request was deliberately handed off to production instead of being shipped
+   * from central stock. Drives the "Chiqgan" tab's manual-flow tracker (receive
+   * + forward affordances). Older payloads omit it — treat absent as `false`.
+   */
+  route_to_production_manual: boolean;
+  /**
+   * ISO timestamp the central warehouse manager confirmed receipt of the
+   * produced goods (`POST /:id/receive-from-production`), or `null` until then.
+   * When set with status `SHIP_TO_REQUESTER`, the "Do'konga yuborish" forward
+   * action becomes available. Older payloads omit it — treat absent as `null`.
+   */
+  received_from_production_at: string | null;
+  /**
+   * Defective ("brak"/yaroqsiz) qty recorded when the central manager received
+   * the produced goods (`POST /:id/receive-from-production`). `null`/absent
+   * until receipt or when no defect was logged. Written off central stock.
+   * Optional on the wire so older payloads stay strict-type-safe.
+   */
+  brak_qty?: number | null;
+  /** Free-text reason for `brak_qty > 0`; `null`/absent otherwise. */
+  brak_reason?: string | null;
 }
 
 /** A single replenishment_transitions audit row. */
@@ -518,6 +600,83 @@ export interface ReplenishmentAdvanceResponse {
   status: ReplenishmentStatus;
   reason: string;
   request: ReplenishmentRequest;
+}
+
+/**
+ * `POST /api/replenishment/:id/accept-central` envelope (manual central flow).
+ *
+ * Accept now ships ONLY when the central warehouse holds enough stock. When it
+ * is short it does NOT cascade to production — `shipped` is `false`, `reason`
+ * explains why, and the request stays at `CHECK_STORE_SUPPLIER` so the UI can
+ * surface the "Ishlab chiqarishga yuborish" action instead of leaving the
+ * manager stuck.
+ */
+export interface AcceptCentralResponse {
+  request: ReplenishmentRequest;
+  shipped: boolean;
+  reason: string;
+}
+
+/**
+ * `POST /api/replenishment/:id/to-production` envelope. Manual "send to
+ * production" raised by the central warehouse manager. Allowed from `NEW` or
+ * `CHECK_STORE_SUPPLIER`. On success `request.route_to_production_manual` is
+ * `true` and the status advances to `CREATE_PRODUCTION_ORDER` (raw sufficient)
+ * or `CREATE_PURCHASE_ORDER` (raw short); when there is no production topology /
+ * BOM it stays at `CHECK_PRODUCTION_INPUT` with `advanced: false`.
+ */
+export interface ToProductionResponse {
+  request: ReplenishmentRequest;
+  advanced: boolean;
+  status: ReplenishmentStatus;
+  reason: string;
+}
+
+/**
+ * `POST /api/replenishment/:id/receive-from-production` envelope. The central
+ * warehouse manager confirms the produced goods arrived (allowed only from
+ * `DONE_TO_WAREHOUSE`). Idempotent. The goods are already physically at central
+ * (no stock re-add); any `brak_qty > 0` is written off. Status → `SHIP_TO_REQUESTER`.
+ */
+export interface ReceiveFromProductionResponse {
+  request: ReplenishmentRequest;
+}
+
+/**
+ * `POST /api/replenishment/:id/ship-to-store` envelope. Forwards the sound qty
+ * from central to the requesting store (allowed only from `SHIP_TO_REQUESTER`).
+ * Status → `CLOSED`.
+ */
+export interface ShipToStoreResponse {
+  request: ReplenishmentRequest;
+  shipped: boolean;
+  reason: string;
+}
+
+/**
+ * `POST /api/replenishment/:id/fulfill` envelope — PARTIAL FULFILMENT of a
+ * store request from central stock (owner's corrected single-flow logic).
+ *
+ * The manager confirms how much to ship NOW (`ship_qty`, auto-filled to
+ * `min(needed, available)` and capped at on-hand). On success:
+ *   - the shipped part leaves «Kutuvda» and lands in «Yuborilgan» (awaiting the
+ *     store's acceptance), and
+ *   - any SHORTFALL (`needed - ship_qty`) auto-raises a production request that
+ *     surfaces in «So'ralgan».
+ *
+ * Fields are OPTIONAL on the wire so the UI degrades gracefully while the
+ * backend finalises the shape: `shipped_qty` / `shortfall_qty` drive the toast,
+ * and `shortfall_request_id` is the id of the production request raised for the
+ * gap (when any). The updated `request` row reflects the new pipeline stage.
+ */
+export interface FulfillResponse {
+  request: ReplenishmentRequest;
+  /** Quantity actually shipped to the store now. */
+  shipped_qty?: number;
+  /** Remaining quantity routed to production (0 when fully shipped). */
+  shortfall_qty?: number;
+  /** Id of the production request raised for the shortfall, when any. */
+  shortfall_request_id?: number | null;
 }
 
 /** Production order status — production_orders.status enum. */
@@ -1521,6 +1680,16 @@ export interface PurchaseOrder {
   created_at: string;
   updated_at: string;
   /**
+   * Defective ("brak"/yaroqsiz) qty recorded by the raw-warehouse manager when
+   * the purchase order was received (`POST /api/purchase-orders/:id/receive`).
+   * The sound (qty - brak) portion is added to raw-warehouse stock; the brak
+   * portion is written off. Defaults to `0`; absent on older payloads —
+   * optional on the wire so they stay strict-type-safe.
+   */
+  brak_qty?: number;
+  /** Free-text reason for `brak_qty > 0`; `null`/absent otherwise. */
+  brak_reason?: string | null;
+  /**
    * Embedded by the backend for display — `GET /api/purchase-orders`
    * always sends these. Approver / supplier names are nullable because
    * the referenced FK columns are themselves optional.
@@ -1727,6 +1896,56 @@ export interface CashShiftsResponse {
 }
 
 /**
+ * TZ Module 15 — «Kassir boti» solishtiruvi (cashier-bot reconciliation).
+ *
+ * The cashier closes the day in the Telegram bot, submitting cash / card /
+ * expense figures (the "nakladnoy"). The system reconciles those submitted
+ * values against Poster's `finance.getCashShift` data and surfaces the per-
+ * field difference so a PM / store manager can review. This is a READ-ONLY
+ * report — submissions arrive via the bot, not this web page.
+ *
+ * Poster-side figures (`poster_*`) and the diffs are `null` when no Poster
+ * cash-shift could be matched to the submission (`status: 'no_poster_data'`).
+ */
+export type CashReconciliationStatus =
+  | 'matched'
+  | 'discrepancy'
+  | 'no_poster_data';
+
+export interface CashReconciliation {
+  id: number;
+  /** Submitted shift report (nakladnoy) id this reconciliation belongs to. */
+  nakladnoy_id: number;
+  location_id: number;
+  location_name: string;
+  /** Business day of the shift — ISO `YYYY-MM-DD`. */
+  shift_date: string;
+  /** Matched Poster cash-shift id, or null when none could be matched. */
+  poster_cash_shift_id: number | null;
+  /** Figures the cashier submitted via the Telegram bot. */
+  submitted_cash: number;
+  submitted_card: number;
+  submitted_expense: number;
+  /** Poster-reported figures; null when `status === 'no_poster_data'`. */
+  poster_cash: number | null;
+  poster_card: number | null;
+  poster_expense: number | null;
+  /** Poster safe balance after the shift; null when unavailable. */
+  poster_safe_balance: number | null;
+  /** Per-field difference (submitted − poster); null when no Poster data. */
+  cash_diff: number | null;
+  card_diff: number | null;
+  expense_diff: number | null;
+  status: CashReconciliationStatus;
+  created_at: string;
+}
+
+/** `GET /api/cash-shifts/reconciliations` envelope (TZ Module 15). */
+export interface CashReconciliationsResponse {
+  items: CashReconciliation[];
+}
+
+/**
  * EPIC 8.7 — seyf rasxodi (safe expense). A withdrawal recorded against
  * the company safe; mirrors Poster `finance.createTransaction` (gap P11)
  * but lives ADIA-side only (owner decision: Poster stays read-only).
@@ -1850,4 +2069,303 @@ export interface KpiProductsResponse {
   month: string;
   totals: KpiTotals;
   products: KpiProductRow[];
+}
+
+// ---------------------------------------------------------------------------
+// TZ Module 9 — Kassa tafovuti / fors-major ogohlantirishlar.
+// Self-correcting cash/stock discrepancy report ("xato cheklar"). Mirrors
+// `apps/backend` GET /api/discrepancies + PATCH /api/discrepancies/:id
+// (built in parallel to this exact contract).
+// ---------------------------------------------------------------------------
+
+/**
+ * Kind of discrepancy the self-correcting engine detected:
+ *   - `wrong_keyed`    — a Poster cheque sold MORE of a product than was on
+ *                        hand (cashier rang up the wrong item / quantity) →
+ *                        "Ortiqcha sotuv".
+ *   - `negative_stock` — a location's stock went (or would go) below zero →
+ *                        "Manfiy ostatka".
+ */
+export type DiscrepancyKind = 'wrong_keyed' | 'negative_stock';
+
+/**
+ * Lifecycle status of a discrepancy:
+ *   - `open`         — newly detected, not yet looked at.
+ *   - `acknowledged` — a manager has seen it (triage).
+ *   - `resolved`     — corrected / written off (optional note).
+ */
+export type DiscrepancyStatus = 'open' | 'acknowledged' | 'resolved';
+
+/** One row of `GET /api/discrepancies` (`items[]`). */
+export interface DiscrepancyItem {
+  id: number;
+  kind: DiscrepancyKind;
+  location_id: number;
+  location_name: string;
+  product_id: number;
+  product_name: string;
+  /** Originating Poster cheque id; `null` for non-receipt-driven negatives. */
+  poster_transaction_id: number | null;
+  /** Quantity the cheque sold. */
+  sold_qty: number;
+  /** Quantity actually on hand before the sale. */
+  had_qty: number;
+  /** `sold_qty - had_qty` — the shortfall the engine flagged. */
+  shortfall: number;
+  /** ISO timestamp the discrepancy was detected. */
+  detected_at: string;
+  status: DiscrepancyStatus;
+  /** Resolver user id + name; `null` until acted on. */
+  resolved_by: number | null;
+  resolved_by_name: string | null;
+  resolved_at: string | null;
+  /** Optional free-text note captured on resolve. */
+  note: string | null;
+}
+
+/** Per-status / per-kind counts embedded in the list response. */
+export interface DiscrepancySummary {
+  open: number;
+  acknowledged: number;
+  resolved: number;
+  wrong_keyed: number;
+  negative_stock: number;
+}
+
+/** `GET /api/discrepancies` envelope. */
+export interface DiscrepanciesResponse {
+  items: DiscrepancyItem[];
+  total: number;
+  summary: DiscrepancySummary;
+}
+
+// ---------------------------------------------------------------------------
+// TZ Module 8 — Do'kon KPI (store-level monthly sales plan vs actual).
+// Mirrors `apps/backend/src/routes/storeKpi.ts` (built in parallel):
+//   GET  /api/store-kpi?month=YYYY-MM
+//   PUT  /api/store-kpi/plan        (pm/admin only)
+//   GET  /api/store-kpi/:locationId/trend?months=6
+// All sums are local-currency major units (so'm). Numbers arrive as plain
+// JS numbers (the NUMERIC pool parser — see ReplenishmentRequest.qty_needed).
+// ---------------------------------------------------------------------------
+
+/**
+ * One store's monthly KPI row. `target_sum` is `null` when no plan has been
+ * set for the month, in which case `achievement_pct` is also `null` (the UI
+ * renders an em-dash). `growth_pct_mom` is month-over-month growth vs
+ * `prev_month_actual` and is `null` when the previous month had no sales
+ * (division-by-zero — the backend declines to fabricate a percentage).
+ */
+export interface StoreKpiItem {
+  location_id: number;
+  location_name: string;
+  /** Monthly sales target (so'm); `null` when no plan is set. */
+  target_sum: number | null;
+  /** Actual sales for the month (so'm), from Poster. */
+  actual_sum: number;
+  /** `actual_sum / target_sum * 100`; `null` when no target. */
+  achievement_pct: number | null;
+  /** Previous month's actual sales (so'm) — basis for the MoM growth. */
+  prev_month_actual: number;
+  /** Month-over-month growth %; `null` when `prev_month_actual` is 0. */
+  growth_pct_mom: number | null;
+  /** 1-based rank within the month, ordered by `actual_sum` desc. */
+  rank: number;
+}
+
+/** Chain-wide totals across every store for the selected month. */
+export interface StoreKpiSummary {
+  total_target: number;
+  total_actual: number;
+  /** `total_actual / total_target * 100`; `null` when no targets set. */
+  achievement_pct: number | null;
+}
+
+/** `GET /api/store-kpi?month=YYYY-MM` envelope. */
+export interface StoreKpiResponse {
+  /** Echoed `YYYY-MM` the rows belong to. */
+  month: string;
+  items: StoreKpiItem[];
+  summary: StoreKpiSummary;
+}
+
+/**
+ * `PUT /api/store-kpi/plan` request body (pm/admin only). Sets/updates the
+ * monthly target for one store; the backend echoes the resolved row.
+ */
+export interface StoreKpiPlanRequest {
+  location_id: number;
+  /** `YYYY-MM`. */
+  month: string;
+  target_sum: number;
+}
+
+/** One point of a store's monthly actual-sales trend (oldest → newest). */
+export interface StoreKpiTrendPoint {
+  /** `YYYY-MM`. */
+  month: string;
+  actual_sum: number;
+}
+
+/** `GET /api/store-kpi/:locationId/trend?months=6` envelope. */
+export interface StoreKpiTrendResponse {
+  location_id: number;
+  location_name: string;
+  /** Monthly actual_sum series, oldest → newest. */
+  series: StoreKpiTrendPoint[];
+}
+
+// ---------------------------------------------------------------------------
+// TZ Module 8 — Sotuvchi KPI (SELLER-level monthly sales plan vs actual).
+//
+// Mirrors the store-level shape above but one row per SELLER (Poster waiter),
+// ranked across the selected month and (PM) filterable by store. Built in
+// parallel to `apps/backend/src/routes/sellerKpi.ts`.
+// ---------------------------------------------------------------------------
+
+/**
+ * One seller's monthly KPI row. `target_sum` is `null` when no plan has been
+ * set for the seller×month, in which case `achievement_pct` is also `null`
+ * (the UI renders an em-dash). `growth_pct_mom` is month-over-month growth vs
+ * `prev_month_actual` and is `null` when the previous month had no sales
+ * (division-by-zero — the backend declines to fabricate a percentage).
+ */
+export interface SellerKpiItem {
+  seller_id: number;
+  /** Originating Poster waiter id (Poster's `waiter_id`). */
+  poster_waiter_id: number;
+  /** Seller display name. */
+  name: string;
+  /** Store the seller belongs to. */
+  store_id: number;
+  store_name: string;
+  /** Monthly sales target (so'm); `null` when no plan is set. */
+  target_sum: number | null;
+  /** Actual sales for the month (so'm), from Poster. */
+  actual_sum: number;
+  /** `actual_sum / target_sum * 100`; `null` when no target. */
+  achievement_pct: number | null;
+  /** Previous month's actual sales (so'm) — basis for the MoM growth. */
+  prev_month_actual: number;
+  /** Month-over-month growth %; `null` when `prev_month_actual` is 0. */
+  growth_pct_mom: number | null;
+  /** 1-based rank within the month, ordered by `actual_sum` desc. */
+  rank: number;
+}
+
+/** Chain-wide totals across every seller (in scope) for the selected month. */
+export interface SellerKpiSummary {
+  total_target: number;
+  total_actual: number;
+  /** `total_actual / total_target * 100`; `null` when no targets set. */
+  achievement_pct: number | null;
+}
+
+/** `GET /api/seller-kpi?month=YYYY-MM&store_id=` envelope. */
+export interface SellerKpiResponse {
+  /** Echoed `YYYY-MM` the rows belong to. */
+  month: string;
+  items: SellerKpiItem[];
+  summary: SellerKpiSummary;
+}
+
+/**
+ * `PUT /api/seller-kpi/plan` request body (pm only). Sets/updates the monthly
+ * target for one seller; the backend echoes the resolved row.
+ */
+export interface SellerKpiPlanRequest {
+  seller_id: number;
+  /** `YYYY-MM`. */
+  month: string;
+  target_sum: number;
+}
+
+// ---------------------------------------------------------------------------
+// TZ Module 11 — Inventarizatsiya konverteri (bo'lak ↔ butun).
+//
+// Cakes are sold by WEIGHT (kg). Each cake product carries two coefficients:
+//   - `weight_per_whole`  — kg of one WHOLE cake.
+//   - `pieces_per_whole`  — slices ("bo'lak") in one whole cake.
+// The end-of-day endpoint converts on-hand kg into whole + pieces + a kg
+// remnant so a store can run a physical count and reconcile its stock.
+// Mirrors `apps/backend/src/routes/inventory.ts` (built in parallel to this).
+// ---------------------------------------------------------------------------
+
+/**
+ * One cake product row of `GET /api/inventory/end-of-day`. `system_qty` is the
+ * current on-hand stock in kg; `whole` / `pieces` / `remnant_kg` are the
+ * SYSTEM figure decomposed via the product's coefficients. `weight_per_whole`
+ * and/or `pieces_per_whole` are `null` when the PM has not configured the
+ * product yet — the UI then shows a "Koeffitsiyent kerak" hint and the editor.
+ */
+export interface InventoryEndOfDayItem {
+  product_id: number;
+  name: string;
+  weight_per_whole: number | null;
+  pieces_per_whole: number | null;
+  /** Current on-hand stock, kg. */
+  system_qty: number;
+  /** System `system_qty` decomposed into whole cakes. */
+  whole: number;
+  /** System remainder expressed in slices. */
+  pieces: number;
+  /** Leftover kg below one slice (0 when it divides evenly / no coefficients). */
+  remnant_kg: number;
+}
+
+/** `GET /api/inventory/end-of-day?location_id=&date=YYYY-MM-DD` envelope. */
+export interface InventoryEndOfDayResponse {
+  /** Echoed `YYYY-MM-DD` the snapshot belongs to. */
+  date: string;
+  location_id: number;
+  items: InventoryEndOfDayItem[];
+}
+
+/**
+ * `POST /api/inventory/count` request body — a single product's physical
+ * end-of-day count. The store enters whole cakes, loose slices, and a kg
+ * remnant; the backend resolves these to a counted qty (kg) and the diff
+ * against the system figure.
+ */
+export interface InventoryCountRequest {
+  location_id: number;
+  product_id: number;
+  /** `YYYY-MM-DD`. */
+  count_date: string;
+  counted_whole: number;
+  counted_pieces: number;
+  counted_remnant_kg: number;
+}
+
+/**
+ * A single `inventory_counts` row — the result of a physical count.
+ * `system_qty` is the on-hand figure at count time, `counted_qty` is the
+ * physical total (kg) resolved from whole/pieces/remnant, and `diff_qty`
+ * is `counted_qty − system_qty` (negative = shortage / yetishmovchilik).
+ */
+export interface InventoryCount {
+  id: number;
+  location_id: number;
+  product_id: number;
+  /** `YYYY-MM-DD`. */
+  count_date: string;
+  counted_whole: number;
+  counted_pieces: number;
+  counted_remnant_kg: number;
+  /** System on-hand at count time, kg. */
+  system_qty: number;
+  /** Physical total resolved from the count, kg. */
+  counted_qty: number;
+  /** `counted_qty − system_qty`, kg (negative = shortage). */
+  diff_qty: number;
+  /** Embedded by the backend for display. */
+  product_name?: string;
+  location_name?: string;
+  created_at?: string;
+  created_by?: number | null;
+}
+
+/** `GET /api/inventory/counts?location_id=&from=&to=` envelope. */
+export interface InventoryCountsResponse {
+  items: InventoryCount[];
 }

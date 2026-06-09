@@ -70,6 +70,32 @@ export function requirePositiveNumber(obj: Record<string, unknown>, key: string)
   return n;
 }
 
+/**
+ * A field that is REQUIRED in the body but whose value may be `null` (to clear
+ * the setting) or a finite number strictly greater than zero. Returns `null`
+ * for the clear case, the number otherwise. A missing key, a non-number, or a
+ * value <= 0 is a 422.
+ *
+ * Mirrors the inline "number > 0, or null to clear" pattern used by the
+ * editable-cost / kpi-target endpoints; shared so the whole↔piece coefficient
+ * edit (TZ-11) and future nullable-setting edits stay consistent.
+ */
+export function parseNullablePositive(
+  obj: Record<string, unknown>,
+  key: string,
+): number | null {
+  const value = obj[key];
+  if (value === null) {
+    return null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  throw AppError.validation(
+    `Field "${key}" must be a number greater than zero, or null to clear it.`,
+  );
+}
+
 /** A required finite number greater than or equal to zero (levels). */
 export function requireNonNegativeNumber(obj: Record<string, unknown>, key: string): number {
   const n = obj[key];

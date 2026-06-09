@@ -235,6 +235,63 @@ describe('list_products executor', () => {
     expect(rows.length).toBeLessThanOrEqual(5);
   });
 
+  it('translit: Latin "napoleon" matches the Cyrillic НАПОЛЕОН family with (ЦЕЛЫЙ) first', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    // The real Poster family: one whole base cake plus flavour / portion / other
+    // НАПОЛЕОН variants. Insert in a NON-canonical order so ranking (not the
+    // SQL ORDER BY name alone) is what surfaces the whole base first.
+    const karamel = await makeProduct(ctx.db, {
+      name: 'Г/П НАПОЛЕОН (КАРАМЕЛЬНО)',
+      type: 'finished',
+      unit: 'pcs',
+    });
+    const afgan = await makeProduct(ctx.db, {
+      name: 'Г/П НАПОЛЕОН АВГАНСКИЙ (ЦЕЛЫЙ)',
+      type: 'finished',
+      unit: 'pcs',
+    });
+    const whole = await makeProduct(ctx.db, {
+      name: 'Г/П НАПОЛЕОН (ЦЕЛЫЙ)',
+      type: 'finished',
+      unit: 'pcs',
+    });
+    const half = await makeProduct(ctx.db, {
+      name: 'Г/П НАПОЛЕОН (ПОЛОВИНА)',
+      type: 'finished',
+      unit: 'pcs',
+    });
+
+    const rows = await TOOL_REGISTRY.list_products.execute(
+      { name_contains: 'napoleon' },
+      pmPrincipal(pm.id),
+    );
+    const ids = rows.map((r) => r.id);
+    // All four НАПОЛЕОН rows are found despite the Latin query vs Cyrillic name.
+    expect(ids).toContain(whole);
+    expect(ids).toContain(karamel);
+    expect(ids).toContain(afgan);
+    expect(ids).toContain(half);
+    // The whole base cake is FIRST — a bare "napoleon" resolves to it.
+    expect(rows[0]?.id).toBe(whole);
+    // The whole base ranks ahead of the afghan cake whose core is longer.
+    expect(ids.indexOf(whole)).toBeLessThan(ids.indexOf(afgan));
+  });
+
+  it('translit: a Cyrillic bare "наполеон" query still works and prefers (ЦЕЛЫЙ)', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const whole = await makeProduct(ctx.db, {
+      name: 'Г/П ЭКЛЕР НАПОЛЕОН (ЦЕЛЫЙ)',
+      type: 'finished',
+      unit: 'pcs',
+    });
+    const rows = await TOOL_REGISTRY.list_products.execute(
+      { name_contains: 'эклер наполеон' },
+      pmPrincipal(pm.id),
+    );
+    expect(rows.some((r) => r.id === whole)).toBe(true);
+    expect(rows[0]?.id).toBe(whole);
+  });
+
   it('store_manager can still browse the global catalogue (not scoped)', async () => {
     // The product catalogue is global. RBAC continues at downstream tools.
     const store = await makeLocation(ctx.db, { type: 'store' });

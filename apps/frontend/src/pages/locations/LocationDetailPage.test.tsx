@@ -106,6 +106,8 @@ const REQUESTS: ReplenishmentRequest[] = [
     requester_location_name: 'Markaziy sklad',
     target_location_name: null,
     production_location_name: null,
+    route_to_production_manual: false,
+    received_from_production_at: null,
   },
 ];
 

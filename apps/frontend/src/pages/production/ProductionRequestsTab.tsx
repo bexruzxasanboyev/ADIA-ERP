@@ -5,9 +5,12 @@ import {
   Clock,
   Factory,
   History,
+  Layers,
   PackageCheck,
+  ShoppingCart,
   Store,
   Truck,
+  Warehouse,
 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -23,8 +26,10 @@ import {
 import { EmptyState, ErrorState, LoadingState } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
-import { formatDateTime, formatQtyUnit } from '@/lib/format';
+import { formatDateTime, formatPlainNumber, formatQtyUnit } from '@/lib/format';
 import {
+  PURCHASE_ORDER_STATUS_LABELS,
+  PURCHASE_ORDER_STATUS_VARIANT,
   REPLENISHMENT_STATUS_LABELS,
   REPLENISHMENT_STATUS_VARIANT,
   movementCounterpartyLabel,
@@ -38,6 +43,8 @@ import { rangeBounds } from '@/lib/dateRange';
 import { cn } from '@/lib/utils';
 import type {
   MovementsResponse,
+  Product,
+  PurchaseOrder,
   ReplenishmentRequest,
   StockMovement,
 } from '@/lib/types';
@@ -74,13 +81,45 @@ type PipelineTab =
   | 'soralgan'
   | 'qabul_qilingan'
   | 'yuborilgan'
-  | 'transactions';
+  | 'transactions'
+  | 'xom_ashyo';
 
 /** A movement classified relative to the отдел (receipt / issue). */
 type DeptMovement = StockMovement & {
   direction: 'in' | 'out';
   counterpartyName: string | null;
 };
+
+/**
+ * A зг (yarim tayyor / semi-finished) catalogue row. `GET /api/products/yarim-tayyor`
+ * returns the отдел's semi-finished products (auto-scoped server-side for a
+ * production_manager) as `Product` rows enriched with the current on-hand `qty`.
+ */
+type SemiProduct = Product & { qty: number };
+
+/**
+ * A request belongs in the PRODUCTION отдел's So'rovlar ONLY when production is
+ * / was involved in MAKING it (central pulling a shortfall from a sex) — it is
+ * in a production-making state, or it already came back from production. A
+ * plain central→store stock shipment (SHIP_TO_REQUESTER with no
+ * `received_from_production_at`) is CENTRAL's job, never production's, so it is
+ * excluded here. Owner 2026-06-08: "ishlab chiqarish do'konga emas, markaziy
+ * skladga yuboradi" — the chain is Ishlab chiqarish → Markaziy sklad → Do'kon,
+ * so a production отдел never ships to a store.
+ */
+const PRODUCTION_FLOW_STATUSES = new Set<string>([
+  'CHECK_PRODUCTION_INPUT',
+  'CREATE_PURCHASE_ORDER',
+  'CREATE_PRODUCTION_ORDER',
+  'PRODUCING',
+  'DONE_TO_WAREHOUSE',
+]);
+function isProductionFlow(r: ReplenishmentRequest): boolean {
+  return (
+    r.received_from_production_at != null ||
+    PRODUCTION_FLOW_STATUSES.has(r.status)
+  );
+}
 
 /**
  * Clean pipeline status label — collapse the production state-machine statuses
@@ -121,6 +160,20 @@ export function ProductionRequestsTab({
       : '/api/stock/movements?limit=100';
   const movements = useApiQuery<MovementsResponse>(movementsUrl);
 
+  // зг (semi-finished) catalogue + on-hand qty — auto-scoped server-side for a
+  // production_manager; PM sees every type='semi' product. Feeds the compact
+  // "зг ombor qoldig'i" summary strip the owner asked for ("ishlab chiqarishga
+  // so'rov kelganda зг ombori ko'rishi kerak").
+  const semi = useApiQuery<SemiProduct[]>('/api/products/yarim-tayyor');
+
+  // "Xom-ashyo so'rovlari" — the purchase orders the отдел triggered toward the
+  // raw-material warehouse. The replenishment engine raises these automatically
+  // when the sex_storage зг buffer is short (ADR-0015 check-first). RBAC for
+  // production_manager is being added on the backend; until then this may 403,
+  // which `useApiQuery` surfaces as an error → we show the empty state, never
+  // crash (handled below).
+  const purchaseOrders = useApiQuery<PurchaseOrder[]>('/api/purchase-orders');
+
   const bounds = useMemo(() => rangeBounds(dateRange), [dateRange]);
   const inRange = (iso: string) => {
     const t = new Date(iso).getTime();
@@ -131,6 +184,7 @@ export function ProductionRequestsTab({
   const chartRequests = useMemo<ReplenishmentRequest[]>(() => {
     const rows = allRequests.data ?? [];
     return rows.filter((r) => {
+      if (!isProductionFlow(r)) return false;
       if (!inRange(r.created_at)) return false;
       if (productionId === null) return true;
       return (
@@ -141,7 +195,10 @@ export function ProductionRequestsTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allRequests.data, productionId, bounds]);
 
-  const allRows = useMemo(() => allRequests.data ?? [], [allRequests.data]);
+  const allRows = useMemo(
+    () => (allRequests.data ?? []).filter(isProductionFlow),
+    [allRequests.data],
+  );
 
   // ----- Pipeline buckets (reused central bucketing, отдел-scoped) ----------
   const kutuvda = useMemo(
@@ -186,12 +243,36 @@ export function ProductionRequestsTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [movements.data, productionId, bounds]);
 
+  // зг ombor qoldig'i — distinct semi-finished types + total on-hand grouped by
+  // unit (зг can be mixed-unit: kg / l / dona). Most qty are 0 right now, which
+  // is expected. NOT date-bound — it reflects the live зг buffer.
+  const semiRows = useMemo<SemiProduct[]>(() => semi.data ?? [], [semi.data]);
+  const semiSummary = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const row of semiRows) {
+      totals.set(row.unit, (totals.get(row.unit) ?? 0) + row.qty);
+    }
+    return { count: semiRows.length, totals };
+  }, [semiRows]);
+
+  // "Xom-ashyo so'rovlari" — the отдел's purchase orders, newest first. A 403/
+  // error (RBAC not yet granted) is treated as "no data" so the sub-tab shows
+  // its empty state instead of crashing the whole So'rovlar view.
+  const poRows = useMemo<PurchaseOrder[]>(() => {
+    const rows = purchaseOrders.error ? [] : purchaseOrders.data ?? [];
+    return [...rows].sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
+  }, [purchaseOrders.data, purchaseOrders.error]);
+
   const tabOptions: { value: PipelineTab; label: string }[] = [
     { value: 'kutuvda', label: `Kutuvda (${kutuvda.length})` },
     { value: 'soralgan', label: `So‘ralgan (${soralgan.length})` },
     { value: 'qabul_qilingan', label: `Qabul qilingan (${qabulQilingan.length})` },
     { value: 'yuborilgan', label: `Yuborilgan (${yuborilgan.length})` },
     { value: 'transactions', label: 'Tranzaksiyalar' },
+    { value: 'xom_ashyo', label: `Xom-ashyo so‘rovlari (${poRows.length})` },
   ];
 
   const listLoading = allRequests.isLoading;
@@ -209,6 +290,15 @@ export function ProductionRequestsTab({
           <StoreRequestsTrendChart requests={chartRequests} />
         </div>
       )}
+
+      {/* зг ombor qoldig'i — compact summary strip. When a request reaches
+          production the manager must see the зг buffer at a glance. */}
+      <SemiSummaryCard
+        loading={semi.isLoading}
+        error={semi.error}
+        count={semiSummary.count}
+        totals={semiSummary.totals}
+      />
 
       {/* Section header + pipeline tabs. */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -459,7 +549,97 @@ export function ProductionRequestsTab({
           </PipelineFootnote>
         </Card>
       )}
+
+      {/* XOM-ASHYO SO'ROVLARI — purchase orders the отдел triggered toward the
+          raw-material warehouse. A 403/error (RBAC not yet granted) collapses to
+          the empty state so the rest of the tab keeps working. */}
+      {tab === 'xom_ashyo' && (
+        <Card>
+          {purchaseOrders.isLoading && <LoadingState />}
+          {!purchaseOrders.isLoading && poRows.length === 0 && (
+            <EmptyState message="Xom-ashyo so‘rovlari yo‘q." />
+          )}
+          {!purchaseOrders.isLoading && poRows.length > 0 && (
+            <PurchaseOrderList rows={poRows} />
+          )}
+          <PipelineFootnote
+            icon={<ShoppingCart className="size-3.5" aria-hidden="true" />}
+          >
+            Bu — зг yetmaganda xom-ashyo omboriga avtomatik chiqarilgan
+            so‘rovlar (sex skladidagi zaxira kamayganda tizim o‘zi yaratadi).
+          </PipelineFootnote>
+        </Card>
+      )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SemiSummaryCard — the compact "зг ombor qoldig'i" strip at the top of the
+// So'rovlar tab: distinct зг types + total on-hand (per unit). Production must
+// see its semi-finished buffer the moment a request lands.
+// ---------------------------------------------------------------------------
+
+function SemiSummaryCard({
+  loading,
+  error,
+  count,
+  totals,
+}: {
+  loading: boolean;
+  error: string | null;
+  count: number;
+  totals: Map<string, number>;
+}) {
+  // Render the total per unit ("0 kg · 0 l"), dropping empty buckets but always
+  // keeping at least one so the strip never reads blank.
+  const totalLabel = useMemo(() => {
+    const parts = [...totals.entries()]
+      .filter(([, qty]) => qty > 0)
+      .map(([unit, qty]) => `${formatPlainNumber(qty)} ${unit}`);
+    if (parts.length === 0) {
+      const firstUnit = [...totals.keys()][0] ?? 'kg';
+      return `0 ${firstUnit}`;
+    }
+    return parts.join(' · ');
+  }, [totals]);
+
+  return (
+    <Card className="flex flex-col gap-3 border-border/60 p-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-center gap-3">
+        <span
+          aria-hidden="true"
+          className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"
+        >
+          <Warehouse className="size-5" />
+        </span>
+        <div className="space-y-0.5">
+          <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+            <Layers className="size-3.5 text-muted-foreground" aria-hidden="true" />
+            зг ombor qoldig‘i
+          </h3>
+          <p className="text-xs text-muted-foreground">
+            So‘rov kelganda bo‘limning yarim tayyor zaxirasi.
+          </p>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+        {loading ? (
+          <span className="text-xs text-muted-foreground">Yuklanmoqda…</span>
+        ) : error ? (
+          <Badge variant="secondary">Ma’lumot yo‘q</Badge>
+        ) : (
+          <>
+            <Badge variant="outline" className="gap-1 tabular-nums">
+              {formatPlainNumber(count)} tur
+            </Badge>
+            <Badge variant="secondary" className="gap-1 tabular-nums">
+              jami {totalLabel}
+            </Badge>
+          </>
+        )}
+      </div>
+    </Card>
   );
 }
 
@@ -520,6 +700,48 @@ function PipelineList({
             </Badge>
             {renderMeta?.(req)}
           </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PurchaseOrderList — one row per xom-ashyo purchase order, in the same row
+// style as PipelineList: id · product · qty · → target raw warehouse · status
+// badge · date, with the supplier name when known.
+// ---------------------------------------------------------------------------
+
+function PurchaseOrderList({ rows }: { rows: PurchaseOrder[] }) {
+  return (
+    <ul className="divide-y divide-border/40">
+      {rows.map((po) => (
+        <li
+          key={po.id}
+          className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="text-xs text-muted-foreground">#{po.id}</span>
+            <span className="font-medium">{po.product_name}</span>
+            <span className="tabular-nums text-muted-foreground">
+              {formatQtyUnit(po.qty, po.product_unit)}
+            </span>
+            <span className="flex items-center gap-1 text-xs text-muted-foreground">
+              <Warehouse className="size-3" aria-hidden="true" />
+              {po.target_location_name}
+            </span>
+            {po.supplier_name && (
+              <span className="text-xs text-muted-foreground">
+                {po.supplier_name}
+              </span>
+            )}
+            <Badge variant={PURCHASE_ORDER_STATUS_VARIANT[po.status]}>
+              {PURCHASE_ORDER_STATUS_LABELS[po.status]}
+            </Badge>
+          </div>
+          <span className="whitespace-nowrap text-xs text-muted-foreground sm:text-right">
+            {formatDateTime(po.created_at)}
+          </span>
         </li>
       ))}
     </ul>

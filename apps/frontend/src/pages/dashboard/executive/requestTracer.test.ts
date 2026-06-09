@@ -50,6 +50,8 @@ function makeRequest(
     requester_location_name: 'Kokcha',
     target_location_name: 'Tort sklad',
     production_location_name: null,
+    route_to_production_manual: false,
+    received_from_production_at: null,
     ...overrides,
   };
 }

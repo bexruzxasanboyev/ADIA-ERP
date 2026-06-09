@@ -36,15 +36,25 @@ import {
   cancelRequest,
   cancelRequestByFulfiller,
   createRequest,
+  derivePipelineStage,
+  fulfillStoreRequest,
   getProposalsForLocation,
+  PIPELINE_STAGE_SQL,
+  type PipelineStage,
+  receiveFromProduction,
   receiveShipment,
   rejectShipment,
   REPLENISHMENT_COLUMNS,
   returnShipment,
+  sendToProduction,
+  shipToStore,
   type ReplenishmentRow,
   type ReplenishmentStatus,
 } from '../services/replenishment.js';
-import { enqueuePosterReceiveWriteback } from '../services/posterWriteback.js';
+import {
+  enqueueCentralDecrementWriteback,
+  enqueuePosterReceiveWriteback,
+} from '../services/posterWriteback.js';
 
 export const replenishmentRouter: Router = Router();
 
@@ -111,6 +121,7 @@ replenishmentRouter.get(
         requester_location_name: string | null;
         target_location_name: string | null;
         production_location_name: string | null;
+        pipeline_stage: PipelineStage;
       }
     >(
       `SELECT ${qualifiedCols},
@@ -118,7 +129,8 @@ replenishmentRouter.get(
               p.unit AS product_unit,
               rl.name AS requester_location_name,
               tl.name AS target_location_name,
-              pl.name AS production_location_name
+              pl.name AS production_location_name,
+              ${PIPELINE_STAGE_SQL} AS pipeline_stage
        FROM replenishment_requests r
        JOIN products p ON p.id = r.product_id
        LEFT JOIN locations rl ON rl.id = r.requester_location_id
@@ -166,6 +178,7 @@ replenishmentRouter.get(
         requester_location_name: string | null;
         target_location_name: string | null;
         production_location_name: string | null;
+        pipeline_stage: PipelineStage;
       }
     >(
       `SELECT ${qualifiedCols},
@@ -173,7 +186,8 @@ replenishmentRouter.get(
               p.unit AS product_unit,
               rl.name AS requester_location_name,
               tl.name AS target_location_name,
-              pl.name AS production_location_name
+              pl.name AS production_location_name,
+              ${PIPELINE_STAGE_SQL} AS pipeline_stage
        FROM replenishment_requests r
        JOIN products p ON p.id = r.product_id
        LEFT JOIN locations rl ON rl.id = r.requester_location_id
@@ -613,6 +627,76 @@ replenishmentRouter.post(
   }),
 );
 
+// POST /api/replenishment/:id/fulfill
+//   body: { location_id, ship_qty?: number>=0, note?: string }
+//
+// 0058 — PARTIAL FULFILLMENT (the new partial path; supersedes accept-central
+// for the modal). In ONE transaction the central warehouse manager:
+//   (a) ships the AVAILABLE portion (min(qty_needed, central_on_hand), or the
+//       capped `ship_qty`) to the store -> request shipped/awaiting-store-accept
+//       (pipeline yuborilgan); and
+//   (b) routes the shortfall (qty_needed - shipped) to production (pipeline
+//       soralgan), as a NEW grouped request (or the original, when nothing was
+//       on hand). pm is 403 (read-and-recommend write guard).
+//
+// Response: { shipped_qty, shortfall_qty, production_request_id, request }.
+replenishmentRouter.post(
+  '/:id/fulfill',
+  authenticate,
+  authorizeWrite('central_warehouse_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+    const centralId = requireId(body, 'location_id');
+
+    // Optional ship_qty (>= 0); the service caps it at min(qty_needed, available).
+    const shipQtyRaw = body.ship_qty;
+    let shipQty: number | undefined;
+    if (shipQtyRaw !== undefined && shipQtyRaw !== null) {
+      if (typeof shipQtyRaw !== 'number' || !Number.isFinite(shipQtyRaw) || shipQtyRaw < 0) {
+        throw AppError.validation('Field "ship_qty" must be a number >= 0.');
+      }
+      shipQty = shipQtyRaw;
+    }
+    const note = optionalString(body, 'note') ?? null;
+
+    // The operator must own the acting central warehouse.
+    await requireLocationOperator(principal, centralId);
+
+    // Existence + the warehouse must actually be a central_warehouse (parity
+    // with accept-central / to-production).
+    const { rows } = await query<{ id: number; type: string }>(
+      `SELECT l.id, l.type
+         FROM replenishment_requests r
+         JOIN locations l ON l.id = $2
+        WHERE r.id = $1`,
+      [id, centralId],
+    );
+    const row = rows[0];
+    if (row === undefined) {
+      throw AppError.notFound('Replenishment request not found.');
+    }
+    if (row.type !== 'central_warehouse') {
+      throw AppError.validation('location_id must be a central_warehouse.');
+    }
+
+    const result = await fulfillStoreRequest({
+      requestId: id,
+      centralLocationId: centralId,
+      ...(shipQty !== undefined ? { shipQty } : {}),
+      note,
+      actorUserId: principal.userId,
+    });
+    res.status(200).json({
+      shipped_qty: result.shippedQty,
+      shortfall_qty: result.shortfallQty,
+      production_request_id: result.productionRequestId,
+      request: { ...result.request, pipeline_stage: derivePipelineStage(result.request) },
+    });
+  }),
+);
+
 // POST /api/replenishment/:id/reject-central
 //   body: { reason }
 //
@@ -666,6 +750,158 @@ replenishmentRouter.post(
       'rejected',
     );
     res.status(200).json({ request: updated });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// 0055 — Manual central -> production flow (store requests)
+// ---------------------------------------------------------------------------
+// When the central warehouse is SHORT, the central warehouse manager:
+//   1. POST /:id/to-production            — explicitly route the request to
+//                                           production (creates a production
+//                                           order at the workshop; the request
+//                                           STOPS at DONE_TO_WAREHOUSE and never
+//                                           auto-ships).
+//   2. POST /:id/receive-from-production  — after the production order is done,
+//                                           confirm receipt at central with an
+//                                           optional brak split.
+//   3. POST /:id/ship-to-store            — forward central -> store -> CLOSED.
+// All three are write actions gated to `central_warehouse_manager` (own central
+// only). pm is 403 (read-and-recommend write guard).
+
+// POST /api/replenishment/:id/to-production
+//   body: { location_id }  (the acting central warehouse)
+//
+// status before: NEW | CHECK_STORE_SUPPLIER
+// status after : CREATE_PRODUCTION_ORDER (raw OK) | CREATE_PURCHASE_ORDER (raw short)
+//                — or unchanged (CHECK_PRODUCTION_INPUT) when no production
+//                  topology/BOM can be resolved (advanced=false).
+replenishmentRouter.post(
+  '/:id/to-production',
+  authenticate,
+  authorizeWrite('central_warehouse_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+    const centralId = requireId(body, 'location_id');
+
+    // The operator must own the acting central warehouse.
+    await requireLocationOperator(principal, centralId);
+
+    // Existence + the warehouse must actually be a central_warehouse (parity
+    // with accept-central).
+    const { rows } = await query<{ id: number; type: string }>(
+      `SELECT l.id, l.type
+         FROM replenishment_requests r
+         JOIN locations l ON l.id = $2
+        WHERE r.id = $1`,
+      [id, centralId],
+    );
+    const row = rows[0];
+    if (row === undefined) {
+      throw AppError.notFound('Replenishment request not found.');
+    }
+    if (row.type !== 'central_warehouse') {
+      throw AppError.validation('location_id must be a central_warehouse.');
+    }
+
+    const result = await sendToProduction({
+      requestId: id,
+      centralLocationId: centralId,
+      actorUserId: principal.userId,
+    });
+    res.status(200).json({
+      request: result.request,
+      advanced: result.advanced,
+      status: result.request.status,
+      reason: result.reason,
+    });
+  }),
+);
+
+// POST /api/replenishment/:id/receive-from-production
+//   body: { brak_qty?: number>=0, brak_reason?: string }
+//
+// status before: DONE_TO_WAREHOUSE   status after: SHIP_TO_REQUESTER
+// The goods are already at central (production_output); this records the
+// acknowledgement + an optional brak write-off (no double stock-in).
+replenishmentRouter.post(
+  '/:id/receive-from-production',
+  authenticate,
+  authorizeWrite('central_warehouse_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+
+    const brakQtyRaw = body.brak_qty;
+    let brakQty = 0;
+    if (brakQtyRaw !== undefined && brakQtyRaw !== null) {
+      if (typeof brakQtyRaw !== 'number' || !Number.isFinite(brakQtyRaw) || brakQtyRaw < 0) {
+        throw AppError.validation('Field "brak_qty" must be a number >= 0.');
+      }
+      brakQty = brakQtyRaw;
+    }
+    const brakReason = optionalString(body, 'brak_reason') ?? null;
+
+    // The acting principal must own the request's target central warehouse.
+    const { rows } = await query<{ target_location_id: number | null }>(
+      'SELECT target_location_id FROM replenishment_requests WHERE id = $1',
+      [id],
+    );
+    const existing = rows[0];
+    if (existing === undefined) {
+      throw AppError.notFound('Replenishment request not found.');
+    }
+    if (existing.target_location_id === null) {
+      throw AppError.validation('Request has no target warehouse to receive into.');
+    }
+    await requireLocationOperator(principal, Number(existing.target_location_id));
+
+    const updated = await receiveFromProduction({
+      requestId: id,
+      brakQty,
+      brakReason,
+      actorUserId: principal.userId,
+    });
+    res.status(200).json({ request: updated });
+  }),
+);
+
+// POST /api/replenishment/:id/ship-to-store
+//   body: {}  (no fields)
+//
+// status before: SHIP_TO_REQUESTER   status after: CLOSED
+// Forwards the received goods central -> store (atomic transfer), then closes.
+replenishmentRouter.post(
+  '/:id/ship-to-store',
+  authenticate,
+  authorizeWrite('central_warehouse_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+
+    // The acting principal must own the request's target central warehouse.
+    const { rows } = await query<{ target_location_id: number | null }>(
+      'SELECT target_location_id FROM replenishment_requests WHERE id = $1',
+      [id],
+    );
+    const existing = rows[0];
+    if (existing === undefined) {
+      throw AppError.notFound('Replenishment request not found.');
+    }
+    if (existing.target_location_id === null) {
+      throw AppError.validation('Request has no target warehouse to ship from.');
+    }
+    await requireLocationOperator(principal, Number(existing.target_location_id));
+
+    const result = await shipToStore({ requestId: id, actorUserId: principal.userId });
+    res.status(200).json({
+      request: result.request,
+      shipped: result.shipped,
+      reason: result.reason,
+    });
   }),
 );
 
@@ -959,6 +1195,17 @@ replenishmentRouter.post(
       note,
       actorUserId: principal.userId,
     });
+
+    // 0058 — central Poster decrement on store-accept (best-effort, DRY-RUN by
+    // default). The accepted (kept) qty is what physically left the central.
+    await decrementCentralOnAccept({
+      requestId: id,
+      productId: updated.product_id,
+      targetLocationId: updated.target_location_id,
+      qty: qtyAcceptedRaw,
+      actorUserId: principal.userId,
+    });
+
     res.status(200).json({ request: updated });
   }),
 );
@@ -1040,6 +1287,18 @@ replenishmentRouter.post(
         err instanceof Error ? err.message : String(err),
       );
     }
+
+    // 0058 — central Poster decrement (best-effort, DRY-RUN by default). When the
+    // store accepts a shipment that left a CENTRAL warehouse, the central's
+    // Poster storage must be decremented (goods left central). Same try/catch
+    // safety as above.
+    await decrementCentralOnAccept({
+      requestId: id,
+      productId: updated.product_id,
+      targetLocationId: updated.target_location_id,
+      qty: receivedQtyRaw,
+      actorUserId: principal.userId,
+    });
 
     res.status(200).json({ request: updated });
   }),
@@ -1189,6 +1448,47 @@ replenishmentRouter.post(
     res.status(200).json({ request: updated });
   }),
 );
+
+/**
+ * 0058 — decrement the CENTRAL warehouse's Poster storage when a store accepts a
+ * shipment that left a central. Best-effort + DRY-RUN by default: a Poster
+ * failure (or a non-central target) must NEVER surface to the caller, so this
+ * resolves the target type, calls `enqueueCentralDecrementWriteback` only for a
+ * `central_warehouse` target, and swallows every error. The accept transaction
+ * has already committed before this runs.
+ */
+async function decrementCentralOnAccept(opts: {
+  requestId: number;
+  productId: number;
+  targetLocationId: number | null;
+  qty: number;
+  actorUserId: number | null;
+}): Promise<void> {
+  if (opts.targetLocationId === null || !Number.isFinite(opts.qty) || opts.qty <= 0) {
+    return;
+  }
+  try {
+    const { rows } = await query<{ type: string }>(
+      'SELECT type FROM locations WHERE id = $1',
+      [opts.targetLocationId],
+    );
+    if (rows[0]?.type !== 'central_warehouse') {
+      return; // only a central warehouse's Poster storage is decremented.
+    }
+    await enqueueCentralDecrementWriteback({
+      requestId: opts.requestId,
+      productId: opts.productId,
+      centralLocationId: opts.targetLocationId,
+      qty: opts.qty,
+      actorUserId: opts.actorUserId,
+    });
+  } catch (err) {
+    console.error(
+      '[replenishment.accept] central poster decrement failed (ignored):',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
 
 /**
  * Spec §6 "W(bog'liq)" — a scoped role touches a request when its location

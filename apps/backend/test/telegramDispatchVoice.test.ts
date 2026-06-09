@@ -214,6 +214,85 @@ describe('dispatchCallback — voice verbs', () => {
     expect(Number(rows[0]?.count)).toBe(1);
   });
 
+  // Owner feedback (2026-06-08) — confirming a store-manager voice
+  // create_replenishment_request must reply "markaziy skladga yuborildi"
+  // (NOT a generic "Bajarildi"), and must create the request at status NEW.
+  it('apprv:act create_replenishment_request — reply says yuborildi, request NEW', async () => {
+    // A store + its manager (the do'konchi). The raw-warehouse fixture in
+    // beforeEach is unrelated to this request — we build a store chain here.
+    const central = await makeLocation(ctx.db, { type: 'central_warehouse' });
+    const store = await makeLocation(ctx.db, { type: 'store', parentId: central });
+    const napoleon = await makeProduct(ctx.db, { name: 'Napoleon', unit: 'pcs' });
+    const dokonchi = await makeUser(ctx.db, { role: 'store_manager', locationId: store });
+    await ctx.db.query(`UPDATE locations SET manager_user_id = $1 WHERE id = $2`, [
+      dokonchi.id,
+      store,
+    ]);
+    const dokonchiPrincipal: CallbackPrincipal = {
+      userId: dokonchi.id,
+      role: 'store_manager',
+      locationId: store,
+    };
+
+    // Stage a pending create_replenishment_request (as the voice flow would).
+    const { rows: sess } = await ctx.db.query<{ id: string }>(
+      `INSERT INTO assistant_sessions (user_id, title) VALUES ($1, 'voice') RETURNING id`,
+      [dokonchi.id],
+    );
+    const sessionId = Number(sess[0]?.id);
+    const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+    const args = {
+      product_id: napoleon,
+      requester_location_id: store,
+      qty_needed: 10,
+    };
+    const { rows: act } = await ctx.db.query<{ id: string }>(
+      `INSERT INTO assistant_actions
+         (session_id, user_id, tool_name, args, summary, status, expires_at)
+       VALUES ($1, $2, 'create_replenishment_request', $3, $4, 'pending', $5)
+       RETURNING id`,
+      [
+        sessionId,
+        dokonchi.id,
+        JSON.stringify(args),
+        "Yangi so'rov: Kukcha — 10 pcs Napoleon",
+        expiresAt,
+      ],
+    );
+    const actionId = Number(act[0]?.id);
+
+    const parsed = parseCallbackData(`apprv:act:${actionId}`);
+    const outcome = await dispatchCallback(parsed!, dokonchiPrincipal);
+    expect(outcome.kind).toBe('ok');
+    if (outcome.kind === 'ok') {
+      expect(outcome.message).toContain('markaziy skladga yuborildi');
+      expect(outcome.message).not.toContain('Bajarildi');
+    }
+
+    // The request row was created at NEW (correct store→central request).
+    const { rows: req } = await ctx.db.query<{ status: string }>(
+      `SELECT status FROM replenishment_requests
+        WHERE requester_location_id = $1 AND product_id = $2`,
+      [store, napoleon],
+    );
+    expect(req).toHaveLength(1);
+    expect(req[0]?.status).toBe('NEW');
+
+    // The requester (do'konchi) must NOT have received a fast:req button.
+    const { rows: notif } = await ctx.db.query<{
+      inline_callback: { buttons: { text: string; data: string }[][] } | null;
+    }>(
+      `SELECT inline_callback FROM notifications
+        WHERE type = 'replenishment_created' AND recipient_user_id = $1`,
+      [dokonchi.id],
+    );
+    const datas = notif
+      .flatMap((n) => n.inline_callback?.buttons ?? [])
+      .flat()
+      .map((b) => b.data);
+    expect(datas.some((d) => d.startsWith('fast:req:'))).toBe(false);
+  });
+
   it('clarify:vmsg foreign user — rbac', async () => {
     const voiceId = await makeVoiceMessage();
     const otherUser = await makeUser(ctx.db, {

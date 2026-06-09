@@ -33,7 +33,12 @@ import { CentralWorkflowPage } from '@/pages/central/CentralWorkflowPage';
 import { ReceiptsPage } from '@/pages/cashier/ReceiptsPage';
 import { CashShiftsPage } from '@/pages/cashier/CashShiftsPage';
 import { SafeExpensesPage } from '@/pages/cashier/SafeExpensesPage';
+import { CashReconciliationPage } from '@/pages/cashier/CashReconciliationPage';
 import { KpiPage } from '@/pages/kpi/KpiPage';
+import { StoreKpiPage } from '@/pages/kpi/StoreKpiPage';
+import { SellerKpiPage } from '@/pages/kpi/SellerKpiPage';
+import { DiscrepanciesPage } from '@/pages/alerts/DiscrepanciesPage';
+import { InventoryPage } from '@/pages/inventory/InventoryPage';
 
 /**
  * Application routes (phase-1-mvp.md §2, §6).
@@ -219,6 +224,21 @@ export function AppRouter() {
           }
         />
 
+        {/* TZ Module 11 — «Inventarizatsiya» (bo'lak ↔ butun konverteri).
+            Tortlar kg bo'yicha sotiladi; bu sahifa qoldiqni butun + bo'lak +
+            qoldiq(kg)ga ajratadi va do'kon kun oxiri fizik sanog'ini qoldiq
+            bilan solishtiradi. store_manager o'z do'konini; pm /
+            production_manager do'kon tanlab koeffitsiyentlarni sozlaydi.
+            Backend RBAC-scopes every endpoint. Lives in the Modullar group. */}
+        <Route
+          path="/inventory"
+          element={
+            <RoleRoute allow={['pm', 'store_manager', 'production_manager']}>
+              <InventoryPage />
+            </RoleRoute>
+          }
+        />
+
         <Route path="/replenishment" element={<ReplenishmentPage />} />
         <Route
           path="/replenishment/:id"
@@ -295,6 +315,33 @@ export function AppRouter() {
           }
         />
 
+        {/* TZ Module 9 — Kassa tafovutlari / fors-major ogohlantirishlar.
+            Self-correcting discrepancy report ("xato cheklar" + manfiy
+            ostatka). PM (chain-wide) + store_manager (own store, RBAC-scoped
+            server-side). Lives under the Kassa nav group. */}
+        <Route
+          path="/cashier/discrepancies"
+          element={
+            <RoleRoute allow={['pm', 'store_manager']}>
+              <DiscrepanciesPage />
+            </RoleRoute>
+          }
+        />
+
+        {/* TZ Module 15 — «Kassa solishtiruvi» / kassir-bot reconciliation.
+            The cashier submits the end-of-day report via Telegram; this
+            read-only page reconciles it against Poster (naqd / karta /
+            rasxod farqi). PM (chain-wide) + store_manager (own store,
+            RBAC-scoped server-side). Lives under the Kassa nav group. */}
+        <Route
+          path="/cashier/reconciliation"
+          element={
+            <RoleRoute allow={['pm', 'store_manager']}>
+              <CashReconciliationPage />
+            </RoleRoute>
+          }
+        />
+
         {/* KPI — boshliq (PM) uchun per-mahsulot to'liq tan-narx
             (xom-ashyo + komunal + oylik) va foyda/sotuv tahlili. Sotuv
             narxlarini boshqarish uchun. Faqat PM; backend ham himoyalaydi. */}
@@ -303,6 +350,34 @@ export function AppRouter() {
           element={
             <RoleRoute allow={['pm']}>
               <KpiPage />
+            </RoleRoute>
+          }
+        />
+
+        {/* TZ Module 8 — Do'kon KPI (store-level monthly sales plan vs
+            actual, ranking + MoM growth + per-store trend chart). PM sets
+            plans chain-wide; the store manager sees their own store
+            read-only (backend RBAC-scopes the rows). Lives under the KPI
+            nav group as a sibling tab of the per-product /kpi page. */}
+        <Route
+          path="/store-kpi"
+          element={
+            <RoleRoute allow={['pm', 'store_manager']}>
+              <StoreKpiPage />
+            </RoleRoute>
+          }
+        />
+
+        {/* TZ Module 8 — Sotuvchi KPI (seller-level monthly sales plan vs
+            actual, ranking + MoM growth). PM sets plans chain-wide and can
+            filter by store; the store manager sees their own store's sellers
+            read-only (backend RBAC-scopes the rows). Lives under the KPI nav
+            group as a sibling tab of the Do'kon KPI page. */}
+        <Route
+          path="/seller-kpi"
+          element={
+            <RoleRoute allow={['pm', 'store_manager']}>
+              <SellerKpiPage />
             </RoleRoute>
           }
         />

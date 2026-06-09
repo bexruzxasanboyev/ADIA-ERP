@@ -278,6 +278,100 @@ describe('POST /api/purchase-orders/:id/receive', () => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/purchase-orders/:id/receive — 0056 brak (defect) split
+// ---------------------------------------------------------------------------
+describe('POST /api/purchase-orders/:id/receive — brak split', () => {
+  async function approvedPO(): Promise<{
+    id: number;
+    rawWh: number;
+    product: number;
+    rawMgr: Awaited<ReturnType<typeof makeUser>>;
+  }> {
+    const supplyLoc = await makeLocation(ctx.db, { type: 'supply' });
+    const rawWh = await makeLocation(ctx.db, { type: 'raw_warehouse' });
+    const supplyMgr = await makeUser(ctx.db, { role: 'supply_manager', locationId: supplyLoc });
+    const rawMgr = await makeUser(ctx.db, { role: 'raw_warehouse_manager', locationId: rawWh });
+    const product = await makeProduct(ctx.db, { type: 'raw' });
+    const id = await draftPO(product, rawWh);
+    await approvePurchaseOrder(id, 'manager', supplyMgr.id);
+    await approvePurchaseOrder(id, 'keeper', rawMgr.id);
+    return { id, rawWh, product, rawMgr };
+  }
+
+  it('no body is back-compatible (200, brak_qty 0)', async () => {
+    const { id, rawMgr } = await approvedPO();
+    const res = await request(ctx.app)
+      .post(`/api/purchase-orders/${id}/receive`)
+      .set('Authorization', `Bearer ${rawMgr.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.purchase_order?.status).toBe('received');
+    expect(Number(res.body.purchase_order?.brak_qty)).toBe(0);
+    expect(res.body.purchase_order?.brak_reason).toBe(null);
+  });
+
+  it('records brak and writes it off (response carries brak_qty/brak_reason)', async () => {
+    const { id, rawWh, product, rawMgr } = await approvedPO();
+    const res = await request(ctx.app)
+      .post(`/api/purchase-orders/${id}/receive`)
+      .set('Authorization', `Bearer ${rawMgr.token}`)
+      .send({ brak_qty: 3, brak_reason: 'broken seals' });
+    expect(res.status).toBe(200);
+    expect(res.body.purchase_order?.status).toBe('received');
+    expect(Number(res.body.purchase_order?.brak_qty)).toBe(3);
+    expect(res.body.purchase_order?.brak_reason).toBe('broken seals');
+    // qty fixture for draftPO is 10 — net sound = 10 - 3 = 7.
+    const { rows } = await ctx.db.query<{ qty: string }>(
+      `SELECT qty FROM stock WHERE location_id = $1 AND product_id = $2`,
+      [rawWh, product],
+    );
+    expect(Number(rows[0]?.qty)).toBe(7);
+  });
+
+  it('rejects brak_qty > 0 with no reason (422)', async () => {
+    const { id, rawMgr } = await approvedPO();
+    const res = await request(ctx.app)
+      .post(`/api/purchase-orders/${id}/receive`)
+      .set('Authorization', `Bearer ${rawMgr.token}`)
+      .send({ brak_qty: 2 });
+    expect(res.status).toBe(422);
+    expect(res.body.error?.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects brak_qty greater than the received qty (422)', async () => {
+    const { id, rawMgr } = await approvedPO();
+    const res = await request(ctx.app)
+      .post(`/api/purchase-orders/${id}/receive`)
+      .set('Authorization', `Bearer ${rawMgr.token}`)
+      .send({ brak_qty: 11, brak_reason: 'all wet' });
+    expect(res.status).toBe(422);
+    expect(res.body.error?.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects a negative brak_qty (422)', async () => {
+    const { id, rawMgr } = await approvedPO();
+    const res = await request(ctx.app)
+      .post(`/api/purchase-orders/${id}/receive`)
+      .set('Authorization', `Bearer ${rawMgr.token}`)
+      .send({ brak_qty: -1, brak_reason: 'x' });
+    expect(res.status).toBe(422);
+    expect(res.body.error?.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('a supply_manager cannot receive-with-brak (403 — RBAC unchanged)', async () => {
+    const supplyLoc = await makeLocation(ctx.db, { type: 'supply' });
+    const supplyMgr = await makeUser(ctx.db, { role: 'supply_manager', locationId: supplyLoc });
+    const rawWh = await makeLocation(ctx.db, { type: 'raw_warehouse' });
+    const product = await makeProduct(ctx.db, { type: 'raw' });
+    const id = await draftPO(product, rawWh);
+    const res = await request(ctx.app)
+      .post(`/api/purchase-orders/${id}/receive`)
+      .set('Authorization', `Bearer ${supplyMgr.token}`)
+      .send({ brak_qty: 1, brak_reason: 'x' });
+    expect(res.status).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/purchase-orders/:id/reject
 // ---------------------------------------------------------------------------
 describe('POST /api/purchase-orders/:id/reject', () => {

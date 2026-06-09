@@ -186,6 +186,84 @@ describe('replenishment_created', () => {
     expect(await countByType('replenishment_created', storeManagerId)).toBe(1);
   });
 
+  // Owner feedback (2026-06-08) — the requester (do'konchi) card after sending a
+  // store→central request must read "sent to the central warehouse" and must
+  // carry NO actionable "Tezda bajarish" (fast:req) button — only "Ko'rish".
+  // Advancing/fulfilling is the central manager's job, not the requester's.
+  it('requester card says "yuborildi" and has NO fast:req button (only view)', async () => {
+    const { store, storeManagerId } = await buildChainWithManagers();
+    const product = await makeProduct(ctx.db, { type: 'finished' });
+    await setStock(ctx.db, {
+      locationId: store,
+      productId: product,
+      qty: 1,
+      minLevel: 5,
+      maxLevel: 10,
+    });
+
+    const created = await createRequest({
+      productId: product,
+      requesterLocationId: store,
+      qtyNeeded: 9,
+      actorUserId: null,
+    });
+
+    const { rows } = await ctx.db.query<{
+      title: string;
+      body: string;
+      inline_callback: { buttons: { text: string; data: string }[][] } | null;
+    }>(
+      `SELECT title, body, inline_callback
+         FROM notifications
+        WHERE type = 'replenishment_created' AND recipient_user_id = $1`,
+      [storeManagerId],
+    );
+    expect(rows).toHaveLength(1);
+    const card = rows[0]!;
+    expect(card.body).toContain('markaziy skladga yuborildi');
+    const datas = (card.inline_callback?.buttons ?? []).flat().map((b) => b.data);
+    expect(datas).toContain(`view:req:${created.id}`);
+    expect(datas).not.toContain(`fast:req:${created.id}`);
+  });
+
+  // The actionable "Tezda bajarish" (fast:req) nudge goes to the FULFILLING
+  // manager — the central warehouse manager — even though the bare store
+  // request is still at NEW (target not yet pinned). It is resolved from the
+  // requester's chain topology.
+  it('central (target) manager gets the actionable fast:req nudge on createRequest', async () => {
+    const { store, central, centralManagerId } = await buildChainWithManagers();
+    const product = await makeProduct(ctx.db, { type: 'finished' });
+    await setStock(ctx.db, {
+      locationId: store,
+      productId: product,
+      qty: 1,
+      minLevel: 5,
+      maxLevel: 10,
+    });
+
+    const created = await createRequest({
+      productId: product,
+      requesterLocationId: store,
+      qtyNeeded: 9,
+      actorUserId: null,
+    });
+
+    expect(await countByType('replenishment_created', centralManagerId)).toBe(1);
+    const { rows } = await ctx.db.query<{
+      inline_callback: { buttons: { text: string; data: string }[][] } | null;
+      payload: { target_location_id?: number } | null;
+    }>(
+      `SELECT inline_callback, payload
+         FROM notifications
+        WHERE type = 'replenishment_created' AND recipient_user_id = $1`,
+      [centralManagerId],
+    );
+    expect(rows).toHaveLength(1);
+    const datas = (rows[0]!.inline_callback?.buttons ?? []).flat().map((b) => b.data);
+    expect(datas).toContain(`fast:req:${created.id}`);
+    expect(rows[0]!.payload?.target_location_id).toBe(central);
+  });
+
   // C1 (Sprint 3 audit) — spec §7 requires BOTH the requester AND the
   // target location manager to receive `replenishment_created`. The target
   // manager is notified after `advanceNew` resolves the central warehouse.

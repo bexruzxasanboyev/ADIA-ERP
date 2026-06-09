@@ -22,6 +22,7 @@ import {
   getLocationManager,
   getPmRecipients,
 } from '../../services/notify.js';
+import { recordNegativeStockDiscrepancy } from '../../services/salesDiscrepancy.js';
 import type { PosterClient, PosterLeftover } from './client.js';
 import {
   finishSyncRun,
@@ -151,6 +152,20 @@ export async function emitNegativeStockDigests(
           if (prev === undefined || it.posterQty < prev) {
             perProduct.set(it.productId, it.posterQty);
           }
+        }
+
+        // M9 (TZ §9) — PERSIST each negative-leftover anomaly into the
+        // discrepancy log. One row per (location, product) per day; the
+        // recorder keeps the WORST shortfall on conflict and is non-fatal, and
+        // joins THIS transaction via `tx`. `posterQty` is negative, so the
+        // shortfall magnitude is its absolute value. The digest below is
+        // unchanged.
+        for (const [productId, posterQty] of perProduct) {
+          await recordNegativeStockDiscrepancy(tx, {
+            locationId,
+            productId,
+            shortfall: Math.abs(posterQty),
+          });
         }
 
         const locationName = await resolveLocationName(tx, locationId);

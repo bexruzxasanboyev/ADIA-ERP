@@ -51,6 +51,14 @@ async function main(): Promise<void> {
         `${leftovers.length} rows (negative=${neg})`,
     );
   }
+
+  // TZ Module 15 — money accounts (Hisob raqamlar). Cash-box accounts are
+  // type='3'; their TIYIN balance drives the kassir reconciliation safe view.
+  const accounts = await client.getAccounts();
+  const cashBoxes = accounts.filter((a) => String(a.type) === '3');
+  console.log(
+    `finance.getAccounts     -> ${accounts.length} accounts (cash-box type=3: ${cashBoxes.length})`,
+  );
 }
 
 main().catch((err) => {

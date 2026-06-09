@@ -7,7 +7,7 @@
  *
  * Covers the principal-level branches in `authenticate` middleware:
  *   header valid + in set       -> activeLocationId = header value
- *   header valid + NOT in set   -> 403 FORBIDDEN (scoped user)
+ *   header valid + NOT in set   -> 403 ACTIVE_LOCATION_INVALID (scoped user; ADR-0012)
  *   header valid + chain-wide   -> 200 (pm may pick any)
  *   no header                   -> activeLocationId = primary
  */
@@ -89,7 +89,10 @@ describe('X-Active-Location header — middleware-level validation', () => {
       .set('Authorization', `Bearer ${mgr.token}`)
       .set('X-Active-Location', String(otherStore));
     expect(res.status).toBe(403);
-    expect(res.body.error?.code).toBe('FORBIDDEN');
+    // ADR-0012: a stale X-Active-Location yields the distinct
+    // ACTIVE_LOCATION_INVALID code (still HTTP 403) — NOT FORBIDDEN — so the
+    // client can self-heal by dropping the header and retrying on its primary.
+    expect(res.body.error?.code).toBe('ACTIVE_LOCATION_INVALID');
   });
 
   it('rejects a non-integer header with 422 VALIDATION_ERROR', async () => {

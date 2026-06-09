@@ -8,6 +8,7 @@ import { useCanAct } from '@/hooks/useCanAct';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/format';
 import type { PurchaseApprovalStep, PurchaseOrder } from '@/lib/types';
+import { PurchaseOrderReceiveDialog } from './PurchaseOrderReceiveDialog';
 
 interface ApprovalPanelProps {
   order: PurchaseOrder;
@@ -39,6 +40,9 @@ export function ApprovalPanel({ order, onChanged }: ApprovalPanelProps) {
   const { notify } = useToast();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Receive now opens a dialog (brak capture) instead of an inline POST — the
+  // dialog owns the `/:id/receive` call and refetches via `onChanged`.
+  const [receiveOpen, setReceiveOpen] = useState(false);
 
   const role = user?.role;
   // Manager step — the supply manager who DRAFTED the request is the
@@ -93,17 +97,6 @@ export function ApprovalPanel({ order, onChanged }: ApprovalPanelProps) {
     );
   }
 
-  function receive(): void {
-    void run(
-      'receive',
-      () =>
-        apiRequest(`/api/purchase-orders/${order.id}/receive`, {
-          method: 'POST',
-        }),
-      'So‘rov qabul qilindi, ombor qoldig‘i yangilandi.',
-    );
-  }
-
   function reject(): void {
     void run(
       'reject',
@@ -151,16 +144,8 @@ export function ApprovalPanel({ order, onChanged }: ApprovalPanelProps) {
 
       <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
         {isApproved && canReceive && (
-          <Button
-            size="sm"
-            disabled={busy === 'receive'}
-            onClick={receive}
-          >
-            {busy === 'receive' ? (
-              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-            ) : (
-              <PackageCheck className="size-4" aria-hidden="true" />
-            )}
+          <Button size="sm" onClick={() => setReceiveOpen(true)}>
+            <PackageCheck className="size-4" aria-hidden="true" />
             Qabul qilish
           </Button>
         )}
@@ -194,6 +179,13 @@ export function ApprovalPanel({ order, onChanged }: ApprovalPanelProps) {
           {error}
         </p>
       )}
+
+      <PurchaseOrderReceiveDialog
+        open={receiveOpen}
+        onOpenChange={setReceiveOpen}
+        order={order}
+        onSaved={onChanged}
+      />
     </div>
   );
 }

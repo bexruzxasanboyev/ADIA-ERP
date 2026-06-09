@@ -17,6 +17,9 @@ import {
   ReceiptText,
   Banknote,
   Target,
+  AlertTriangle,
+  GitCompare,
+  ClipboardCheck,
   type LucideIcon,
 } from 'lucide-react';
 import type { Role } from './types';
@@ -244,6 +247,17 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         icon: RefreshCw,
         roles: ALL_ROLES,
       },
+      {
+        // TZ Module 11 — Inventarizatsiya konverteri (bo'lak ↔ butun). Tortlar
+        // kg bo'yicha sotiladi; sahifa qoldiqni «butun + bo'lak + qoldiq»ga
+        // ajratadi va do'kon kun oxiri fizik sanog'ini solishtiradi. Do'kon
+        // boshlig'i o'z do'konini; PM / ishlab chiqarish boshlig'i do'kon
+        // tanlab + koeffitsiyentlarni sozlaydi (backend RBAC bilan ham).
+        path: '/inventory',
+        label: 'Inventarizatsiya',
+        icon: ClipboardCheck,
+        roles: ['pm', 'store_manager', 'production_manager'],
+      },
     ],
   },
   {
@@ -273,6 +287,25 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         icon: Wallet,
         roles: ['pm'],
       },
+      {
+        // TZ Module 9 — Kassa tafovuti / fors-major ogohlantirishlar
+        // (xato cheklar + manfiy ostatka). PM butun zanjirni; do'kon
+        // boshlig'i o'z do'konini (backend RBAC).
+        path: '/cashier/discrepancies',
+        label: 'Kassa tafovutlari',
+        icon: AlertTriangle,
+        roles: ['pm', 'store_manager'],
+      },
+      {
+        // TZ Module 15 — «Kassir boti» solishtiruvi. Kassir Telegram bot
+        // orqali topshirgan kunlik hisobot Poster ma'lumoti bilan
+        // solishtiriladi (naqd / karta / rasxod farqi). PM butun zanjirni;
+        // do'kon boshlig'i o'z do'konini (backend RBAC).
+        path: '/cashier/reconciliation',
+        label: 'Kassa solishtiruvi',
+        icon: GitCompare,
+        roles: ['pm', 'store_manager'],
+      },
     ],
   },
   {
@@ -284,13 +317,32 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     label: 'KPI',
     icon: Target,
     defaultPath: '/kpi',
-    hasTabs: false,
+    hasTabs: true,
     items: [
       {
         path: '/kpi',
         label: 'KPI',
         icon: Target,
         roles: ['pm'],
+      },
+      {
+        // TZ Module 8 — Do'kon KPI (store-level monthly sales plan vs
+        // actual, ranking + MoM growth). PM sets the plan (chain-wide);
+        // do'kon boshlig'i sees their own store read-only (backend RBAC).
+        path: '/store-kpi',
+        label: 'Do‘kon KPI',
+        icon: Store,
+        roles: ['pm', 'store_manager'],
+      },
+      {
+        // TZ Module 8 — Sotuvchi KPI (seller-level monthly sales plan vs
+        // actual, ranking + MoM growth). PM sets plans (chain-wide) and can
+        // filter by store; do'kon boshlig'i sees their own store's sellers
+        // read-only (backend RBAC).
+        path: '/seller-kpi',
+        label: 'Sotuvchi KPI',
+        icon: UserCog,
+        roles: ['pm', 'store_manager'],
       },
     ],
   },

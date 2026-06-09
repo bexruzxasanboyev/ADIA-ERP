@@ -650,8 +650,8 @@ describe('Poster seedSync — nested BOM (structure_type) + cost', () => {
   });
 });
 
-describe('Poster seedSync — dish enrichment + menu-product drop', () => {
-  it('imports type=2 products with BOM and skips type=3 products', async () => {
+describe('Poster seedSync — dish enrichment + sales resolution map', () => {
+  it('materialises every unmatched menu product as a resale row + alias', async () => {
     // Drive `menu.getProduct?product_id=...` per id via URL inspection.
     const client = new PosterClient({
       token: 'acc:test',
@@ -696,18 +696,34 @@ describe('Poster seedSync — dish enrichment + menu-product drop', () => {
     const r = await syncMenuProducts(client);
     expect(r.status).toBe('ok');
 
-    // menu.getProducts NEVER creates products — only the raw ingredient exists.
-    const { rows: products } = await ctx.db.query<{ poster_product_id: number | null }>(
-      `SELECT poster_product_id FROM products WHERE poster_product_id IS NOT NULL`,
+    // Neither menu product name-matches a prepack -> BOTH become `resale`
+    // products keyed by their menu product_id, each with a map alias so a sale
+    // check line resolves. The raw ingredient is untouched (no menu match).
+    const { rows: resale } = await ctx.db.query<{ poster_product_id: number; name: string; type: string }>(
+      `SELECT poster_product_id, name, type FROM products
+        WHERE type = 'resale' ORDER BY poster_product_id`,
     );
-    expect(products).toHaveLength(0);
+    expect(resale).toEqual([
+      { poster_product_id: 800, name: 'Cake', type: 'resale' },
+      { poster_product_id: 801, name: 'Adia', type: 'resale' },
+    ]);
+
+    // The map aliases the menu ids (800, 801) to those resale rows.
+    const { rows: map } = await ctx.db.query<{ poster_menu_product_id: number; product_id: number }>(
+      `SELECT m.poster_menu_product_id, m.product_id
+         FROM poster_menu_product_map m
+         JOIN products p ON p.id = m.product_id
+        WHERE p.type = 'resale' ORDER BY m.poster_menu_product_id`,
+    );
+    expect(map.map((x) => x.poster_menu_product_id)).toEqual([800, 801]);
   });
 
-  it('enriches a matching prepack with category, image_url and workshop, then drops menu-products', async () => {
+  it('enriches a matching prepack + maps its menu id, and materialises the товар as resale', async () => {
     // A Г/П prepack «Г/П ПИРОГ С ТВОРОГОМ (ЦЕЛЫЙ)» matches the dish
     // «ПИРОГ С ТВОРОГОМ» by normalised name -> inherits category Пироги,
-    // photo, and workshop «Пирог отдел» (a production location). The товар
-    // «Coca Cola» matches nothing and its product row must be dropped.
+    // photo, and workshop «Пирог отдел» (a production location), AND the menu id
+    // (537) is aliased to that prepack. The товар «Coca Cola» (37) matches no
+    // prepack -> becomes a `resale` product + alias so its sales still land.
     const client = clientForResponses({
       'menu.getWorkshops': [
         { workshop_id: '9', workshop_name: 'Пирог отдел', delete: '0' },
@@ -732,7 +748,7 @@ describe('Poster seedSync — dish enrichment + menu-product drop', () => {
           workshop: '9',
           photo: '/upload/menu/pirog.jpg',
         },
-        // A товар — matches no prepack -> ignored for enrichment, dropped as a row.
+        // A товар — matches no prepack -> materialised as a `resale` product.
         {
           product_id: '37',
           product_name: 'Coca Cola',
@@ -772,12 +788,31 @@ describe('Poster seedSync — dish enrichment + menu-product drop', () => {
     expect(rows[0]?.workshop_name).toBe('Пирог отдел');
     expect(rows[0]?.workshop_type).toBe('production');
 
-    // The товар row (537/Coca Cola were menu products) is dropped — no product
-    // carries a menu poster_product_id (537 / 37) any more.
-    const { rows: drop } = await ctx.db.query<{ n: string }>(
-      `SELECT count(*)::text AS n FROM products WHERE poster_product_id IN (537, 37)`,
+    // The dish's menu id (537) is aliased to the prepack (#978), NOT a new row —
+    // a sale check line for 537 resolves to the prepack.
+    const { rows: pirogMap } = await ctx.db.query<{ same: boolean }>(
+      `SELECT (m.product_id = p.id) AS same
+         FROM poster_menu_product_map m
+         JOIN products p ON p.poster_product_id = 978
+        WHERE m.poster_menu_product_id = 537`,
     );
-    expect(drop[0]?.n).toBe('0');
+    expect(pirogMap).toHaveLength(1);
+    expect(pirogMap[0]?.same).toBe(true);
+
+    // The товар «Coca Cola» (37) is a `resale` product (NOT dropped), aliased.
+    const { rows: cola } = await ctx.db.query<{
+      type: string;
+      name: string;
+      mapped: number;
+    }>(
+      `SELECT p.type, p.name, m.product_id AS mapped
+         FROM products p
+         JOIN poster_menu_product_map m ON m.poster_menu_product_id = 37
+        WHERE p.poster_product_id = 37`,
+    );
+    expect(cola).toHaveLength(1);
+    expect(cola[0]?.type).toBe('resale');
+    expect(cola[0]?.name).toBe('Coca Cola');
 
     // The excluded «холодные напитки» workshop was NOT seeded as a location.
     const { rows: ws } = await ctx.db.query<{ n: string }>(

@@ -45,10 +45,10 @@ type LocationSeed = {
     | 'store_manager';
 };
 
-// Chain (D7, 2026-05-28): raw warehouse -> production root -> 3 sex floors
-// (Tort, Perojniy, Yarim Fabrika) -> 3 sex skladi (one per sex, type
-// `sex_storage`) -> central warehouse -> store. Every sex has its own ready-
-// batch buffer (`sex_storage`); the central warehouse parents to the Tort
+// Chain (D7, 2026-05-28; + TZ §6 cream отдел): raw warehouse -> production root
+// -> sex floors (Tort, Perojniy, Yarim Fabrika, Qaymoq) -> sex skladi (one per
+// sex, type `sex_storage`) -> central warehouse -> store. Every sex has its own
+// ready-batch buffer (`sex_storage`); the central warehouse parents to the Tort
 // skladi so the M4 replenishment engine has an end-to-end path. The
 // `supply_manager` role is reused as the manager of the sex_storage layer.
 const LOCATIONS: LocationSeed[] = [
@@ -60,6 +60,14 @@ const LOCATIONS: LocationSeed[] = [
   { name: 'Tort skladi', type: 'sex_storage', parentName: 'Tort sexi', managerRole: 'supply_manager' },
   { name: 'Perojniy skladi', type: 'sex_storage', parentName: 'Perojniy sexi', managerRole: 'supply_manager' },
   { name: 'Yarim Fabrika skladi', type: 'sex_storage', parentName: 'Yarim Fabrika sexi', managerRole: 'supply_manager' },
+  // TZ §6 — the dedicated cream/krem отдел + its sex_storage buffer. The
+  // structure itself is also seeded idempotently by migration 0060 (app-owned
+  // config); listing them here gives the dev DB a manager + user_locations for
+  // each (D6), exactly like every other sex. The cream product + flows live in
+  // the migration. `upsertLocation` dedups by name, so this never duplicates
+  // the migration's rows — whichever ran first wins.
+  { name: 'Qaymoq sexi', type: 'production', parentName: 'Ishlab chiqarish sexi', managerRole: 'production_manager' },
+  { name: 'Qaymoq skladi', type: 'sex_storage', parentName: 'Qaymoq sexi', managerRole: 'supply_manager' },
   { name: 'Markaziy Sklad', type: 'central_warehouse', parentName: 'Tort skladi', managerRole: 'central_warehouse_manager' },
   { name: 'Do\'kon 1', type: 'store', parentName: 'Markaziy Sklad', managerRole: 'store_manager' },
 ];
@@ -134,6 +142,39 @@ async function upsertUser(
   return userId;
 }
 
+/**
+ * Resolve the canonical raw warehouse — the Poster-synced "Основной склад"
+ * (poster_storage_id=2, ADR-0017). The dev seed also defines a placeholder
+ * `raw_warehouse` ("Mahsulotlar Ombori") with no Poster link; on a
+ * Poster-synced DB we must consolidate the whole replenishment chain onto the
+ * REAL raw warehouse (the one that actually stocks ingredients), exactly like
+ * the central-warehouse dedup. Returns null when no raw warehouse exists yet
+ * (fresh DB before the placeholder is inserted).
+ */
+async function resolveCanonicalRawWarehouseId(): Promise<number | null> {
+  const { rows } = await query<{ id: number }>(
+    `SELECT id FROM locations
+      WHERE type = 'raw_warehouse'
+      ORDER BY (poster_storage_id IS NOT NULL) DESC, id
+      LIMIT 1`,
+  );
+  return rows[0]?.id ?? null;
+}
+
+/**
+ * Resolve the canonical central warehouse — the Poster singleton "Склад
+ * Центральный" (poster_storage_id=8). Same dedup rule as the raw warehouse.
+ */
+async function resolveCanonicalCentralWarehouseId(): Promise<number | null> {
+  const { rows } = await query<{ id: number }>(
+    `SELECT id FROM locations
+      WHERE type = 'central_warehouse'
+      ORDER BY (poster_storage_id IS NOT NULL) DESC, id
+      LIMIT 1`,
+  );
+  return rows[0]?.id ?? null;
+}
+
 /** Insert a location if its name is free; return the location id. */
 async function upsertLocation(
   name: string,
@@ -145,14 +186,21 @@ async function upsertLocation(
   // creating a second, placeholder central_warehouse ("Markaziy Sklad") — the
   // duplicate has no stock and only confuses the location switcher.
   if (type === 'central_warehouse') {
-    const poster = await query<{ id: number }>(
-      `SELECT id FROM locations
-        WHERE type = 'central_warehouse'
-        ORDER BY (poster_storage_id IS NOT NULL) DESC, id
-        LIMIT 1`,
-    );
-    if (poster.rows[0] !== undefined) {
-      return poster.rows[0].id;
+    const central = await resolveCanonicalCentralWarehouseId();
+    if (central !== null) {
+      return central;
+    }
+  }
+  // The raw warehouse is likewise a Poster singleton ("Основной склад",
+  // poster_storage_id=2, ADR-0017) that holds the real ingredient stock. Reuse
+  // it instead of creating a second placeholder ("Mahsulotlar Ombori") so the
+  // dev ingredient stock and the replenishment chain land on the warehouse that
+  // actually stocks raws. On a fresh DB (no Poster sync) the placeholder is
+  // created as before and becomes the canonical raw.
+  if (type === 'raw_warehouse') {
+    const raw = await resolveCanonicalRawWarehouseId();
+    if (raw !== null) {
+      return raw;
     }
   }
   const existing = await query<{ id: number }>('SELECT id FROM locations WHERE name = $1', [name]);
@@ -187,6 +235,154 @@ async function upsertProduct(p: ProductSeed): Promise<number> {
   return row.id;
 }
 
+/**
+ * Wire the location topology (`locations.parent_id`) so the replenishment
+ * engine resolves the supply chain end-to-end. `resolveTopology` walks
+ * `parent_id` UPWARD from the requester, so the chain must be:
+ *
+ *   store -> central_warehouse -> production hub -> raw_warehouse (root)
+ *
+ * Idempotent + id-stable: matches locations by TYPE and the canonical Poster
+ * singletons (never volatile hardcoded ids), and is safe to re-run on every
+ * seed. Rules (one company — single chain):
+ *   1. every store.parent_id        = the canonical central warehouse
+ *   2. central_warehouse.parent_id  = the main production hub
+ *   3. main production hub.parent_id = the canonical raw warehouse
+ *   4. every parentless production.parent_id = the canonical raw warehouse
+ *   5. raw warehouses stay roots (parent_id stays NULL)
+ *
+ * The per-product production routing is `products.workshop_location_id`
+ * (migration 0054); the central's parent chain is only walked to find the RAW
+ * warehouse, so `central -> hub -> raw` is sufficient for raw resolution
+ * regardless of which workshop a product is actually made in.
+ */
+async function wireTopology(
+  locationIdByName: Map<string, number>,
+): Promise<void> {
+  const rawId = await resolveCanonicalRawWarehouseId();
+  const centralId = await resolveCanonicalCentralWarehouseId();
+  if (rawId === null || centralId === null) {
+    console.warn('[seed-dev]   topology: missing raw/central warehouse — skipping wiring.');
+    return;
+  }
+
+  // 5. Raw warehouses are roots — defensively clear any parent so a
+  //    placeholder raw never points at the canonical one (which would break
+  //    the chain walk).
+  await query(`UPDATE locations SET parent_id = NULL WHERE type = 'raw_warehouse'`);
+
+  // 3. Main production hub -> canonical raw. The hub is the seed-created
+  //    "Ishlab chiqarish sexi" (it sits between the central warehouse and the
+  //    raw warehouse). It must NOT point at the placeholder raw.
+  const hubId = locationIdByName.get('Ishlab chiqarish sexi') ?? null;
+  if (hubId !== null) {
+    await query('UPDATE locations SET parent_id = $1 WHERE id = $2 AND id <> $1', [rawId, hubId]);
+  }
+
+  // 4. Every production location with NO parent (the Poster-synced workshops)
+  //    -> canonical raw, so each workshop can resolve raw for its own pulls.
+  //    The seed sex floors (Tort/Perojniy/Yarim) already parent to the hub and
+  //    are left untouched (the hub resolves raw for them).
+  await query(
+    `UPDATE locations
+        SET parent_id = $1
+      WHERE type = 'production' AND parent_id IS NULL AND id <> $1`,
+    [rawId],
+  );
+
+  // 2. Central warehouse -> production hub (so the central's chain reaches a
+  //    production location AND the raw warehouse above it). Fall back to the
+  //    canonical raw directly when no hub exists (degenerate dev DB).
+  await query('UPDATE locations SET parent_id = $1 WHERE id = $2 AND id <> $1', [
+    hubId ?? rawId,
+    centralId,
+  ]);
+
+  // 1. Every store -> canonical central warehouse.
+  await query(
+    `UPDATE locations SET parent_id = $1 WHERE type = 'store' AND (parent_id IS DISTINCT FROM $1) AND id <> $1`,
+    [centralId],
+  );
+
+  const counts = await query<{ type: string; total: string; wired: string }>(
+    `SELECT type, count(*)::text AS total, count(parent_id)::text AS wired
+       FROM locations GROUP BY type ORDER BY type`,
+  );
+  console.log(
+    `[seed-dev]   topology wired: raw=${rawId} central=${centralId} hub=${hubId ?? '(none)'}`,
+  );
+  for (const c of counts.rows) {
+    console.log(`[seed-dev]     ${c.type}: ${c.wired}/${c.total} have parent_id`);
+  }
+}
+
+/**
+ * Assign a `production_manager` to EVERY `type='production'` location that has
+ * none yet (D6 — every location has its own manager). This covers the
+ * Poster-synced workshops (`poster_workshop_id` set, e.g. 115 "Сомса отдел")
+ * which are NOT in the static `LOCATIONS` array: without a manager the
+ * central → production replenishment flow stalls there, because
+ * `PATCH /api/production-orders/:id` requires the production_manager who OWNS
+ * the order's location.
+ *
+ * The workshop names are Cyrillic, so the login (which must satisfy
+ * `chk_users_username_format` = `^[a-z0-9._-]{2,32}$`) is derived from the
+ * stable `poster_workshop_id` (`pm-ws-<id>`) and falls back to the location id
+ * (`pm-ws-loc-<id>`) for the legacy seed children that have no Poster link.
+ *
+ * Idempotent:
+ *   - the location set is queried at run time (anything already owning a
+ *     production_manager via `user_locations` is excluded), so a re-seed is a
+ *     no-op once every workshop has a manager;
+ *   - `upsertUser` matches by username (never duplicates the account) and
+ *     keeps `user_locations` in sync with `ON CONFLICT DO NOTHING`;
+ *   - if a manager is already bound to the workshop it is reused — D6's
+ *     one-manager-per-location is honoured, no second manager is created.
+ */
+async function seedWorkshopManagers(): Promise<void> {
+  // Production locations with NO production_manager bound via user_locations.
+  const { rows } = await query<{ id: number; name: string; poster_workshop_id: number | null }>(
+    `SELECT l.id, l.name, l.poster_workshop_id
+       FROM locations l
+      WHERE l.type = 'production'::location_type
+        AND NOT EXISTS (
+          SELECT 1 FROM user_locations ul
+          JOIN users u ON u.id = ul.user_id
+          WHERE ul.location_id = l.id AND u.role = 'production_manager'
+        )
+      ORDER BY l.id`,
+  );
+
+  if (rows.length === 0) {
+    console.log('[seed-dev]   workshop managers: every production location already has one.');
+    return;
+  }
+
+  for (const loc of rows) {
+    // Stable, ASCII-clean, predictable login. poster_workshop_id is the natural
+    // key for Poster workshops; the legacy seed children fall back to loc id.
+    const slug =
+      loc.poster_workshop_id !== null
+        ? `pm-ws-${loc.poster_workshop_id}`
+        : `pm-ws-loc-${loc.id}`;
+    const managerId = await upsertUser(
+      `${loc.name} — boshliq`,
+      slug,
+      'production_manager',
+      loc.id,
+    );
+    // Mirror onto locations.manager_user_id only when empty, so a workshop that
+    // already names a manager (set elsewhere) is not silently overwritten.
+    await query(
+      'UPDATE locations SET manager_user_id = $1 WHERE id = $2 AND manager_user_id IS NULL',
+      [managerId, loc.id],
+    );
+    console.log(
+      `[seed-dev]   workshop manager: ${slug} / ${SEED_PASSWORD}  (${loc.name}, location ${loc.id})`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
   console.log('[seed-dev] seeding development data...');
 
@@ -201,6 +397,12 @@ async function main(): Promise<void> {
     const id = await upsertLocation(loc.name, loc.type, parentId);
     locationIdByName.set(loc.name, id);
   }
+
+  // 2b. Wire the replenishment topology (`parent_id`) idempotently. `upsertLocation`
+  //     only sets parent_id on INSERT, so an already-seeded DB keeps stale/empty
+  //     parents; this UPDATE-based pass re-asserts the whole chain on every run
+  //     (store -> central -> production hub -> raw warehouse).
+  await wireTopology(locationIdByName);
 
   // 3. One manager user per location, then attach as the location's manager.
   //    The username (login) must be unique per location: roles like
@@ -224,6 +426,13 @@ async function main(): Promise<void> {
     await query('UPDATE locations SET manager_user_id = $1 WHERE id = $2', [managerId, locId]);
     console.log(`[seed-dev]   manager login: ${username} / ${SEED_PASSWORD}  (${loc.name})`);
   }
+
+  // 3b. Assign a production_manager to EVERY remaining production workshop
+  //     (D6) — chiefly the Poster-synced sexes (poster_workshop_id set) that
+  //     are absent from the static LOCATIONS array. Without this, production
+  //     orders raised at those workshops by the replenishment engine have no
+  //     operator who can drive them new -> in_progress -> done.
+  await seedWorkshopManagers();
 
   // 4. Products.
   const productIdBySku = new Map<string, number>();

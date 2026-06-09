@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react';
 import {
   Check,
+  Factory,
   Minus,
   Plus,
   Search,
   ShoppingCart,
+  Store,
   Trash2,
   Warehouse,
   X,
@@ -26,11 +28,9 @@ import {
   LoadingState,
   PageHeader,
 } from '@/components/PageState';
-import { useToast } from '@/components/ui/toast';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
 import { usePrefersReducedMotion } from '@/hooks/usePrefersReducedMotion';
-import { ApiError } from '@/lib/api-client';
 import { formatQtyUnit } from '@/lib/format';
 import { UNIT_OPTIONS } from '@/lib/labels';
 import { matchesSearch } from '@/lib/translit';
@@ -38,7 +38,12 @@ import { cn } from '@/lib/utils';
 import type { Location, Product, StockRow } from '@/lib/types';
 import { CentralDashboardTab } from './CentralDashboardTab';
 import { CentralRequestsTab } from './CentralRequestsTab';
-import { CentralBasketPanel } from './CentralBasketPanel';
+import { CentralDispatchGrid } from './CentralDispatchGrid';
+import { CentralSummaryTiles } from './CentralSummaryTiles';
+import {
+  SendToProductionDialog,
+  ShipToStoreDialog,
+} from './CentralCardActions';
 import {
   storeOptionsFromTargets,
   type CentralStoreOption,
@@ -48,11 +53,6 @@ import {
   basketItemFromStockRow,
   type BasketItem,
 } from '@/pages/stores/storeBasket';
-import {
-  batchSuccessMessage,
-  submitStoreRequestBatch,
-  type BatchRequestItem,
-} from '@/pages/stores/storeRequestSubmit';
 
 /**
  * Markaziy sklad ish joyi — a clean, central-warehouse-scoped unified
@@ -88,10 +88,12 @@ const PAGE_TABS: { value: PageTabKey; label: string }[] = [
   { value: 'requests', label: 'So‘rovlar' },
 ];
 
-type StockStatusKey = 'all' | 'below_min' | 'low' | 'out' | 'enough';
+/** A concrete stock-status bucket (the "Hammasi" pseudo-status is gone — an
+ * empty status filter now means "all", living inside the Filter popover). */
+type StockStatusKey = 'below_min' | 'low' | 'out' | 'enough';
 
-const STOCK_STATUS_TABS: { value: StockStatusKey; label: string }[] = [
-  { value: 'all', label: 'Hammasi' },
+/** Status filter options for the "Holat" group inside the Filter popover. */
+const STOCK_STATUS_OPTIONS: { value: StockStatusKey; label: string }[] = [
   { value: 'below_min', label: 'Min’dan past' },
   { value: 'low', label: 'Kam' },
   { value: 'out', label: 'Tugagan' },
@@ -108,7 +110,7 @@ function isLowStock(row: StockRow): boolean {
   return row.qty > row.min_level && row.qty <= row.min_level * 1.2;
 }
 
-function stockStatusOf(row: StockRow): Exclude<StockStatusKey, 'all'> {
+function stockStatusOf(row: StockRow): StockStatusKey {
   if (row.qty <= 0) return 'out';
   if (row.qty <= row.min_level) return 'below_min';
   if (isLowStock(row)) return 'low';
@@ -136,7 +138,6 @@ export function CentralWorkflowPage() {
   // Only the scoped central manager ships to stores; PM is read-only.
   const canShip = user?.role === 'central_warehouse_manager';
   const reducedMotion = usePrefersReducedMotion();
-  const { notify } = useToast();
 
   // The central warehouse this workspace is scoped to. A scoped central
   // manager is pinned to their active location (falling back to their primary
@@ -154,8 +155,6 @@ export function CentralWorkflowPage() {
   // it persists across the Mahsulotlar ↔ So'rovlar tabs.
   const [basket, setBasket] = useState<Record<number, BasketItem>>({});
   const [basketOpen, setBasketOpen] = useState(false);
-  const [basketSubmitting, setBasketSubmitting] = useState(false);
-  const [shipStoreId, setShipStoreId] = useState<number | null>(null);
 
   // Downstream store options for the ship-to-store picker. The dedicated
   // `/api/replenishment/store-targets` endpoint lists EVERY store the hub may
@@ -181,7 +180,12 @@ export function CentralWorkflowPage() {
     setBasket((prev) => {
       const next = { ...prev };
       if (next[row.product_id]) delete next[row.product_id];
-      else next[row.product_id] = basketItemFromStockRow(row);
+      else {
+        // Ship-to-store: we can only send what's on hand, so the initial
+        // qty is capped at the central stock (never refill-to-max here).
+        const item = basketItemFromStockRow(row);
+        next[row.product_id] = { ...item, qty: Math.min(item.qty, row.qty) };
+      }
       return next;
     });
   }
@@ -190,9 +194,11 @@ export function CentralWorkflowPage() {
     setBasket((prev) => {
       const item = prev[productId];
       if (!item) return prev;
+      // Cap at on-hand central stock — can't ship more than we have.
+      const wanted = Number.isFinite(qty) && qty > 0 ? qty : 0;
       return {
         ...prev,
-        [productId]: { ...item, qty: Number.isFinite(qty) && qty > 0 ? qty : 0 },
+        [productId]: { ...item, qty: Math.min(wanted, item.current_qty) },
       };
     });
   }
@@ -201,7 +207,9 @@ export function CentralWorkflowPage() {
     setBasket((prev) => {
       const item = prev[productId];
       if (!item) return prev;
-      return { ...prev, [productId]: { ...item, qty: Math.max(1, item.qty + delta) } };
+      // Clamp between 1 and the on-hand central stock.
+      const next = Math.min(Math.max(1, item.qty + delta), item.current_qty);
+      return { ...prev, [productId]: { ...item, qty: next } };
     });
   }
 
@@ -217,35 +225,6 @@ export function CentralWorkflowPage() {
     setBasket({});
   }
 
-  /** Ship the basket to the chosen store via the batch endpoint. */
-  async function confirmShipment() {
-    const items: BatchRequestItem[] = basketItems
-      .filter((i) => i.qty > 0)
-      .map((i) => ({ product_id: i.product_id, qty_needed: i.qty }));
-    if (items.length === 0 || shipStoreId === null) return;
-    setBasketSubmitting(true);
-    try {
-      const res = await submitStoreRequestBatch({
-        requester_location_id: shipStoreId,
-        items,
-        note: 'Markaziy skladdan do‘konga jo‘natma',
-      });
-      const storeName =
-        storeOptions.find((s) => s.id === shipStoreId)?.name ?? 'do‘kon';
-      notify(
-        'success',
-        `${batchSuccessMessage(res, items.length)} (${storeName}).`,
-      );
-      clearBasket();
-    } catch (err: unknown) {
-      notify(
-        'error',
-        err instanceof ApiError ? err.message : 'Jo‘natib bo‘lmadi.',
-      );
-    } finally {
-      setBasketSubmitting(false);
-    }
-  }
 
   return (
     <div className="mx-auto w-full max-w-[120rem] space-y-6">
@@ -254,6 +233,8 @@ export function CentralWorkflowPage() {
         description="Markaziy sklad qoldig‘i, kelayotgan jo‘natmalar va do‘konlardan kelgan so‘rovlar — bitta joyda."
       />
 
+      <CentralSummaryTiles centralId={centralId} />
+
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <Tabs
           value={pageTab}
@@ -261,6 +242,7 @@ export function CentralWorkflowPage() {
           options={PAGE_TABS}
           ariaLabel="Bo‘lim"
         />
+        <div className="flex items-center gap-3">
         {/* Persistent Savat trigger — visible from any tab whenever the draft
             has lines. central manager only. */}
         {canShip && basketCount > 0 && (
@@ -281,6 +263,7 @@ export function CentralWorkflowPage() {
             </Badge>
           </Button>
         )}
+        </div>
       </div>
 
       {/* TAB: Dashboard — clean finished-only KPI cards + charts. */}
@@ -292,23 +275,41 @@ export function CentralWorkflowPage() {
           <CentralProductsTab
             centralId={centralId}
             canShip={canShip}
+            storeOptions={storeOptions}
             basket={basket}
             onToggleBasket={toggleBasket}
             onStepQty={stepBasketQty}
             onSetQty={setBasketQty}
             onRemove={removeBasketItem}
           />
-          {/* Sticky basket bar (Mahsulotlar) — opens the Savat slide-over. */}
+          {/* Floating basket pill — same shape/treatment as the AI button,
+              stacked just above it (bottom-right). central manager only. */}
           {canShip && basketCount > 0 && (
-            <div className="sticky bottom-4 z-10 flex items-center justify-between gap-3 rounded-lg border border-primary/40 bg-card/95 px-4 py-3 pr-[5.5rem] shadow-lg backdrop-blur sm:pr-[11rem]">
-              <span className="flex items-center gap-2 text-sm font-medium">
-                <ShoppingCart className="size-4 text-primary" aria-hidden="true" />
-                {basketCount} ta mahsulot tanlandi
+            <button
+              type="button"
+              onClick={() => setBasketOpen(true)}
+              aria-label={`Savatni ko‘rish — ${basketCount} ta mahsulot`}
+              title="Savatni ko‘rish"
+              className={cn(
+                'group fixed bottom-[5.5rem] right-6 z-40 inline-flex items-center gap-2 rounded-full',
+                'bg-primary px-4 py-3 text-sm font-medium text-primary-foreground shadow-lg shadow-primary/30',
+                'ring-1 ring-primary/40 transition-all',
+                'hover:translate-y-[-1px] hover:shadow-xl hover:shadow-primary/40',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+              )}
+            >
+              <ShoppingCart className="size-4" aria-hidden="true" />
+              <span className="hidden sm:inline">Savatni ko‘rish</span>
+              <span
+                key={basketCount}
+                className={cn(
+                  'inline-flex min-w-5 items-center justify-center rounded-full bg-primary-foreground/20 px-1.5 py-0.5 text-xs font-semibold tabular-nums',
+                  !reducedMotion && 'animate-badge-bump',
+                )}
+              >
+                {basketCount}
               </span>
-              <Button size="sm" onClick={() => setBasketOpen(true)}>
-                Savatni ko‘rish
-              </Button>
-            </div>
+            </button>
           )}
         </>
       )}
@@ -316,26 +317,15 @@ export function CentralWorkflowPage() {
       {/* TAB: So'rovlar — do'kondek: charts + kiruvchi/chiqgan + So'rov qo'shish. */}
       {pageTab === 'requests' && <CentralRequestsTab centralId={centralId} />}
 
-      {/* Ship-to-store Savat slide-over (central manager only). */}
-      {canShip && (
-        <CentralBasketPanel
+      {/* Ship-to-store dispatch grid — multi-destination (stores + production). */}
+      {canShip && centralId !== null && (
+        <CentralDispatchGrid
           open={basketOpen}
           onOpenChange={setBasketOpen}
           items={basketItems}
-          count={basketCount}
-          submitting={basketSubmitting}
-          storeOptions={storeOptions}
-          storeId={shipStoreId}
-          onStoreChange={setShipStoreId}
-          setQty={setBasketQty}
-          stepQty={stepBasketQty}
-          removeItem={removeBasketItem}
-          clear={clearBasket}
-          confirm={confirmShipment}
-          onGoToProducts={() => {
-            setBasketOpen(false);
-            setPageTab('products');
-          }}
+          stores={storeOptions}
+          centralId={centralId}
+          onDone={clearBasket}
         />
       )}
     </div>
@@ -348,8 +338,10 @@ export function CentralWorkflowPage() {
 
 interface CentralProductsTabProps {
   centralId: number | null;
-  /** Whether the ship-to-store basket controls are shown (central manager). */
+  /** Whether the ship / production controls are shown (central manager). */
   canShip: boolean;
+  /** Downstream stores the "Do'konga yuborish" dialog can target. */
+  storeOptions: CentralStoreOption[];
   /** Current basket, keyed by product_id (page-owned). */
   basket: Record<number, BasketItem>;
   onToggleBasket: (row: StockRow) => void;
@@ -361,6 +353,7 @@ interface CentralProductsTabProps {
 function CentralProductsTab({
   centralId,
   canShip,
+  storeOptions,
   basket,
   onToggleBasket,
   onStepQty,
@@ -378,12 +371,21 @@ function CentralProductsTab({
   // PM may need location names to disambiguate several central warehouses.
   const locations = useApiQuery<Location[]>(centralId === null ? '/api/locations' : null);
 
-  const [statusFilter, setStatusFilter] = useState<StockStatusKey>('all');
   const [productSearch, setProductSearch] = useState('');
+  // Status, category and unit are all groups inside the single Filter popover
+  // (owner feedback: drop the full-width status tab row). An empty `status`
+  // array means "all statuses".
   const [productFilter, setProductFilter] = useState<FilterValue>({
+    status: [],
     category: [],
     unit: [],
   });
+
+  // Direct per-product card actions (owner feedback): the row whose
+  // "Do'konga yuborish" / "Ishlab chiqarishga yuborish" dialog is open, or
+  // `null` when both are closed.
+  const [shipRow, setShipRow] = useState<StockRow | null>(null);
+  const [prodRow, setProdRow] = useState<StockRow | null>(null);
 
   // Map product_id → Product so each stock row can resolve its type
   // (finished-only gate) and its Poster category / unit.
@@ -413,10 +415,12 @@ function CentralProductsTab({
   }, [stock.data, productById]);
 
   const filteredStock = useMemo(() => {
+    const statuses = productFilter.status ?? [];
     const cats = productFilter.category ?? [];
     const units = productFilter.unit ?? [];
     return finishedRows.filter((r) => {
-      if (statusFilter !== 'all' && stockStatusOf(r) !== statusFilter) {
+      // Empty status selection = all statuses.
+      if (statuses.length > 0 && !statuses.includes(stockStatusOf(r))) {
         return false;
       }
       if (!matchesSearch(r.product_name, productSearch)) return false;
@@ -430,7 +434,7 @@ function CentralProductsTab({
       if (units.length > 0 && !units.includes(r.product_unit)) return false;
       return true;
     });
-  }, [finishedRows, statusFilter, productSearch, productFilter, productById]);
+  }, [finishedRows, productSearch, productFilter, productById]);
 
   // Distinct Poster categories across the finished rows (most-populated first).
   const categoryOptions = useMemo<FilterOption[]>(() => {
@@ -447,6 +451,15 @@ function CentralProductsTab({
 
   const STOCK_FILTER_GROUPS = useMemo<FilterGroup[]>(
     () => [
+      {
+        key: 'status',
+        label: 'Holat',
+        searchable: false,
+        options: STOCK_STATUS_OPTIONS.map((s) => ({
+          value: s.value,
+          label: s.label,
+        })),
+      },
       {
         key: 'category',
         label: 'Kategoriya',
@@ -538,13 +551,6 @@ function CentralProductsTab({
             />
           </div>
         </div>
-        <Tabs
-          value={statusFilter}
-          onValueChange={setStatusFilter}
-          options={STOCK_STATUS_TABS}
-          ariaLabel="Qoldiq holati bo‘yicha filtr"
-          fullWidth
-        />
       </header>
 
       {stock.isLoading && <LoadingState />}
@@ -625,74 +631,118 @@ function CentralProductsTab({
                         </div>
                       </div>
 
-                      {/* Ship-to-store basket control (#15) — empty card shows
-                          "Savatga qo'shish"; in basket → qty stepper + remove.
+                      {/* Direct per-product actions (owner feedback): act
+                          straight from the card. "Do'konga yuborish" needs
+                          on-hand stock; "Ishlab chiqarishga yuborish" always
+                          replenishes the central's own stock from production.
+                          The basket stays as a SECONDARY batching control.
                           central manager only. */}
-                      {canShip &&
-                        (basketItem ? (
-                          <div className="flex items-center justify-between gap-2 rounded-md border border-primary/40 bg-primary/10 px-2 py-1.5">
-                            <span className="flex items-center gap-1 text-xs font-medium text-primary">
-                              <Check className="size-3.5" aria-hidden="true" />
-                              Savatda
-                            </span>
-                            <div className="flex items-center gap-1">
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                className="size-6"
-                                onClick={() => onStepQty(row.product_id, -1)}
-                                aria-label={`${row.product_name} sonini kamaytirish`}
-                              >
-                                <Minus className="size-3.5" aria-hidden="true" />
-                              </Button>
-                              <Input
-                                type="text"
-                                inputMode="decimal"
-                                value={basketItem.qty}
-                                onChange={(e) =>
-                                  onSetQty(
-                                    row.product_id,
-                                    Number(e.target.value.replace(',', '.')),
-                                  )
-                                }
-                                aria-label={`${row.product_name} soni`}
-                                className="h-6 w-14 px-1 text-center text-xs tabular-nums"
-                              />
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                className="size-6"
-                                onClick={() => onStepQty(row.product_id, 1)}
-                                aria-label={`${row.product_name} sonini oshirish`}
-                              >
-                                <Plus className="size-3.5" aria-hidden="true" />
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                className="size-6 text-muted-foreground hover:text-destructive"
-                                onClick={() => onRemove(row.product_id)}
-                                aria-label={`${row.product_name} ni savatdan olib tashlash`}
-                              >
-                                <Trash2 className="size-3.5" aria-hidden="true" />
-                              </Button>
-                            </div>
+                      {canShip && (
+                        <div className="space-y-1.5 border-t border-border/40 pt-2">
+                          <div className="flex flex-col gap-1.5 sm:flex-row">
+                            <Button
+                              type="button"
+                              variant={row.qty <= 0 ? 'outline' : 'default'}
+                              size="sm"
+                              className="h-8 flex-1 text-xs"
+                              disabled={row.qty <= 0}
+                              onClick={() => setShipRow(row)}
+                              title={
+                                row.qty <= 0
+                                  ? 'Markazda qoldiq yo‘q — do‘konga jo‘natib bo‘lmaydi'
+                                  : undefined
+                              }
+                            >
+                              <Store className="size-3.5" aria-hidden="true" />
+                              Do‘konga
+                            </Button>
+                            <Button
+                              type="button"
+                              variant={row.qty <= 0 ? 'default' : 'outline'}
+                              size="sm"
+                              className="h-8 flex-1 text-xs"
+                              onClick={() => setProdRow(row)}
+                            >
+                              <Factory className="size-3.5" aria-hidden="true" />
+                              Ishlab chiqarishga
+                            </Button>
                           </div>
-                        ) : (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="h-8 w-full text-xs"
-                            onClick={() => onToggleBasket(row)}
-                          >
-                            <ShoppingCart className="size-3.5" aria-hidden="true" />
-                            Savatga qo‘shish
-                          </Button>
-                        ))}
+
+                          {/* Secondary basket batching control. */}
+                          {basketItem ? (
+                            <div className="flex items-center justify-between gap-2 rounded-md border border-primary/40 bg-primary/10 px-2 py-1.5">
+                              <span className="flex items-center gap-1 text-xs font-medium text-primary">
+                                <Check className="size-3.5" aria-hidden="true" />
+                                Savatda
+                              </span>
+                              <div className="flex items-center gap-1">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="size-6"
+                                  onClick={() => onStepQty(row.product_id, -1)}
+                                  aria-label={`${row.product_name} sonini kamaytirish`}
+                                >
+                                  <Minus className="size-3.5" aria-hidden="true" />
+                                </Button>
+                                <Input
+                                  type="text"
+                                  inputMode="decimal"
+                                  value={basketItem.qty}
+                                  onChange={(e) =>
+                                    onSetQty(
+                                      row.product_id,
+                                      Number(e.target.value.replace(',', '.')),
+                                    )
+                                  }
+                                  aria-label={`${row.product_name} soni`}
+                                  className="h-6 w-14 px-1 text-center text-xs tabular-nums"
+                                />
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="size-6"
+                                  disabled={
+                                    basketItem.qty >= basketItem.current_qty
+                                  }
+                                  onClick={() => onStepQty(row.product_id, 1)}
+                                  aria-label={`${row.product_name} sonini oshirish`}
+                                >
+                                  <Plus className="size-3.5" aria-hidden="true" />
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="size-6 text-muted-foreground hover:text-destructive"
+                                  onClick={() => onRemove(row.product_id)}
+                                  aria-label={`${row.product_name} ni savatdan olib tashlash`}
+                                >
+                                  <Trash2 className="size-3.5" aria-hidden="true" />
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            row.qty > 0 && (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 w-full text-xs text-muted-foreground hover:text-foreground"
+                                onClick={() => onToggleBasket(row)}
+                              >
+                                <ShoppingCart
+                                  className="size-3.5"
+                                  aria-hidden="true"
+                                />
+                                Savatga qo‘shish
+                              </Button>
+                            )
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -700,6 +750,33 @@ function CentralProductsTab({
             </section>
           ))}
         </div>
+      )}
+
+      {/* Direct card-action dialogs. Both refetch the stock query on success so
+          the card reflects the change immediately. central manager only. */}
+      {canShip && (
+        <>
+          <ShipToStoreDialog
+            open={shipRow !== null}
+            onOpenChange={(open) => {
+              if (!open) setShipRow(null);
+            }}
+            row={shipRow}
+            storeOptions={storeOptions}
+            onDone={stock.refetch}
+          />
+          {centralId !== null && (
+            <SendToProductionDialog
+              open={prodRow !== null}
+              onOpenChange={(open) => {
+                if (!open) setProdRow(null);
+              }}
+              row={prodRow}
+              centralId={centralId}
+              onDone={stock.refetch}
+            />
+          )}
+        </>
       )}
     </Card>
   );

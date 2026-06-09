@@ -45,8 +45,20 @@ function AppLayoutShell() {
   const actionsSlot = useHeaderActionsContent();
   const location = useLocation();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, locations, activeLocationId } = useAuth();
   const isStoreManager = user?.role === 'store_manager';
+
+  // Header title comes from the user's ACTUAL location (owner: "bu bo'limdan
+  // kelib chiqishi kerak") — a single-location manager sees their real
+  // location name (e.g. "Склад Центральный", "Кукча"), sourced from
+  // /api/auth/me. Resolution mirrors LocationSwitcher: active → primary →
+  // first. PMs / chain-wide users have no single location, so we fall back to
+  // the active nav-group label below.
+  const activeLocation =
+    locations.find((l) => l.id === activeLocationId) ??
+    locations.find((l) => l.is_primary) ??
+    locations[0] ??
+    null;
 
   // ESC → Bosh sahifa (owner request). A global shortcut, but it must NOT
   // hijack ESC when it is doing its normal job: closing an open dialog /
@@ -107,12 +119,12 @@ function AppLayoutShell() {
           title="Bosh sahifaga qaytish"
         >
           <CakeSlice className="size-6 shrink-0 text-primary" aria-hidden="true" />
-          {/* Show WHICH section the user is in (the active nav group), so the
-              header reads "where am I" — not just the brand. The cake icon is
-              the home button; the label falls back to the brand name on pages
-              with no group (e.g. the Home launcher). */}
+          {/* Show WHERE the user is — their REAL location name when they are
+              bound to one (manager), otherwise the active nav-group label
+              (PM / chain-wide) and finally the brand on group-less pages
+              (e.g. the Home launcher). The cake icon is the home button. */}
           <span className="hidden truncate text-lg font-bold tracking-tight sm:inline">
-            {group?.label ?? 'ADIA ERP'}
+            {activeLocation?.name ?? group?.label ?? 'ADIA ERP'}
           </span>
         </Link>
 
@@ -145,7 +157,9 @@ function AppLayoutShell() {
           </Link>
         </div>
       </header>
-      <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
+      {/* Extra bottom padding keeps content clear of the fixed
+          bottom-right floating button(s). */}
+      <main className="flex-1 overflow-y-auto p-4 pb-24 sm:p-6 sm:pb-28 lg:p-8 lg:pb-28">
         {actionsSlot && <div className="mb-4">{actionsSlot}</div>}
         <Outlet />
       </main>

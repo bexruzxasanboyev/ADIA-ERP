@@ -32,6 +32,8 @@ import type { Bot, Context } from 'grammy';
 
 import { query, withTransaction, type SqlParam, type TxClient } from '../../db/index.js';
 import { writeAudit, poolRunner } from '../../lib/audit.js';
+import { matchesSearch } from '../../lib/translit.js';
+import { bareNameRank } from '../../lib/productNameRank.js';
 import { AppError } from '../../errors/index.js';
 import { loadConfig } from '../../config/index.js';
 import type { AuthPrincipal } from '../../auth/jwt.js';
@@ -366,21 +368,25 @@ type ProductMatch =
   | { kind: 'not_found' };
 
 /**
- * Mahsulot nomini ID ga aylantirish:
- *   1. LOWER(name) aniq mos → unique.
- *   2. ILIKE prefix `<name>%` (max 4 nomzod). 1 ta → unique; ko'p → ambiguous.
- *   3. ILIKE substring `%<name>%` (fallback). 1 ta → unique; ko'p → ambiguous.
- *   4. Aks holda → not_found.
- *
- * `pg_trgm` similarity kelajakda qo'shilsa, 3-bosqich o'rniga ishlatilishi mumkin.
+ * Mahsulot nomini ID ga aylantirish (translit-aware + «(ЦЕЛЫЙ)» ustunligi):
+ *   1. LOWER(name) aniq mos → unique (tezkor yo'l).
+ *   2. Aks holda — barcha aktiv mahsulotlarni olib, `matchesSearch` (fonetik
+ *      Latin↔Kirill kalit) bilan filtrlash. SQL ILIKE Latin "napoleon" va
+ *      Kirill "НАПОЛЕОН" ni bog'lay olmaydi, shuning uchun moslik JS'da.
+ *   3. Nomzodlarni `bareNameRank` bo'yicha tartiblash — so'rov mahsulot
+ *      CORE'iga teng va «(ЦЕЛЫЙ)» bo'lsa birinchi keladi. Shu sabab yalang'och
+ *      "napoleon" → «Г/П НАПОЛЕОН (ЦЕЛЫЙ)».
+ *      - eng yaxshi nomzod rank ∈ {0,1} (CORE==so'rov, butun yoki birliksiz)
+ *        bo'lsa → unique (foydalanuvchidan so'ramaymiz).
+ *      - aks holda bir nechta nomzod → ambiguous (top 3).
+ *   4. Hech narsa moslamasa → not_found.
  */
 export async function resolveProduct(name: string): Promise<ProductMatch> {
   const trimmed = name.trim();
   if (trimmed === '') return { kind: 'not_found' };
-  // Like-escape (foydalanuvchi gapida % bo'lishi kam, lekin xavfsizroq).
-  const escaped = trimmed.replace(/\\/g, '\\\\').replace(/[%_]/g, (m) => `\\${m}`);
 
-  // 1. exact (case-insensitive).
+  // 1. exact (case-insensitive) — cheap, common when STT produced the stored
+  //    Russian name verbatim (the catalog context primes it).
   const { rows: exact } = await query<{ id: string; name: string; unit: string; type: string }>(
     `SELECT id, name, unit::text AS unit, type::text AS type FROM products
       WHERE is_active = TRUE AND LOWER(name) = LOWER($1)
@@ -391,51 +397,40 @@ export async function resolveProduct(name: string): Promise<ProductMatch> {
     const r = exact[0];
     return { kind: 'unique', id: Number(r.id), name: r.name, unit: r.unit, type: r.type };
   }
-  // 2. prefix.
-  const { rows: prefix } = await query<{ id: string; name: string; unit: string; type: string }>(
+
+  // 2. Translit-aware scan. Fetch the active catalogue (capped) and match in JS
+  //    with the phonetic key. The catalogue is small (a few thousand rows) and
+  //    a voice intent is infrequent, so an in-memory filter is acceptable.
+  const FETCH_CAP = 5000;
+  const { rows } = await query<{ id: string; name: string; unit: string; type: string }>(
     `SELECT id, name, unit::text AS unit, type::text AS type FROM products
-      WHERE is_active = TRUE AND name ILIKE $1
+      WHERE is_active = TRUE
       ORDER BY name
-      LIMIT 4`,
-    [`${escaped}%`],
+      LIMIT ${FETCH_CAP}`,
   );
-  if (prefix.length === 1) {
-    const r = prefix[0]!;
+  const matched = rows
+    .filter((r) => matchesSearch(r.name, trimmed))
+    .map((r, i) => ({ r, i, rank: bareNameRank(r.name, trimmed) }))
+    .sort((a, b) => (a.rank !== b.rank ? a.rank - b.rank : a.i - b.i));
+
+  if (matched.length === 0) {
+    return { kind: 'not_found' };
+  }
+  const best = matched[0]!;
+  // A bare name that equals a product CORE (whole «(ЦЕЛЫЙ)» = rank 0, or an
+  // unqualified base = rank 1) resolves directly — no disambiguation prompt.
+  if (matched.length === 1 || best.rank <= 1) {
+    const r = best.r;
     return { kind: 'unique', id: Number(r.id), name: r.name, unit: r.unit, type: r.type };
   }
-  if (prefix.length > 1) {
-    return {
-      kind: 'ambiguous',
-      candidates: prefix.slice(0, 3).map((r) => ({
-        id: Number(r.id),
-        name: r.name,
-        unit: r.unit,
-      })),
-    };
-  }
-  // 3. substring.
-  const { rows: sub } = await query<{ id: string; name: string; unit: string; type: string }>(
-    `SELECT id, name, unit::text AS unit, type::text AS type FROM products
-      WHERE is_active = TRUE AND name ILIKE $1
-      ORDER BY name
-      LIMIT 4`,
-    [`%${escaped}%`],
-  );
-  if (sub.length === 1) {
-    const r = sub[0]!;
-    return { kind: 'unique', id: Number(r.id), name: r.name, unit: r.unit, type: r.type };
-  }
-  if (sub.length > 1) {
-    return {
-      kind: 'ambiguous',
-      candidates: sub.slice(0, 3).map((r) => ({
-        id: Number(r.id),
-        name: r.name,
-        unit: r.unit,
-      })),
-    };
-  }
-  return { kind: 'not_found' };
+  return {
+    kind: 'ambiguous',
+    candidates: matched.slice(0, 3).map(({ r }) => ({
+      id: Number(r.id),
+      name: r.name,
+      unit: r.unit,
+    })),
+  };
 }
 
 /**

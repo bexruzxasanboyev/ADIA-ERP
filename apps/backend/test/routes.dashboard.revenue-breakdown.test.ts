@@ -225,6 +225,130 @@ describe('GET /api/dashboard/revenue-breakdown', () => {
     expect(res.status).toBe(422);
   });
 
+  it('auto-scopes a store_manager to their own store spot when no spotId is given', async () => {
+    const { resetConfigCache } = await import('../src/config/index.js');
+    resetConfigCache();
+
+    // Kukcha-like store mapped to spot 1; the stub serves only that spot's
+    // transactions so an UNSCOPED chain-wide call would have leaked spot 2's.
+    const myStore = await makeLocation(ctx.db, { type: 'store', name: 'Kukcha' });
+    await ctx.db.query(`UPDATE locations SET poster_spot_id = $1 WHERE id = $2`, [
+      1,
+      myStore,
+    ]);
+    // spot 1 = manager's store (7.4M-ish), spot 2 = another store (the leak).
+    const transactions: PosterTransactionSummary[] = [
+      txn({ transaction_id: 'a', spot_id: '1', pay_type: '1', payment_method_id: '0', payed_cash: '740000000', payed_sum: '740000000' }),
+      txn({ transaction_id: 'b', spot_id: '2', pay_type: '1', payment_method_id: '0', payed_cash: '500000000', payed_sum: '500000000' }),
+    ];
+    // Stub honours the spot_id filter so we can assert real scoping, not just
+    // the URL: only matching-spot rows come back.
+    setPosterClientForTests(
+      new PosterClient({
+        token: 'acc:test',
+        minIntervalMs: 0,
+        paymentMethodsTtlMs: 0,
+        fetcher: ((url: string | URL) => {
+          const u = typeof url === 'string' ? new URL(url) : url;
+          const m = u.pathname.split('/').pop();
+          if (m === 'settings.getPaymentMethods') {
+            return Promise.resolve(
+              new Response(JSON.stringify({ response: ADIA_METHODS }), { status: 200 }),
+            );
+          }
+          if (m === 'dash.getTransactions') {
+            const spot = u.searchParams.get('spot_id');
+            const offset = Number(u.searchParams.get('offset') ?? '0');
+            const num = Number(u.searchParams.get('num') ?? '1000');
+            const filtered =
+              spot === null
+                ? transactions
+                : transactions.filter((t) => String(t.spot_id) === spot);
+            const page = filtered.slice(offset, offset + num);
+            return Promise.resolve(
+              new Response(JSON.stringify({ response: page }), { status: 200 }),
+            );
+          }
+          if (m === 'dash.getAnalytics') {
+            return Promise.resolve(
+              new Response(JSON.stringify({ response: { data: [], counters: {} } }), {
+                status: 200,
+              }),
+            );
+          }
+          return Promise.resolve(
+            new Response(JSON.stringify({ error: { code: 30, message: 'NA' } }), {
+              status: 200,
+            }),
+          );
+        }) as unknown as typeof fetch,
+      }),
+    );
+    process.env.POSTER_TOKEN = 'acc:test';
+
+    const manager = await makeUser(ctx.db, {
+      role: 'store_manager',
+      locationId: myStore,
+    });
+    const res = await request(ctx.app)
+      .get('/api/dashboard/revenue-breakdown?range=custom&from=2026-06-06&to=2026-06-06')
+      .set('Authorization', `Bearer ${manager.token}`);
+
+    expect(res.status).toBe(200);
+    // Only the manager's own store spot (7.4M), NOT the chain total (12.4M).
+    expect(res.body.total).toBe(7_400_000);
+    expect(res.body.count).toBe(1);
+    expect(res.body.byMethod.cash).toBe(7_400_000);
+  });
+
+  it('returns an empty breakdown for a store_manager whose store has no Poster spot', async () => {
+    const { resetConfigCache } = await import('../src/config/index.js');
+    resetConfigCache();
+    // The stub would serve a fat chain-wide window; the route must NOT call it
+    // for a spot-less store — it returns zero instead of leaking the chain.
+    stubPoster({
+      transactions: [
+        txn({ pay_type: '1', payment_method_id: '0', payed_cash: '999000000', payed_sum: '999000000' }),
+      ],
+    });
+    const store = await makeLocation(ctx.db, { type: 'store', name: 'NoSpot' });
+    const manager = await makeUser(ctx.db, {
+      role: 'store_manager',
+      locationId: store,
+    });
+
+    const res = await request(ctx.app)
+      .get('/api/dashboard/revenue-breakdown?range=custom&from=2026-06-06&to=2026-06-06')
+      .set('Authorization', `Bearer ${manager.token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(0);
+    expect(res.body.count).toBe(0);
+  });
+
+  it('keeps PM chain-wide (no spot filter sent to Poster)', async () => {
+    const { resetConfigCache } = await import('../src/config/index.js');
+    resetConfigCache();
+    const { txUrls } = stubPoster({
+      transactions: [
+        txn({ spot_id: '1', pay_type: '1', payment_method_id: '0', payed_cash: '100000000', payed_sum: '100000000' }),
+        txn({ spot_id: '2', pay_type: '1', payment_method_id: '0', payed_cash: '200000000', payed_sum: '200000000' }),
+      ],
+      analyticsRevenue: 3_000_000,
+    });
+    const pm = await makeUser(ctx.db, { role: 'pm', locationId: null });
+
+    const res = await request(ctx.app)
+      .get('/api/dashboard/revenue-breakdown?range=custom&from=2026-06-06&to=2026-06-06')
+      .set('Authorization', `Bearer ${pm.token}`);
+
+    expect(res.status).toBe(200);
+    // Both spots fold into the chain total — no scoping for PM.
+    expect(res.body.total).toBe(3_000_000);
+    // No getTransactions call carried a spot_id filter.
+    expect(txUrls().every((u) => !u.includes('spot_id='))).toBe(true);
+  });
+
   it('rejects a store_manager asking for a spot outside their stores', async () => {
     const { resetConfigCache } = await import('../src/config/index.js');
     resetConfigCache();

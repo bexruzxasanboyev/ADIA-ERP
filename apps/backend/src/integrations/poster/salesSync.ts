@@ -13,9 +13,10 @@
  *     from_location_id)` keyed on `reason='sale'` rows — a re-played event
  *     never decrements stock twice.
  *
- * The line product_id is resolved via `products.poster_product_id` (NOT
- * `poster_ingredient_id`) — sales come from the menu side, leftovers come
- * from the storage side. See ADR-0002 §1.
+ * The line product_id (a `menu.getProducts` id) is resolved via
+ * `poster_menu_product_map` (built by `syncMenuProducts`), falling back to
+ * `products.poster_product_id` — NOT `poster_ingredient_id`. Sales come from the
+ * menu side, leftovers come from the storage side. See ADR-0002 §1.
  */
 import { query, withTransaction, type TxClient } from '../../db/index.js';
 import { writeAudit } from '../../lib/audit.js';
@@ -24,6 +25,7 @@ import {
   getLocationManager,
   getPmRecipients,
 } from '../../services/notify.js';
+import { recordWrongKeyedDiscrepancy } from '../../services/salesDiscrepancy.js';
 import type { PosterClient, PosterTransactionFull } from './client.js';
 import {
   finishSyncRun,
@@ -79,10 +81,29 @@ async function resolveStoreId(posterSpotId: number): Promise<number | null> {
   return rows[0]?.id ?? null;
 }
 
-/** Locate an ADIA product by Poster menu product_id (sales side). */
+/**
+ * Locate an ADIA product for a Poster sale check line's `product_id` (a
+ * `menu.getProducts` id). Resolution order (2026-06-08 root-cause fix):
+ *   1. `poster_menu_product_map` — the canonical menu-id -> product alias built
+ *      by `syncMenuProducts`. Covers BOTH name-matched prepacks (one prepack may
+ *      back many menu ids, e.g. БАУНТИ) AND materialised resale товары.
+ *   2. `products.poster_product_id` — back-compat fallback for the rare case a
+ *      menu id equals a prepack's own product_id (the two id-spaces are disjoint
+ *      in the live catalogue, but the fallback costs nothing and is safe).
+ *
+ * Returns the local id, or null when the menu product is not yet seeded — the
+ * caller skips such a line (a full re-seed then makes it resolvable).
+ */
 async function resolveSalesProductId(posterProductId: number): Promise<number | null> {
   const { rows } = await query<{ id: number }>(
-    `SELECT id FROM products WHERE poster_product_id = $1`,
+    `SELECT id FROM (
+        SELECT product_id AS id, 1 AS rank FROM poster_menu_product_map
+          WHERE poster_menu_product_id = $1
+        UNION ALL
+        SELECT id, 2 AS rank FROM products WHERE poster_product_id = $1
+     ) candidates
+     ORDER BY rank
+     LIMIT 1`,
     [posterProductId],
   );
   return rows[0]?.id ?? null;
@@ -120,6 +141,21 @@ function parseCloseDate(raw: string | undefined): Date | null {
   // Reject the year-2000 / epoch placeholder Poster emits for un-closed checks.
   if (d.getTime() < MIN_VALID_CLOSE_MS) return null;
   return d;
+}
+
+/**
+ * Parse a Poster numeric string. Poster formats LARGE quantities / sums with a
+ * THOUSANDS SEPARATOR comma — e.g. a weighted line's `num` arrives as
+ * "3,000.0000000" and a big `payed_sum` as "1,440,000" (verified live against
+ * `adia` 2026-06-08, TX 794490 / 794423). A bare `Number("3,000.00")` is `NaN`,
+ * which the qty guard silently dropped — losing the whole line's revenue. We
+ * strip commas (and any stray spaces) before parsing so weighted/bulk lines are
+ * never lost. Returns `NaN` only for genuinely non-numeric input.
+ */
+function parsePosterNumber(value: string | number | undefined | null): number {
+  if (value === undefined || value === null) return NaN;
+  if (typeof value === 'number') return value;
+  return Number(value.replace(/[,\s]/g, ''));
 }
 
 /**
@@ -181,14 +217,30 @@ export async function ingestTransaction(
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i]!;
     const posterProductId = Number(line.product_id);
-    const num = Number(line.num);
-    // Poster reports ALL money in TIYIN (1 so'm = 100 tiyin) — the same
-    // convention `paymentReportToBuckets` divides by 100. `product_price` is
-    // the per-unit price in tiyin; store it as so'm so `qty * price` agrees
-    // with the Poster payments report instead of being 100× inflated.
-    const price = Number(line.product_price ?? 0) / 100;
+    // `num` may carry a thousands-separator comma for weighted/bulk lines
+    // ("3,000.0000000") — parse comma-tolerantly or the line is lost (NaN).
+    const num = parsePosterNumber(line.num);
     if (!Number.isInteger(posterProductId) || posterProductId <= 0) continue;
     if (!Number.isFinite(num) || num <= 0) continue;
+
+    // MONEY (root-cause fix 2026-06-08, verified live against `adia`):
+    // Poster reports ALL money in TIYIN (1 so'm = 100 tiyin). The per-LINE
+    // total — NOT a per-unit price — lives in `payed_sum` (net, after
+    // discounts) with `product_price` as the gross fallback. The OLD code
+    // treated `product_price` as a per-unit price and stored it directly, so a
+    // WEIGHTED ("КГ") line where `num` is the weight (e.g. 170) blew up
+    // `qty * price` ~Nx (a single samsa line read as 3.46M instead of 20.4k).
+    //
+    // Fix: derive a TRUE per-unit `price = lineTotalSom / num`. Then every
+    // downstream `sum(qty * price)` query collapses to `sum(payed_sum)`, which
+    // reconciles EXACTLY to the Poster revenue-breakdown total. `payed_sum`
+    // wins; `product_price` is the gross fallback; 0 only when both are absent.
+    const lineTotalTiyin = parsePosterNumber(
+      line.payed_sum ?? line.product_price ?? 0,
+    );
+    const lineTotalSom = Number.isFinite(lineTotalTiyin) ? lineTotalTiyin / 100 : 0;
+    // num is already validated > 0 above, so this division is always finite.
+    const price = lineTotalSom / num;
 
     const productId = await resolveSalesProductId(posterProductId);
     if (productId === null) continue; // menu item not yet seeded — skip silently
@@ -351,6 +403,20 @@ export async function emitWrongKeyedDigests(
   for (const [storeId, lines] of byStore) {
     try {
       await withTransaction(async (txc) => {
+        // M9 (TZ §9) — PERSIST each over-sold line into the discrepancy log
+        // BEFORE building the digest. One row per (transaction, product); the
+        // recorder is idempotent (ON CONFLICT DO NOTHING) and non-fatal, and it
+        // joins THIS transaction via `txc`. The digest below is unchanged.
+        for (const l of lines) {
+          await recordWrongKeyedDiscrepancy(txc, {
+            storeId: l.storeId,
+            productId: l.productId,
+            transactionId: l.transactionId,
+            sold: l.sold,
+            had: l.had,
+            shortfall: l.shortfall,
+          });
+        }
         // Aggregate shortfall per product across all the run's checks for this
         // store (a product over-sold in 3 checks shows once with the total).
         const perProduct = new Map<number, number>();
