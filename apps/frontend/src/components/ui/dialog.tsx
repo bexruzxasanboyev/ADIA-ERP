@@ -15,7 +15,7 @@ const DialogOverlay = React.forwardRef<
   <DialogPrimitive.Overlay
     ref={ref}
     className={cn(
-      'fixed inset-0 z-50 bg-black/70 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
+      'fixed inset-0 z-50 bg-black/60 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
       className,
     )}
     {...props}
@@ -33,9 +33,9 @@ const DialogContent = React.forwardRef<
       ref={ref}
       className={cn(
         // Default (mobile <640): full-screen sheet from the top.
-        'fixed left-0 right-0 top-0 z-50 mx-auto grid h-[100dvh] w-full max-w-full gap-4 overflow-y-auto border-border bg-card p-4 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out',
+        'fixed left-0 right-0 top-0 z-50 mx-auto grid h-[100dvh] w-full max-w-full gap-4 overflow-y-auto border-border/70 bg-card p-4 shadow-pop duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out',
         // ≥ sm: centered modal. left/right unset, positioned by transform.
-        'sm:left-1/2 sm:right-auto sm:top-1/2 sm:h-auto sm:max-h-[90vh] sm:w-[calc(100vw-2rem)] sm:max-w-lg sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-lg sm:border sm:p-6',
+        'sm:left-1/2 sm:right-auto sm:top-1/2 sm:h-auto sm:max-h-[90vh] sm:w-[calc(100vw-2rem)] sm:max-w-lg sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl sm:border sm:p-6 sm:data-[state=open]:zoom-in-95 sm:data-[state=closed]:zoom-out-95',
         className,
       )}
       {...props}

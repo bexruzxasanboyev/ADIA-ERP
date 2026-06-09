@@ -11,6 +11,8 @@ export default {
     extend: {
       colors: {
         border: 'hsl(var(--border))',
+        'border-soft': 'hsl(var(--border-soft))',
+        'border-strong': 'hsl(var(--border-strong))',
         input: 'hsl(var(--input))',
         ring: 'hsl(var(--ring))',
         background: 'hsl(var(--background))',
@@ -81,10 +83,29 @@ export default {
           4: 'hsl(var(--surface-4))',
         },
       },
+      fontFamily: {
+        sans: [
+          'Inter Variable',
+          'Inter',
+          'ui-sans-serif',
+          'system-ui',
+          'sans-serif',
+        ],
+      },
       borderRadius: {
+        xl: 'calc(var(--radius) + 4px)',
         lg: 'var(--radius)',
         md: 'calc(var(--radius) - 2px)',
         sm: 'calc(var(--radius) - 4px)',
+      },
+      boxShadow: {
+        // Card elevation — barely-there drop + 1px inner top highlight that
+        // reads as a lit edge on dark surfaces.
+        card: '0 1px 2px 0 rgb(0 0 0 / 0.25), inset 0 1px 0 0 hsl(var(--highlight))',
+        'card-hover':
+          '0 6px 16px -6px rgb(0 0 0 / 0.35), inset 0 1px 0 0 hsl(var(--highlight))',
+        // Floating layers — popovers, dialogs, dropdowns.
+        pop: '0 16px 40px -12px rgb(0 0 0 / 0.5), 0 0 0 1px hsl(var(--border) / 0.6)',
       },
       keyframes: {
         'accordion-down': {

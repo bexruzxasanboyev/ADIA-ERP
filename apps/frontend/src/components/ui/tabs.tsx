@@ -28,7 +28,7 @@ export function Tabs<T extends string>({
       role="tablist"
       aria-label={ariaLabel}
       className={cn(
-        'items-center gap-1 rounded-lg border border-border bg-card p-1',
+        'items-center gap-1 rounded-xl border border-border/70 bg-surface-1 p-1',
         fullWidth ? 'flex w-full' : 'inline-flex',
         className,
       )}
@@ -43,12 +43,12 @@ export function Tabs<T extends string>({
             aria-selected={isActive}
             onClick={() => onValueChange(opt.value)}
             className={cn(
-              'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+              'rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
               fullWidth && 'flex-1',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               isActive
-                ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground',
+                ? 'bg-primary/15 text-primary shadow-none ring-1 ring-inset ring-primary/25'
+                : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
             )}
           >
             {opt.label}

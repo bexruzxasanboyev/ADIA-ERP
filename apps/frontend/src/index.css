@@ -102,7 +102,10 @@
     --border-soft: 215 20% 85%;        /* secondary divider */
     --border-strong: 215 25% 76%;      /* emphasized boundary */
 
-    --radius: 0.625rem;
+    /* Inner top edge of elevated surfaces — invisible-ish on light */
+    --highlight: 0 0% 100% / 0.6;
+
+    --radius: 0.75rem;
   }
 
   .dark {
@@ -195,6 +198,9 @@
     /* Border depth */
     --border-soft:   220 10% 16%;
     --border-strong: 220 10% 22%;
+
+    /* Inner top edge of elevated surfaces — the "lit rim" on dark cards */
+    --highlight: 220 30% 90% / 0.045;
   }
 
   * {
