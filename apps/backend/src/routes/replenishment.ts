@@ -294,7 +294,89 @@ replenishmentRouter.get(
        WHERE t.replenishment_id = $1 ORDER BY t.id`,
       [id],
     );
-    res.status(200).json({ request, transitions });
+
+    // cross-dept-flow F-Q — the linked production order, so the отдел detail
+    // page can render the zayafka it must finish ("qanday Tayyorga o'tkazaman?").
+    // ONE LEFT JOIN on the request's `production_order_id`; null when no order
+    // is linked yet. Numeric-coerced (pg returns BIGINT/NUMERIC as strings).
+    const productionOrderId = request.production_order_id;
+    let productionOrder: {
+      id: number;
+      status: string;
+      qty: number;
+      location_id: number;
+    } | null = null;
+    if (productionOrderId !== null) {
+      const { rows: poRows } = await query<{
+        id: number;
+        status: string;
+        qty: string;
+        location_id: number;
+      }>(
+        `SELECT id, status, qty, location_id
+           FROM production_orders WHERE id = $1`,
+        [productionOrderId],
+      );
+      const po = poRows[0];
+      if (po !== undefined) {
+        productionOrder = {
+          id: Number(po.id),
+          status: po.status,
+          qty: Number(po.qty),
+          location_id: Number(po.location_id),
+        };
+      }
+    }
+
+    // cross-dept-flow F-Q — every purchase order linked to this request, so the
+    // отдел can SEE / control the raw purchases its зг is waiting on ("mahsulot
+    // ombori so'rovini qanday kontrol qilaman?"). The link is the UNION of:
+    //   - the legacy direct FK `replenishment_requests.purchase_order_id`, and
+    //   - every row in the M:N `replenishment_purchase_orders` (0005) for this
+    //     request (a multi-shortage chain raises one PO per missing component).
+    // Deduped by po.id (the direct FK is usually ALSO the latest M:N row),
+    // newest first, with product name/unit joined. Empty array when none.
+    const { rows: poListRows } = await query<{
+      id: number;
+      status: string;
+      qty: string;
+      product_id: number;
+      product_name: string;
+      product_unit: string;
+      created_at: Date;
+    }>(
+      `SELECT po.id, po.status, po.qty, po.product_id,
+              p.name AS product_name, p.unit AS product_unit, po.created_at
+         FROM purchase_orders po
+         JOIN products p ON p.id = po.product_id
+        WHERE po.id IN (
+                SELECT purchase_order_id
+                  FROM replenishment_purchase_orders
+                 WHERE replenishment_id = $1
+                UNION
+                SELECT purchase_order_id
+                  FROM replenishment_requests
+                 WHERE id = $1 AND purchase_order_id IS NOT NULL
+              )
+        ORDER BY po.created_at DESC, po.id DESC`,
+      [id],
+    );
+    const purchaseOrders = poListRows.map((po) => ({
+      id: Number(po.id),
+      status: po.status,
+      qty: Number(po.qty),
+      product_id: Number(po.product_id),
+      product_name: po.product_name,
+      product_unit: po.product_unit,
+      created_at: po.created_at,
+    }));
+
+    res.status(200).json({
+      request,
+      transitions,
+      production_order: productionOrder,
+      purchase_orders: purchaseOrders,
+    });
   }),
 );
 
