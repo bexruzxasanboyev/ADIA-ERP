@@ -5,6 +5,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { ProductionDashboardTab } from './ProductionDashboardTab';
 import { ProductionRequestsTab } from './ProductionRequestsTab';
 import { ProductionTransactionsTab } from './ProductionTransactionsTab';
+import { ProductionWorkInbox } from './ProductionWorkInbox';
 import { YarimTayyorTab } from './YarimTayyorTab';
 
 /**
@@ -38,9 +39,15 @@ import { YarimTayyorTab } from './YarimTayyorTab';
  * every endpoint.
  */
 
-type PageTabKey = 'dashboard' | 'semi' | 'requests' | 'transactions';
+type PageTabKey =
+  | 'inbox'
+  | 'dashboard'
+  | 'semi'
+  | 'requests'
+  | 'transactions';
 
 const PAGE_TABS: { value: PageTabKey; label: string }[] = [
+  { value: 'inbox', label: 'Ishlarim' },
   { value: 'dashboard', label: 'Dashboard' },
   { value: 'semi', label: 'Yarim tayyor' },
   { value: 'requests', label: 'So‘rovlar' },
@@ -56,8 +63,14 @@ export function ProductionWorkflowPage() {
   // location_id). PM sees the chain-wide production view (productionId = null).
   const pinnedProductionId = activeLocationId ?? user?.location_id ?? null;
   const productionId = isPm ? null : pinnedProductionId;
+  // Only the scoped production manager acts; PM is read-only chain-wide.
+  const isProductionManager = user?.role === 'production_manager';
 
-  const [pageTab, setPageTab] = useState<PageTabKey>('dashboard');
+  // F-V (research Rule 12): the scoped отдел manager lands on «Ishlarim» — the
+  // simple bump-style feed of "what needs me now". PM keeps the Dashboard default.
+  const [pageTab, setPageTab] = useState<PageTabKey>(
+    isProductionManager ? 'inbox' : 'dashboard',
+  );
 
   return (
     <div className="mx-auto w-full max-w-[120rem] space-y-6">
@@ -72,6 +85,17 @@ export function ProductionWorkflowPage() {
         options={PAGE_TABS}
         ariaLabel="Bo‘lim"
       />
+
+      {/* TAB: Ishlarim (F-V simple-mode feed) — the scoped отдел manager's
+          default: an action-only bump feed in plain words. Accept/reject the
+          gate inline; «Tayyor — skladga» finishes the linked production order. */}
+      {pageTab === 'inbox' && (
+        <ProductionWorkInbox
+          productionId={productionId}
+          canAct={isProductionManager}
+          onOpenDetails={() => setPageTab('requests')}
+        />
+      )}
 
       {/* TAB: Dashboard — production KPI cards + charts (central-style). */}
       {pageTab === 'dashboard' && (

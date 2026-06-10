@@ -121,11 +121,21 @@ export default {
           '50%': { transform: 'scale(1.1)' },
           '100%': { transform: 'scale(1)' },
         },
+        // A brief attention pulse on the «Ishlarim» header when a new task
+        // arrives (useInboxAlert, research Rule 4) — a soft primary-tinted
+        // glow that fades out, so a frontline worker notices the count rose
+        // without staring at the screen. Honours prefers-reduced-motion via
+        // the global reset in index.css.
+        'inbox-flash': {
+          '0%': { backgroundColor: 'hsl(var(--primary) / 0.18)' },
+          '100%': { backgroundColor: 'transparent' },
+        },
       },
       animation: {
         'accordion-down': 'accordion-down 0.2s ease-out',
         'accordion-up': 'accordion-up 0.2s ease-out',
         'badge-bump': 'badge-bump 0.15s ease-out',
+        'inbox-flash': 'inbox-flash 1.1s ease-out',
       },
     },
   },

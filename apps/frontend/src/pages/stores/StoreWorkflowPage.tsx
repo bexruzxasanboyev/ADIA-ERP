@@ -75,6 +75,8 @@ import { TERMINAL_REPLENISHMENT_STATUSES } from '@/lib/types';
 import { StoreRequestCreateDialog } from './StoreRequestCreateDialog';
 import { StoreReceiveDialog } from './StoreReceiveDialog';
 import { StoreWorkInbox } from './StoreWorkInbox';
+import { useInboxAlert } from '@/pages/replenishment/inbox/useInboxAlert';
+import { useInboxPolling } from '@/pages/replenishment/inbox/useInboxPolling';
 import { StoreAiProposalsDialog } from './StoreAiProposalsDialog';
 import { StoreMultiSelect } from './StoreMultiSelect';
 import { StoreMinMaxEditDialog } from './StoreMinMaxEditDialog';
@@ -894,6 +896,31 @@ export function StoreWorkflowPage() {
     [boardRows, selectedStoreSet],
   );
 
+  // «Ishlarim» (F-V) — the actionable count is the arrived shipments awaiting
+  // THIS store's receive (mirrors StoreWorkInbox's `receivable` predicate). It
+  // drives the audio/title/flash alert + the 25s poll; only the scoped store
+  // role gets the attention cue (PM is a read-only multi-store viewer).
+  const inboxCount = useMemo(() => {
+    if (!hasSelection) return 0;
+    let n = 0;
+    for (const r of replen.data ?? []) {
+      const flow = r as FlowRequest;
+      if (
+        selectedStoreSet.has(r.requester_location_id) &&
+        r.status === 'CLOSED' &&
+        flow.closure_reason == null &&
+        flow.fulfiller_accepted_at != null
+      ) {
+        n += 1;
+      }
+    }
+    return n;
+  }, [replen.data, selectedStoreSet, hasSelection]);
+
+  const inboxActive = isStoreManager && pageTab === 'inbox';
+  const { flash: inboxFlash } = useInboxAlert(inboxCount, inboxActive);
+  useInboxPolling([replen.refetch, stock.refetch], inboxActive);
+
   const requestTabOptions: { value: RequestTabKey; label: string }[] = [
     { value: 'board', label: 'Doska' },
     { value: 'sent', label: `So‘rov · ${sent.length}` },
@@ -1008,6 +1035,7 @@ export function StoreWorkflowPage() {
             <StoreWorkInbox
               requests={replen.data ?? []}
               storeScope={selectedStoreSet}
+              flash={inboxFlash}
               onReceive={(req) => setReceiveTarget(req)}
               onOpenAiProposals={
                 isStoreManager ? () => setAiProposalsOpen(true) : null

@@ -39,6 +39,7 @@ import { cn } from '@/lib/utils';
 import type { Location, Product, StockRow } from '@/lib/types';
 import { CentralDashboardTab } from './CentralDashboardTab';
 import { CentralRequestsTab } from './CentralRequestsTab';
+import { CentralWorkInbox } from './CentralWorkInbox';
 import { CentralDispatchGrid } from './CentralDispatchGrid';
 import { CentralSummaryTiles } from './CentralSummaryTiles';
 import {
@@ -81,9 +82,10 @@ import {
  * The backend RBAC-scopes every endpoint.
  */
 
-type PageTabKey = 'dashboard' | 'products' | 'requests';
+type PageTabKey = 'inbox' | 'dashboard' | 'products' | 'requests';
 
 const PAGE_TABS: { value: PageTabKey; label: string }[] = [
+  { value: 'inbox', label: 'Ishlarim' },
   { value: 'dashboard', label: 'Dashboard' },
   { value: 'products', label: 'Mahsulotlar' },
   { value: 'requests', label: 'So‘rovlar' },
@@ -154,7 +156,12 @@ export function CentralWorkflowPage() {
   const pinnedCentralId = activeLocationId ?? user?.location_id ?? null;
   const centralId = isPm ? null : pinnedCentralId;
 
-  const [pageTab, setPageTab] = useState<PageTabKey>('dashboard');
+  // F-V (research Rule 12): the scoped manager lands on «Ishlarim» — the simple
+  // action feed of "what needs me now". PM (a chain-wide read-only viewer) keeps
+  // the Dashboard default.
+  const [pageTab, setPageTab] = useState<PageTabKey>(
+    canShip ? 'inbox' : 'dashboard',
+  );
 
   // Ship-to-store basket (owner feedback #15). The central manager queues
   // finished products on the Mahsulotlar cards, picks a destination store in
@@ -276,9 +283,20 @@ export function CentralWorkflowPage() {
         ariaLabel="Bo‘lim"
       />
 
-      {/* KONTENT — the hero KPI strip leads the content, AFTER the tab layer
-          (DESIGN.md §9 scaffold order). */}
-      <CentralSummaryTiles centralId={centralId} />
+      {/* TAB: Ishlarim (F-V simple-mode feed) — the scoped manager's default:
+          an action-only feed in plain words, calm (no KPI strip). Delegates to
+          the SAME dialogs the So'rovlar power view uses. */}
+      {pageTab === 'inbox' && (
+        <CentralWorkInbox
+          centralId={centralId}
+          canWrite={canShip}
+          onOpenDetails={() => setPageTab('requests')}
+        />
+      )}
+
+      {/* KONTENT — the hero KPI strip leads the content on every NON-inbox tab,
+          AFTER the tab layer (DESIGN.md §9 scaffold order). */}
+      {pageTab !== 'inbox' && <CentralSummaryTiles centralId={centralId} />}
 
       {/* TAB: Dashboard — clean finished-only KPI cards + charts. */}
       {pageTab === 'dashboard' && <CentralDashboardTab centralId={centralId} />}
