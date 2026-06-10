@@ -110,8 +110,8 @@ function AppLayoutShell() {
   const showStoreManagerTabs = isStoreManager && !centerSlot;
 
   return (
-    <div className="flex h-screen w-full flex-col overflow-hidden bg-background">
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border/70 bg-background px-3 sm:px-6 lg:px-8">
+    <div className="app-ambient flex h-screen w-full flex-col overflow-hidden">
+      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border/70 bg-surface-0/80 px-3 sm:px-6 lg:px-8">
         <Link
           to={isStoreManager ? '/store-workflow' : '/home'}
           className="flex min-w-0 shrink-0 items-center gap-2 rounded-md px-1 py-1 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -160,8 +160,12 @@ function AppLayoutShell() {
       {/* Extra bottom padding keeps content clear of the fixed
           bottom-right floating button(s). */}
       <main className="flex-1 overflow-y-auto p-4 pb-24 sm:p-6 sm:pb-28 lg:p-8 lg:pb-28">
-        {actionsSlot && <div className="mb-4">{actionsSlot}</div>}
-        <Outlet />
+        {/* Cap content width on ultra-wide monitors so pages keep a
+            readable measure instead of sprawling edge-to-edge. */}
+        <div className="mx-auto w-full max-w-[1600px]">
+          {actionsSlot && <div className="mb-4">{actionsSlot}</div>}
+          <Outlet />
+        </div>
       </main>
 
       <AssistantButton />

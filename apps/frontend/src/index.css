@@ -258,6 +258,20 @@
  * muted-foreground on hover.
  */
 @layer utilities {
+  /*
+   * Ambient app backdrop — two faint corner glows (cobalt top-right, teal
+   * top-left) over the base background so large dark pages don't read as
+   * flat black. Used by the AppLayout shell and the login screen; tokens
+   * (--glow-primary / --chain-raw-glow) adapt per theme.
+   */
+  .app-ambient {
+    background-color: hsl(var(--background));
+    background-image:
+      radial-gradient(1100px 520px at 78% -120px, hsl(var(--glow-primary)), transparent 62%),
+      radial-gradient(900px 480px at -140px -100px, hsl(var(--chain-raw-glow)), transparent 58%);
+    background-attachment: fixed;
+  }
+
   .scrollbar-thin {
     scrollbar-width: thin;
     scrollbar-color: hsl(var(--border)) transparent;

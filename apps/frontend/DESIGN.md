@@ -54,6 +54,35 @@ Barcha vizual qarorlar `src/components/ui/*` primitivlarida va `src/index.css` t
 5. `p-6`/`p-8` bilan o'zboshimcha padding — Card o'z paddingiga ega.
 6. `text-lg`+ sarlavhalarni card ichida ishlatish (CardTitle text-base).
 
-## 8. Maqsadli his (vibe)
+## 8. Status tizimi v2 — "qizil toshqin" taqiqlanadi
+
+Eski uslub (qizil border + qizil qiymat + qizil badge bir cardda) TAQIQLANADI. Holat KARTANI emas, BITTA elementni bo'yaydi:
+
+- Card har doim neytral: `<Card>` (border/rang o'zgarmaydi, status uchun border bo'yalmaydi).
+- Holat ko'rsatkichi: faqat `<Badge variant>` (pill, o'ng yuqorida) + `<StockMeter>` to'ldirish rangi.
+- Qiymat (qty) rangi: default `text-foreground`; FAQAT qty=0 da `text-destructive`, min'dan past bo'lsa `text-warning`. Boshqa hech narsa qizarmasin.
+
+### Stok kartasi v2 (do'kon/markaziy/sklad mahsulot kartalari)
+
+```
+┌──────────────────────────────────┐
+│ Mahsulot nomi (truncate)   [Badge]│  ← font-medium text-sm; Badge o'ngda
+│ 🏪 Lokatsiya · turkum             │  ← text-xs text-muted-foreground
+│                                  │
+│ 4 000 gr  (4 kg)                 │  ← text-xl font-semibold tabular-nums
+│ ▓▓▓▓▓▓░░|░░░░░░░░               │  ← <StockMeter ratio minRatio tone>
+│ Min 1 kg          Max 2 kg       │  ← text-xs text-muted-foreground, justify-between
+└──────────────────────────────────┘
+```
+
+- `<StockMeter>` — `@/components/ui/stock-meter`: `ratio = qty/max`, `minRatio = min/max`, `tone`: qty<=0 → `danger`, qty<min → `warning`, aks holda `success` (min/max yo'q bo'lsa `neutral`, meter ko'rsatilmaydi ham bo'ladi).
+- "Qoldiq" / "Min / Max" so'z-label qatorlari OLIB TASHLANADI — meter + ikki chetdagi min/max o'zi tushuntiradi.
+- Grid: `grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4` — kichikroq, zichroq kartalar.
+
+### Filtr tablari
+
+`fullWidth` segmented tablar (butun enini cho'zilgan) TAQIQLANADI — kompakt `inline-flex` segmented, hisob label ichida: `Hammasi · 66`. Holat tablarida nuqta-indikator mumkin: `● Tugagan · 12` (nuqta `text-destructive`).
+
+## 9. Maqsadli his (vibe)
 
 Linear/Vercel uslubidagi qorong'u premium: tinch grafit sirtlar, bitta cobalt aksent, pill-badge'lar, mayin 1px "lit edge" soyalar, zich lekin nafas oladigan jadvallar, uppercase mikro-yorliqlar. Bezak uchun gradient/glow qo'shmang — faqat tokenlardagilar.
