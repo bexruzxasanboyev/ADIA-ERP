@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import {
   ArrowDownLeft,
   ArrowUpRight,
@@ -9,7 +9,6 @@ import {
 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Tabs } from '@/components/ui/tabs';
 import {
   Table,
   TableBody,
@@ -48,7 +47,7 @@ import {
   splitBoards,
   type ProductionAssignment,
 } from '@/pages/replenishment/board/boardFilters';
-import type { FlowRequest } from '@/lib/replenishmentFlow';
+import type { FlowRequest, KanbanColumn } from '@/lib/replenishmentFlow';
 import { ManbaRejaModal } from './ManbaRejaModal';
 
 /**
@@ -75,10 +74,9 @@ import { ManbaRejaModal } from './ManbaRejaModal';
  * live on the Dashboard tab only — this view holds nothing but requests.)
  */
 
-// F-O (owner: "nega 2 ta kanban? murakkab bo'lib ketibdi") — the legacy
-// stage-list strip duplicated the board's columns 1:1 and is GONE; only the
-// two non-board views survive as a compact secondary row.
-type PipelineTab = 'transactions' | 'xom_ashyo';
+// F-O/F-P (owner): the board IS the flow — the legacy stage strip is gone and
+// the raw purchase orders ride the board itself; only the movements history
+// remains below.
 
 /** A movement classified relative to the отдел (receipt / issue). */
 type DeptMovement = StockMovement & {
@@ -132,7 +130,6 @@ export function ProductionRequestsTab({
   // Only a scoped production manager may run a Manba reja; PM is read-only.
   const canExecute = user?.role === 'production_manager';
 
-  const [tab, setTab] = useState<PipelineTab>('xom_ashyo');
   const [dateRange, setDateRange] = useState<DateRangeValue>({ range: 'month' });
   // The incoming production request whose "Manba reja" modal is open.
   const [planTarget, setPlanTarget] = useState<FlowRequest | null>(null);
@@ -257,10 +254,25 @@ export function ProductionRequestsTab({
     );
   }, [purchaseOrders.data, purchaseOrders.error]);
 
-  const tabOptions: { value: PipelineTab; label: string }[] = [
-    { value: 'xom_ashyo', label: `Xom-ashyo so‘rovlari · ${poRows.length}` },
-    { value: 'transactions', label: 'Tranzaksiyalar' },
-  ];
+  // F-P (owner: "homashyo so'rovini ham bitta kanbanga qo'shib yubor") — the
+  // отдел's raw purchase orders ride the SAME board as Chiqgan-side cards:
+  // draft («Loyiha») → Kutuvda, approved → Tasdiqlandi, received/cancelled →
+  // Yopildi. The separate Xom-ashyo tab is gone.
+  const poExtraCards = useMemo<Partial<Record<KanbanColumn, ReactNode[]>>>(() => {
+    const columnOf = (status: PurchaseOrder['status']): KanbanColumn =>
+      status === 'draft'
+        ? 'kutuvda'
+        : status === 'approved'
+          ? 'tasdiqlandi'
+          : 'yopilgan';
+    const map: Partial<Record<KanbanColumn, ReactNode[]>> = {};
+    for (const po of poRows) {
+      (map[columnOf(po.status)] ??= []).push(
+        <PoBoardCard key={`po-${po.id}`} po={po} />,
+      );
+    }
+    return map;
+  }, [poRows]);
 
   const listLoading = allRequests.isLoading;
   const listError = allRequests.error;
@@ -295,6 +307,7 @@ export function ProductionRequestsTab({
           incomingEmptyLabel="Kelgan so‘rov yo‘q."
           outgoingEmptyLabel="Chiqgan so‘rov yo‘q."
           actionScope={scope ?? undefined}
+          outgoingExtraCards={poExtraCards}
           renderIncomingAction={(req) => (
             <Button
               size="sm"
@@ -312,15 +325,13 @@ export function ProductionRequestsTab({
         />
       )}
 
-      {/* F-O: the board above IS the request flow — no second stage strip.
-          Only the two non-board views remain on a compact secondary row. */}
+      {/* F-O/F-P: the board above IS the whole flow (raw POs included) — the
+          only non-board view left is the movements history. */}
       <div className="flex items-center justify-between gap-4">
-        <Tabs
-          value={tab}
-          onValueChange={setTab}
-          options={tabOptions}
-          ariaLabel="Qo‘shimcha ro‘yxatlar"
-        />
+        <h2 className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          <History className="size-3.5" aria-hidden="true" />
+          Tranzaksiyalar
+        </h2>
         {isPm && (
           <Badge
             variant="secondary"
@@ -332,10 +343,8 @@ export function ProductionRequestsTab({
         )}
       </div>
 
-      {/* KUTUVDA — requests awaiting the next step. */}
       {/* TRANZAKSIYALAR — every stock movement touching the отдел. */}
-      {tab === 'transactions' && (
-        <Card>
+      <Card>
           {movements.isLoading && <LoadingState />}
           {!movements.isLoading && movements.error && (
             <ErrorState message={movements.error} onRetry={movements.refetch} />
@@ -442,28 +451,6 @@ export function ProductionRequestsTab({
             Bo‘lim harakatlari (qabul qildi / chiqardi) — eng yangisi yuqorida.
           </PipelineFootnote>
         </Card>
-      )}
-
-      {/* XOM-ASHYO SO'ROVLARI — purchase orders the отдел triggered toward the
-          raw-material warehouse. A 403/error (RBAC not yet granted) collapses to
-          the empty state so the rest of the tab keeps working. */}
-      {tab === 'xom_ashyo' && (
-        <Card>
-          {purchaseOrders.isLoading && <LoadingState />}
-          {!purchaseOrders.isLoading && poRows.length === 0 && (
-            <EmptyState message="Xom-ashyo so‘rovlari yo‘q." />
-          )}
-          {!purchaseOrders.isLoading && poRows.length > 0 && (
-            <PurchaseOrderList rows={poRows} />
-          )}
-          <PipelineFootnote
-            icon={<ShoppingCart className="size-3.5" aria-hidden="true" />}
-          >
-            Bu — зг yetmaganda xom-ashyo omboriga avtomatik chiqarilgan
-            so‘rovlar (sex skladidagi zaxira kamayganda tizim o‘zi yaratadi).
-          </PipelineFootnote>
-        </Card>
-      )}
 
       {/* The Jira card — opened on any board card click. Production incoming
           gets the "Manba reja" action inside the modal too. */}
@@ -590,43 +577,53 @@ function PipelineFootnote({
 }
 
 // ---------------------------------------------------------------------------
-// PurchaseOrderList — one row per xom-ashyo purchase order: id · product ·
-// qty · → target raw warehouse · status badge · date, with the supplier name
-// when known. (The stage-row PipelineList it once mirrored is gone — F-O.)
+// PoBoardCard (F-P) — a raw purchase order AS A BOARD CARD on the Chiqgan
+// side, mirroring RequestCard's anatomy (accent rail · top row · product +
+// qty chip · destination line · chips) so the отдел reads one visual
+// language. The card waits on the raw warehouse, so it renders slightly
+// receded, like every "boshqa tomon kutilmoqda" request card.
 // ---------------------------------------------------------------------------
 
-function PurchaseOrderList({ rows }: { rows: PurchaseOrder[] }) {
+function PoBoardCard({ po }: { po: PurchaseOrder }) {
   return (
-    <ul className="divide-y divide-border/40">
-      {rows.map((po) => (
-        <li
-          key={po.id}
-          className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between"
+    <div className="relative shrink-0 overflow-hidden rounded-lg border border-border/70 bg-card py-2.5 pl-3 pr-3 opacity-75">
+      <span
+        aria-hidden="true"
+        className="absolute inset-y-0 left-0 w-1 bg-warning"
+      />
+      <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+        <span className="flex items-center gap-1">
+          <ShoppingCart className="size-3" aria-hidden="true" />
+          Xarid #{po.id}
+        </span>
+        <span className="tabular-nums">{formatDateTime(po.created_at)}</span>
+      </div>
+      <div className="mt-1 flex items-start justify-between gap-2">
+        <p className="min-w-0 truncate text-sm font-semibold leading-tight">
+          {po.product_name}
+        </p>
+        <Badge variant="outline" className="shrink-0 tabular-nums">
+          {formatQtyUnit(po.qty, po.product_unit)}
+        </Badge>
+      </div>
+      <p className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
+        <Warehouse className="size-3 shrink-0" aria-hidden="true" />
+        <span className="truncate">{po.target_location_name}</span>
+        {po.supplier_name && (
+          <span className="truncate">· {po.supplier_name}</span>
+        )}
+      </p>
+      <div className="mt-2 flex flex-wrap items-center gap-1">
+        <Badge
+          variant={PURCHASE_ORDER_STATUS_VARIANT[po.status]}
+          className="text-[10px]"
         >
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
-            <span className="text-xs text-muted-foreground">#{po.id}</span>
-            <span className="font-medium">{po.product_name}</span>
-            <span className="tabular-nums text-muted-foreground">
-              {formatQtyUnit(po.qty, po.product_unit)}
-            </span>
-            <span className="flex items-center gap-1 text-xs text-muted-foreground">
-              <Warehouse className="size-3" aria-hidden="true" />
-              {po.target_location_name}
-            </span>
-            {po.supplier_name && (
-              <span className="text-xs text-muted-foreground">
-                {po.supplier_name}
-              </span>
-            )}
-            <Badge variant={PURCHASE_ORDER_STATUS_VARIANT[po.status]}>
-              {PURCHASE_ORDER_STATUS_LABELS[po.status]}
-            </Badge>
-          </div>
-          <span className="whitespace-nowrap text-xs text-muted-foreground sm:text-right">
-            {formatDateTime(po.created_at)}
-          </span>
-        </li>
-      ))}
-    </ul>
+          {PURCHASE_ORDER_STATUS_LABELS[po.status]}
+        </Badge>
+        <Badge variant="secondary" className="text-[10px]">
+          Xom-ashyo xaridi
+        </Badge>
+      </div>
+    </div>
   );
 }

@@ -63,6 +63,11 @@ export interface BoardWorkspaceProps {
   onlySide?: BoardSide;
   /** Per-host column re-voicing, passed through to {@link RequestKanban}. */
   columnLabels?: Partial<Record<KanbanColumn, string>>;
+  /**
+   * F-P: non-request cards folded into the OUTGOING side's columns (e.g. the
+   * отдел's raw purchase orders). Counted into the toggle label too.
+   */
+  outgoingExtraCards?: Partial<Record<KanbanColumn, ReactNode[]>>;
 }
 
 export function BoardWorkspace({
@@ -78,14 +83,24 @@ export function BoardWorkspace({
   actionScope,
   onlySide,
   columnLabels,
+  outgoingExtraCards,
 }: BoardWorkspaceProps) {
   const [toggledSide, setSide] = useState<BoardSide>(defaultSide);
   // F-N: a single-sided host has no toggle — the side is fixed.
   const side = onlySide ?? toggledSide;
 
+  const outgoingExtraCount = outgoingExtraCards
+    ? Object.values(outgoingExtraCards).reduce(
+        (n, cards) => n + (cards?.length ?? 0),
+        0,
+      )
+    : 0;
   const sideOptions: { value: BoardSide; label: string }[] = [
     { value: 'incoming', label: `📥 Kelgan · ${incoming.length}` },
-    { value: 'outgoing', label: `📤 Chiqgan · ${outgoing.length}` },
+    {
+      value: 'outgoing',
+      label: `📤 Chiqgan · ${outgoing.length + outgoingExtraCount}`,
+    },
   ];
 
   const active = side === 'incoming' ? incoming : outgoing;
@@ -117,6 +132,7 @@ export function BoardWorkspace({
             actionScope !== undefined ? { side, scope: actionScope } : undefined
           }
           columnLabels={columnLabels}
+          extraCards={side === 'outgoing' ? outgoingExtraCards : undefined}
         />
       </div>
     </div>

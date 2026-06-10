@@ -84,6 +84,14 @@ export interface RequestKanbanProps {
    * keys keep the canonical label.
    */
   columnLabels?: Partial<Record<KanbanColumn, string>>;
+  /**
+   * F-P (owner: "homashyo so'rovini ham bitta kanbanga qo'shib yubor") —
+   * host-supplied NON-request cards appended to a column after the request
+   * cards (e.g. the отдел's raw purchase orders on the Chiqgan side: draft →
+   * Kutuvda, approved → Tasdiqlandi, received → Yopildi). They count toward
+   * the column badge and suppress its empty state.
+   */
+  extraCards?: Partial<Record<KanbanColumn, ReactNode[]>>;
 }
 
 export function RequestKanban({
@@ -94,6 +102,7 @@ export function RequestKanban({
   fill = false,
   viewer,
   columnLabels,
+  extraCards,
 }: RequestKanbanProps) {
   const byColumn = useMemo(() => {
     const map: Record<KanbanColumn, FlowRequest[]> = {
@@ -121,6 +130,7 @@ export function RequestKanban({
     >
       {KANBAN_COLUMNS.map(({ column, label: canonical }) => {
         const items = byColumn[column];
+        const extras = extraCards?.[column] ?? [];
         const label = columnLabels?.[column] ?? canonical;
         return (
           <section
@@ -146,7 +156,7 @@ export function RequestKanban({
                 {label}
               </span>
               <Badge variant="outline" className="tabular-nums">
-                {items.length}
+                {items.length + extras.length}
               </Badge>
             </header>
             <div
@@ -155,21 +165,24 @@ export function RequestKanban({
                 fill && 'scrollbar-thin min-h-0 flex-1 overflow-y-auto',
               )}
             >
-              {items.length === 0 ? (
+              {items.length === 0 && extras.length === 0 ? (
                 <p className="px-1 py-6 text-center text-xs text-muted-foreground">
                   {emptyLabel ?? '—'}
                 </p>
               ) : (
-                items.map((req) => (
-                  <RequestCard
-                    key={req.id}
-                    req={req}
-                    column={column}
-                    action={renderAction?.(req)}
-                    onOpen={onOpen ? () => onOpen(req) : undefined}
-                    viewer={viewer}
-                  />
-                ))
+                <>
+                  {items.map((req) => (
+                    <RequestCard
+                      key={req.id}
+                      req={req}
+                      column={column}
+                      action={renderAction?.(req)}
+                      onOpen={onOpen ? () => onOpen(req) : undefined}
+                      viewer={viewer}
+                    />
+                  ))}
+                  {extras}
+                </>
               )}
             </div>
           </section>
