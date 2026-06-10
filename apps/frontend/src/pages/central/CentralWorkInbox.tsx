@@ -1,12 +1,10 @@
 import { useMemo, useState } from 'react';
-import { ChevronDown, PackageCheck, Send } from 'lucide-react';
-import { Card } from '@/components/ui/card';
-import { cn } from '@/lib/utils';
+import { PackageCheck, Send } from 'lucide-react';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useToast } from '@/components/ui/toast';
 import { ApiError } from '@/lib/api-client';
 import { rejectFulfiller } from '@/lib/replenishmentActions';
-import { formatQtyUnit } from '@/lib/format';
+import { formatQtyUnit, formatRelative } from '@/lib/format';
 import { groupByBatch } from '@/lib/groupByBatch';
 import { pipelineStageOf } from '@/lib/pipeline';
 import type {
@@ -15,12 +13,18 @@ import type {
   StockRow,
   Unit,
 } from '@/lib/types';
-import type { FlowRequest } from '@/lib/replenishmentFlow';
+import type { FlowRequest, Journey } from '@/lib/replenishmentFlow';
 import {
   StatusTracker,
   WorkCard,
   WorkFeed,
+  WorkSection,
 } from '@/pages/replenishment/inbox/WorkFeed';
+import {
+  centralBucketOf,
+  partitionByBucket,
+  WORK_BUCKET_LABELS,
+} from '@/pages/replenishment/inbox/workBuckets';
 import { useInboxAlert } from '@/pages/replenishment/inbox/useInboxAlert';
 import { useInboxPolling } from '@/pages/replenishment/inbox/useInboxPolling';
 import { CENTRAL_TRACKER_STEPS, centralTrackerIndex } from './centralInboxTracker';
@@ -29,25 +33,21 @@ import { ProductionReceiveDialog } from './ProductionReceiveDialog';
 import { CancelDialog } from '@/pages/replenishment/CancelDialog';
 
 /**
- * Markaziy sklad — «Ishlarim» (phase F-V). The central manager's DEFAULT screen:
- * a calm vertical card feed of "what needs me now", built on the shared kit
- * (research §4 / Rule 1). The kanban + transactions stay one tab away under
- * So'rovlar («Batafsil»).
+ * Markaziy sklad — «Ishlarim» (Variant A + mini-xarita). The central manager's
+ * ONLY screen: a single feed of large cards in three fixed groups — YANGI /
+ * JARAYONDA / TAYYOR — one big primary button per card, plain-Uzbek status
+ * lines, and a {@link ChainStrip} mini chain-map per card (the `journey`
+ * field, backend in parallel — hidden until it lands).
  *
- * Two action card types (everyday Uzbek — NO status terms):
- *   1. A store request waiting to be sent (incoming Kutuvda, not yet accepted):
- *      «Kukcha 8 kg Napoleon so'radi» → [Jo'natish] (the existing FulfillmentModal,
- *      whole batch) + [Rad] (rejectFulfiller via a reason dialog).
- *   2. A production arrival awaiting receipt (DONE_TO_WAREHOUSE):
- *      «Napoleon-otdel 6 kg Napoleon tayyorladi — qabul qiling» → [Qabul qildim]
- *      (the existing ProductionReceiveDialog, brak flow inside).
+ *   YANGI     — a store order awaiting the send decision (batch = one card):
+ *               «Kukcha 8 kg Napoleon so'radi» → [Jo'natish] + [Rad].
+ *   JARAYONDA — shipped to a store, awaiting the store's receive — watch
+ *               cards (chain strip / tracker, no button).
+ *   TAYYOR    — a production arrival to confirm-receive:
+ *               «Tort sexi 6 kg Napoleon tayyorladi» → [Qabul qildim].
  *
- * Plus a muted, collapsed «Kutilmoqda (N)» section: rows shipped to a store and
- * awaiting the store's receipt, with a {@link StatusTracker} (research Rule 6).
- *
- * Self-contained data layer mirroring CentralRequestsTab so the feed lives
- * independently of the power view. Every action delegates to an EXISTING dialog
- * / endpoint — zero new flows.
+ * Bucketing is the PURE {@link centralBucketOf} (unit-tested); every action
+ * delegates to an EXISTING dialog / endpoint — zero new flows.
  */
 
 /** One item from GET /api/replenishment/incoming (uses `unit`, no flow fields). */
@@ -62,6 +62,8 @@ interface IncomingItem {
   status: ReplenishmentStatus;
   batch_id: number | null;
   created_at: string;
+  /** Mini chain-map — same PINNED contract as GET /api/replenishment. */
+  journey?: Journey | null;
 }
 
 export function CentralWorkInbox({
@@ -73,7 +75,7 @@ export function CentralWorkInbox({
   centralId: number | null;
   /** Only the scoped central manager acts; PM is read-only (no cards' buttons). */
   canWrite: boolean;
-  /** Jump to the power view (So'rovlar tab). */
+  /** Open the detail surface («Batafsil →» — tables for staff, board for PM). */
   onOpenDetails: () => void;
 }) {
   const { notify } = useToast();
@@ -150,46 +152,25 @@ export function CentralWorkInbox({
     return [...fromAll, ...fromIncoming];
   }, [allRows, incoming.data, centralId]);
 
-  // (1) Store orders awaiting send — Kutuvda, not a production delivery, not
-  // raised by central itself. Grouped by batch so one order reads as one card.
-  const storeOrderGroups = useMemo(() => {
-    const storeOrders = incomingBoard.filter(
-      (r) =>
-        pipelineStageOf(r) === 'kutuvda' &&
-        r.status !== 'DONE_TO_WAREHOUSE' &&
-        (centralId === null || r.requester_location_id !== centralId),
-    );
-    return groupByBatch(storeOrders as ReplenishmentRequest[]);
-  }, [incomingBoard, centralId]);
-
-  // (2) Production arrivals awaiting receipt — DONE_TO_WAREHOUSE (the goods are
-  // physically at central; the manager confirms receipt + any brak).
-  const arrivals = useMemo<FlowRequest[]>(
-    () =>
-      incomingBoard
-        .filter((r) => r.status === 'DONE_TO_WAREHOUSE')
-        .sort((a, b) => b.id - a.id),
-    [incomingBoard],
+  // The three-group split (pure, unit-tested): YANGI / JARAYONDA / TAYYOR.
+  const buckets = useMemo(
+    () => partitionByBucket(incomingBoard, (r) => centralBucketOf(r, centralId)),
+    [incomingBoard, centralId],
   );
 
-  // (3) Muted «Kutilmoqda» — rows shipped to a store, awaiting the store's
-  // receipt (Yuborilgan), so the manager can see the order is on its way.
-  const shippedAwaiting = useMemo<FlowRequest[]>(
-    () =>
-      incomingBoard
-        .filter((r) => pipelineStageOf(r) === 'yuborilgan')
-        .sort((a, b) => b.id - a.id),
-    [incomingBoard],
+  // YANGI grouped by batch so one store order reads as ONE card.
+  const storeOrderGroups = useMemo(
+    () => groupByBatch(buckets.yangi as ReplenishmentRequest[]),
+    [buckets.yangi],
   );
 
-  const actionableCount = storeOrderGroups.length + arrivals.length;
+  const actionableCount = storeOrderGroups.length + buckets.tayyor.length;
+  const visibleCount = actionableCount + buckets.jarayonda.length;
   const { flash } = useInboxAlert(actionableCount, canWrite);
   useInboxPolling(
     [allRequests.refetch, incoming.refetch, stock.refetch],
     canWrite,
   );
-
-  const [pendingOpen, setPendingOpen] = useState(false);
 
   async function handleRejectConfirm(reason: string | undefined) {
     if (rejectTarget === null) return;
@@ -209,116 +190,128 @@ export function CentralWorkInbox({
     }
   }
 
+  /** "#id · qachon" — the muted second line, everyday words only. */
+  const subline = (req: FlowRequest) =>
+    `so‘rov #${req.id} · ${formatRelative(req.created_at)}`;
+
   return (
     <>
       <WorkFeed
         title="Ishlarim"
         count={actionableCount}
+        visibleCount={visibleCount}
         flash={flash}
         onOpenDetails={onOpenDetails}
         emptyHint="Do‘konlardan so‘rov yoki ishlab chiqarishdan tovar kelsa shu yerda chiqadi."
-        footer={
-          shippedAwaiting.length > 0 ? (
-            <div className="space-y-2">
-              <button
-                type="button"
-                onClick={() => setPendingOpen((v) => !v)}
-                aria-expanded={pendingOpen}
-                className="flex w-full items-center justify-between rounded-md px-1 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-              >
-                <span>Kutilmoqda · {shippedAwaiting.length}</span>
-                <ChevronDown
-                  className={cn(
-                    'size-4 transition-transform',
-                    pendingOpen && 'rotate-180',
-                  )}
-                  aria-hidden="true"
-                />
-              </button>
-              {pendingOpen &&
-                shippedAwaiting.map((req) => (
-                  <Card key={req.id} className="space-y-2 p-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="min-w-0 truncate text-sm font-medium">
-                        {formatQtyUnit(req.qty_needed, req.product_unit)}{' '}
-                        {req.product_name}
-                        <span className="ml-1 text-muted-foreground">
-                          → {req.requester_location_name}
-                        </span>
-                      </p>
-                      <span className="shrink-0 text-xs text-muted-foreground">
-                        #{req.id}
-                      </span>
-                    </div>
-                    <StatusTracker
-                      steps={CENTRAL_TRACKER_STEPS}
-                      activeIndex={centralTrackerIndex(pipelineStageOf(req))}
-                    />
-                  </Card>
-                ))}
-            </div>
-          ) : null
-        }
       >
-        {/* (1) Store orders awaiting send. */}
-        {storeOrderGroups.map((group) => {
-          const head = group.lines[0];
-          if (!head) return null;
-          const extra = group.lines.length - 1;
-          return (
+        {/* YANGI — store orders awaiting the send decision. */}
+        <WorkSection
+          label={WORK_BUCKET_LABELS.yangi}
+          count={storeOrderGroups.length}
+        >
+          {storeOrderGroups.map((group) => {
+            const head = group.lines[0];
+            if (!head) return null;
+            const headFlow = head as FlowRequest;
+            const extra = group.lines.length - 1;
+            return (
+              <WorkCard
+                key={group.key}
+                journey={headFlow.journey}
+                headline={
+                  <>
+                    {head.requester_location_name}{' '}
+                    {formatQtyUnit(head.qty_needed, head.product_unit)}{' '}
+                    {head.product_name} so‘radi
+                    {extra > 0 && (
+                      <span className="text-muted-foreground"> +{extra} ta</span>
+                    )}
+                  </>
+                }
+                subline={subline(headFlow)}
+                primary={
+                  canWrite
+                    ? {
+                        label: 'Jo‘natish',
+                        icon: <Send className="size-4" aria-hidden="true" />,
+                        variant: 'success',
+                        onClick: () => setFulfillLines(group.lines),
+                      }
+                    : undefined
+                }
+                secondaryLabel={canWrite ? 'Rad' : undefined}
+                onSecondary={canWrite ? () => setRejectTarget(head) : undefined}
+              />
+            );
+          })}
+        </WorkSection>
+
+        {/* JARAYONDA — shipped to a store, awaiting its receive (watch-only). */}
+        <WorkSection
+          label={WORK_BUCKET_LABELS.jarayonda}
+          count={buckets.jarayonda.length}
+        >
+          {buckets.jarayonda.map((req) => (
             <WorkCard
-              key={group.key}
+              key={req.id}
+              journey={req.journey}
               headline={
                 <>
-                  {head.requester_location_name}{' '}
-                  {formatQtyUnit(head.qty_needed, head.product_unit)}{' '}
-                  {head.product_name} so‘radi
-                  {extra > 0 && (
-                    <span className="text-muted-foreground"> +{extra} ta</span>
-                  )}
+                  {formatQtyUnit(req.qty_needed, req.product_unit)}{' '}
+                  {req.product_name} → {req.requester_location_name} yo‘lda
                 </>
               }
-              subline={`so‘rov #${head.id}`}
+              subline={subline(req)}
+              waitReason={
+                req.journey?.wait_reason ??
+                `${req.requester_location_name} qabul qilishi kutilmoqda.`
+              }
+              // The legacy tracker carries the strip's job until journey lands.
+              tracker={
+                req.journey ? undefined : (
+                  <StatusTracker
+                    steps={CENTRAL_TRACKER_STEPS}
+                    activeIndex={centralTrackerIndex(pipelineStageOf(req))}
+                  />
+                )
+              }
+            />
+          ))}
+        </WorkSection>
+
+        {/* TAYYOR — production arrivals awaiting receipt. */}
+        <WorkSection
+          label={WORK_BUCKET_LABELS.tayyor}
+          count={buckets.tayyor.length}
+        >
+          {buckets.tayyor.map((req) => (
+            <WorkCard
+              key={req.id}
+              journey={req.journey}
+              headline={
+                <>
+                  {req.production_location_name ?? 'Ishlab chiqarish'}{' '}
+                  {formatQtyUnit(req.qty_needed, req.product_unit)}{' '}
+                  {req.product_name} tayyorladi — qabul qiling
+                </>
+              }
+              subline={subline(req)}
               primary={
                 canWrite
                   ? {
-                      label: 'Jo‘natish',
-                      icon: <Send className="size-4" aria-hidden="true" />,
+                      label: 'Qabul qildim',
+                      icon: (
+                        <PackageCheck className="size-4" aria-hidden="true" />
+                      ),
                       variant: 'success',
-                      onClick: () => setFulfillLines(group.lines),
+                      onClick: () =>
+                        setReceiveTarget(req as ReplenishmentRequest),
                     }
                   : undefined
               }
-              secondaryLabel={canWrite ? 'Rad' : undefined}
-              onSecondary={canWrite ? () => setRejectTarget(head) : undefined}
             />
-          );
-        })}
-
-        {/* (2) Production arrivals awaiting receipt. */}
-        {arrivals.map((req) => (
-          <WorkCard
-            key={req.id}
-            headline={
-              <>
-                {req.production_location_name ?? 'Ishlab chiqarish'}{' '}
-                {formatQtyUnit(req.qty_needed, req.product_unit)}{' '}
-                {req.product_name} tayyorladi — qabul qiling
-              </>
-            }
-            subline={`so‘rov #${req.id}`}
-            primary={
-              canWrite
-                ? {
-                    label: 'Qabul qildim',
-                    icon: <PackageCheck className="size-4" aria-hidden="true" />,
-                    variant: 'success',
-                    onClick: () => setReceiveTarget(req as ReplenishmentRequest),
-                  }
-                : undefined
-            }
-          />
-        ))}
+          ))}
+        </WorkSection>
       </WorkFeed>
 
       {/* «Jo'natish» — the existing partial-fulfilment modal (whole batch). */}

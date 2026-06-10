@@ -28,12 +28,12 @@ import {
 
 export type WorkBucket = 'yangi' | 'jarayonda' | 'tayyor';
 
-/** The three groups in feed order, with their Uzbek labels. */
-export const WORK_BUCKETS: readonly { key: WorkBucket; label: string }[] = [
-  { key: 'yangi', label: 'Yangi' },
-  { key: 'jarayonda', label: 'Jarayonda' },
-  { key: 'tayyor', label: 'Tayyor' },
-];
+/** Uzbek group labels (feed order: yangi → jarayonda → tayyor). */
+export const WORK_BUCKET_LABELS: Record<WorkBucket, string> = {
+  yangi: 'Yangi',
+  jarayonda: 'Jarayonda',
+  tayyor: 'Tayyor',
+};
 
 /** Generic id-desc partition of rows into the three buckets. */
 export function partitionByBucket<T extends { id: number }>(

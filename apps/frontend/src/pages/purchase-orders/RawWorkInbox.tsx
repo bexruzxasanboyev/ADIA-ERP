@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
-import { CheckCircle2, Clock, PackageCheck } from 'lucide-react';
-import { Card } from '@/components/ui/card';
+import { CheckCircle2, PackageCheck } from 'lucide-react';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
 import { useCanAct } from '@/hooks/useCanAct';
@@ -10,41 +9,45 @@ import {
   acceptFulfiller,
   rejectFulfiller,
 } from '@/lib/replenishmentActions';
-import { formatQty, formatQtyUnit } from '@/lib/format';
-import { pipelineStageOf } from '@/lib/pipeline';
-import { isRawPosterWaiting } from '@/lib/replenishmentFlow';
+import { formatQty, formatQtyUnit, formatRelative } from '@/lib/format';
 import type {
   PurchaseOrder,
   ReplenishmentRequest,
 } from '@/lib/types';
 import type { FlowRequest } from '@/lib/replenishmentFlow';
-import { WorkCard, WorkFeed } from '@/pages/replenishment/inbox/WorkFeed';
+import {
+  WorkCard,
+  WorkFeed,
+  WorkSection,
+} from '@/pages/replenishment/inbox/WorkFeed';
+import {
+  partitionByBucket,
+  rawPurchaseOrderBucketOf,
+  rawRequestBucketOf,
+  WORK_BUCKET_LABELS,
+} from '@/pages/replenishment/inbox/workBuckets';
 import { useInboxAlert } from '@/pages/replenishment/inbox/useInboxAlert';
 import { useInboxPolling } from '@/pages/replenishment/inbox/useInboxPolling';
 import { CancelDialog } from '@/pages/replenishment/CancelDialog';
 import { PurchaseOrderReceiveDialog } from './PurchaseOrderReceiveDialog';
 
 /**
- * Homashyo ombori — «Ishlarim» (phase F-V). The raw-warehouse keeper's DEFAULT
- * surface on /purchase-orders: a calm Odoo-style "qabul qilish" queue of "what
- * needs me now", built on the shared kit (research §4 / Rule 1). The unified
- * board + the PO table stay below a «Batafsil» disclosure on the page.
+ * Homashyo ombori — «Ishlarim» (Variant A + mini-xarita). The raw-warehouse
+ * keeper's ONLY surface on /purchase-orders: a single feed of large cards in
+ * three fixed groups — YANGI / JARAYONDA / TAYYOR — one big primary button per
+ * card, plain-Uzbek status lines, and a {@link ChainStrip} mini chain-map on
+ * request cards (the `journey` field, backend in parallel).
  *
- * Three action card types (everyday Uzbek — NO status terms):
- *   1. A pinned incoming department request (NEW/CHECK_STORE_SUPPLIER at the raw
- *      warehouse): «Napoleon-otdel 20 kg un so'radi» → [Qabul qilish]
- *      (accept-fulfiller) + [Rad] (reject-fulfiller). After accept the row flips
- *      to an INFO card: «Poster'da Поставка qo'shing — sinxron kelgach avtomatik
- *      jo'natiladi» (the existing isRawPosterWaiting hold).
- *   2. A purchase order awaiting the keeper's signature (draft, not yet signed):
- *      «Xarid #15 — skladchi tasdig'i kerak (20.1 kg крем)» → [Tasdiqlash]
- *      (the existing approve endpoint, keeper step).
- *   3. An approved purchase order awaiting receipt: «Xarid #3 yetib keldimi?» →
- *      [Qabul qilish] (the existing brak-receive dialog).
+ *   YANGI     — an incoming department request («Tort sexi 20 kg un so'radi» →
+ *               [Qabul qilish] + [Rad]) AND a draft PO awaiting the keeper's
+ *               signature («Xarid #15 — tasdiqlang» → [Tasdiqlash]).
+ *   JARAYONDA — accepted requests waiting on the Poster Поставка sync — watch
+ *               cards (wait line, no button).
+ *   TAYYOR    — an approved PO whose goods arrive: «Xarid #3 yetib keldimi?» →
+ *               [Qabul qilish] (the existing brak-receive dialog).
  *
- * RBAC mirrors ApprovalPanel exactly (keeper sign / receive need the scoped raw
- * operator). Every action delegates to an EXISTING endpoint / dialog — zero new
- * flows.
+ * Bucketing is PURE ({@link rawRequestBucketOf} + {@link rawPurchaseOrderBucketOf},
+ * unit-tested); every action delegates to an EXISTING endpoint / dialog.
  */
 
 export function RawWorkInbox({
@@ -53,7 +56,7 @@ export function RawWorkInbox({
 }: {
   /** The raw-warehouse location ids the viewer operates (from useAuth). */
   rawScope: ReadonlySet<number>;
-  /** Jump to the power view (the board + PO table below «Batafsil»). */
+  /** Open the detail surface («Batafsil →» — signals + the PO table). */
   onOpenDetails: () => void;
 }) {
   const { user } = useAuth();
@@ -78,83 +81,43 @@ export function RawWorkInbox({
     purchaseOrders.refetch();
   }
 
-  // Raw-targeted requests (target ∈ my raw scope).
-  const rawRequests = useMemo<FlowRequest[]>(
+  // Raw-targeted requests (target ∈ my raw scope), three-group split (pure).
+  const requestBuckets = useMemo(
     () =>
-      (replen.data ?? [])
-        .map((r) => r as FlowRequest)
-        .filter(
-          (r) =>
-            r.target_location_id != null && rawScope.has(r.target_location_id),
-        ),
-    [replen.data, rawScope],
-  );
-
-  // (1a) NEW incoming requests awaiting the keeper's accept (not yet accepted).
-  const incomingNew = useMemo<FlowRequest[]>(
-    () =>
-      rawRequests
-        .filter(
-          (r) =>
-            !r.fulfiller_accepted_at &&
-            (r.status === 'NEW' || r.status === 'CHECK_STORE_SUPPLIER'),
-        )
-        .sort((a, b) => b.id - a.id),
-    [rawRequests],
-  );
-
-  // (1b) Accepted, awaiting the Поставка sync — the «Poster postavka kutilmoqda»
-  // info hold (no action; reassures the keeper the request is in-flight).
-  const posterWaiting = useMemo<FlowRequest[]>(
-    () =>
-      rawRequests
-        .filter((r) => isRawPosterWaiting(r, pipelineStageOf(r)))
-        .sort((a, b) => b.id - a.id),
-    [rawRequests],
-  );
-
-  // POs scoped to my raw warehouse(s).
-  const myOrders = useMemo<PurchaseOrder[]>(
-    () =>
-      (purchaseOrders.error ? [] : purchaseOrders.data ?? []).filter((o) =>
-        rawScope.has(o.target_location_id),
+      partitionByBucket(
+        (replen.data ?? [])
+          .map((r) => r as FlowRequest)
+          .filter(
+            (r) =>
+              r.target_location_id != null &&
+              rawScope.has(r.target_location_id),
+          ),
+        rawRequestBucketOf,
       ),
-    [purchaseOrders.data, purchaseOrders.error, rawScope],
+    [replen.data, rawScope],
   );
 
   const isKeeperRole = user?.role === 'raw_warehouse_manager';
 
-  // (2) POs awaiting the keeper's signature (draft, keeper not yet signed, scoped).
-  const awaitingKeeper = useMemo<PurchaseOrder[]>(
+  // POs scoped to my raw warehouse(s) AND my acting rights, split (pure).
+  const orderBuckets = useMemo(
     () =>
-      myOrders
-        .filter(
+      partitionByBucket(
+        (purchaseOrders.error ? [] : purchaseOrders.data ?? []).filter(
           (o) =>
-            o.status === 'draft' &&
-            o.keeper_approved_by === null &&
+            rawScope.has(o.target_location_id) &&
             isKeeperRole &&
             canActOn(o.target_location_id),
-        )
-        .sort((a, b) => b.id - a.id),
-    [myOrders, isKeeperRole, canActOn],
+        ),
+        rawPurchaseOrderBucketOf,
+      ),
+    [purchaseOrders.data, purchaseOrders.error, rawScope, isKeeperRole, canActOn],
   );
 
-  // (3) Approved POs awaiting receipt (scoped keeper).
-  const awaitingReceive = useMemo<PurchaseOrder[]>(
-    () =>
-      myOrders
-        .filter(
-          (o) =>
-            o.status === 'approved' &&
-            isKeeperRole &&
-            canActOn(o.target_location_id),
-        )
-        .sort((a, b) => b.id - a.id),
-    [myOrders, isKeeperRole, canActOn],
-  );
-
-  const actionableCount =
-    incomingNew.length + awaitingKeeper.length + awaitingReceive.length;
+  const yangiCount = requestBuckets.yangi.length + orderBuckets.yangi.length;
+  const tayyorCount = orderBuckets.tayyor.length;
+  const actionableCount = yangiCount + tayyorCount;
+  const visibleCount = actionableCount + requestBuckets.jarayonda.length;
   const { flash } = useInboxAlert(actionableCount, isKeeperRole);
   useInboxPolling([replen.refetch, purchaseOrders.refetch], rawScope.size > 0);
 
@@ -211,110 +174,122 @@ export function RawWorkInbox({
     }
   }
 
+  /** "#id · qachon" — the muted second line, everyday words only. */
+  const reqSubline = (req: FlowRequest) =>
+    `so‘rov #${req.id} · ${formatRelative(req.created_at)}`;
+
   return (
     <>
       <WorkFeed
         title="Ishlarim"
         count={actionableCount}
+        visibleCount={visibleCount}
         flash={flash}
         onOpenDetails={onOpenDetails}
         emptyHint="Bo‘limlardan so‘rov yoki yangi xarid kelsa shu yerda chiqadi."
-        footer={
-          // (1b) «Poster postavka kutilmoqda» — accepted requests in-flight.
-          posterWaiting.length > 0 ? (
-            <div className="space-y-2 pt-1">
-              {posterWaiting.map((req) => (
-                <Card
-                  key={req.id}
-                  className="flex items-start gap-2 border-info/30 bg-info/5 p-3"
-                >
-                  <Clock
-                    className="mt-0.5 size-4 shrink-0 text-info"
-                    aria-hidden="true"
-                  />
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium">
-                      {formatQtyUnit(req.qty_needed, req.product_unit)}{' '}
-                      {req.product_name} — Poster’da Поставка qo‘shing
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      Sinxron kelgach avtomatik jo‘natiladi · so‘rov #{req.id}
-                    </p>
-                  </div>
-                </Card>
-              ))}
-            </div>
-          ) : null
-        }
       >
-        {/* (1a) Incoming department requests — accept / reject. */}
-        {incomingNew.map((req) => (
-          <WorkCard
-            key={`req-${req.id}`}
-            headline={
-              <>
-                {req.requester_location_name}{' '}
-                {formatQtyUnit(req.qty_needed, req.product_unit)}{' '}
-                {req.product_name} so‘radi
-              </>
-            }
-            subline={`so‘rov #${req.id}`}
-            busy={busyKey === `a${req.id}`}
-            primary={
-              isKeeperRole
-                ? {
-                    label: 'Qabul qilish',
-                    icon: <CheckCircle2 className="size-4" aria-hidden="true" />,
-                    variant: 'success',
-                    onClick: () => handleAccept(req),
-                  }
-                : undefined
-            }
-            secondaryLabel={isKeeperRole ? 'Rad' : undefined}
-            onSecondary={isKeeperRole ? () => setRejectTarget(req) : undefined}
-          />
-        ))}
+        {/* YANGI — incoming department requests + keeper-signature POs. */}
+        <WorkSection label={WORK_BUCKET_LABELS.yangi} count={yangiCount}>
+          {requestBuckets.yangi.map((req) => (
+            <WorkCard
+              key={`req-${req.id}`}
+              journey={req.journey}
+              headline={
+                <>
+                  {req.requester_location_name}{' '}
+                  {formatQtyUnit(req.qty_needed, req.product_unit)}{' '}
+                  {req.product_name} so‘radi
+                </>
+              }
+              subline={reqSubline(req)}
+              busy={busyKey === `a${req.id}`}
+              primary={
+                isKeeperRole
+                  ? {
+                      label: 'Qabul qilish',
+                      icon: (
+                        <CheckCircle2 className="size-4" aria-hidden="true" />
+                      ),
+                      variant: 'success',
+                      onClick: () => handleAccept(req),
+                    }
+                  : undefined
+              }
+              secondaryLabel={isKeeperRole ? 'Rad' : undefined}
+              onSecondary={isKeeperRole ? () => setRejectTarget(req) : undefined}
+            />
+          ))}
+          {orderBuckets.yangi.map((order) => (
+            <WorkCard
+              key={`po-sign-${order.id}`}
+              headline={
+                <>
+                  Xarid #{order.id} — skladchi tasdig‘i kerak (
+                  {formatQty(order.qty)} {order.product_unit}{' '}
+                  {order.product_name})
+                </>
+              }
+              subline={[order.supplier_name, formatRelative(order.created_at)]
+                .filter(Boolean)
+                .join(' · ')}
+              busy={busyKey === `k${order.id}`}
+              primary={{
+                label: 'Tasdiqlash',
+                icon: <CheckCircle2 className="size-4" aria-hidden="true" />,
+                variant: 'success',
+                onClick: () => handleApprove(order),
+              }}
+            />
+          ))}
+        </WorkSection>
 
-        {/* (2) POs awaiting the keeper's signature. */}
-        {awaitingKeeper.map((order) => (
-          <WorkCard
-            key={`po-sign-${order.id}`}
-            headline={
-              <>
-                Xarid #{order.id} — skladchi tasdig‘i kerak (
-                {formatQty(order.qty)} {order.product_unit} {order.product_name})
-              </>
-            }
-            subline={order.supplier_name ?? undefined}
-            busy={busyKey === `k${order.id}`}
-            primary={{
-              label: 'Tasdiqlash',
-              icon: <CheckCircle2 className="size-4" aria-hidden="true" />,
-              variant: 'success',
-              onClick: () => handleApprove(order),
-            }}
-          />
-        ))}
+        {/* JARAYONDA — accepted, waiting on the Poster Поставка sync. */}
+        <WorkSection
+          label={WORK_BUCKET_LABELS.jarayonda}
+          count={requestBuckets.jarayonda.length}
+        >
+          {requestBuckets.jarayonda.map((req) => (
+            <WorkCard
+              key={`wait-${req.id}`}
+              journey={req.journey}
+              headline={
+                <>
+                  {formatQtyUnit(req.qty_needed, req.product_unit)}{' '}
+                  {req.product_name} — Poster’da Поставка qo‘shing
+                </>
+              }
+              subline={reqSubline(req)}
+              waitReason={
+                req.journey?.wait_reason ??
+                'Sinxron kelgach avtomatik jo‘natiladi.'
+              }
+            />
+          ))}
+        </WorkSection>
 
-        {/* (3) Approved POs awaiting receipt. */}
-        {awaitingReceive.map((order) => (
-          <WorkCard
-            key={`po-recv-${order.id}`}
-            headline={
-              <>
-                Xarid #{order.id} yetib keldimi? ({formatQty(order.qty)}{' '}
-                {order.product_unit} {order.product_name})
-              </>
-            }
-            subline={order.supplier_name ?? undefined}
-            primary={{
-              label: 'Qabul qilish',
-              icon: <PackageCheck className="size-4" aria-hidden="true" />,
-              variant: 'success',
-              onClick: () => setReceiveOrder(order),
-            }}
-          />
-        ))}
+        {/* TAYYOR — approved POs awaiting receipt at the door. */}
+        <WorkSection label={WORK_BUCKET_LABELS.tayyor} count={tayyorCount}>
+          {orderBuckets.tayyor.map((order) => (
+            <WorkCard
+              key={`po-recv-${order.id}`}
+              headline={
+                <>
+                  Xarid #{order.id} yetib keldimi? ({formatQty(order.qty)}{' '}
+                  {order.product_unit} {order.product_name})
+                </>
+              }
+              subline={[order.supplier_name, formatRelative(order.created_at)]
+                .filter(Boolean)
+                .join(' · ')}
+              primary={{
+                label: 'Qabul qilish',
+                icon: <PackageCheck className="size-4" aria-hidden="true" />,
+                variant: 'success',
+                onClick: () => setReceiveOrder(order),
+              }}
+            />
+          ))}
+        </WorkSection>
       </WorkFeed>
 
       {/* «Rad» — reason dialog → reject-fulfiller. */}

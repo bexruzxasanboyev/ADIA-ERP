@@ -9,36 +9,42 @@ import {
   rejectProduction,
 } from '@/lib/replenishmentActions';
 import { patchProductionOrderStatus } from '@/lib/productionOrders';
-import { formatQtyUnit } from '@/lib/format';
-import { isProductionInputWaiting } from '@/lib/replenishmentFlow';
+import { formatQtyUnit, formatRelative } from '@/lib/format';
 import type { ReplenishmentRequest } from '@/lib/types';
 import type { FlowRequest } from '@/lib/replenishmentFlow';
-import { WorkCard, WorkFeed } from '@/pages/replenishment/inbox/WorkFeed';
+import {
+  WorkCard,
+  WorkFeed,
+  WorkSection,
+} from '@/pages/replenishment/inbox/WorkFeed';
+import {
+  isProductionWaitingRaw,
+  partitionByBucket,
+  productionBucketOf,
+  WORK_BUCKET_LABELS,
+} from '@/pages/replenishment/inbox/workBuckets';
 import { useInboxAlert } from '@/pages/replenishment/inbox/useInboxAlert';
 import { useInboxPolling } from '@/pages/replenishment/inbox/useInboxPolling';
 import { CancelDialog } from '@/pages/replenishment/CancelDialog';
 import { ManbaRejaModal } from './ManbaRejaModal';
 
 /**
- * Ishlab chiqarish bo'limi — «Ishlarim» (phase F-V). The отдел manager's DEFAULT
- * screen: a calm vertical card feed of "what needs me now", built on the shared
- * kit (research §4 / Rule 1, the KDS bump queue). The kanban stays one tab away
- * under So'rovlar («Batafsil»).
+ * Ishlab chiqarish bo'limi — «Ishlarim» (Variant A + mini-xarita). The отдел
+ * manager's ONLY screen: a single feed of large cards in three fixed groups —
+ * YANGI / JARAYONDA / TAYYOR — each card with ONE big primary button, a plain-
+ * Uzbek status line and a {@link ChainStrip} mini chain-map (the `journey`
+ * field, backend in parallel — hidden until it lands).
  *
- * Two action card types (everyday Uzbek — NO status terms):
- *   1. A new job from central waiting at the отдел gate (isProductionInputWaiting
- *      — CHECK_PRODUCTION_INPUT, not yet accepted):
- *      «Markazdan yangi ish: 6 kg Napoleon» → [Qabul qilish] (accept-production)
- *      + [Rad] (reject-production). INLINE — no modal (research Rule 5/7).
- *   2. A job accepted + in the making pipeline:
- *      «6 kg Napoleon tayyormi?» → [Tayyor — skladga] (PATCH the linked
- *      production order to `done`) + secondary [Manba reja] (the existing source
- *      plan modal). When no production order exists yet, [Manba reja] is the
- *      primary (that is how the order gets created).
+ *   YANGI     — a job from central at the отдел gate:
+ *               «Markazdan yangi ish: 6 kg Napoleon» → [Qabul qilish] + [Rad].
+ *   JARAYONDA — accepted, no zayafka yet: either WAITING on raw materials
+ *               (calm wait line, no button — `journey.wait_reason` preferred)
+ *               or awaiting the «Manba reja» source-plan step (one button).
+ *   TAYYOR    — the zayafka is open: «6 kg Napoleon tayyormi?» →
+ *               [Tayyor — skladga] (+ muted [Manba reja]).
  *
- * Self-contained data layer mirroring ProductionRequestsTab's scope so the feed
- * lives independently of the board. Every action delegates to an EXISTING
- * endpoint / modal — zero new flows.
+ * Bucketing is the PURE {@link productionBucketOf} (unit-tested); every action
+ * delegates to an EXISTING endpoint / modal — zero new flows.
  */
 
 /** A production-flow request — production is/was involved in MAKING it. */
@@ -56,17 +62,14 @@ function isProductionFlow(r: ReplenishmentRequest): boolean {
   );
 }
 
-/** An accepted job still being made (card type 2): production-assigned, past the
- *  gate (accepted), not yet handed to the warehouse. */
-function isMakingNow(r: FlowRequest): boolean {
-  if (r.status === 'DONE_TO_WAREHOUSE') return false; // already at warehouse
-  if (isProductionInputWaiting(r)) return false; // still at the gate (card 1)
-  return (
-    r.status === 'CHECK_PRODUCTION_INPUT' ||
-    r.status === 'CREATE_PURCHASE_ORDER' ||
-    r.status === 'CREATE_PRODUCTION_ORDER' ||
-    r.status === 'PRODUCING'
-  );
+/**
+ * A JARAYONDA card with NO button: the backend's `journey.wait_reason` is
+ * authoritative when the journey is present; otherwise fall back to the local
+ * raw-material-wait heuristic (CREATE_PURCHASE_ORDER, no zayafka).
+ */
+function isWaitCard(r: FlowRequest): boolean {
+  if (r.journey != null) return r.journey.wait_reason != null;
+  return isProductionWaitingRaw(r);
 }
 
 export function ProductionWorkInbox({
@@ -78,7 +81,7 @@ export function ProductionWorkInbox({
   productionId: number | null;
   /** Only the scoped production manager acts; PM is read-only. */
   canAct: boolean;
-  /** Jump to the power view (So'rovlar board tab). */
+  /** Open the detail surface («Batafsil →» — tables for staff, board for PM). */
   onOpenDetails: () => void;
 }) {
   const { locations } = useAuth();
@@ -128,15 +131,9 @@ export function ProductionWorkInbox({
     [allRequests.data, scope, myProductionNames],
   );
 
-  // (1) Gate rows — a new job from central waiting to be accepted.
-  const gateRows = useMemo(
-    () => mineFlow.filter(isProductionInputWaiting).sort((a, b) => b.id - a.id),
-    [mineFlow],
-  );
-
-  // (2) Making rows — accepted, in production, awaiting «Tayyor».
-  const makingRows = useMemo(
-    () => mineFlow.filter(isMakingNow).sort((a, b) => b.id - a.id),
+  // The three-group split (pure, unit-tested): YANGI / JARAYONDA / TAYYOR.
+  const buckets = useMemo(
+    () => partitionByBucket(mineFlow, productionBucketOf),
     [mineFlow],
   );
 
@@ -149,7 +146,12 @@ export function ProductionWorkInbox({
   // The row whose «Manba reja» source-plan modal is open.
   const [planTarget, setPlanTarget] = useState<FlowRequest | null>(null);
 
-  const actionableCount = gateRows.length + makingRows.length;
+  // Actionable = cards with a button (wait cards are watch-only).
+  const planRows = buckets.jarayonda.filter((r) => !isWaitCard(r));
+  const waitRows = buckets.jarayonda.filter(isWaitCard);
+  const actionableCount =
+    buckets.yangi.length + planRows.length + buckets.tayyor.length;
+  const visibleCount = actionableCount + waitRows.length;
   const { flash } = useInboxAlert(actionableCount, canAct);
   useInboxPolling([allRequests.refetch], canAct);
 
@@ -204,101 +206,126 @@ export function ProductionWorkInbox({
     }
   }
 
+  /** "kim · #id · qachon" — the muted second line, everyday words only. */
+  const subline = (req: FlowRequest) =>
+    `so‘rov #${req.id} · ${formatRelative(req.created_at)}`;
+
   return (
     <>
       <WorkFeed
         title="Ishlarim"
         count={actionableCount}
+        visibleCount={visibleCount}
         flash={flash}
         onOpenDetails={onOpenDetails}
         emptyHint="Markazdan yangi ish kelsa shu yerda chiqadi."
       >
-        {/* (1) Gate rows — accept / reject INLINE, no modal. */}
-        {gateRows.map((req) => (
-          <WorkCard
-            key={req.id}
-            headline={
-              <>
-                Markazdan yangi ish:{' '}
-                {formatQtyUnit(req.qty_needed, req.product_unit)}{' '}
-                {req.product_name}
-              </>
-            }
-            subline={`so‘rov #${req.id}`}
-            busy={busyKey === `a${req.id}`}
-            primary={
-              canAct
-                ? {
-                    label: 'Qabul qilish',
-                    icon: <CheckCircle2 className="size-4" aria-hidden="true" />,
-                    variant: 'success',
-                    onClick: () => handleAccept(req),
-                  }
-                : undefined
-            }
-            secondaryLabel={canAct ? 'Rad' : undefined}
-            onSecondary={canAct ? () => setRejectTarget(req) : undefined}
-          />
-        ))}
-
-        {/* (2) Making rows — «… tayyormi?» → Tayyor (done) / Manba reja.
-            F-W follow-up (owner: "qanday yakunlayman?"): a row stuck at
-            CREATE_PURCHASE_ORDER has NO zayafka yet because it is WAITING ON
-            RAW MATERIALS — say so in plain words instead of dead-ending. The
-            «Tayyor» button appears by itself once the purchase is received
-            and the zayafka opens. */}
-        {makingRows.map((req) => {
-          const hasOrder = req.production_order_id != null;
-          const waitingRaw =
-            !hasOrder && req.status === 'CREATE_PURCHASE_ORDER';
-          return (
+        {/* YANGI — accept / reject INLINE, no modal. */}
+        <WorkSection label={WORK_BUCKET_LABELS.yangi} count={buckets.yangi.length}>
+          {buckets.yangi.map((req) => (
             <WorkCard
               key={req.id}
+              journey={req.journey}
               headline={
-                waitingRaw ? (
-                  <>
-                    {formatQtyUnit(req.qty_needed, req.product_unit)}{' '}
-                    {req.product_name} — xom-ashyo kutilmoqda
-                  </>
-                ) : (
-                  <>
-                    {formatQtyUnit(req.qty_needed, req.product_unit)}{' '}
-                    {req.product_name} tayyormi?
-                  </>
-                )
+                <>
+                  Markazdan yangi ish:{' '}
+                  {formatQtyUnit(req.qty_needed, req.product_unit)}{' '}
+                  {req.product_name}
+                </>
               }
-              subline={
-                waitingRaw
-                  ? `so‘rov #${req.id} · xarid homashyo omborida tasdiqlanib qabul qilingach, bu yerda «Tayyor» tugmasi chiqadi`
-                  : `so‘rov #${req.id}`
-              }
-              busy={busyKey === `d${req.id}`}
+              subline={subline(req)}
+              busy={busyKey === `a${req.id}`}
               primary={
-                !canAct
-                  ? undefined
-                  : hasOrder
+                canAct
+                  ? {
+                      label: 'Qabul qilish',
+                      icon: (
+                        <CheckCircle2 className="size-4" aria-hidden="true" />
+                      ),
+                      variant: 'success',
+                      onClick: () => handleAccept(req),
+                    }
+                  : undefined
+              }
+              secondaryLabel={canAct ? 'Rad' : undefined}
+              onSecondary={canAct ? () => setRejectTarget(req) : undefined}
+            />
+          ))}
+        </WorkSection>
+
+        {/* JARAYONDA — wait cards (no button, plain wait line) + the «Manba
+            reja» step. The wait line prefers the backend's journey.wait_reason. */}
+        <WorkSection
+          label={WORK_BUCKET_LABELS.jarayonda}
+          count={buckets.jarayonda.length}
+        >
+          {buckets.jarayonda.map((req) => {
+            const waiting = isWaitCard(req);
+            return (
+              <WorkCard
+                key={req.id}
+                journey={req.journey}
+                headline={
+                  <>
+                    {formatQtyUnit(req.qty_needed, req.product_unit)}{' '}
+                    {req.product_name}
+                    {waiting && ' — xom-ashyo kutilmoqda'}
+                  </>
+                }
+                subline={subline(req)}
+                waitReason={
+                  waiting
+                    ? (req.journey?.wait_reason ??
+                      'Xarid homashyo omborida qabul qilingach, bu yerda «Tayyor» tugmasi chiqadi.')
+                    : undefined
+                }
+                primary={
+                  canAct && !waiting
                     ? {
-                        label: 'Tayyor — skladga',
-                        icon: <Factory className="size-4" aria-hidden="true" />,
-                        variant: 'success',
-                        onClick: () => handleDone(req),
-                      }
-                    : {
                         label: 'Manba reja',
-                        icon: <Sparkles className="size-4" aria-hidden="true" />,
+                        icon: (
+                          <Sparkles className="size-4" aria-hidden="true" />
+                        ),
                         variant: 'default',
                         onClick: () => setPlanTarget(req),
                       }
+                    : undefined
+                }
+              />
+            );
+          })}
+        </WorkSection>
+
+        {/* TAYYOR — the zayafka is open; finish it to the sklad. */}
+        <WorkSection label={WORK_BUCKET_LABELS.tayyor} count={buckets.tayyor.length}>
+          {buckets.tayyor.map((req) => (
+            <WorkCard
+              key={req.id}
+              journey={req.journey}
+              headline={
+                <>
+                  {formatQtyUnit(req.qty_needed, req.product_unit)}{' '}
+                  {req.product_name} tayyormi?
+                </>
               }
-              // When there IS an order, «Manba reja» is the (neutral) secondary.
-              secondaryLabel={canAct && hasOrder ? 'Manba reja' : undefined}
+              subline={subline(req)}
+              busy={busyKey === `d${req.id}`}
+              primary={
+                canAct
+                  ? {
+                      label: 'Tayyor — skladga',
+                      icon: <Factory className="size-4" aria-hidden="true" />,
+                      variant: 'success',
+                      onClick: () => handleDone(req),
+                    }
+                  : undefined
+              }
+              secondaryLabel={canAct ? 'Manba reja' : undefined}
               secondaryVariant="muted"
-              onSecondary={
-                canAct && hasOrder ? () => setPlanTarget(req) : undefined
-              }
+              onSecondary={canAct ? () => setPlanTarget(req) : undefined}
             />
-          );
-        })}
+          ))}
+        </WorkSection>
       </WorkFeed>
 
       {/* «Rad» — reason dialog → reject-production. */}
