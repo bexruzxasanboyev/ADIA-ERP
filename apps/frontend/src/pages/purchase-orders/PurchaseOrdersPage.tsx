@@ -56,6 +56,11 @@ import { BoardWorkspace } from '@/pages/replenishment/board/BoardWorkspace';
 import { RequestDetailModal } from '@/pages/replenishment/RequestDetailModal';
 import { splitBoards } from '@/pages/replenishment/board/boardFilters';
 import { RawWorkInbox } from './RawWorkInbox';
+import { RawStockList } from './RawStockList';
+import {
+  StaffViewSwitch,
+  type StaffView,
+} from '@/pages/replenishment/inbox/StaffViewSwitch';
 import type { FlowRequest } from '@/lib/replenishmentFlow';
 import type { ReplenishmentRequest } from '@/lib/types';
 import type { PurchaseSignal } from '@/lib/replenishmentFlow';
@@ -156,12 +161,18 @@ export function PurchaseOrdersPage() {
   const [filter, setFilter] = useState<FilterValue>({});
   const [dialogOpen, setDialogOpen] = useState(false);
   const [adminDialogOpen, setAdminDialogOpen] = useState(false);
-  // F-V — the raw keeper's DEFAULT is the «Ishlarim» feed; the board + signals +
-  // PO table live behind a «Batafsil» disclosure (research Rule 12). A non-raw
+  // F-V + StaffViewSwitch — the raw keeper's DEFAULT is the «Ishlarim» feed;
+  // the LARGE Ishlarim|Mahsulotlar switch keeps the ombor qoldig'i first-class
+  // (owner: "mahsulotlar tabi qani?"). The signals + PO table history stays
+  // behind the «Batafsil» disclosure INSIDE the Ishlarim segment. A non-raw
   // role (supply_manager / PM) has no inbox, so for them the detail is always on.
   const isRawKeeper = rawScope.size > 0;
+  const [rawView, setRawView] = useState<StaffView>('inbox');
+  const rawOnProducts = isRawKeeper && rawView === 'products';
+  // Live actionable count from the feed — drives the switch's badge.
+  const [feedCount, setFeedCount] = useState(0);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const showDetails = !isRawKeeper || detailsOpen;
+  const showDetails = !isRawKeeper || (detailsOpen && !rawOnProducts);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   // F-F — seed values for the create-PO dialog when it is opened from a
   // "Xarid signallari" card (prefill product / suggested qty / raw location).
@@ -278,17 +289,36 @@ export function PurchaseOrdersPage() {
         }
       />
 
-      {/* F-V — the raw keeper's «Ishlarim» feed is the default surface. */}
+      {/* StaffViewSwitch — the LARGE Ishlarim|Mahsulotlar segmented control
+          (owner: "mahsulotlar tabi qani?"). Raw keeper only. */}
       {isRawKeeper && (
-        <RawWorkInbox
-          rawScope={rawScope}
-          onOpenDetails={() => setDetailsOpen(true)}
+        <StaffViewSwitch
+          value={rawView}
+          onChange={setRawView}
+          inboxCount={feedCount}
         />
       )}
 
-      {/* «Batafsil» disclosure — opens the full board + signals + PO table.
-          Always-open (no toggle) for non-raw roles, which have no inbox. */}
+      {/* F-V — the raw keeper's «Ishlarim» feed is the default segment. Kept
+          MOUNTED (hidden) on the Mahsulotlar segment so polling + the live
+          badge keep running. */}
       {isRawKeeper && (
+        <div hidden={rawOnProducts}>
+          <RawWorkInbox
+            rawScope={rawScope}
+            onOpenDetails={() => setDetailsOpen(true)}
+            onActionableCount={setFeedCount}
+          />
+        </div>
+      )}
+
+      {/* «Mahsulotlar» segment — the keeper's own raw-warehouse qoldiq. */}
+      {rawOnProducts && <RawStockList rawScope={rawScope} />}
+
+      {/* «Batafsil» disclosure — opens the full board + signals + PO table.
+          Always-open (no toggle) for non-raw roles, which have no inbox;
+          lives INSIDE the Ishlarim segment for the keeper. */}
+      {isRawKeeper && !rawOnProducts && (
         <button
           type="button"
           onClick={() => setDetailsOpen((v) => !v)}
