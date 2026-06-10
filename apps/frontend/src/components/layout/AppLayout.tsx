@@ -5,7 +5,11 @@ import { AssistantButton } from './AssistantButton';
 import { LocationSwitcher } from './LocationSwitcher';
 import { PageTabs } from './PageTabs';
 import { StoreManagerTabs } from './StoreManagerTabs';
-import { findGroupForPath, pageOwnsHeaderTabs } from '@/lib/navigation';
+import {
+  findGroupForPath,
+  pageOwnsHeaderTabs,
+  roleHomePath,
+} from '@/lib/navigation';
 import { useAuth } from '@/hooks/useAuth';
 import {
   HeaderSlotProvider,
@@ -87,15 +91,15 @@ function AppLayoutShell() {
       ) {
         return;
       }
-      // store_manager has no /home launcher — their "home" is the store
-      // workspace. Every other role goes to /home.
-      const home = isStoreManager ? '/store-workflow' : '/home';
+      // Single-section managers' "home" is their OWN workspace (store /
+      // central / production / raw) — one source of truth: roleHomePath.
+      const home = roleHomePath(user?.role);
       if (location.pathname === home) return;
       navigate(home);
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [navigate, location.pathname, isStoreManager]);
+  }, [navigate, location.pathname, user?.role]);
 
   // Restore the centred sub-tabs — but only for tabbed groups, and the
   // page-supplied center slot (the dashboard greeting/range) always wins
@@ -121,7 +125,7 @@ function AppLayoutShell() {
     <div className="app-ambient flex h-screen w-full flex-col overflow-hidden">
       <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border/70 bg-surface-0/80 px-3 sm:px-6 lg:px-8">
         <Link
-          to={isStoreManager ? '/store-workflow' : '/home'}
+          to={roleHomePath(user?.role)}
           className="flex min-w-0 shrink-0 items-center gap-2 rounded-md px-1 py-1 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-label="Bosh sahifa"
           title="Bosh sahifaga qaytish"

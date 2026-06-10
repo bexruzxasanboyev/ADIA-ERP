@@ -6,6 +6,7 @@ import { LoginPage } from '@/pages/LoginPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
 import { HomePage } from '@/pages/home/HomePage';
 import { useAuth } from '@/hooks/useAuth';
+import { roleHomePath } from '@/lib/navigation';
 import { LocationsPage } from '@/pages/locations/LocationsPage';
 import { LocationFlowsPage } from '@/pages/locations/LocationFlowsPage';
 import { LocationDetailPage } from '@/pages/locations/LocationDetailPage';
@@ -63,21 +64,12 @@ import { InventoryPage } from '@/pages/inventory/InventoryPage';
  */
 function HomeRoute() {
   const { user } = useAuth();
-  if (user?.role === 'store_manager') {
-    return <Navigate to="/store-workflow" replace />;
-  }
-  // Owner feedback: the central warehouse manager lands directly on their
-  // unified workspace (/central-workflow), never on the /home launcher —
-  // exactly like the store manager → /store-workflow.
-  if (user?.role === 'central_warehouse_manager') {
-    return <Navigate to="/central-workflow" replace />;
-  }
-  // Owner feedback (2026-06-08): a production / workshop manager (Tort,
-  // Perojniy, «Наполеон отдел», …) lands directly on their production
-  // workspace (/production), which the backend RBAC-scopes to that one sex —
-  // never the /home launcher, exactly like the store and central managers.
-  if (user?.role === 'production_manager') {
-    return <Navigate to="/production" replace />;
+  // Single-section managers (store / central / production / raw) live on
+  // their OWN workspace — roleHomePath is the one source of truth shared
+  // with the header logo, ESC and the login default.
+  const home = roleHomePath(user?.role);
+  if (home !== '/home') {
+    return <Navigate to={home} replace />;
   }
   return <HomePage />;
 }

@@ -563,6 +563,30 @@ export function pageOwnsHeaderTabs(pathname: string): boolean {
 }
 
 /**
+ * The role's HOME — single-section managers live on their OWN workspace page
+ * and never see the /home module launcher (owner: "bitta o'zining sahifasiga
+ * kiradigan qilib ber", like the store/central/production managers). ONE
+ * source of truth consumed by the / and /home redirect, the header logo, the
+ * ESC shortcut and the login default, so every "home" gesture agrees.
+ */
+export function roleHomePath(role: Role | undefined): string {
+  switch (role) {
+    case 'store_manager':
+      return '/store-workflow';
+    case 'central_warehouse_manager':
+      return '/central-workflow';
+    case 'production_manager':
+      return '/production';
+    // The raw (homashyo) warehouse has no dedicated workspace page yet — its
+    // working surface is the purchase flow (signals + two-step POs + receive).
+    case 'raw_warehouse_manager':
+      return '/purchase-orders';
+    default:
+      return '/home';
+  }
+}
+
+/**
  * Resolve the landing path for a group icon click — the group's
  * `defaultPath` if the role can see it, otherwise the first visible
  * item, otherwise `null` (meaning: the group has no items for this
