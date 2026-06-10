@@ -176,7 +176,10 @@ export function RequestCard({ req, column, action, onOpen }: RequestCardProps) {
   return (
     <div
       className={cn(
-        'relative overflow-hidden rounded-lg border border-border/70 bg-card pl-3 pr-3 py-2.5 text-left transition-shadow',
+        // shrink-0: inside a fill-mode column the card list is an overflow-y
+        // scroll flex column — without it flexbox SQUEEZES every card to fit
+        // instead of scrolling (owner: "cardlar siqilib qolyabdi").
+        'relative shrink-0 overflow-hidden rounded-lg border border-border/70 bg-card pl-3 pr-3 py-2.5 text-left transition-shadow',
         interactive &&
           'cursor-pointer hover:-translate-y-px hover:border-border-strong hover:shadow-card-hover',
       )}
