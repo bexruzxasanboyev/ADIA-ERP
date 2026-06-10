@@ -74,6 +74,7 @@ import type {
 import { TERMINAL_REPLENISHMENT_STATUSES } from '@/lib/types';
 import { StoreRequestCreateDialog } from './StoreRequestCreateDialog';
 import { StoreReceiveDialog } from './StoreReceiveDialog';
+import { StoreWorkInbox } from './StoreWorkInbox';
 import { StoreAiProposalsDialog } from './StoreAiProposalsDialog';
 import { StoreMultiSelect } from './StoreMultiSelect';
 import { StoreMinMaxEditDialog } from './StoreMinMaxEditDialog';
@@ -134,10 +135,13 @@ const STOCK_STATUS_TABS: { value: StockStatusKey; label: string }[] = [
 
 type RequestTabKey = 'board' | 'sent' | 'incoming' | 'transactions';
 
-/** Top-level page sections, surfaced as header tabs (owner feedback). */
-type PageTabKey = 'dashboard' | 'products' | 'requests';
+/** Top-level page sections, surfaced as header tabs (owner feedback).
+ *  F-T: «Ishlarim» — the simple-mode action feed — is FIRST and the default:
+ *  staff land on "what needs me now", everything else is one tab away. */
+type PageTabKey = 'inbox' | 'dashboard' | 'products' | 'requests';
 
 const PAGE_TABS: { value: PageTabKey; label: string }[] = [
+  { value: 'inbox', label: 'Ishlarim' },
   { value: 'dashboard', label: 'Dashboard' },
   { value: 'products', label: 'Mahsulotlar' },
   { value: 'requests', label: 'So‘rovlar' },
@@ -504,7 +508,7 @@ export function StoreWorkflowPage() {
   const movements = useApiQuery<MovementsResponse>(movementsUrl);
 
   // Default to the Dashboard overview tab on open (owner feedback).
-  const [pageTab, setPageTab] = useState<PageTabKey>('dashboard');
+  const [pageTab, setPageTab] = useState<PageTabKey>('inbox');
   const [statusFilter, setStatusFilter] = useState<StockStatusKey>('all');
   const [productSearch, setProductSearch] = useState('');
   // Category + unit filter for the Mahsulotlar cards (owner: mirror /products).
@@ -997,6 +1001,24 @@ export function StoreWorkflowPage() {
         </Card>
       ) : (
         <>
+          {/* TAB: Ishlarim (F-T simple-mode pilot) — the staff's default: an
+              action-only feed in plain words. Delegates to the SAME dialogs
+              the power tabs use. */}
+          {pageTab === 'inbox' && (
+            <StoreWorkInbox
+              requests={replen.data ?? []}
+              storeScope={selectedStoreSet}
+              onReceive={(req) => setReceiveTarget(req)}
+              onOpenAiProposals={
+                isStoreManager ? () => setAiProposalsOpen(true) : null
+              }
+              onCreateRequest={
+                isStoreManager ? () => setCreateOpen(true) : null
+              }
+              onOpenDetails={() => setPageTab('requests')}
+            />
+          )}
+
           {/* TAB: Dashboard — real-time KPI cards + status bars + sales. */}
           {pageTab === 'dashboard' && (
             <>
