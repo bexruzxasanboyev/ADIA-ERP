@@ -410,11 +410,17 @@ function ModalBody({
 
         {canAcceptFulfiller && (
           <>
-            <Button onClick={runAccept} disabled={busy !== null}>
+            {/* Owner: NO emojis in the modal — meaning rides on COLOUR:
+                accept = green, reject = red, ship = blue (primary). */}
+            <Button
+              variant="success"
+              onClick={runAccept}
+              disabled={busy !== null}
+            >
               {busy === 'accept' ? (
                 <Loader2 className="size-4 animate-spin" aria-hidden="true" />
               ) : null}
-              ✅ Qabul qilish
+              Qabul qilish
             </Button>
             <Button
               variant="destructive"
@@ -424,7 +430,7 @@ function ModalBody({
               {busy === 'reject' ? (
                 <Loader2 className="size-4 animate-spin" aria-hidden="true" />
               ) : null}
-              ❌ Rad etish
+              Rad etish
             </Button>
           </>
         )}

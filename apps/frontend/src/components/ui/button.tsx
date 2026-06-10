@@ -12,6 +12,10 @@ const buttonVariants = cva(
           'bg-primary text-primary-foreground shadow-sm shadow-primary/25 hover:bg-primary/90',
         destructive:
           'bg-destructive text-destructive-foreground shadow-sm shadow-destructive/25 hover:bg-destructive/90',
+        // Positive/confirm action (owner: accept = GREEN, no emojis) — mirrors
+        // destructive but on the success token.
+        success:
+          'bg-success text-success-foreground shadow-sm shadow-success/25 hover:bg-success/90',
         outline:
           'border border-border bg-card shadow-sm hover:bg-accent hover:text-accent-foreground',
         secondary:

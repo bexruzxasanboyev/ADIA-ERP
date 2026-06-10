@@ -793,7 +793,23 @@ export function StoreWorkflowPage() {
       const isTerminal = TERMINAL_REPLENISHMENT_STATUSES.includes(row.status);
 
       if (isRequester && !isTerminal) sentRows.push(row);
-      if ((isTarget || isRequester) && row.status === 'SHIP_TO_REQUESTER') {
+      // "Qabul qiluvchi" = shipped, awaiting the store's receive. TWO ship
+      // shapes exist: the legacy/manual hop parks at SHIP_TO_REQUESTER, while
+      // the central partial-fulfill path (0058) ships as CLOSED with
+      // closure_reason NULL (pipeline "yuborilgan" — reserved, store has NOT
+      // accepted). The owner shipped 5 kg via fulfill and the store saw
+      // "Qabul qiluvchi · 0" — this branch was the gap.
+      if (
+        (isTarget || isRequester) &&
+        row.status === 'SHIP_TO_REQUESTER'
+      ) {
+        incomingRows.push(row);
+      } else if (
+        isRequester &&
+        row.status === 'CLOSED' &&
+        // closure_reason lives on the FlowRequest superset (0058 fields).
+        (row as FlowRequest).closure_reason == null
+      ) {
         incomingRows.push(row);
       }
     }
