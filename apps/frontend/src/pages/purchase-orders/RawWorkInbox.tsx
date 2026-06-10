@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, PackageCheck } from 'lucide-react';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
@@ -53,11 +53,14 @@ import { PurchaseOrderReceiveDialog } from './PurchaseOrderReceiveDialog';
 export function RawWorkInbox({
   rawScope,
   onOpenDetails,
+  onActionableCount,
 }: {
   /** The raw-warehouse location ids the viewer operates (from useAuth). */
   rawScope: ReadonlySet<number>;
   /** Open the detail surface («Batafsil →» — signals + the PO table). */
   onOpenDetails: () => void;
+  /** Live actionable count — feeds the StaffViewSwitch «Ishlarim» badge. */
+  onActionableCount?: (count: number) => void;
 }) {
   const { user } = useAuth();
   const { canActOn } = useCanAct();
@@ -118,6 +121,9 @@ export function RawWorkInbox({
   const tayyorCount = orderBuckets.tayyor.length;
   const actionableCount = yangiCount + tayyorCount;
   const visibleCount = actionableCount + requestBuckets.jarayonda.length;
+  useEffect(() => {
+    onActionableCount?.(actionableCount);
+  }, [actionableCount, onActionableCount]);
   const { flash } = useInboxAlert(actionableCount, isKeeperRole);
   useInboxPolling([replen.refetch, purchaseOrders.refetch], rawScope.size > 0);
 

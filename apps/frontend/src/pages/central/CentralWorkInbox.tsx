@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { PackageCheck, Send } from 'lucide-react';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useToast } from '@/components/ui/toast';
@@ -70,6 +70,7 @@ export function CentralWorkInbox({
   centralId,
   canWrite,
   onOpenDetails,
+  onActionableCount,
 }: {
   /** Scoped central warehouse id, or `null` for the PM chain-wide view. */
   centralId: number | null;
@@ -77,6 +78,8 @@ export function CentralWorkInbox({
   canWrite: boolean;
   /** Open the detail surface («Batafsil →» — tables for staff, board for PM). */
   onOpenDetails: () => void;
+  /** Live actionable count — feeds the StaffViewSwitch «Ishlarim» badge. */
+  onActionableCount?: (count: number) => void;
 }) {
   const { notify } = useToast();
 
@@ -166,6 +169,9 @@ export function CentralWorkInbox({
 
   const actionableCount = storeOrderGroups.length + buckets.tayyor.length;
   const visibleCount = actionableCount + buckets.jarayonda.length;
+  useEffect(() => {
+    onActionableCount?.(actionableCount);
+  }, [actionableCount, onActionableCount]);
   const { flash } = useInboxAlert(actionableCount, canWrite);
   useInboxPolling(
     [allRequests.refetch, incoming.refetch, stock.refetch],

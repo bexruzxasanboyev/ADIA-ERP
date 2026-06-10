@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, Factory, Sparkles } from 'lucide-react';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
@@ -76,6 +76,7 @@ export function ProductionWorkInbox({
   productionId,
   canAct,
   onOpenDetails,
+  onActionableCount,
 }: {
   /** Scoped отдел id, or `null` for the PM chain-wide view. */
   productionId: number | null;
@@ -83,6 +84,8 @@ export function ProductionWorkInbox({
   canAct: boolean;
   /** Open the detail surface («Batafsil →» — tables for staff, board for PM). */
   onOpenDetails: () => void;
+  /** Live actionable count — feeds the StaffViewSwitch «Ishlarim» badge. */
+  onActionableCount?: (count: number) => void;
 }) {
   const { locations } = useAuth();
   const { notify } = useToast();
@@ -152,6 +155,9 @@ export function ProductionWorkInbox({
   const actionableCount =
     buckets.yangi.length + planRows.length + buckets.tayyor.length;
   const visibleCount = actionableCount + waitRows.length;
+  useEffect(() => {
+    onActionableCount?.(actionableCount);
+  }, [actionableCount, onActionableCount]);
   const { flash } = useInboxAlert(actionableCount, canAct);
   useInboxPolling([allRequests.refetch], canAct);
 
