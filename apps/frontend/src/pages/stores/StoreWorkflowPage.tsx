@@ -146,6 +146,11 @@ const PAGE_TABS: { value: PageTabKey; label: string }[] = [
   { value: 'requests', label: 'So‘rovlar' },
 ];
 
+// Variant A + mini-xarita: for the scoped store manager the «Ishlarim» feed
+// IS the page — the detail tabs (no Ishlarim entry; the feed is always on top)
+// appear only after the feed's single «Batafsil →» link.
+const STAFF_DETAIL_TABS = PAGE_TABS.filter((t) => t.value !== 'inbox');
+
 /**
  * F-W (owner: "nega 'Sotib olish so'rovi' deyapti — to'g'ri tushunarli emas")
  * — the store lists speak EVERYDAY language, not state-machine terms. One
@@ -544,8 +549,15 @@ export function StoreWorkflowPage() {
   }, [hasSelection, singleStoreId]);
   const movements = useApiQuery<MovementsResponse>(movementsUrl);
 
-  // Default to the Dashboard overview tab on open (owner feedback).
-  const [pageTab, setPageTab] = useState<PageTabKey>('inbox');
+  // Variant A single-screen staff mode: the store manager sees ONLY the
+  // «Ishlarim» feed until they open «Batafsil» (which reveals the detail tabs
+  // below, defaulting to So'rovlar). PM keeps the full tabbed workspace.
+  const isStaff = isStoreManager;
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [pageTab, setPageTab] = useState<PageTabKey>(
+    isStaff ? 'requests' : 'inbox',
+  );
+  const showTabbed = !isStaff || detailsOpen;
   const [statusFilter, setStatusFilter] = useState<StockStatusKey>('all');
   const [productSearch, setProductSearch] = useState('');
   // Category + unit filter for the Mahsulotlar cards (owner: mirror /products).
@@ -955,7 +967,9 @@ export function StoreWorkflowPage() {
     return n;
   }, [replen.data, selectedStoreSet, hasSelection]);
 
-  const inboxActive = isStoreManager && pageTab === 'inbox';
+  // The staff feed is ALWAYS on screen (Variant A), so the attention cue +
+  // poll run whenever the scoped store role is viewing; PM stays cue-less.
+  const inboxActive = isStoreManager;
   const { flash: inboxFlash } = useInboxAlert(inboxCount, inboxActive);
   useInboxPolling([replen.refetch, stock.refetch], inboxActive);
 
@@ -1017,17 +1031,17 @@ export function StoreWorkflowPage() {
               onChange={setPickedStoreIds}
             />
           )}
-          {hasSelection && (
+          {hasSelection && showTabbed && (
             <Tabs
               value={pageTab}
               onValueChange={setPageTab}
-              options={PAGE_TABS}
+              options={isStaff ? STAFF_DETAIL_TABS : PAGE_TABS}
               ariaLabel="Bo‘lim"
             />
           )}
         </div>
         <div className="flex items-center gap-3 sm:items-end">
-          {hasSelection && pageTab === 'requests' && (
+          {hasSelection && showTabbed && pageTab === 'requests' && (
             <DateRangeFilter value={dateRange} onChange={setDateRange} />
           )}
           {/* Persistent Savat trigger (store_manager only) — visible from any
@@ -1068,10 +1082,9 @@ export function StoreWorkflowPage() {
         </Card>
       ) : (
         <>
-          {/* TAB: Ishlarim (F-T simple-mode pilot) — the staff's default: an
-              action-only feed in plain words. Delegates to the SAME dialogs
-              the power tabs use. */}
-          {pageTab === 'inbox' && (
+          {/* «Ishlarim» (Variant A) — the staff's WHOLE page; PM reaches it
+              via its tab. «Batafsil →» reveals the detail tabs for staff. */}
+          {(isStaff || pageTab === 'inbox') && (
             <StoreWorkInbox
               requests={replen.data ?? []}
               storeScope={selectedStoreSet}
@@ -1083,12 +1096,15 @@ export function StoreWorkflowPage() {
               onCreateRequest={
                 isStoreManager ? () => setCreateOpen(true) : null
               }
-              onOpenDetails={() => setPageTab('requests')}
+              onOpenDetails={() => {
+                if (isStaff) setDetailsOpen((v) => !v);
+                else setPageTab('requests');
+              }}
             />
           )}
 
           {/* TAB: Dashboard — real-time KPI cards + status bars + sales. */}
-          {pageTab === 'dashboard' && (
+          {showTabbed && pageTab === 'dashboard' && (
             <>
               {/* First load (no stock data yet, no error): a full-layout
                   skeleton mirroring the Dashboard tab, instead of a centred
@@ -1120,7 +1136,7 @@ export function StoreWorkflowPage() {
           {/* TAB: Mahsulotlar — toolbar (segmented status filter + search)
               over open category sections of v2 stock cards. No wrapping
               mega-card: the cards ARE the surface (DESIGN.md §8). */}
-          {pageTab === 'products' && (
+          {showTabbed && pageTab === 'products' && (
             <div className="space-y-5">
               {/* Filter row (DESIGN.md §9): status filters left; search +
                   Filter + result count pushed right via ml-auto — one row. */}
@@ -1229,7 +1245,7 @@ export function StoreWorkflowPage() {
 
           {/* Sticky basket bar — visible on Mahsulotlar while the draft has
               lines; opens the Savat slide-over to review + confirm. */}
-          {pageTab === 'products' && isStoreManager && basketCount > 0 && (
+          {showTabbed && pageTab === 'products' && isStoreManager && basketCount > 0 && (
             <div className="sticky bottom-4 z-10 flex items-center justify-between gap-3 rounded-lg border border-primary/40 bg-card/95 px-4 py-3 pr-[5.5rem] shadow-pop backdrop-blur sm:pr-[11rem]">
               <span className="flex items-center gap-2 text-sm font-medium">
                 <ShoppingCart className="size-4 text-primary" aria-hidden="true" />
@@ -1242,7 +1258,7 @@ export function StoreWorkflowPage() {
           )}
 
           {/* TAB: So'rovlar (So'rov / Qabul qiluvchi / Tranzaksiyalar). */}
-          {pageTab === 'requests' && (
+          {showTabbed && pageTab === 'requests' && (
             <div className="space-y-6">
               {/* (Owner 2026-06-10: request charts live on the Dashboard tab
                   only — the So'rovlar view holds nothing but requests.) */}

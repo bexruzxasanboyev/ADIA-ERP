@@ -91,6 +91,11 @@ const PAGE_TABS: { value: PageTabKey; label: string }[] = [
   { value: 'requests', label: 'So‘rovlar' },
 ];
 
+// Variant A + mini-xarita: for the scoped central manager the «Ishlarim» feed
+// IS the page — the detail tabs (no Ishlarim entry; the feed is always on top)
+// appear only after the feed's single «Batafsil →» link.
+const STAFF_DETAIL_TABS = PAGE_TABS.filter((t) => t.value !== 'inbox');
+
 /** A concrete stock-status bucket (the "Hammasi" pseudo-status is gone — an
  * empty status filter now means "all", living inside the Filter popover). */
 type StockStatusKey = 'below_min' | 'low' | 'out' | 'enough';
@@ -156,12 +161,15 @@ export function CentralWorkflowPage() {
   const pinnedCentralId = activeLocationId ?? user?.location_id ?? null;
   const centralId = isPm ? null : pinnedCentralId;
 
-  // F-V (research Rule 12): the scoped manager lands on «Ishlarim» — the simple
-  // action feed of "what needs me now". PM (a chain-wide read-only viewer) keeps
-  // the Dashboard default.
+  // Variant A single-screen staff mode: the scoped manager sees ONLY the
+  // «Ishlarim» feed until they open «Batafsil» (which reveals the detail tabs
+  // below, defaulting to So'rovlar). PM keeps the full tabbed workspace.
+  const isStaff = canShip;
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [pageTab, setPageTab] = useState<PageTabKey>(
-    canShip ? 'inbox' : 'dashboard',
+    isStaff ? 'requests' : 'dashboard',
   );
+  const showTabbed = !isStaff || detailsOpen;
 
   // Ship-to-store basket (owner feedback #15). The central manager queues
   // finished products on the Mahsulotlar cards, picks a destination store in
@@ -275,34 +283,42 @@ export function CentralWorkflowPage() {
         }
       />
 
-      {/* 2. TAB QATORI — compact segmented, left-aligned, own row. */}
-      <Tabs
-        value={pageTab}
-        onValueChange={setPageTab}
-        options={PAGE_TABS}
-        ariaLabel="Bo‘lim"
-      />
-
-      {/* TAB: Ishlarim (F-V simple-mode feed) — the scoped manager's default:
-          an action-only feed in plain words, calm (no KPI strip). Delegates to
-          the SAME dialogs the So'rovlar power view uses. */}
-      {pageTab === 'inbox' && (
+      {/* «Ishlarim» (Variant A) — the staff's WHOLE page; PM reaches it via
+          its tab. «Batafsil →» reveals the detail tabs below for staff. */}
+      {(isStaff || pageTab === 'inbox') && (
         <CentralWorkInbox
           centralId={centralId}
           canWrite={canShip}
-          onOpenDetails={() => setPageTab('requests')}
+          onOpenDetails={() => {
+            if (isStaff) setDetailsOpen((v) => !v);
+            else setPageTab('requests');
+          }}
+        />
+      )}
+
+      {/* 2. TAB QATORI — PM always; staff only inside the Batafsil disclosure. */}
+      {showTabbed && (
+        <Tabs
+          value={pageTab}
+          onValueChange={setPageTab}
+          options={isStaff ? STAFF_DETAIL_TABS : PAGE_TABS}
+          ariaLabel="Bo‘lim"
         />
       )}
 
       {/* KONTENT — the hero KPI strip leads the content on every NON-inbox tab,
           AFTER the tab layer (DESIGN.md §9 scaffold order). */}
-      {pageTab !== 'inbox' && <CentralSummaryTiles centralId={centralId} />}
+      {showTabbed && pageTab !== 'inbox' && (
+        <CentralSummaryTiles centralId={centralId} />
+      )}
 
       {/* TAB: Dashboard — clean finished-only KPI cards + charts. */}
-      {pageTab === 'dashboard' && <CentralDashboardTab centralId={centralId} />}
+      {showTabbed && pageTab === 'dashboard' && (
+        <CentralDashboardTab centralId={centralId} />
+      )}
 
       {/* TAB: Mahsulotlar — finished-only stock as searchable cards + basket. */}
-      {pageTab === 'products' && (
+      {showTabbed && pageTab === 'products' && (
         <>
           <CentralProductsTab
             centralId={centralId}
@@ -347,7 +363,9 @@ export function CentralWorkflowPage() {
       )}
 
       {/* TAB: So'rovlar — do'kondek: charts + kiruvchi/chiqgan + So'rov qo'shish. */}
-      {pageTab === 'requests' && <CentralRequestsTab centralId={centralId} />}
+      {showTabbed && pageTab === 'requests' && (
+        <CentralRequestsTab centralId={centralId} />
+      )}
 
       {/* Ship-to-store dispatch grid — multi-destination (stores + production). */}
       {canShip && centralId !== null && (
