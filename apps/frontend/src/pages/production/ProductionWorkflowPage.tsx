@@ -54,6 +54,10 @@ const PAGE_TABS: { value: PageTabKey; label: string }[] = [
   { value: 'transactions', label: 'Tranzaksiyalar' },
 ];
 
+// F-W (owner: "hali ham kanban-ku") — the So'rovlar board tab is PM-only;
+// staff get Ishlarim / Yarim tayyor / Tranzaksiyalar (+ Dashboard).
+const STAFF_TABS = PAGE_TABS.filter((t) => t.value !== 'requests');
+
 export function ProductionWorkflowPage() {
   const { user, activeLocationId } = useAuth();
   const isPm = user?.role === 'pm';
@@ -82,7 +86,7 @@ export function ProductionWorkflowPage() {
       <Tabs
         value={pageTab}
         onValueChange={setPageTab}
-        options={PAGE_TABS}
+        options={isPm ? PAGE_TABS : STAFF_TABS}
         ariaLabel="Bo‘lim"
       />
 
@@ -93,7 +97,9 @@ export function ProductionWorkflowPage() {
         <ProductionWorkInbox
           productionId={productionId}
           canAct={isProductionManager}
-          onOpenDetails={() => setPageTab('requests')}
+          onOpenDetails={() =>
+            setPageTab(isPm ? 'requests' : 'transactions')
+          }
         />
       )}
 
@@ -111,7 +117,7 @@ export function ProductionWorkflowPage() {
 
       {/* TAB: So'rovlar — the board IS the flow (raw POs included). Ends at the
           board; the movements history is its own Tranzaksiyalar tab now (F-Q §3). */}
-      {pageTab === 'requests' && (
+      {pageTab === 'requests' && isPm && (
         <ProductionRequestsTab productionId={productionId} />
       )}
 

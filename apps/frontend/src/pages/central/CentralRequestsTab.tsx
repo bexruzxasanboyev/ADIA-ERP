@@ -124,7 +124,9 @@ export function CentralRequestsTab({
   // Only the scoped central manager acts; PM is read-only across the pipeline.
   const canWrite = user?.role === 'central_warehouse_manager';
 
-  const [tab, setTab] = useState<CentralTab>('board');
+  // F-W (owner: "hali ham kanban-ku") — the Doska is PM-only; the central
+  // keeper's actions live on «Ishlarim», so staff default to Tranzaksiyalar.
+  const [tab, setTab] = useState<CentralTab>(isPm ? 'board' : 'transactions');
   const [dateRange, setDateRange] = useState<DateRangeValue>({ range: 'month' });
   // A single busy key locks the ship buttons while one is in flight (`s<id>`).
   const [shipBusyKey, setShipBusyKey] = useState<string | null>(null);
@@ -369,13 +371,15 @@ export function CentralRequestsTab({
         )}
       </div>
 
-      {/* 2. Tab row — compact segmented Doska / Tranzaksiyalar, left-aligned. */}
-      <Tabs
-        value={tab}
-        onValueChange={setTab}
-        options={VIEW_TABS}
-        ariaLabel="Ko‘rinish"
-      />
+      {/* 2. Tab row — Doska is PM-only (F-W); staff see just Tranzaksiyalar. */}
+      {isPm && (
+        <Tabs
+          value={tab}
+          onValueChange={setTab}
+          options={VIEW_TABS}
+          ariaLabel="Ko‘rinish"
+        />
+      )}
 
       {/* 3. Filter row — the date range filter right-aligned via ml-auto;
           donut + trend + Tranzaksiyalar follow it. */}
@@ -395,7 +399,7 @@ export function CentralRequestsTab({
 
       {/* DOSKA — ONE board area + a 📥 Kelgan | 📤 Chiqgan toggle
           (cross-department-flow §9.2; owner: no more stacked duplicate). */}
-      {tab === 'board' && (
+      {tab === 'board' && isPm && (
         <>
           {listLoading && (
             <Card>

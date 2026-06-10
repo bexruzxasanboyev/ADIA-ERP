@@ -330,11 +330,10 @@ export function PurchaseOrdersPage() {
         onCreatePo={canCreate ? handleCreatePoFromSignal : null}
       />
 
-      {/* F-S — bo'limlardan kelgan so'rovlar (pinned raw target): the same
-          unified board every other link has. Accept/reject lives in the shared
-          modal (accept-fulfiller); after accept the row shows the «Poster
-          postavka kutilmoqda» state until the sync lands the stock. */}
-      {rawScope.size > 0 && !replen.isLoading && !replen.error && (
+      {/* F-S board — F-W: PM-ONLY (owner: "hali ham kanban-ku"). The keeper's
+          incoming requests live as «Ishlarim» cards; his Batafsil is just the
+          signals + the PO table. */}
+      {isPm && rawScope.size > 0 && !replen.isLoading && !replen.error && (
         <section className="space-y-2">
           <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Bo‘limlardan kelgan so‘rovlar

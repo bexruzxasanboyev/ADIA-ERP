@@ -50,11 +50,8 @@ import { useAuth } from '@/hooks/useAuth';
 import { usePrefersReducedMotion } from '@/hooks/usePrefersReducedMotion';
 import { ApiError, apiRequest } from '@/lib/api-client';
 import { formatDateTime, formatQtyUnit } from '@/lib/format';
-import {
-  REPLENISHMENT_STATUS_LABELS,
-  REPLENISHMENT_STATUS_VARIANT,
-  UNIT_OPTIONS,
-} from '@/lib/labels';
+import { UNIT_OPTIONS } from '@/lib/labels';
+import { pipelineStageOf } from '@/lib/pipeline';
 import { matchesSearch } from '@/lib/translit';
 import { groupByBatch } from '@/lib/groupByBatch';
 import { cn } from '@/lib/utils';
@@ -148,6 +145,44 @@ const PAGE_TABS: { value: PageTabKey; label: string }[] = [
   { value: 'products', label: 'Mahsulotlar' },
   { value: 'requests', label: 'So‘rovlar' },
 ];
+
+/**
+ * F-W (owner: "nega 'Sotib olish so'rovi' deyapti — to'g'ri tushunarli emas")
+ * — the store lists speak EVERYDAY language, not state-machine terms. One
+ * stage → one plain word, mirroring the Ishlarim tracker steps.
+ */
+function storeStageLabel(row: ReplenishmentRequest): string {
+  switch (pipelineStageOf(row as FlowRequest)) {
+    case 'kutuvda':
+      return 'Yuborildi';
+    case 'soralgan':
+      return 'Tayyorlanmoqda';
+    case 'qabul_qilingan':
+      return 'Tayyor';
+    case 'yuborilgan':
+      return 'Yo‘lda';
+    case 'yopilgan':
+    default:
+      return 'Yopildi';
+  }
+}
+function storeStageVariant(
+  row: ReplenishmentRequest,
+): 'warning' | 'info' | 'success' | 'default' | 'secondary' {
+  switch (pipelineStageOf(row as FlowRequest)) {
+    case 'kutuvda':
+      return 'warning';
+    case 'soralgan':
+      return 'info';
+    case 'qabul_qilingan':
+      return 'success';
+    case 'yuborilgan':
+      return 'default';
+    case 'yopilgan':
+    default:
+      return 'secondary';
+  }
+}
 
 /**
  * "Kam" (low) heuristic: at or below 120% of min but still above min — the
@@ -518,7 +553,10 @@ export function StoreWorkflowPage() {
     category: [],
     unit: [],
   });
-  const [requestTab, setRequestTab] = useState<RequestTabKey>('board');
+  // F-W: staff default to the plain «So'rov» list; only PM lands on Doska.
+  const [requestTab, setRequestTab] = useState<RequestTabKey>(
+    isPm ? 'board' : 'sent',
+  );
   // The board card whose detail modal is open, and the request queued for the
   // CancelDialog (opened from inside the modal's requester action).
   const [openRequest, setOpenRequest] = useState<FlowRequest | null>(null);
@@ -921,8 +959,10 @@ export function StoreWorkflowPage() {
   const { flash: inboxFlash } = useInboxAlert(inboxCount, inboxActive);
   useInboxPolling([replen.refetch, stock.refetch], inboxActive);
 
+  // F-W (owner: "hali ham kanban-ku") — the board is a MANAGER view only
+  // (research Rule 12). Staff never see a Doska option anywhere; PM keeps it.
   const requestTabOptions: { value: RequestTabKey; label: string }[] = [
-    { value: 'board', label: 'Doska' },
+    ...(isPm ? [{ value: 'board' as const, label: 'Doska' }] : []),
     { value: 'sent', label: `So‘rov · ${sent.length}` },
     { value: 'incoming', label: `Qabul qiluvchi · ${incoming.length}` },
     { value: 'transactions', label: 'Tranzaksiyalar' },
@@ -1267,7 +1307,7 @@ export function StoreWorkflowPage() {
                   is the default side; Kelgan (jo'natmalar to'g'ri do'konga
                   pinlangan kam holatlar) may be empty. Scoped to the selected
                   store(s) via the same `splitBoards`. */}
-              {requestTab === 'board' && (
+              {requestTab === 'board' && isPm && (
                 <div className="p-5">
                   {replen.isLoading && <LoadingState />}
                   {!replen.isLoading && replen.error && (
@@ -1365,12 +1405,8 @@ export function StoreWorkflowPage() {
                                     line.product_unit,
                                   )}
                                 </span>
-                                <Badge
-                                  variant={
-                                    REPLENISHMENT_STATUS_VARIANT[line.status]
-                                  }
-                                >
-                                  {REPLENISHMENT_STATUS_LABELS[line.status]}
+                                <Badge variant={storeStageVariant(line)}>
+                                  {storeStageLabel(line)}
                                 </Badge>
                               </li>
                             ))}
@@ -1413,10 +1449,8 @@ export function StoreWorkflowPage() {
                               {formatQtyUnit(row.qty_needed, row.product_unit)}
                             </TableCell>
                             <TableCell>
-                              <Badge
-                                variant={REPLENISHMENT_STATUS_VARIANT[row.status]}
-                              >
-                                {REPLENISHMENT_STATUS_LABELS[row.status]}
+                              <Badge variant={storeStageVariant(row)}>
+                                {storeStageLabel(row)}
                               </Badge>
                             </TableCell>
                             <TableCell className="whitespace-nowrap text-muted-foreground">
