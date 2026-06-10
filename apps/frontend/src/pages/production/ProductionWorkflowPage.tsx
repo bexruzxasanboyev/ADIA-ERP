@@ -4,6 +4,7 @@ import { PageHeader } from '@/components/PageState';
 import { useAuth } from '@/hooks/useAuth';
 import { ProductionDashboardTab } from './ProductionDashboardTab';
 import { ProductionRequestsTab } from './ProductionRequestsTab';
+import { ProductionTransactionsTab } from './ProductionTransactionsTab';
 import { YarimTayyorTab } from './YarimTayyorTab';
 
 /**
@@ -13,7 +14,7 @@ import { YarimTayyorTab } from './YarimTayyorTab';
  * Owner: "make me a dashboard just like central/store with useful precise data,
  * and make So'rovlar look like the central warehouse's (I'll give edits later)."
  *
- * Three focused sub-tabs surfaced as in-page tabs (page-state, NOT sub-routes —
+ * Four focused sub-tabs surfaced as in-page tabs (page-state, NOT sub-routes —
  * exactly like central):
  *   1. Dashboard         — production-relevant KPI cards (Faol zayafkalar,
  *                          Kutilayotgan, Yarim tayyor turlari, Min'dan past,
@@ -24,9 +25,12 @@ import { YarimTayyorTab } from './YarimTayyorTab';
  *                          qoldiq AND a per-card "To'ldirish" self-fill (opens a
  *                          zagatovka). A dedicated production-scoped grid
  *                          (YarimTayyorTab) fed by /api/products/yarim-tayyor.
- *   3. So'rovlar         — mirrors central's So'rovlar LOOK (5-stage pipeline +
- *                          date-range + charts), read-only, fed by the отдел's
- *                          own /api/replenishment. See ProductionRequestsTab.
+ *   3. So'rovlar         — the 📥 Kelgan | 📤 Chiqgan board (raw POs ride it
+ *                          too); the board IS the flow. Fed by the отдел's own
+ *                          /api/replenishment. See ProductionRequestsTab.
+ *   4. Tranzaksiyalar    — the отдел's stock-movement ledger (qabul qildi /
+ *                          chiqardi) with its own date filter, extracted out of
+ *                          So'rovlar (F-Q §3). See ProductionTransactionsTab.
  *
  * RBAC: a `production_manager` is pinned to their active отдел (falling back to
  * their primary location_id); PM gets the chain-wide production view (the
@@ -34,12 +38,13 @@ import { YarimTayyorTab } from './YarimTayyorTab';
  * every endpoint.
  */
 
-type PageTabKey = 'dashboard' | 'semi' | 'requests';
+type PageTabKey = 'dashboard' | 'semi' | 'requests' | 'transactions';
 
 const PAGE_TABS: { value: PageTabKey; label: string }[] = [
   { value: 'dashboard', label: 'Dashboard' },
   { value: 'semi', label: 'Yarim tayyor' },
   { value: 'requests', label: 'So‘rovlar' },
+  { value: 'transactions', label: 'Tranzaksiyalar' },
 ];
 
 export function ProductionWorkflowPage() {
@@ -80,9 +85,16 @@ export function ProductionWorkflowPage() {
         <YarimTayyorTab productionId={productionId} canFill={!isPm} />
       )}
 
-      {/* TAB: So'rovlar — central-style pipeline LOOK, read-only (owner edits later). */}
+      {/* TAB: So'rovlar — the board IS the flow (raw POs included). Ends at the
+          board; the movements history is its own Tranzaksiyalar tab now (F-Q §3). */}
       {pageTab === 'requests' && (
         <ProductionRequestsTab productionId={productionId} />
+      )}
+
+      {/* TAB: Tranzaksiyalar — the отдел's stock-movement ledger (qabul qildi /
+          chiqardi) with its own date filter. Extracted from So'rovlar (F-Q §3). */}
+      {pageTab === 'transactions' && (
+        <ProductionTransactionsTab productionId={productionId} />
       )}
     </div>
   );

@@ -7,6 +7,7 @@ import {
   Info,
   Loader2,
   PackageCheck,
+  ShoppingCart,
   Sparkles,
 } from 'lucide-react';
 import {
@@ -23,8 +24,14 @@ import { LoadingState } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useCanAct } from '@/hooks/useCanAct';
 import { ApiError } from '@/lib/api-client';
-import { formatDateTime, formatQty, formatQtyUnit } from '@/lib/format';
-import { PIPELINE_STAGE_LABELS } from '@/lib/labels';
+import { formatDate, formatDateTime, formatQty, formatQtyUnit } from '@/lib/format';
+import {
+  PIPELINE_STAGE_LABELS,
+  PRODUCTION_ORDER_STATUS_LABELS,
+  PRODUCTION_ORDER_STATUS_VARIANT,
+  PURCHASE_ORDER_STATUS_LABELS,
+  PURCHASE_ORDER_STATUS_VARIANT,
+} from '@/lib/labels';
 import { kanbanColumnOf, pipelineStageOf } from '@/lib/pipeline';
 import {
   acceptFulfiller,
@@ -34,6 +41,11 @@ import {
   rejectInternal,
   rejectProduction,
 } from '@/lib/replenishmentActions';
+import {
+  patchProductionOrderStatus,
+  type DetailPurchaseOrder,
+  type ReplenishmentDetailExt,
+} from '@/lib/productionOrders';
 import {
   CLOSURE_REASON_LABELS,
   CLOSURE_REASON_VARIANT,
@@ -45,11 +57,7 @@ import {
   type FlowRequest,
 } from '@/lib/replenishmentFlow';
 import { TERMINAL_REPLENISHMENT_STATUSES } from '@/lib/types';
-import type {
-  LocationType,
-  PipelineStage,
-  ReplenishmentDetail,
-} from '@/lib/types';
+import type { LocationType, PipelineStage } from '@/lib/types';
 import { TransitionTimeline } from './TransitionTimeline';
 import { RequestTreeSection } from './RequestTreeSection';
 
@@ -188,13 +196,17 @@ function ModalBody({
 
   // The detail fetch refines the seed (live status + transitions). Until it
   // lands we render entirely from the seed, so the panel never flashes blank.
-  const detail = useApiQuery<ReplenishmentDetail>(
+  const detail = useApiQuery<ReplenishmentDetailExt>(
     `/api/replenishment/${requestId}`,
   );
   const live = (detail.data?.request as FlowRequest | undefined) ?? seed;
   const transitions = detail.data?.transitions ?? [];
 
   const [busy, setBusy] = useState<'accept' | 'reject' | null>(null);
+  // F-Q §1 — the «Tayyorga o'tkazish» production-order PATCH is busy. Separate
+  // from `busy` (accept/reject) because the two action groups can co-exist on
+  // one row and must spin independently.
+  const [prodBusy, setProdBusy] = useState<'in_progress' | 'done' | null>(null);
 
   const stage = useMemo(() => pipelineStageOf(live), [live]);
   // The kanban column drives the header qty chip (shipped vs. needed), mirroring
@@ -277,6 +289,26 @@ function ModalBody({
       live.status === 'DONE_TO_WAREHOUSE' ||
       live.status === 'CLOSED');
 
+  // ----- F-Q §1 — «Tayyorga o'tkazish» (production order) -------------------
+  // The embedded making order (null until the engine creates it). The отдел
+  // operator who runs the order's `location_id` may start it / finish it; PM /
+  // a foreign operator only reads the strip. Gated on `canActOn(po.location_id)`
+  // — the same RBAC the backend enforces (operator of the order's отдел).
+  const prodOrder = detail.data?.production_order ?? null;
+  const canRunProdOrder = prodOrder !== null && canActOn(prodOrder.location_id);
+  // 'new' → may «Ishni boshlash» (→ in_progress). 'new' | 'in_progress' → may
+  // «Tayyor — skladga topshirish» (→ done). 'done' → finished, no buttons.
+  const canStartProdOrder = canRunProdOrder && prodOrder.status === 'new';
+  const canFinishProdOrder =
+    canRunProdOrder &&
+    (prodOrder.status === 'new' || prodOrder.status === 'in_progress');
+
+  // ----- F-Q §2 — «Bog'liq xaridlar» (purchase orders) ---------------------
+  // The related raw purchase orders the отдел TRACKS (read-only — the two-step
+  // approval lives with the raw side). Renders only when non-empty, so the
+  // section is harmless on every other host.
+  const purchaseOrders: DetailPurchaseOrder[] = detail.data?.purchase_orders ?? [];
+
   async function runAccept() {
     setBusy('accept');
     try {
@@ -346,6 +378,44 @@ function ModalBody({
       notify('error', acceptError(err));
     } finally {
       setBusy(null);
+    }
+  }
+
+  // F-Q §1 — «Ishni boshlash»: mark the making order in_progress (no cascade).
+  async function runStartProdOrder() {
+    if (prodOrder === null) return;
+    setProdBusy('in_progress');
+    try {
+      await patchProductionOrderStatus(prodOrder.id, 'in_progress');
+      notify('success', `Zayafka #${prodOrder.id} ishga olindi.`);
+      detail.refetch();
+      onActed?.();
+    } catch (err: unknown) {
+      notify('error', acceptError(err));
+    } finally {
+      setProdBusy(null);
+    }
+  }
+
+  // F-Q §1 — «Tayyor — skladga topshirish»: finish the order in one click. The
+  // backend decrements raw by the BOM, increments the сех storage / central,
+  // and advances the linked request to the Tayyor column — atomically — so the
+  // card moves the moment `onActed()` refetches the host list.
+  async function runFinishProdOrder() {
+    if (prodOrder === null) return;
+    setProdBusy('done');
+    try {
+      await patchProductionOrderStatus(prodOrder.id, 'done');
+      notify(
+        'success',
+        `Zayafka #${prodOrder.id} yakunlandi — mahsulot skladga tushdi, so‘rov Tayyorga o‘tdi.`,
+      );
+      detail.refetch();
+      onActed?.();
+    } catch (err: unknown) {
+      notify('error', acceptError(err));
+    } finally {
+      setProdBusy(null);
     }
   }
 
@@ -462,6 +532,120 @@ function ModalBody({
             </Meta>
           )}
         </dl>
+
+        {/* F-Q §1 — «Ishlab chiqarish zayafkasi». The отдел operator's
+            «Tayyorga o'tkazish» surface: the linked making order's id · status ·
+            qty, plus the start/finish actions (operator-only; PM reads the
+            strip). Colour carries meaning — green = finish, no emojis (owner).
+            Renders only when the detail embeds a production_order. */}
+        {prodOrder !== null && (
+          <section className="space-y-3 rounded-lg border border-border/60 bg-surface-3 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  <Factory className="size-3.5" aria-hidden="true" />
+                  Ishlab chiqarish zayafkasi
+                </h3>
+                <span className="text-sm font-medium tabular-nums">
+                  #{prodOrder.id}
+                </span>
+                <Badge variant={PRODUCTION_ORDER_STATUS_VARIANT[prodOrder.status]}>
+                  {PRODUCTION_ORDER_STATUS_LABELS[prodOrder.status]}
+                </Badge>
+                <Badge variant="outline" className="tabular-nums">
+                  {formatQtyUnit(prodOrder.qty, live.product_unit)}
+                </Badge>
+              </div>
+              {/* 'done' → success state, no buttons. */}
+              {prodOrder.status === 'done' && (
+                <Badge variant="success" className="gap-1">
+                  <PackageCheck className="size-3" aria-hidden="true" />
+                  Skladga topshirildi
+                </Badge>
+              )}
+            </div>
+
+            {(canStartProdOrder || canFinishProdOrder) && (
+              <div className="flex flex-wrap items-center gap-2">
+                {canStartProdOrder && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={runStartProdOrder}
+                    disabled={prodBusy !== null}
+                  >
+                    {prodBusy === 'in_progress' ? (
+                      <Loader2
+                        className="size-4 animate-spin"
+                        aria-hidden="true"
+                      />
+                    ) : null}
+                    Ishni boshlash
+                  </Button>
+                )}
+                {canFinishProdOrder && (
+                  <Button
+                    variant="success"
+                    size="sm"
+                    onClick={runFinishProdOrder}
+                    disabled={prodBusy !== null}
+                  >
+                    {prodBusy === 'done' ? (
+                      <Loader2
+                        className="size-4 animate-spin"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <PackageCheck className="size-4" aria-hidden="true" />
+                    )}
+                    Tayyor — skladga topshirish
+                  </Button>
+                )}
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* F-Q §2 — «Bog'liq xaridlar». The raw purchase orders this request
+            spawned — read-only; the отдел only TRACKS them (the two-step
+            approval lives with the raw side). Renders only when non-empty, so
+            the section is harmless on every other host. */}
+        {purchaseOrders.length > 0 && (
+          <section>
+            <h3 className="mb-1 flex items-center gap-1.5 px-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              <ShoppingCart className="size-3.5" aria-hidden="true" />
+              Bog‘liq xaridlar
+            </h3>
+            <ul className="divide-y divide-border/60 rounded-lg border border-border/60 bg-surface-3">
+              {purchaseOrders.map((po) => (
+                <li key={po.id} className="space-y-1 px-3 py-2 text-sm">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="font-medium tabular-nums">
+                      Xarid #{po.id}
+                    </span>
+                    <span className="min-w-0 truncate text-foreground/90">
+                      {po.product_name}
+                    </span>
+                    <Badge variant="outline" className="tabular-nums">
+                      {formatQtyUnit(po.qty, po.product_unit)}
+                    </Badge>
+                    <Badge variant={PURCHASE_ORDER_STATUS_VARIANT[po.status]}>
+                      {PURCHASE_ORDER_STATUS_LABELS[po.status]}
+                    </Badge>
+                    <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+                      {formatDate(po.created_at)}
+                    </span>
+                  </div>
+                  {po.status === 'draft' && (
+                    <p className="text-xs text-muted-foreground">
+                      Основной склад tasdig‘ini kutmoqda
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         {/* Free-text blocks. */}
         {live.note && (
