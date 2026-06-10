@@ -2,6 +2,10 @@ import { useState } from 'react';
 import { Tabs } from '@/components/ui/tabs';
 import { PageHeader } from '@/components/PageState';
 import { useAuth } from '@/hooks/useAuth';
+import {
+  StaffViewSwitch,
+  type StaffView,
+} from '@/pages/replenishment/inbox/StaffViewSwitch';
 import { ProductionDashboardTab } from './ProductionDashboardTab';
 import { ProductionRequestsTab } from './ProductionRequestsTab';
 import { ProductionTransactionsTab } from './ProductionTransactionsTab';
@@ -47,10 +51,13 @@ const PAGE_TABS: { value: PageTabKey; label: string }[] = [
 // F-W (owner: "hali ham kanban-ku") — the So'rovlar board tab is PM-only.
 const STAFF_TABS = PAGE_TABS.filter((t) => t.value !== 'requests');
 
-// Variant A: for the scoped отдел manager the feed IS the page — the detail
-// tabs (no Ishlarim entry; the feed is always on top) appear only after the
-// single «Batafsil →» link.
-const STAFF_DETAIL_TABS = STAFF_TABS.filter((t) => t.value !== 'inbox');
+// Variant A + StaffViewSwitch (owner: "mahsulotlar tabi qani?"): the отдел's
+// own products (Yarim tayyor qoldig'i) are first-class via the LARGE
+// Ishlarim|Mahsulotlar segmented switch, so 'semi' leaves the «Batafsil»
+// detail tabs (only Dashboard + Tranzaksiyalar history stay behind it).
+const STAFF_DETAIL_TABS = STAFF_TABS.filter(
+  (t) => t.value !== 'inbox' && t.value !== 'semi',
+);
 
 export function ProductionWorkflowPage() {
   const { user, activeLocationId } = useAuth();
@@ -64,15 +71,22 @@ export function ProductionWorkflowPage() {
   // Only the scoped production manager acts; PM is read-only chain-wide.
   const isProductionManager = user?.role === 'production_manager';
 
-  // Single-screen staff mode: the отдел manager sees ONLY the feed until they
-  // open «Batafsil». Their detail default is the Tranzaksiyalar table (the
-  // ledger they actually consult); PM keeps the Dashboard default.
+  // Single-screen staff mode + StaffViewSwitch: the отдел manager lands on the
+  // feed; the LARGE Ishlarim|Mahsulotlar switch keeps the отдел's own product
+  // list (Yarim tayyor + qoldiq) first-class. «Batafsil» (inside the Ishlarim
+  // segment) reveals Dashboard + Tranzaksiyalar; PM keeps the full tab row.
   const isStaff = isProductionManager;
+  const [staffView, setStaffView] = useState<StaffView>('inbox');
+  const staffOnProducts = isStaff && staffView === 'products';
+  // Live actionable count from the feed — drives the switch's badge.
+  const [feedCount, setFeedCount] = useState(0);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [pageTab, setPageTab] = useState<PageTabKey>(
     isStaff ? 'transactions' : 'dashboard',
   );
-  const showTabbed = !isStaff || detailsOpen;
+  const showTabbed = (!isStaff || detailsOpen) && !staffOnProducts;
+  // The Mahsulotlar surface: staff via the switch, PM/managers via the tab.
+  const semiVisible = staffOnProducts || (showTabbed && pageTab === 'semi');
 
   return (
     <div className="mx-auto w-full max-w-[120rem] space-y-6">
@@ -81,17 +95,31 @@ export function ProductionWorkflowPage() {
         description="Bo‘limning zayafkalari, yarim tayyor mahsulotlari va so‘rovlari — bitta joyda."
       />
 
-      {/* «Ishlarim» — the staff's WHOLE page (Variant A); PM reaches it via
-          its tab. «Batafsil →» reveals the detail views below for staff. */}
-      {(isStaff || pageTab === 'inbox') && (
-        <ProductionWorkInbox
-          productionId={productionId}
-          canAct={isProductionManager}
-          onOpenDetails={() => {
-            if (isStaff) setDetailsOpen((v) => !v);
-            else setPageTab('requests');
-          }}
+      {/* StaffViewSwitch — the LARGE Ishlarim|Mahsulotlar segmented control
+          (owner: "mahsulotlar tabi qani?"). Staff only; PM keeps the tab row. */}
+      {isStaff && (
+        <StaffViewSwitch
+          value={staffView}
+          onChange={setStaffView}
+          inboxCount={feedCount}
         />
+      )}
+
+      {/* «Ishlarim» — the staff's primary segment (Variant A); PM reaches it
+          via its tab. Kept MOUNTED (hidden) on the Mahsulotlar segment so
+          polling + the live badge keep running. */}
+      {(isStaff || pageTab === 'inbox') && (
+        <div hidden={staffOnProducts}>
+          <ProductionWorkInbox
+            productionId={productionId}
+            canAct={isProductionManager}
+            onOpenDetails={() => {
+              if (isStaff) setDetailsOpen((v) => !v);
+              else setPageTab('requests');
+            }}
+            onActionableCount={setFeedCount}
+          />
+        </div>
       )}
 
       {/* TAB QATORI — PM always; staff only inside the Batafsil disclosure. */}
@@ -109,10 +137,10 @@ export function ProductionWorkflowPage() {
         <ProductionDashboardTab productionId={productionId} />
       )}
 
-      {/* TAB: Yarim tayyor — the отдел's зг grid WITH on-hand qoldiq + a per-card
-          "To'ldirish" self-fill (opens a zagatovka). Server-scoped to the отдел
-          for a production_manager; PM sees all type='semi' (read-only, no fill). */}
-      {showTabbed && pageTab === 'semi' && (
+      {/* Mahsulotlar / Yarim tayyor — the отдел's зг grid WITH on-hand qoldiq +
+          a per-card "To'ldirish" self-fill (opens a zagatovka). Staff via the
+          segmented switch; PM via the tab (read-only, no fill). */}
+      {semiVisible && (
         <YarimTayyorTab productionId={productionId} canFill={!isPm} />
       )}
 
