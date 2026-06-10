@@ -152,8 +152,9 @@ describe('RecipePage — read-only recipe view', () => {
     // Product name resolved from the products list into the header (it may
     // also appear inside the breakdown, so allow multiple matches).
     expect(screen.getAllByText(/Shokoladli tort/).length).toBeGreaterThan(0);
-    // The flour component appears in the read-only breakdown tree.
-    expect(screen.getByText(/Un \(oliy nav\)/)).toBeTruthy();
+    // The flour component appears in the breakdown tree AND in the new
+    // "Umumiy mahsulotlar" aggregate table, so allow multiple matches.
+    expect(screen.getAllByText(/Un \(oliy nav\)/).length).toBeGreaterThan(0);
   });
 
   it('renders a top-level RAW component alongside semi sections in a MIXED tree (НАПОЛЕОН regression)', async () => {
@@ -250,8 +251,9 @@ describe('RecipePage — read-only recipe view', () => {
       expect(screen.queryByText(/Retseptni yuklab bo/i)).toBeNull();
     });
 
-    // The DIRECT raw component must be visible (the bug hid it entirely).
-    expect(screen.getByText('ун')).toBeTruthy();
+    // The DIRECT raw component must be visible (the bug hid it entirely);
+    // it also shows in the "Umumiy mahsulotlar" aggregate, allow multiple.
+    expect(screen.getAllByText('ун').length).toBeGreaterThan(0);
     // BOTH semi sections must still render.
     expect(screen.getByText('крем наполеон')).toBeTruthy();
     expect(screen.getByText('зувала наполеон тесто')).toBeTruthy();

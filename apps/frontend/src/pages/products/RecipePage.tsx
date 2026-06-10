@@ -2,9 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { AlertTriangle, ArrowLeft, Inbox } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { NumberInput } from '@/components/ui/number-input';
 import {
   EmptyState,
   ErrorState,
@@ -12,8 +10,6 @@ import {
   PageHeader,
 } from '@/components/PageState';
 import { useApiQuery } from '@/hooks/useApiQuery';
-import { useAuth } from '@/hooks/useAuth';
-import { useToast } from '@/components/ui/toast';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import {
   PRODUCT_TYPE_LABELS,
@@ -24,7 +20,11 @@ import { formatSom } from '@/lib/format';
 import { effectiveType, isResaleCategory } from '@/lib/productCategory';
 import { groupRecipeByStage } from '@/lib/recipeStage';
 import type { Product, RecipeNode, RecipeResponse } from '@/lib/types';
-import { PRODUCT_TYPE_BADGE, RecipeBreakdown } from './RecipeTreeView';
+import {
+  AggregatedIngredients,
+  PRODUCT_TYPE_BADGE,
+  RecipeBreakdown,
+} from './RecipeTreeView';
 
 /**
  * View a product's recipe (BOM) as a dedicated, READ-ONLY page.
@@ -38,90 +38,6 @@ import { PRODUCT_TYPE_BADGE, RecipeBreakdown } from './RecipeTreeView';
  * recipe shows a WARNING ("Posterda kiritilishi kerak"); a resale/base item
  * shows a NEUTRAL "Sotib olinadigan mahsulot — retseptsiz." with no alarm.
  */
-/**
- * TZ-3 — "Retsept hajmi" editor. Shows how many finished pieces one recipe
- * yields; the whole cost/quantity view above is already per-piece (÷ yield).
- * pm / production_manager may correct the AI estimate; saving refetches so the
- * per-piece figures update live.
- */
-function RecipeYieldEditor({
-  productId,
-  value,
-  onSaved,
-}: {
-  productId: number;
-  value: number;
-  onSaved: () => void;
-}) {
-  const { user } = useAuth();
-  const { notify } = useToast();
-  const canEdit =
-    user?.role === 'pm' || user?.role === 'production_manager';
-  const [draft, setDraft] = useState<number | null>(value);
-  const [saving, setSaving] = useState(false);
-  useEffect(() => setDraft(value), [value]);
-
-  async function save() {
-    const n = draft ?? NaN;
-    if (!Number.isFinite(n) || n <= 0) {
-      notify('error', 'Hajm 0 dan katta son bo‘lishi kerak.');
-      return;
-    }
-    setSaving(true);
-    try {
-      await apiRequest(`/api/products/${productId}/recipe-yield`, {
-        method: 'PATCH',
-        body: { recipe_yield: n },
-      });
-      notify('success', 'Retsept hajmi saqlandi.');
-      onSaved();
-    } catch (err) {
-      notify(
-        'error',
-        err instanceof ApiError ? err.message : 'Saqlab bo‘lmadi.',
-      );
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <Card className="flex flex-wrap items-center justify-between gap-3 p-4">
-      <div>
-        <p className="text-sm font-medium text-foreground">Retsept hajmi</p>
-        <p className="text-xs text-muted-foreground">
-          1 retsept necha dona tayyor mahsulot chiqaradi — tarkib va tannarx shu
-          songa bo‘linib, 1 dona uchun ko‘rsatiladi.
-        </p>
-      </div>
-      {canEdit ? (
-        <div className="flex items-center gap-2">
-          <NumberInput
-            decimals
-            min={1}
-            value={draft}
-            onValueChange={setDraft}
-            className="w-24"
-            aria-label="Retsept hajmi (dona)"
-          />
-          <span className="text-sm text-muted-foreground">dona</span>
-          <Button
-            size="sm"
-            onClick={save}
-            disabled={saving || draft === value}
-          >
-            Saqlash
-          </Button>
-        </div>
-      ) : (
-        <span className="text-lg font-semibold tabular-nums text-foreground">
-          {value} dona
-        </span>
-      )}
-    </Card>
-  );
-}
-
 export function RecipePage() {
   const { productId } = useParams<{ productId: string }>();
 
@@ -141,7 +57,6 @@ export function RecipePage() {
 
   const [tree, setTree] = useState<RecipeNode[]>([]);
   const [totalCost, setTotalCost] = useState<number | null>(null);
-  const [recipeYield, setRecipeYield] = useState<number>(1);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -160,7 +75,6 @@ export function RecipePage() {
         if (cancelled) return;
         setTree(data.tree ?? []);
         setTotalCost(data.total_cost ?? null);
-        setRecipeYield(data.recipe_yield ?? 1);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -248,14 +162,6 @@ export function RecipePage() {
         />
       )}
 
-      {!isLoading && !loadError && tree.length > 0 && (
-        <RecipeYieldEditor
-          productId={numericId}
-          value={recipeYield}
-          onSaved={() => setReloadKey((k) => k + 1)}
-        />
-      )}
-
       {!isLoading && !loadError && (
         <Card className="space-y-5 p-5 sm:p-6">
           {tree.length === 0 ? (
@@ -289,12 +195,16 @@ export function RecipePage() {
                   neutral KPI card; the value alone carries the accent. */}
               <Card className="p-5">
                 <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                  Umumiy tannarx (itogo)
+                  Umumiy tannarx (itogo) · 1 dona uchun
                 </p>
                 <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-primary">
                   {totalCost === null ? '—' : formatSom(totalCost)}
                 </p>
               </Card>
+
+              {/* Owner request: the whole tree flattened to ingredient
+                  totals (e.g. шакар summed across every biskvit + krem). */}
+              <AggregatedIngredients tree={tree} grandTotal={totalCost} />
 
               {stageGroups.map((g) => (
                 <section key={g.stage} className="space-y-3">
@@ -318,12 +228,25 @@ export function RecipePage() {
               ))}
             </div>
           ) : (
-            <RecipeBreakdown
-              tree={tree}
-              totalCost={totalCost}
-              unit={product?.unit ?? null}
-              productName={product?.name ?? 'Mahsulot'}
-            />
+            <div className="space-y-4">
+              <Card className="p-5">
+                <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Jami tannarx ·{' '}
+                  {product?.unit === 'pcs' ? '1 dona uchun' : '1 birlik uchun'}
+                </p>
+                <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-primary">
+                  {totalCost === null ? '—' : formatSom(totalCost)}
+                </p>
+              </Card>
+              <AggregatedIngredients tree={tree} grandTotal={totalCost} />
+              <RecipeBreakdown
+                tree={tree}
+                totalCost={totalCost}
+                unit={product?.unit ?? null}
+                productName={product?.name ?? 'Mahsulot'}
+                showSummary={false}
+              />
+            </div>
           )}
         </Card>
       )}

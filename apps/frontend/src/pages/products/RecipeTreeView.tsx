@@ -1,4 +1,5 @@
-import { CornerDownRight } from 'lucide-react';
+import { useState } from 'react';
+import { ChevronDown, CornerDownRight } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import { formatPlainNumber, formatQtyUnit, formatSom } from '@/lib/format';
@@ -136,11 +137,15 @@ function SectionCard({
   node,
   depth,
   grandTotal,
+  defaultOpen = false,
 }: {
   node: RecipeNode;
   depth: number;
   grandTotal: number | null;
+  /** Direct-component cards open by default; semi sections start collapsed. */
+  defaultOpen?: boolean;
 }) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <Card
       className={cn(
@@ -148,8 +153,25 @@ function SectionCard({
         depth > 0 && 'border-l-2 border-l-primary/40',
       )}
     >
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 bg-surface-3 px-4 py-3">
+      {/* Accordion header — the whole strip toggles the breakdown so long
+          recipes collapse to a scannable list of section names + costs. */}
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className={cn(
+          'flex w-full flex-wrap items-center justify-between gap-2 bg-surface-3 px-4 py-3 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          open && 'border-b border-border/60',
+        )}
+      >
         <div className="flex min-w-0 items-center gap-2">
+          <ChevronDown
+            className={cn(
+              'size-4 shrink-0 text-muted-foreground transition-transform duration-200',
+              !open && '-rotate-90',
+            )}
+            aria-hidden="true"
+          />
           <h3
             className="min-w-0 truncate text-sm font-semibold text-foreground"
             title={node.name}
@@ -162,32 +184,184 @@ function SectionCard({
           >
             {PRODUCT_TYPE_LABELS[node.type]}
           </Badge>
+          <span className="shrink-0 text-xs text-muted-foreground">
+            {formatPlainNumber(node.children.length)} komponent
+          </span>
         </div>
         <span className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
           {costCell(node.total_cost)}
         </span>
-      </div>
+      </button>
 
-      <div className="px-4">
-        <div
-          className={cn(
-            ROW_GRID,
-            'border-b border-border/60 py-3 text-xs font-medium text-muted-foreground',
-          )}
-        >
-          <span>Komponent</span>
-          <span className="text-right">Miqdor</span>
-          <span className="text-right">Ulush</span>
-          <span className="text-right">Tannarx</span>
+      {open && (
+        <div className="px-4">
+          <div
+            className={cn(
+              ROW_GRID,
+              'border-b border-border/60 py-3 text-xs font-medium text-muted-foreground',
+            )}
+          >
+            <span>Komponent</span>
+            <span className="text-right">Miqdor</span>
+            <span className="text-right">Ulush</span>
+            <span className="text-right">Tannarx</span>
+          </div>
+          {node.children.map((child) => (
+            <ComponentRow
+              key={child.component_product_id}
+              node={child}
+              grandTotal={grandTotal}
+            />
+          ))}
         </div>
-        {node.children.map((child) => (
-          <ComponentRow
-            key={child.component_product_id}
-            node={child}
-            grandTotal={grandTotal}
+      )}
+    </Card>
+  );
+}
+
+interface AggregatedLine {
+  id: number;
+  name: string;
+  type: ProductType;
+  unit: Unit;
+  qty: number;
+  cost: number | null;
+}
+
+/** Sum every LEAF line (raw / recipe-less semi) across the whole tree. */
+function collectLeafTotals(
+  nodes: RecipeNode[],
+  map: Map<number, AggregatedLine>,
+): void {
+  for (const node of nodes) {
+    if (node.children.length > 0) {
+      collectLeafTotals(node.children, map);
+      continue;
+    }
+    const prev = map.get(node.component_product_id);
+    if (prev) {
+      prev.qty += node.qty_per_unit;
+      if (node.line_cost !== null) prev.cost = (prev.cost ?? 0) + node.line_cost;
+    } else {
+      map.set(node.component_product_id, {
+        id: node.component_product_id,
+        name: node.name,
+        type: node.type,
+        unit: node.unit,
+        qty: node.qty_per_unit,
+        cost: node.line_cost,
+      });
+    }
+  }
+}
+
+/**
+ * "Umumiy mahsulotlar" — the whole recipe tree flattened to ingredient
+ * totals: an ingredient used by several sub-recipes (e.g. шакар in every
+ * biskvit + krem) shows ONCE with its summed per-piece quantity and cost.
+ */
+export function AggregatedIngredients({
+  tree,
+  grandTotal,
+}: {
+  tree: RecipeNode[];
+  grandTotal: number | null;
+}) {
+  const [open, setOpen] = useState(true);
+  const map = new Map<number, AggregatedLine>();
+  collectLeafTotals(tree, map);
+  const lines = [...map.values()].sort((a, b) => {
+    if (a.cost === null && b.cost === null) return a.name.localeCompare(b.name);
+    if (a.cost === null) return 1;
+    if (b.cost === null) return -1;
+    return b.cost - a.cost;
+  });
+  if (lines.length === 0) return null;
+  const subtotal = lines.reduce<number | null>(
+    (sum, l) => (l.cost === null ? sum : (sum ?? 0) + l.cost),
+    null,
+  );
+
+  return (
+    <Card className="overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className={cn(
+          'flex w-full flex-wrap items-center justify-between gap-2 bg-surface-3 px-4 py-3 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          open && 'border-b border-border/60',
+        )}
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <ChevronDown
+            className={cn(
+              'size-4 shrink-0 text-muted-foreground transition-transform duration-200',
+              !open && '-rotate-90',
+            )}
+            aria-hidden="true"
           />
-        ))}
-      </div>
+          <h3 className="text-sm font-semibold text-foreground">
+            Umumiy mahsulotlar
+          </h3>
+          <Badge variant="secondary" className="shrink-0">
+            {formatPlainNumber(lines.length)}
+          </Badge>
+          <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
+            butun retsept bo‘ylab jamlangan miqdorlar
+          </span>
+        </div>
+        <span className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
+          {costCell(subtotal)}
+        </span>
+      </button>
+
+      {open && (
+        <div className="px-4">
+          <div
+            className={cn(
+              ROW_GRID,
+              'border-b border-border/60 py-3 text-xs font-medium text-muted-foreground',
+            )}
+          >
+            <span>Mahsulot</span>
+            <span className="text-right">Umumiy miqdor</span>
+            <span className="text-right">Ulush</span>
+            <span className="text-right">Tannarx</span>
+          </div>
+          {lines.map((line) => (
+            <div
+              key={line.id}
+              className={cn(
+                ROW_GRID,
+                'border-b border-border/40 py-3.5 last:border-b-0',
+              )}
+            >
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span
+                  className="min-w-0 flex-1 truncate font-medium text-foreground"
+                  title={line.name}
+                >
+                  {line.name}
+                </span>
+                <Badge
+                  variant={PRODUCT_TYPE_BADGE[line.type]}
+                  className="shrink-0 px-1.5 py-0 text-[10px] font-normal"
+                >
+                  {PRODUCT_TYPE_LABELS[line.type]}
+                </Badge>
+              </div>
+              <span className="text-right tabular-nums text-muted-foreground">
+                {formatQtyUnit(line.qty, line.unit)}
+              </span>
+              <ShareCell lineCost={line.cost} grandTotal={grandTotal} />
+              <span className="text-right font-medium tabular-nums">
+                {costCell(line.cost)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </Card>
   );
 }
@@ -296,6 +470,9 @@ export function RecipeBreakdown({
           node={node}
           depth={depth}
           grandTotal={shareBase}
+          // Synthetic direct-component cards (-1 / -2) carry the product's own
+          // top-level lines — keep them open; semi sections start collapsed.
+          defaultOpen={node.component_product_id < 0}
         />
       ))}
     </div>
