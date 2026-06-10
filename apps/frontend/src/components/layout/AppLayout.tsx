@@ -159,7 +159,10 @@ function AppLayoutShell() {
       </header>
       {/* Extra bottom padding keeps content clear of the fixed
           bottom-right floating button(s). */}
-      <main className="flex-1 overflow-y-auto p-4 pb-24 sm:p-6 sm:pb-28 lg:p-8 lg:pb-28">
+      {/* overflow-x-clip: full-bleed breakouts (w-screen boards) must never
+          hand the main pane a horizontal scrollbar over the ~15px the vertical
+          scrollbar steals from 100vw. */}
+      <main className="flex-1 overflow-y-auto overflow-x-clip p-4 pb-24 sm:p-6 sm:pb-28 lg:p-8 lg:pb-28">
         {/* Cap content width on ultra-wide monitors so pages keep a
             readable measure instead of sprawling edge-to-edge. */}
         <div className="mx-auto w-full max-w-[1600px]">

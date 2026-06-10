@@ -50,6 +50,15 @@ export interface RequestKanbanProps {
   onOpen?: (req: FlowRequest) => void;
   /** Empty-column copy (defaults to a dash). */
   emptyLabel?: string;
+  /**
+   * FULL-AREA mode (owner: "kanban full egallab tursin") — the board fills its
+   * parent's height, the six columns flex-grow to share the full width
+   * (min 16rem each, horizontal scroll only when even that does not fit) and
+   * EACH COLUMN scrolls its own card list under a fixed header, Jira-style.
+   * Off (default) keeps the compact embedded look: fixed 18rem columns, the
+   * page scrolls as a whole.
+   */
+  fill?: boolean;
 }
 
 export function RequestKanban({
@@ -57,6 +66,7 @@ export function RequestKanban({
   renderAction,
   onOpen,
   emptyLabel,
+  fill = false,
 }: RequestKanbanProps) {
   const byColumn = useMemo(() => {
     const map: Record<KanbanColumn, FlowRequest[]> = {
@@ -76,14 +86,25 @@ export function RequestKanban({
   }, [requests]);
 
   return (
-    <div className="scrollbar-thin -mx-1 flex gap-3 overflow-x-auto px-1 pb-2">
+    <div
+      className={cn(
+        'scrollbar-thin -mx-1 flex gap-3 overflow-x-auto px-1 pb-2',
+        fill && 'h-full min-h-0',
+      )}
+    >
       {KANBAN_COLUMNS.map(({ column, label }) => {
         const items = byColumn[column];
         return (
           <section
             key={column}
             aria-label={label}
-            className="flex w-72 shrink-0 flex-col rounded-xl border border-border/60 bg-muted/20"
+            className={cn(
+              'flex flex-col rounded-xl border border-border/60 bg-muted/20',
+              fill
+                ? // fill: grow to share the full width, own scroll under the header
+                  'min-h-0 min-w-64 flex-1'
+                : 'w-72 shrink-0',
+            )}
           >
             <header className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-2.5">
               <span className="flex items-center gap-2 text-sm font-semibold">
@@ -97,7 +118,12 @@ export function RequestKanban({
                 {items.length}
               </Badge>
             </header>
-            <div className="flex flex-col gap-2 p-2">
+            <div
+              className={cn(
+                'flex flex-col gap-2 p-2',
+                fill && 'scrollbar-thin min-h-0 flex-1 overflow-y-auto',
+              )}
+            >
               {items.length === 0 ? (
                 <p className="px-1 py-6 text-center text-xs text-muted-foreground">
                   {emptyLabel ?? '—'}

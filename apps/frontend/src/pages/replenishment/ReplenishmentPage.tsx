@@ -386,11 +386,21 @@ export function ReplenishmentPage() {
                 <EmptyState message="So‘rovlar topilmadi." />
               </Card>
             ) : (
-              <RequestKanban
-                requests={baseRows as FlowRequest[]}
-                emptyLabel="—"
-                onOpen={(req) => setOpenRequest(req)}
-              />
+              /* Owner: "kanban full egallab tursin" — break out of the
+                 AppLayout 1600px cap to the full viewport width (centered
+                 w-screen trick; main is overflow-x-clip) and give the board
+                 the remaining viewport HEIGHT, each column scrolling its own
+                 cards Jira-style. */
+              <div className="relative left-1/2 w-screen -translate-x-1/2 px-4 sm:px-6 lg:px-8">
+                <div className="h-[calc(100dvh-21rem)] min-h-[26rem]">
+                  <RequestKanban
+                    fill
+                    requests={baseRows as FlowRequest[]}
+                    emptyLabel="—"
+                    onOpen={(req) => setOpenRequest(req)}
+                  />
+                </div>
+              </div>
             ))}
 
           {view === 'table' && (
