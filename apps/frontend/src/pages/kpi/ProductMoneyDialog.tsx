@@ -104,7 +104,7 @@ export function ProductMoneyDialog({
           <DialogDescription>{body}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-2 py-2">
+        <div className="space-y-1.5">
           <Label htmlFor={inputId}>{fieldLabel}</Label>
           <MoneyInput
             id={inputId}
@@ -118,7 +118,7 @@ export function ProductMoneyDialog({
         <DialogFooter>
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             onClick={() => onOpenChange(false)}
             disabled={saving}
           >

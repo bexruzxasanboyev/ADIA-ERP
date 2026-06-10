@@ -253,7 +253,16 @@ export function ProfilePage() {
                 </p>
               )}
 
-              <div className="flex gap-2">
+              {/* Button order (DESIGN §9): ghost "Bekor" left, primary rightmost. */}
+              <div className="flex justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={cancelIdentityEdit}
+                  disabled={savingIdentity}
+                >
+                  Bekor qilish
+                </Button>
                 <Button type="submit" disabled={savingIdentity}>
                   {savingIdentity && (
                     <Loader2
@@ -262,14 +271,6 @@ export function ProfilePage() {
                     />
                   )}
                   Saqlash
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={cancelIdentityEdit}
-                  disabled={savingIdentity}
-                >
-                  Bekor qilish
                 </Button>
               </div>
             </form>

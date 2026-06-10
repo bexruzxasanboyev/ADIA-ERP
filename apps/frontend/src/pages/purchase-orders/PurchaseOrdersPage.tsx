@@ -214,18 +214,15 @@ export function PurchaseOrdersPage() {
         description="Admin buyurtma qiladi → skladchi qabul qiladi; ikki bosqichli tasdiq (boshliq + skladchi)."
         actions={
           <>
-            <FilterPopover
-              groups={filterGroups}
-              value={filter}
-              onApply={setFilter}
-            />
             {isReadOnly && !isPm && (
               <Badge variant="secondary" className="h-10 items-center px-3" aria-label="Faqat o‘qish rejimi">
                 Faqat o‘qish
               </Badge>
             )}
+            {/* DESIGN §9 — primary action rightmost; the roles are mutually
+                exclusive, so each row carries exactly ONE primary. */}
             {isPm && (
-              <Button variant="outline" onClick={() => setAdminDialogOpen(true)}>
+              <Button onClick={() => setAdminDialogOpen(true)}>
                 <Plus className="size-4" aria-hidden="true" />
                 Admin sotib olish so‘rovi
               </Button>
@@ -239,6 +236,23 @@ export function PurchaseOrdersPage() {
           </>
         }
       />
+
+      {/* DESIGN §9 — FILTR QATORI: [outline Filter] right via ml-auto; the
+          result count sits at the row's right edge (not a separate row). */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+          {!isLoading && !error && rows.length > 0 && (
+            <span className="text-sm text-muted-foreground tabular-nums">
+              {rows.length} ta so‘rov
+            </span>
+          )}
+          <FilterPopover
+            groups={filterGroups}
+            value={filter}
+            onApply={setFilter}
+          />
+        </div>
+      </div>
 
       {/* F-F — below-min raw-material signals; self-hides on 404/403. */}
       <PurchaseSignalsSection

@@ -80,7 +80,10 @@ export function MyActionsList({
     >
       <header className="flex items-center justify-between gap-3 border-b border-border/60 p-5">
         <div className="space-y-0.5">
-          <h2 id={headingId} className="flex items-center gap-2 text-base font-semibold">
+          <h2
+            id={headingId}
+            className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground"
+          >
             <ClipboardList
               className="size-4 text-primary"
               aria-hidden="true"
@@ -92,7 +95,7 @@ export function MyActionsList({
           </p>
         </div>
         {rows.length > 0 && (
-          <Badge variant="warning" className="tabular-nums">
+          <Badge variant="secondary" className="tabular-nums">
             {formatQty(rows.length)}
           </Badge>
         )}

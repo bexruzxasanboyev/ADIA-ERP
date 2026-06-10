@@ -1,4 +1,5 @@
 import { Card } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 import { EmptyState } from '@/components/PageState';
 import { ForecastsPanel } from '../ForecastsPanel';
 import { OpenRequestsChart } from '../OpenRequestsChart';
@@ -49,7 +50,16 @@ function OpenRequestsPanel({ overview }: { overview: DashboardOverview }) {
     <Card className="flex flex-col">
       <header className="flex items-center justify-between gap-3 border-b border-border/60 p-5">
         <div className="space-y-0.5">
-          <h2 className="text-base font-semibold">Ochiq so‘rovlar — status</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Ochiq so‘rovlar — status
+            </h2>
+            {total > 0 && (
+              <Badge variant="secondary" className="tabular-nums">
+                {total}
+              </Badge>
+            )}
+          </div>
           <p className="text-xs text-muted-foreground">
             Holat bo‘yicha guruhlangan ochiq to‘ldirish so‘rovlari.
           </p>

@@ -124,7 +124,7 @@ export function StoreMinMaxEditDialog({
         </div>
         <DialogFooter>
           <Button
-            variant="outline"
+            variant="ghost"
             onClick={() => onOpenChange(false)}
             disabled={saving}
           >

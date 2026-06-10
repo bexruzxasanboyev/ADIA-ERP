@@ -94,7 +94,7 @@ export function StoreKpiPlanDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-2 py-2">
+        <div className="space-y-1.5">
           <Label htmlFor="store-kpi-plan-input">Oylik reja (so‘m)</Label>
           <NumberInput
             id="store-kpi-plan-input"
@@ -108,7 +108,7 @@ export function StoreKpiPlanDialog({
         <DialogFooter>
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             onClick={() => onOpenChange(false)}
             disabled={saving}
           >

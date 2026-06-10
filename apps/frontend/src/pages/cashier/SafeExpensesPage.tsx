@@ -73,16 +73,26 @@ export function SafeExpensesPage() {
       <PageHeader
         title="Seyf rasxodlari"
         description="Seyfdan chiqarilgan rasxodlar (ijara, maosh, transport...) — har biri transaksiya sifatida qayd etiladi."
-        actions={
-          filterGroups.length > 0 ? (
+      />
+
+      {/* FILTR QATORI — Filter right-aligned via ml-auto, result count at the
+          row's right edge (DESIGN.md §9). */}
+      {filterGroups.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="ml-auto flex flex-wrap items-center gap-2">
             <FilterPopover
               groups={filterGroups}
               value={filter}
               onApply={setFilter}
             />
-          ) : undefined
-        }
-      />
+            {!isLoading && !error && (
+              <span className="text-sm text-muted-foreground tabular-nums">
+                {rows.length} ta rasxod
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {isLoading && (
         <Card>
@@ -104,11 +114,13 @@ export function SafeExpensesPage() {
 
       {!isLoading && !error && rows.length > 0 && (
         <Card>
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-              <Wallet className="size-4" aria-hidden="true" />
-              {rows.length} ta rasxod
-            </span>
+          {/* The result count lives on the filter row (DESIGN.md §9) — the
+              card keeps only the money total. */}
+          <div className="mb-3 flex items-center justify-end gap-2">
+            <Wallet
+              className="size-4 text-muted-foreground"
+              aria-hidden="true"
+            />
             <span className="text-sm font-semibold tabular-nums">
               Jami: {formatSom(total)}
             </span>

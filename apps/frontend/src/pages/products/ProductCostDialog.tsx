@@ -132,7 +132,7 @@ export function ProductCostDialog({
           <div className="flex gap-2">
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
               size="sm"
               disabled={saving}
               onClick={() => onOpenChange(false)}

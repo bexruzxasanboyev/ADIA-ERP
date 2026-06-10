@@ -251,6 +251,10 @@ export function DiscrepanciesPage() {
           <Label className="block">Sana oralig‘i</Label>
           <DateRangeFilter value={dateRange} onChange={setDateRange} />
         </div>
+        {/* Result count — right edge of the filter row (DESIGN.md §9). */}
+        <p className="text-sm text-muted-foreground sm:ml-auto sm:self-end sm:pb-2">
+          {formatPlainNumber(total)} ta tafovut
+        </p>
       </div>
 
       <Card>
@@ -588,7 +592,7 @@ function ResolveDialog({
         <DialogFooter>
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             onClick={() => onOpenChange(false)}
             disabled={isSubmitting}
           >

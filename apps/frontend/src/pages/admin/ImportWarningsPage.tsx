@@ -111,7 +111,8 @@ export function ImportWarningsPage() {
         description="Poster sync, retsept mismatch va dynamic recalc anomaliyalari."
       />
 
-      <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4">
+      {/* Filter row (DESIGN §9): filters left, count at the right edge. */}
+      <div className="flex flex-wrap items-end gap-3">
         <div className="space-y-1.5">
           <Label htmlFor="warning-source">Manba</Label>
           <Select
@@ -142,6 +143,11 @@ export function ImportWarningsPage() {
             ))}
           </Select>
         </div>
+        {!warnings.isLoading && !warnings.error && (
+          <span className="ml-auto self-center text-sm tabular-nums text-muted-foreground">
+            {items.length} ta ogohlantirish
+          </span>
+        )}
       </div>
 
       <Card>

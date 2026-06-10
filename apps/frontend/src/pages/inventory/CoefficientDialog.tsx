@@ -97,7 +97,7 @@ export function CoefficientDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 py-2">
+        <div className="space-y-4">
           <div className="space-y-1.5">
             <Label htmlFor="coeff-weight">Bitta butunning og‘irligi (kg)</Label>
             <NumberInput
@@ -124,7 +124,7 @@ export function CoefficientDialog({
         <DialogFooter>
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             onClick={() => onOpenChange(false)}
             disabled={saving}
           >

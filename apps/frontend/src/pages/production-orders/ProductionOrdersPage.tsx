@@ -25,7 +25,7 @@ import { useApiQuery } from '@/hooks/useApiQuery';
 import { useCanAct } from '@/hooks/useCanAct';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { apiRequest, ApiError } from '@/lib/api-client';
-import { formatDateTime, formatQty } from '@/lib/format';
+import { formatDateTime, formatPlainNumber, formatQty } from '@/lib/format';
 import {
   PRODUCTION_ORDER_STATUS_LABELS,
   PRODUCTION_ORDER_STATUS_OPTIONS,
@@ -157,6 +157,10 @@ export function ProductionOrdersPage() {
             ))}
           </Select>
         </div>
+        {/* Result count — right edge of the filter row (DESIGN.md §9). */}
+        <p className="text-sm text-muted-foreground sm:ml-auto sm:self-end sm:pb-2">
+          {formatPlainNumber(rows.length)} ta zayafka
+        </p>
       </div>
 
       {actionError && (
@@ -208,6 +212,14 @@ export function ProductionOrdersPage() {
                   canActOn(row.location_id) &&
                   (row.status === 'new' || row.status === 'in_progress') ? (
                     <div className="flex flex-wrap gap-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={isBusy}
+                        onClick={() => transition(row.id, 'cancelled')}
+                      >
+                        Bekor
+                      </Button>
                       {row.status === 'new' && (
                         <Button
                           variant="outline"
@@ -233,14 +245,6 @@ export function ProductionOrdersPage() {
                           Yakunlash
                         </Button>
                       )}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={isBusy}
-                        onClick={() => transition(row.id, 'cancelled')}
-                      >
-                        Bekor
-                      </Button>
                     </div>
                   ) : undefined,
               };
@@ -290,6 +294,17 @@ export function ProductionOrdersPage() {
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="inline-flex gap-2">
+                        {canActOn(row.location_id) &&
+                          (row.status === 'new' || row.status === 'in_progress') && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              disabled={isBusy}
+                              onClick={() => transition(row.id, 'cancelled')}
+                            >
+                              Bekor
+                            </Button>
+                          )}
                         {canActOn(row.location_id) && row.status === 'new' && (
                           <Button
                             variant="outline"
@@ -315,17 +330,6 @@ export function ProductionOrdersPage() {
                             Yakunlash
                           </Button>
                         )}
-                        {canActOn(row.location_id) &&
-                          (row.status === 'new' || row.status === 'in_progress') && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              disabled={isBusy}
-                              onClick={() => transition(row.id, 'cancelled')}
-                            >
-                              Bekor
-                            </Button>
-                          )}
                         <span className="whitespace-nowrap text-xs text-muted-foreground">
                           {formatDateTime(row.created_at)}
                         </span>

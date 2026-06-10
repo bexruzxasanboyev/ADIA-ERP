@@ -247,7 +247,7 @@ export function FulfillmentModal({
         <DialogFooter>
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             onClick={() => onOpenChange(false)}
             disabled={submitting}
           >

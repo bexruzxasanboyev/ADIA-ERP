@@ -89,7 +89,7 @@ export function StoreKpiTrendChart({
 
   return (
     <div>
-      <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold">
+      <h3 className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
         <TrendingUp className="size-4 text-primary" aria-hidden="true" />
         {`${locationName} — sotuv dinamikasi (oylik)`}
       </h3>

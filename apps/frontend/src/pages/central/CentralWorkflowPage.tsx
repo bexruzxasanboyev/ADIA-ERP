@@ -236,43 +236,49 @@ export function CentralWorkflowPage() {
 
   return (
     <div className="mx-auto w-full max-w-[120rem] space-y-6">
+      {/* 1. SARLAVHA QATORI — page-level actions live on the title row's right
+          slot (DESIGN.md §9): the persistent Savat trigger, visible from any
+          tab whenever the draft has lines. central manager only. */}
       <PageHeader
         title="Markaziy sklad ish joyi"
         description="Markaziy sklad qoldig‘i, kelayotgan jo‘natmalar va do‘konlardan kelgan so‘rovlar — bitta joyda."
+        actions={
+          canShip &&
+          basketCount > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="relative shrink-0"
+              onClick={() => setBasketOpen(true)}
+            >
+              <ShoppingCart className="size-4" aria-hidden="true" />
+              Savat
+              <Badge
+                key={basketCount}
+                variant="secondary"
+                className={cn(
+                  'tabular-nums',
+                  !reducedMotion && 'animate-badge-bump',
+                )}
+              >
+                {basketCount}
+              </Badge>
+            </Button>
+          )
+        }
       />
 
-      <CentralSummaryTiles centralId={centralId} />
+      {/* 2. TAB QATORI — compact segmented, left-aligned, own row. */}
+      <Tabs
+        value={pageTab}
+        onValueChange={setPageTab}
+        options={PAGE_TABS}
+        ariaLabel="Bo‘lim"
+      />
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <Tabs
-          value={pageTab}
-          onValueChange={setPageTab}
-          options={PAGE_TABS}
-          ariaLabel="Bo‘lim"
-        />
-        <div className="flex items-center gap-3">
-        {/* Persistent Savat trigger — visible from any tab whenever the draft
-            has lines. central manager only. */}
-        {canShip && basketCount > 0 && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="relative shrink-0"
-            onClick={() => setBasketOpen(true)}
-          >
-            <ShoppingCart className="size-4" aria-hidden="true" />
-            Savat
-            <Badge
-              key={basketCount}
-              variant="secondary"
-              className={cn('tabular-nums', !reducedMotion && 'animate-badge-bump')}
-            >
-              {basketCount}
-            </Badge>
-          </Button>
-        )}
-        </div>
-      </div>
+      {/* KONTENT — the hero KPI strip leads the content, AFTER the tab layer
+          (DESIGN.md §9 scaffold order). */}
+      <CentralSummaryTiles centralId={centralId} />
 
       {/* TAB: Dashboard — clean finished-only KPI cards + charts. */}
       {pageTab === 'dashboard' && <CentralDashboardTab centralId={centralId} />}
@@ -516,52 +522,57 @@ function CentralProductsTab({
   }, [finishedRows]);
 
   return (
-    <Card>
-      <header className="flex flex-col gap-3 border-b border-border/60 p-5">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <>
+      {/* 3. FILTR QATORI — search + Filter right-aligned via ml-auto, result
+          count at the row's right edge (DESIGN.md §9). */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <div className="relative w-full sm:w-72">
+            <Search
+              className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <Input
+              value={productSearch}
+              onChange={(e) => setProductSearch(e.target.value)}
+              placeholder="Qidirish (lotin yoki kirill)…"
+              aria-label="Mahsulot qidirish"
+              className="pl-9 pr-9"
+            />
+            {productSearch !== '' && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => setProductSearch('')}
+                aria-label="Qidiruvni tozalash"
+                className="absolute right-1.5 top-1.5 size-6 rounded-md text-muted-foreground"
+              >
+                <X className="size-4" />
+              </Button>
+            )}
+          </div>
+          <FilterPopover
+            groups={STOCK_FILTER_GROUPS}
+            value={productFilter}
+            onApply={setProductFilter}
+          />
+          <span className="text-sm text-muted-foreground tabular-nums">
+            {filteredStock.length} ta mahsulot
+          </span>
+        </div>
+      </div>
+
+      <Card>
+        <header className="flex items-center gap-2 border-b border-border/60 p-5">
+          <Warehouse className="size-4 text-primary" aria-hidden="true" />
           <div className="space-y-0.5">
-            <h2 className="flex items-center gap-2 text-base font-semibold">
-              <Warehouse className="size-4 text-primary" aria-hidden="true" />
-              Mahsulotlar
-            </h2>
+            <h2 className="text-base font-semibold">Mahsulotlar</h2>
             <p className="text-xs text-muted-foreground">
               Markaziy sklad qoldig‘i — faqat tayyor mahsulot.
             </p>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="relative w-full sm:w-72">
-              <Search
-                className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground"
-                aria-hidden="true"
-              />
-              <Input
-                value={productSearch}
-                onChange={(e) => setProductSearch(e.target.value)}
-                placeholder="Qidirish (lotin yoki kirill)…"
-                aria-label="Mahsulot qidirish"
-                className="pl-9 pr-9"
-              />
-              {productSearch !== '' && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => setProductSearch('')}
-                  aria-label="Qidiruvni tozalash"
-                  className="absolute right-1.5 top-1.5 size-6 rounded-md text-muted-foreground"
-                >
-                  <X className="size-4" />
-                </Button>
-              )}
-            </div>
-            <FilterPopover
-              groups={STOCK_FILTER_GROUPS}
-              value={productFilter}
-              onApply={setProductFilter}
-            />
-          </div>
-        </div>
-      </header>
+        </header>
 
       {stock.isLoading && <LoadingState />}
       {!stock.isLoading && stock.error && (
@@ -580,11 +591,12 @@ function CentralProductsTab({
         <div className="space-y-6 p-5">
           {stockGroups.map((group) => (
             <section key={group.key} className="space-y-3">
+              {/* Section heading — kicker + secondary count badge (DESIGN.md §9). */}
               <div className="flex items-center gap-2">
                 <h3 className="text-xs uppercase tracking-wide text-muted-foreground">
                   {group.name}
                 </h3>
-                <Badge variant="outline" className="tabular-nums">
+                <Badge variant="secondary" className="tabular-nums">
                   {group.items.length}
                 </Badge>
               </div>
@@ -658,10 +670,24 @@ function CentralProductsTab({
                           central manager only. */}
                       {canShip && (
                         <div className="mt-auto space-y-1.5 border-t border-border/40 pt-2.5">
+                          {/* Fixed button ordering (DESIGN.md §9): one primary
+                              per row, ALWAYS rightmost — outline secondary
+                              first, primary "Do'konga" last (disabled when
+                              there is nothing on hand to ship). */}
                           <div className="flex flex-col gap-1.5 sm:flex-row">
                             <Button
                               type="button"
-                              variant={row.qty <= 0 ? 'outline' : 'default'}
+                              variant="outline"
+                              size="sm"
+                              className="h-8 flex-1 text-xs"
+                              onClick={() => setProdRow(row)}
+                            >
+                              <Factory className="size-3.5" aria-hidden="true" />
+                              Ishlab chiqarishga
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="default"
                               size="sm"
                               className="h-8 flex-1 text-xs"
                               disabled={row.qty <= 0}
@@ -674,16 +700,6 @@ function CentralProductsTab({
                             >
                               <Store className="size-3.5" aria-hidden="true" />
                               Do‘konga
-                            </Button>
-                            <Button
-                              type="button"
-                              variant={row.qty <= 0 ? 'default' : 'outline'}
-                              size="sm"
-                              className="h-8 flex-1 text-xs"
-                              onClick={() => setProdRow(row)}
-                            >
-                              <Factory className="size-3.5" aria-hidden="true" />
-                              Ishlab chiqarishga
                             </Button>
                           </div>
 
@@ -797,6 +813,7 @@ function CentralProductsTab({
           )}
         </>
       )}
-    </Card>
+      </Card>
+    </>
   );
 }

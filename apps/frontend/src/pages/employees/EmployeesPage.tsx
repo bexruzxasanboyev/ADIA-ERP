@@ -207,9 +207,10 @@ export function EmployeesPage() {
         }
       />
 
-      {/* One content row: full-width search + Filter at the end. */}
-      <div className="flex items-center gap-3">
-        <div className="relative flex-1">
+      {/* Filter row (DESIGN §9): search right-aligned via ml-auto + Filter,
+          count at the right edge. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative ml-auto w-full sm:w-72">
           <Search
             className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground"
             aria-hidden="true"
@@ -235,6 +236,9 @@ export function EmployeesPage() {
           )}
         </div>
         <FilterPopover groups={filterGroups} value={filter} onApply={setFilter} />
+        <span className="text-sm tabular-nums text-muted-foreground">
+          {rows.length} ta hodim
+        </span>
       </div>
 
       <div>
@@ -266,7 +270,7 @@ export function EmployeesPage() {
                     <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                       {ROLE_LABELS[group.role]}
                     </h2>
-                    <Badge variant="outline" className="tabular-nums">
+                    <Badge variant="secondary" className="tabular-nums">
                       {group.items.length}
                     </Badge>
                   </div>

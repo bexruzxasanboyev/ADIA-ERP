@@ -65,14 +65,24 @@ export function CashShiftsPage() {
       <PageHeader
         title="Kassa smenalari"
         description="Do‘kon smenasi yopilganda: savdo, naqd/karta, rasxod, inkassatsiya va qoldiq. Nomuvofiqlik ogohlantiriladi."
-        actions={
+      />
+
+      {/* FILTR QATORI — Filter right-aligned via ml-auto, result count at the
+          row's right edge (DESIGN.md §9). */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           <FilterPopover
             groups={filterGroups}
             value={filter}
             onApply={setFilter}
           />
-        }
-      />
+          {!isLoading && !error && (
+            <span className="text-sm text-muted-foreground tabular-nums">
+              {rows.length} ta smena
+            </span>
+          )}
+        </div>
+      </div>
 
       {isLoading && (
         <Card>

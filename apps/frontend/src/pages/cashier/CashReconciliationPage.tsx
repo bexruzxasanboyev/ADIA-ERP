@@ -106,8 +106,9 @@ export function CashReconciliationPage() {
         }
       />
 
-      {/* Filters: Do'kon (PM only) · Sana oralig'i (from/to) · Holat. */}
-      <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4">
+      {/* FILTR QATORI (DESIGN.md §9): Do'kon (PM only) · Sana oralig'i
+          (from/to) · Holat left; result count at the row's right edge. */}
+      <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-end">
         {isPm && (
           <div className="space-y-1.5">
             <Label htmlFor="reconciliation-store">Do‘kon</Label>
@@ -163,6 +164,11 @@ export function CashReconciliationPage() {
             ))}
           </Select>
         </div>
+        {!isLoading && !error && (
+          <span className="text-sm text-muted-foreground tabular-nums sm:ml-auto sm:pb-2.5">
+            {items.length} ta yozuv
+          </span>
+        )}
       </div>
 
       <Card>

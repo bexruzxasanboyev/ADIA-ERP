@@ -190,13 +190,14 @@ export function ReceiptsPage() {
       <PageHeader
         title="Kassa cheklari"
         description="Har chek bo‘yicha ostatka: ost − sotildi − qoldi. Manfiy qoldiq — noto‘g‘ri urilgan chek (fors-major)."
-        actions={<DateRangeFilter value={range} onChange={setRange} />}
       />
 
-      {/* Fors-major summary + toggle. Reflects loaded cheques only. */}
-      {!isLoadingFirst && !error && items.length > 0 && (
-        <div className="flex flex-wrap items-center gap-3">
-          {forceMajeureCount > 0 ? (
+      {/* FILTR QATORI (DESIGN.md §9) — fors-major status filter left, date
+          range right via ml-auto, result count at the row's right edge. */}
+      <div className="flex flex-wrap items-center gap-2">
+        {/* Fors-major summary + toggle. Reflects loaded cheques only. */}
+        {!isLoadingFirst && !error && items.length > 0 && (
+          forceMajeureCount > 0 ? (
             <Button
               type="button"
               variant="outline"
@@ -215,9 +216,17 @@ export function ReceiptsPage() {
             </Button>
           ) : (
             <Badge variant="secondary">Barcha cheklar to‘g‘ri urilgan</Badge>
+          )
+        )}
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <DateRangeFilter value={range} onChange={setRange} />
+          {!isLoadingFirst && !error && (
+            <span className="text-sm text-muted-foreground tabular-nums">
+              {rows.length} ta chek
+            </span>
           )}
         </div>
-      )}
+      </div>
 
       {isLoadingFirst && (
         <Card>

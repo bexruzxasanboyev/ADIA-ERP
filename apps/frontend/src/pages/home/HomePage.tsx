@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { CakeSlice, CircleUser } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { ThemeToggle } from '@/components/layout/ThemeToggle';
 import { useAuth } from '@/hooks/useAuth';
 import { getGreeting } from '@/lib/format';
@@ -141,14 +142,20 @@ export function HomePage() {
             const accent = GROUP_ACCENTS[group.title] ?? DEFAULT_ACCENT;
             return (
               <section key={group.title} aria-label={group.title}>
-                <h2
-                  className={cn(
-                    'mb-3 text-xs font-semibold uppercase tracking-wider',
-                    accent.heading,
-                  )}
-                >
-                  {group.title}
-                </h2>
+                {/* Section heading (DESIGN.md §9): kicker + secondary count. */}
+                <div className="mb-3 flex items-center gap-2">
+                  <h2
+                    className={cn(
+                      'text-xs font-semibold uppercase tracking-wider',
+                      accent.heading,
+                    )}
+                  >
+                    {group.title}
+                  </h2>
+                  <Badge variant="secondary" className="tabular-nums">
+                    {group.tiles.length}
+                  </Badge>
+                </div>
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4">
                   {group.tiles.map((tile) => (
                     <TileCard key={tile.path} tile={tile} accent={accent} />

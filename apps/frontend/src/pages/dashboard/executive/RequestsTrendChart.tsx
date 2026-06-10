@@ -127,7 +127,7 @@ export function RequestsTrendChart({
       <Card className="flex flex-col">
         <header className="flex items-start justify-between gap-3 border-b border-border/60 p-5">
           <div className="space-y-0.5">
-            <h2 className="flex items-center gap-2 text-base font-semibold">
+            <h2 className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
               <RequestsIcon
                 className="size-4 text-primary"
                 aria-hidden="true"

@@ -271,7 +271,7 @@ export function LocationFlowsPage() {
         <CardHeader className="border-b border-border/60">
           <CardTitle className="flex items-center gap-2">
             Mavjud oqimlar
-            <Badge variant="outline" className="tabular-nums">
+            <Badge variant="secondary" className="tabular-nums">
               {flows.length}
             </Badge>
           </CardTitle>

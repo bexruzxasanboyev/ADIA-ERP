@@ -91,43 +91,46 @@ export function ForecastsPage() {
         description="Keyingi 14 kunlik sotuv bashorati (Prophet)."
       />
 
-      <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4">
-        <div className="space-y-1">
-          <Label htmlFor="forecast-location">Bo‘g‘in</Label>
-          <Select
-            id="forecast-location"
-            className="w-full sm:w-56"
-            value={String(locationFilter)}
-            onChange={(e) => {
-              const v = e.target.value;
-              setLocationFilter(v === 'all' ? 'all' : Number(v));
-            }}
-          >
-            <option value="all">Barchasi</option>
-            {(locations.data ?? []).map((l) => (
-              <option key={l.id} value={String(l.id)}>
-                {l.name}
-              </option>
-            ))}
-          </Select>
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="forecast-type">Mahsulot turi</Label>
-          <Select
-            id="forecast-type"
-            className="w-52"
-            value={typeFilter}
-            onChange={(e) =>
-              setTypeFilter(e.target.value as ProductTypeFilter)
-            }
-          >
-            {PRODUCT_TYPE_FILTER_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </Select>
-        </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Label htmlFor="forecast-location" className="sr-only">
+          Bo‘g‘in
+        </Label>
+        <Select
+          id="forecast-location"
+          className="w-full sm:w-56"
+          value={String(locationFilter)}
+          onChange={(e) => {
+            const v = e.target.value;
+            setLocationFilter(v === 'all' ? 'all' : Number(v));
+          }}
+        >
+          <option value="all">Barchasi</option>
+          {(locations.data ?? []).map((l) => (
+            <option key={l.id} value={String(l.id)}>
+              {l.name}
+            </option>
+          ))}
+        </Select>
+        <Label htmlFor="forecast-type" className="sr-only">
+          Mahsulot turi
+        </Label>
+        <Select
+          id="forecast-type"
+          className="w-52"
+          value={typeFilter}
+          onChange={(e) =>
+            setTypeFilter(e.target.value as ProductTypeFilter)
+          }
+        >
+          {PRODUCT_TYPE_FILTER_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </Select>
+        <span className="ml-auto text-sm text-muted-foreground tabular-nums">
+          {filtered.length} ta natija
+        </span>
       </div>
 
       <Card>

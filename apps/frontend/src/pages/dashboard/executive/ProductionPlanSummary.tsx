@@ -69,7 +69,7 @@ export function ProductionPlanSummary({
   return (
     <Card className={cn('flex h-full flex-col', className)}>
       <header className="flex items-center justify-between gap-3 border-b border-border/60 p-4">
-        <h2 className="flex items-center gap-2 text-sm font-semibold">
+        <h2 className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
           <Factory className="size-4 text-primary" aria-hidden="true" />
           Bugungi ishlab chiqarish
         </h2>

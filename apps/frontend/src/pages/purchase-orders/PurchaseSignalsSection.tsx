@@ -89,28 +89,34 @@ export function PurchaseSignalsSection({
 
   return (
     <section aria-labelledby="purchase-signals-heading" className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0">
+      {/* DESIGN §9 — section heading: kicker style + Badge secondary count
+          (no large h2 text inside the content). */}
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
           <h2
             id="purchase-signals-heading"
-            className="flex items-center gap-2 text-lg font-semibold tracking-tight"
+            className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground"
           >
             <AlertTriangle
-              className="size-4 text-warning"
+              className="size-3.5 text-warning"
               aria-hidden="true"
             />
             Xarid signallari
           </h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            Min darajadan tushgan xom-ashyo — to‘g‘ridan-to‘g‘ri sotib olish
-            so‘rovi oching.
-          </p>
+          {state.kind === 'ready' && state.signals.length > 0 && (
+            <Badge
+              variant="secondary"
+              className="tabular-nums"
+              aria-label="Signallar soni"
+            >
+              {formatQty(state.signals.length)} ta signal
+            </Badge>
+          )}
         </div>
-        {state.kind === 'ready' && state.signals.length > 0 && (
-          <Badge variant="warning" aria-label="Signallar soni">
-            {formatQty(state.signals.length)} ta signal
-          </Badge>
-        )}
+        <p className="mt-0.5 text-sm text-muted-foreground">
+          Min darajadan tushgan xom-ashyo — to‘g‘ridan-to‘g‘ri sotib olish
+          so‘rovi oching.
+        </p>
       </div>
 
       {state.kind === 'loading' && <SignalsSkeleton />}

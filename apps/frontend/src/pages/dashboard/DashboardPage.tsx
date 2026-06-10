@@ -310,7 +310,16 @@ function BelowMinPanel({
     <Card className={cn('flex flex-col', className)}>
       <header className="flex items-center justify-between gap-3 border-b border-border/60 p-5">
         <div className="space-y-0.5">
-          <h2 className="text-base font-semibold">Min’dan tushgan pozitsiyalar</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Min’dan tushgan pozitsiyalar
+            </h2>
+            {items.length > 0 && (
+              <Badge variant="secondary" className="tabular-nums">
+                {formatQty(items.length)}
+              </Badge>
+            )}
+          </div>
           <p className="text-xs text-muted-foreground">
             Avtomatik to‘ldirish tsikli ushbu pozitsiyalar bo‘yicha ishlaydi.
           </p>
@@ -418,7 +427,16 @@ function OpenRequestsPanel({
     <Card className={cn('flex flex-col', className)}>
       <header className="flex items-center justify-between gap-3 border-b border-border/60 p-5">
         <div className="space-y-0.5">
-          <h2 className="text-base font-semibold">Ochiq so‘rovlar — status</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Ochiq so‘rovlar — status
+            </h2>
+            {total > 0 && (
+              <Badge variant="secondary" className="tabular-nums">
+                {formatQty(total)}
+              </Badge>
+            )}
+          </div>
           <p className="text-xs text-muted-foreground">
             Holat bo‘yicha guruhlangan ochiq to‘ldirish so‘rovlari.
           </p>
@@ -452,7 +470,16 @@ function ProductionPlanPanel({ overview }: { overview: DashboardOverview }) {
     <Card>
       <header className="flex items-center justify-between gap-3 border-b border-border/60 p-5">
         <div className="space-y-0.5">
-          <h2 className="text-base font-semibold">Bugungi ishlab chiqarish rejasi</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Bugungi ishlab chiqarish rejasi
+            </h2>
+            {items.length > 0 && (
+              <Badge variant="secondary" className="tabular-nums">
+                {formatQty(items.length)}
+              </Badge>
+            )}
+          </div>
           <p className="text-xs text-muted-foreground">
             Faol va muddati o‘tgan zayafkalar.
           </p>
@@ -525,7 +552,9 @@ function RecentMovementsPanel({ overview }: { overview: DashboardOverview }) {
     <Card>
       <header className="flex items-center justify-between gap-3 border-b border-border/60 p-5">
         <div className="space-y-0.5">
-          <h2 className="text-base font-semibold">Oxirgi harakatlar</h2>
+          <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Oxirgi harakatlar
+          </h2>
           <p className="text-xs text-muted-foreground">
             So‘nggi {Math.min(items.length, 20)} ta ombor harakati.
           </p>

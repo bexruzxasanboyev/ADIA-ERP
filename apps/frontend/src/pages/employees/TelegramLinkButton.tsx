@@ -321,7 +321,7 @@ export function TelegramLinkButton({
           <DialogFooter>
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
               onClick={() => handleOpenChange(false)}
             >
               Yopish

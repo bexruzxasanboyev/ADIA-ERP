@@ -83,6 +83,44 @@ Eski uslub (qizil border + qizil qiymat + qizil badge bir cardda) TAQIQLANADI. H
 
 `fullWidth` segmented tablar (butun enini cho'zilgan) TAQIQLANADI — kompakt `inline-flex` segmented, hisob label ichida: `Hammasi · 66`. Holat tablarida nuqta-indikator mumkin: `● Tugagan · 12` (nuqta `text-destructive`).
 
-## 9. Maqsadli his (vibe)
+## 9. Sahifa karkasi — MAJBURIY tartib (har bo'limda bir xil)
+
+Har sahifa YUQORIDAN PASTGA aynan shu tartibda quriladi; element joyi sahifadan sahifaga o'zgarmaydi:
+
+```
+1. SARLAVHA QATORI (flex items-start justify-between gap-4)
+   chap:  h1 text-xl font-semibold tracking-tight
+          + 1 qator izoh text-sm text-muted-foreground
+   o'ng:  sahifa darajasidagi amallar — MAX 2 ta tugma:
+          [outline ikkilamchi] [default asosiy]  ← primary HAR DOIM eng o'ngda
+2. TAB QATORI (agar bor) — kompakt segmented, CHAPga tekis, alohida qator
+3. FILTR QATORI (flex flex-wrap items-center gap-2)
+   chap:  status/segment filtrlar (kompakt tabs yoki Select'lar)
+   o'ng (ml-auto): qidiruv Input (w-56..72) + [outline Filter]
+4. KONTENT — space-y-6
+```
+
+Qoidalar:
+- Sarlavha qatorida tab YO'Q, filtr qatorida sarlavha YO'Q — qatlamlar aralashmaydi.
+- Bitta qatorda ikkita primary tugma taqiqlanadi.
+- Jadval/grid ustidagi hisob ("103 ta so'rov") — filtr qatorining o'ng chetida `text-sm text-muted-foreground`, alohida qator emas.
+- Bo'lim sarlavhalari (kontent ichida): kicker uslubi + `Badge variant="secondary"` hisob — h2/h3 katta matn emas.
+
+### Dialog karkasi (hammasi bir xil)
+
+```
+DialogHeader: DialogTitle + DialogDescription (majburiy)
+Body: space-y-4 (forma qatorlari space-y-1.5)
+DialogFooter: o'ngga tekis — [ghost "Bekor qilish"] [default/destructive ASOSIY AMAL]
+```
+- Asosiy amal HAR DOIM eng o'ngda, bittagina; xavfli amal `destructive`.
+- "Yopish"/"Bekor" har doim `ghost`, har doim asosiydan chapda.
+- Dialog ichida o'z sarlavha-divlarini yasash taqiqlanadi — faqat DialogHeader.
+
+### Tugma tartibi (har joyda)
+
+Qatorda chapdan o'ngga: [ghost/jim] → [outline/ikkilamchi] → [default/primary]. Ikon-only amallar `ghost size="icon"` va qatorning boshqa tugmalaridan ajratilgan (gap-1 guruh).
+
+## 10. Maqsadli his (vibe)
 
 Linear/Vercel uslubidagi qorong'u premium: tinch grafit sirtlar, bitta cobalt aksent, pill-badge'lar, mayin 1px "lit edge" soyalar, zich lekin nafas oladigan jadvallar, uppercase mikro-yorliqlar. Bezak uchun gradient/glow qo'shmang — faqat tokenlardagilar.

@@ -107,7 +107,7 @@ export function ProductUnitDialog({
         <DialogFooter className="flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             size="sm"
             disabled={saving}
             onClick={() => onOpenChange(false)}

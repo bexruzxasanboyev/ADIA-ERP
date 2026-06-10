@@ -965,14 +965,16 @@ export function StoreWorkflowPage() {
               mega-card: the cards ARE the surface (DESIGN.md §8). */}
           {pageTab === 'products' && (
             <div className="space-y-5">
-              <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+              {/* Filter row (DESIGN.md §9): status filters left; search +
+                  Filter + result count pushed right via ml-auto — one row. */}
+              <div className="flex flex-wrap items-center gap-2">
                 <StockStatusFilter
                   value={statusFilter}
                   onChange={setStatusFilter}
                   counts={filterCounts}
                 />
-                <div className="flex items-center gap-2">
-                  <div className="relative w-full sm:w-72">
+                <div className="ml-auto flex flex-wrap items-center gap-2">
+                  <div className="relative w-56 sm:w-72">
                     <Search
                       className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground"
                       aria-hidden="true"
@@ -1002,6 +1004,9 @@ export function StoreWorkflowPage() {
                     value={productFilter}
                     onApply={setProductFilter}
                   />
+                  <span className="text-sm text-muted-foreground tabular-nums">
+                    {filteredStock.length} ta
+                  </span>
                 </div>
               </div>
 

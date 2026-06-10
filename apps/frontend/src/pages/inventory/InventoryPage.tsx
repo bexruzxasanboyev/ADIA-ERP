@@ -121,11 +121,17 @@ export function InventoryPage() {
         }
       />
 
-      {/* Filters: Do'kon (PM / ishlab chiqarish boshlig'i) · Sana. */}
-      <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4">
+      {/* DESIGN §9 — FILTR QATORI: filters left (Do'kon · Sana), compact
+          inline; result count at the row's right edge. */}
+      <div className="flex flex-wrap items-center gap-2">
         {canPickStore && (
-          <div className="space-y-1.5">
-            <Label htmlFor="inventory-store">Do‘kon</Label>
+          <>
+            <Label
+              htmlFor="inventory-store"
+              className="text-sm text-muted-foreground"
+            >
+              Do‘kon
+            </Label>
             <Select
               id="inventory-store"
               className="w-full sm:w-64"
@@ -139,19 +145,27 @@ export function InventoryPage() {
                 </option>
               ))}
             </Select>
-          </div>
+          </>
         )}
-        <div className="space-y-1.5">
-          <Label htmlFor="inventory-date">Sana</Label>
-          <Input
-            id="inventory-date"
-            type="date"
-            className="w-full sm:w-44"
-            value={date}
-            max={todayIso()}
-            onChange={(e) => setDate(e.target.value)}
-          />
-        </div>
+        <Label
+          htmlFor="inventory-date"
+          className="text-sm text-muted-foreground"
+        >
+          Sana
+        </Label>
+        <Input
+          id="inventory-date"
+          type="date"
+          className="w-full sm:w-44"
+          value={date}
+          max={todayIso()}
+          onChange={(e) => setDate(e.target.value)}
+        />
+        {queryPath !== null && !isLoading && !error && items.length > 0 && (
+          <span className="ml-auto text-sm text-muted-foreground tabular-nums">
+            {items.length} ta mahsulot
+          </span>
+        )}
       </div>
 
       <Card>

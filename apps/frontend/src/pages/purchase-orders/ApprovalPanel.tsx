@@ -142,13 +142,9 @@ export function ApprovalPanel({ order, onChanged }: ApprovalPanelProps) {
         />
       </div>
 
+      {/* DESIGN §9 — button order in a row: outline before default
+          (primary rightmost; the two states are mutually exclusive). */}
       <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
-        {isApproved && canReceive && (
-          <Button size="sm" onClick={() => setReceiveOpen(true)}>
-            <PackageCheck className="size-4" aria-hidden="true" />
-            Qabul qilish
-          </Button>
-        )}
         {isDraft && canReject && (
           <Button
             size="sm"
@@ -162,6 +158,12 @@ export function ApprovalPanel({ order, onChanged }: ApprovalPanelProps) {
               <X className="size-4" aria-hidden="true" />
             )}
             Rad etish
+          </Button>
+        )}
+        {isApproved && canReceive && (
+          <Button size="sm" onClick={() => setReceiveOpen(true)}>
+            <PackageCheck className="size-4" aria-hidden="true" />
+            Qabul qilish
           </Button>
         )}
         {!isDraft && !isApproved && (

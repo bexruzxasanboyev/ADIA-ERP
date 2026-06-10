@@ -200,7 +200,7 @@ export function ShipToStoreDialog({
         <DialogFooter>
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             onClick={() => onOpenChange(false)}
             disabled={submitting}
           >
@@ -350,7 +350,7 @@ export function SendToProductionDialog({
         <DialogFooter>
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             onClick={() => onOpenChange(false)}
             disabled={submitting}
           >

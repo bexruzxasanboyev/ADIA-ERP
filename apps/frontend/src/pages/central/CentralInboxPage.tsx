@@ -753,10 +753,17 @@ function BulkActionBar({
             Tozalash
           </Button>
         </div>
+        {/* Button ordering (DESIGN.md §9): reject left as outline, then the
+            secondary outline action, primary confirm ALWAYS rightmost. */}
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" onClick={onAccept} disabled={busy}>
-            <Check className="size-4" aria-hidden="true" />
-            Hammasini qabul qil
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onReject}
+            disabled={busy}
+          >
+            <X className="size-4" aria-hidden="true" />
+            Rad et
           </Button>
           <Button
             size="sm"
@@ -767,14 +774,9 @@ function BulkActionBar({
             <Factory className="size-4" aria-hidden="true" />
             Ishlab chiqarishga yuborish
           </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={onReject}
-            disabled={busy}
-          >
-            <X className="size-4" aria-hidden="true" />
-            Rad et
+          <Button size="sm" onClick={onAccept} disabled={busy}>
+            <Check className="size-4" aria-hidden="true" />
+            Hammasini qabul qil
           </Button>
         </div>
       </Card>
@@ -882,15 +884,8 @@ function OrderCard({
 
         {/* Group-level actions (batches only). pm is read-only. */}
         {isGroup && !isPm && (
+          /* Reject left as outline, confirm primary rightmost (DESIGN.md §9). */
           <div className="flex items-center gap-2">
-            <Button size="sm" onClick={onAcceptGroup} disabled={anyBusy}>
-              {groupBusy ? (
-                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-              ) : (
-                <Check className="size-4" aria-hidden="true" />
-              )}
-              Hammasini qabul qilish
-            </Button>
             <Button
               size="sm"
               variant="outline"
@@ -899,6 +894,14 @@ function OrderCard({
             >
               <X className="size-4" aria-hidden="true" />
               Hammasini rad etish
+            </Button>
+            <Button size="sm" onClick={onAcceptGroup} disabled={anyBusy}>
+              {groupBusy ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Check className="size-4" aria-hidden="true" />
+              )}
+              Hammasini qabul qilish
             </Button>
           </div>
         )}
@@ -948,22 +951,18 @@ function OrderCard({
                   endpoint), so it shows on EVERY line: the manager can route an
                   individual product to production when central stock is short. */}
               {!isPm && (
+                /* Reject left as outline → secondary outline → primary confirm
+                   rightmost (DESIGN.md §9 button ordering). */
                 <div className="flex flex-wrap items-center gap-2 sm:justify-end">
                   {!isGroup && (
                     <Button
                       size="sm"
-                      onClick={() => onAcceptSingle(line)}
+                      variant="outline"
+                      onClick={() => onRejectSingle(line)}
                       disabled={anyBusy}
                     >
-                      {lineBusy ? (
-                        <Loader2
-                          className="size-4 animate-spin"
-                          aria-hidden="true"
-                        />
-                      ) : (
-                        <Check className="size-4" aria-hidden="true" />
-                      )}
-                      Qabul qilish
+                      <X className="size-4" aria-hidden="true" />
+                      Rad et
                     </Button>
                   )}
                   <Button
@@ -985,12 +984,18 @@ function OrderCard({
                   {!isGroup && (
                     <Button
                       size="sm"
-                      variant="outline"
-                      onClick={() => onRejectSingle(line)}
+                      onClick={() => onAcceptSingle(line)}
                       disabled={anyBusy}
                     >
-                      <X className="size-4" aria-hidden="true" />
-                      Rad et
+                      {lineBusy ? (
+                        <Loader2
+                          className="size-4 animate-spin"
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <Check className="size-4" aria-hidden="true" />
+                      )}
+                      Qabul qilish
                     </Button>
                   )}
                 </div>
@@ -1145,7 +1150,7 @@ function RejectDialog({
         <DialogFooter>
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             onClick={() => onOpenChange(false)}
             disabled={isSubmitting}
           >

@@ -942,8 +942,8 @@ export function ProductsPage({
         }
       />
 
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        {!forcedType && (
+      {/* DESIGN §9 — TAB QATORI: compact segmented, left-aligned, own row. */}
+      {!forcedType && (
         <div
           role="tablist"
           aria-label="Mahsulot turi"
@@ -980,34 +980,44 @@ export function ProductsPage({
           );
         })}
       </div>
-        )}
+      )}
 
-        <div className="flex items-center gap-3">
-          <div className="relative w-full sm:w-72">
-          <Search
-            className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground"
-            aria-hidden="true"
-          />
-          <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Qidirish (lotin yoki kirill)…"
-            aria-label="Mahsulot qidirish"
-            className="pl-9 pr-9"
-          />
-          {search !== '' && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              onClick={() => setSearch('')}
-              aria-label="Qidiruvni tozalash"
-              className="absolute right-1.5 top-1.5 h-6 w-6 text-muted-foreground"
-            >
-              <X className="size-4" />
-            </Button>
+      {/* DESIGN §9 — FILTR QATORI: search + Filter right via ml-auto; the
+          result count sits at the row's right edge (not a separate row). */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+          {!isLoading && !error && items.length > 0 && (
+            <span className="text-sm text-muted-foreground tabular-nums">
+              {items.length === total
+                ? `${total} ta mahsulot`
+                : `Ko‘rsatildi ${items.length} / ${total}`}
+            </span>
           )}
-        </div>
+          <div className="relative w-full sm:w-72">
+            <Search
+              className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Qidirish (lotin yoki kirill)…"
+              aria-label="Mahsulot qidirish"
+              className="pl-9 pr-9"
+            />
+            {search !== '' && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => setSearch('')}
+                aria-label="Qidiruvni tozalash"
+                className="absolute right-1.5 top-1.5 h-6 w-6 text-muted-foreground"
+              >
+                <X className="size-4" />
+              </Button>
+            )}
+          </div>
           <FilterPopover groups={FILTER_GROUPS} value={filter} onApply={setFilter} />
         </div>
       </div>
@@ -1025,17 +1035,6 @@ export function ProductsPage({
         )}
         {!isLoading && !error && items.length === 0 && (
           <EmptyState message="Mahsulot topilmadi." />
-        )}
-
-        {/* Result count — «N ta mahsulot» once everything matching is on
-            screen; while pages are still appending it reads
-            «Ko'rsatildi N / total» so the user sees the progress. */}
-        {!isLoading && !error && items.length > 0 && (
-          <p className="mb-3 text-xs text-muted-foreground tabular-nums">
-            {items.length === total
-              ? `${total} ta mahsulot`
-              : `Ko‘rsatildi ${items.length} / ${total}`}
-          </p>
         )}
 
         {!isLoading && !error && items.length > 0 && showMobileCards && (
@@ -1178,7 +1177,7 @@ export function ProductsPage({
                     <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                       {group.name}
                     </h2>
-                    <Badge variant="outline" className="tabular-nums">
+                    <Badge variant="secondary" className="tabular-nums">
                       {group.items.length}
                     </Badge>
                   </div>

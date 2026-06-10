@@ -200,29 +200,40 @@ export function StockPage({
         }
       />
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between sm:gap-4">
-        <Tabs
-          value={tab}
-          onValueChange={setTab}
-          options={TAB_OPTIONS}
-          ariaLabel="Qoldiq ko‘rinishi"
-        />
-        <div className="space-y-1.5">
-          <Label htmlFor="stock-location">Bo‘g‘in bo‘yicha</Label>
-          <Select
-            id="stock-location"
-            className="w-full sm:w-56"
-            value={locationFilter}
-            onChange={(e) => setLocationFilter(e.target.value)}
-          >
-            <option value="">Barcha bo‘g‘inlar</option>
-            {(locations.data ?? []).map((l) => (
-              <option key={l.id} value={l.id}>
-                {l.name}
-              </option>
-            ))}
-          </Select>
-        </div>
+      {/* DESIGN §9 — TAB QATORI: compact segmented, left-aligned, own row. */}
+      <Tabs
+        value={tab}
+        onValueChange={setTab}
+        options={TAB_OPTIONS}
+        ariaLabel="Qoldiq ko‘rinishi"
+      />
+
+      {/* DESIGN §9 — FILTR QATORI: filters left, compact inline. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Label
+          htmlFor="stock-location"
+          className="text-sm text-muted-foreground"
+        >
+          Bo‘g‘in bo‘yicha
+        </Label>
+        <Select
+          id="stock-location"
+          className="w-full sm:w-56"
+          value={locationFilter}
+          onChange={(e) => setLocationFilter(e.target.value)}
+        >
+          <option value="">Barcha bo‘g‘inlar</option>
+          {(locations.data ?? []).map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.name}
+            </option>
+          ))}
+        </Select>
+        {tab === 'stock' && !stock.isLoading && !stock.error && rows.length > 0 && (
+          <span className="ml-auto text-sm text-muted-foreground tabular-nums">
+            {rows.length} ta pozitsiya
+          </span>
+        )}
       </div>
 
       {/* DESIGN §8 — a neutral strip; ONLY the count badge carries the danger
@@ -413,7 +424,7 @@ export function StockPage({
             </DialogHeader>
             <DialogFooter>
               <Button
-                variant="outline"
+                variant="ghost"
                 onClick={() => setRecalcDialogOpen(false)}
                 disabled={isRecalculating}
               >

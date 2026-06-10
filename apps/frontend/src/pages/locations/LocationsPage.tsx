@@ -438,11 +438,11 @@ export function LocationsPage() {
         }
       />
 
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex flex-wrap items-center gap-2">
         <div
           role="tablist"
           aria-label="Bo‘g‘in turi"
-          className="inline-flex flex-wrap items-center gap-1 self-start rounded-xl border border-border/70 bg-surface-1 p-1"
+          className="inline-flex flex-wrap items-center gap-1 rounded-xl border border-border/70 bg-surface-1 p-1"
         >
           {TYPE_TABS.map((t) => {
             const active = typeTab === t.value;
@@ -454,7 +454,7 @@ export function LocationsPage() {
                 aria-selected={active}
                 onClick={() => setTypeTab(t.value)}
                 className={cn(
-                  'inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
+                  'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   active
                     ? 'bg-primary/15 text-primary ring-1 ring-inset ring-primary/25'
@@ -464,18 +464,18 @@ export function LocationsPage() {
                 {t.label}
                 <span
                   className={cn(
-                    'rounded-full px-1.5 text-xs tabular-nums',
-                    active ? 'bg-primary/20' : 'bg-muted',
+                    'tabular-nums',
+                    active ? 'text-primary/70' : 'text-muted-foreground/70',
                   )}
                 >
-                  {typeCounts[t.value]}
+                  · {typeCounts[t.value]}
                 </span>
               </button>
             );
           })}
         </div>
 
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           {hasArchived && (
             <Button
               type="button"
@@ -483,7 +483,6 @@ export function LocationsPage() {
               size="sm"
               aria-pressed={showArchived}
               onClick={() => setShowArchived((v) => !v)}
-              className="self-start sm:self-auto"
             >
               <Archive className="size-4" aria-hidden="true" />
               Arxivlanganlar
@@ -515,6 +514,10 @@ export function LocationsPage() {
               </Button>
             )}
           </div>
+
+          <span className="text-sm tabular-nums text-muted-foreground">
+            {filtered.length} ta bo‘g‘in
+          </span>
         </div>
       </div>
 
@@ -535,7 +538,7 @@ export function LocationsPage() {
                     <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                       {LOCATION_TYPE_LABELS[group.type]}
                     </h2>
-                    <Badge variant="outline" className="tabular-nums">
+                    <Badge variant="secondary" className="tabular-nums">
                       {group.items.length}
                     </Badge>
                   </div>
