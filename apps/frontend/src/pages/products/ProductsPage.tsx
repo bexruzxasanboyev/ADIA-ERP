@@ -1187,7 +1187,9 @@ export function ProductsPage({
                         key={p.id}
                         product={p}
                         stockQty={showStock ? p.qty : undefined}
-                        showTypeBadge={!showStock}
+                        // On a specific type tab every card IS that type —
+                        // the badge is redundant; show it only on "Hammasi".
+                        showTypeBadge={!showStock && typeTab === 'all'}
                         canEditWorkshop={canEditWorkshop && !showStock}
                         canEditCost={canEditCost}
                         workshops={workshops}
