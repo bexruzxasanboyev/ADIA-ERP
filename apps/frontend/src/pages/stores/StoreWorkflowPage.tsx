@@ -1228,13 +1228,23 @@ export function StoreWorkflowPage() {
                   )}
                   {!replen.isLoading && !replen.error && (
                     <BoardWorkspace
+                      /* F-N (owner: "keraksiz kanbanlar bor — soddalashtir"):
+                         a store is never a supplier, so its Kelgan board was a
+                         forever-empty trap ("markaz yuborgani nega Kelganda
+                         emas?"). ONE board, no toggle; the columns speak the
+                         store's language — the shipment IS the thing that
+                         "keladi", so Jo'natildi reads «Keldi — qabul qiling». */
                       incoming={boards.incoming}
                       outgoing={boards.outgoing}
-                      defaultSide="outgoing"
+                      onlySide="outgoing"
                       onOpen={(req) => setOpenRequest(req)}
-                      incomingEmptyLabel="Do‘konga atalgan so‘rov yo‘q."
                       outgoingEmptyLabel="Do‘kon yuborgan so‘rov yo‘q."
                       actionScope={selectedStoreSet}
+                      columnLabels={{
+                        kutuvda: 'Yuborildi',
+                        soralgan: 'Tayyorlanmoqda',
+                        yuborilgan: 'Keldi — qabul qiling',
+                      }}
                     />
                   )}
                 </div>

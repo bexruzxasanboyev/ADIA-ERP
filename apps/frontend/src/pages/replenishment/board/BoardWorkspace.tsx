@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { Tabs } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
 import { RequestKanban } from './RequestKanban';
-import type { FlowRequest } from '@/lib/replenishmentFlow';
+import type { FlowRequest, KanbanColumn } from '@/lib/replenishmentFlow';
 
 /**
  * The ONE-board workspace shared by every So'rovlar surface (central /
@@ -55,6 +55,14 @@ export interface BoardWorkspaceProps {
    * request (owner: "doskalar bir xil ma'lumot ko'rsatyapti").
    */
   actionScope?: ReadonlySet<number>;
+  /**
+   * F-N simplification (owner: "keraksiz kanbanlar bor"): when a host's other
+   * side is structurally meaningless (a STORE is never a supplier — its Kelgan
+   * is forever 0), render ONLY this side and hide the toggle entirely.
+   */
+  onlySide?: BoardSide;
+  /** Per-host column re-voicing, passed through to {@link RequestKanban}. */
+  columnLabels?: Partial<Record<KanbanColumn, string>>;
 }
 
 export function BoardWorkspace({
@@ -68,8 +76,12 @@ export function BoardWorkspace({
   outgoingEmptyLabel = 'Chiqgan so‘rov yo‘q.',
   heightClassName = 'h-[clamp(28rem,calc(100dvh-30rem),60rem)]',
   actionScope,
+  onlySide,
+  columnLabels,
 }: BoardWorkspaceProps) {
-  const [side, setSide] = useState<BoardSide>(defaultSide);
+  const [toggledSide, setSide] = useState<BoardSide>(defaultSide);
+  // F-N: a single-sided host has no toggle — the side is fixed.
+  const side = onlySide ?? toggledSide;
 
   const sideOptions: { value: BoardSide; label: string }[] = [
     { value: 'incoming', label: `📥 Kelgan · ${incoming.length}` },
@@ -85,13 +97,15 @@ export function BoardWorkspace({
   return (
     <div className="space-y-3">
       {/* Segmented Kelgan | Chiqgan toggle (counts in labels) — left-aligned,
-          own row, DESIGN.md §9. */}
-      <Tabs
-        value={side}
-        onValueChange={setSide}
-        options={sideOptions}
-        ariaLabel="Doska tomoni"
-      />
+          own row, DESIGN.md §9. Hidden for single-sided hosts (F-N). */}
+      {onlySide === undefined && (
+        <Tabs
+          value={side}
+          onValueChange={setSide}
+          options={sideOptions}
+          ariaLabel="Doska tomoni"
+        />
+      )}
       <div className={cn('min-h-0', heightClassName)}>
         <RequestKanban
           fill
@@ -102,6 +116,7 @@ export function BoardWorkspace({
           viewer={
             actionScope !== undefined ? { side, scope: actionScope } : undefined
           }
+          columnLabels={columnLabels}
         />
       </div>
     </div>

@@ -77,6 +77,13 @@ export interface RequestKanbanProps {
   fill?: boolean;
   /** F-M action-ownership signal — see {@link BoardViewerContext}. */
   viewer?: BoardViewerContext;
+  /**
+   * F-N per-host column label overrides (owner: "logikani soddalashtir") — the
+   * UNIFIED grammar stays, but a host may re-voice a column for its audience
+   * (the store reads Jo'natildi as «Keldi — qabul qiling»). Sparse map; absent
+   * keys keep the canonical label.
+   */
+  columnLabels?: Partial<Record<KanbanColumn, string>>;
 }
 
 export function RequestKanban({
@@ -86,6 +93,7 @@ export function RequestKanban({
   emptyLabel,
   fill = false,
   viewer,
+  columnLabels,
 }: RequestKanbanProps) {
   const byColumn = useMemo(() => {
     const map: Record<KanbanColumn, FlowRequest[]> = {
@@ -111,8 +119,9 @@ export function RequestKanban({
         fill && 'h-full min-h-0',
       )}
     >
-      {KANBAN_COLUMNS.map(({ column, label }) => {
+      {KANBAN_COLUMNS.map(({ column, label: canonical }) => {
         const items = byColumn[column];
+        const label = columnLabels?.[column] ?? canonical;
         return (
           <section
             key={column}
