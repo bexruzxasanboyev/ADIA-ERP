@@ -129,8 +129,11 @@ export function RequestKanban({
             className={cn(
               'flex flex-col rounded-xl border border-border/60 bg-muted/20',
               fill
-                ? // fill: grow to share the full width, own scroll under the header
-                  'min-h-0 min-w-64 flex-1'
+                ? // fill: grow to share the full width, own scroll under the
+                  // header. The floor is LOW (10rem) so all six columns fit
+                  // embedded workspaces WITHOUT a horizontal scrollbar (owner:
+                  // "scrollsiz sig'adigan qilsak") — card text truncates.
+                  'min-h-0 min-w-40 flex-1'
                 : 'w-72 shrink-0',
             )}
           >
