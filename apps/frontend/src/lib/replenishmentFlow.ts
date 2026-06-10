@@ -15,6 +15,7 @@
  *   - closure side-states: closure_reason + brak_qty/brak_reason.
  *   - GET /api/replenishment/:id/tree — see {@link RequestTreeResponse}.
  */
+import { formatQtyUnit } from './format';
 import type { LocationType, PipelineStage, ReplenishmentRequest } from './types';
 
 /**
@@ -123,6 +124,17 @@ export interface FlowRequest extends ReplenishmentRequest {
   /** Free-text accept note / reject reason, when the backend embeds it. */
   accept_note?: string | null;
   reject_reason?: string | null;
+  /**
+   * How much of the request was actually SHIPPED — the shipment movement's qty
+   * (phase F-L, PINNED backend contract): `4` when 4 of a 10 kg request was sent
+   * and the rest routed to production. Surfaced as the PRIMARY qty chip on the
+   * Jo'natildi / Yopildi columns (with a muted `/ qty_needed` suffix when they
+   * differ) so a partial ship reads as "what left", not "what was asked". Every
+   * other column keeps `qty_needed`. Optional + null-safe on the wire: absent /
+   * `null` reads as "nothing shipped yet (or not a ship row)" and the chip falls
+   * back to `qty_needed` everywhere — see {@link RequestCard} / the modal header.
+   */
+  shipped_qty?: number | null;
 }
 
 /** Uzbek labels for the request-origin provenance badge. */
@@ -209,27 +221,81 @@ export const KANBAN_COLUMNS: readonly {
 ];
 
 /**
- * Derive the Jira column of a request (phase F-G §2):
+ * True when a production-ASSIGNED request is still parked at the отдел gate —
+ * it landed on the making sex (`production_location_id != null`) and is in the
+ * raw-material check (`status === 'CHECK_PRODUCTION_INPUT'`), but the отдел
+ * operator has NOT yet pressed «Qabul qilish» (`fulfiller_accepted_at` is unset)
+ * (phase F-L §1, owner: "Kutuvda tushishi kerak edi; qabul qilsa keyin jarayon
+ * boshlanishi kerak").
+ *
+ * In that window the cron HOLDS the row (the PINNED backend contract: no
+ * зг-check / transfer / PO until the accept stamps `fulfiller_accepted_at`), so
+ * the board must show it as **Kutuvda**, NOT Tayyorlanmoqda — see
+ * {@link kanbanColumnFromStage}. The instant the stamp lands the predicate goes
+ * false and the existing stage/accept rules carry the row onward
+ * (kutuvda+accepted → Tasdiqlandi; the engine moves it to soralgan on its next
+ * pass). Total + deterministic: it keys ONLY on already-present null-safe fields,
+ * so a legacy row (no `production_location_id`) reads false and buckets exactly
+ * as before. Mirrors {@link isRawPosterWaiting}'s shape (a pre-action hold on a
+ * specific target class), kept beside it on purpose.
+ *
+ * Defined over a minimal `Pick` so it stays dependency-free and the caller
+ * (which already resolved nothing here — `status` is on the row) passes the row.
+ */
+export function isProductionInputWaiting(
+  req: Pick<
+    FlowRequest,
+    'production_location_id' | 'status' | 'fulfiller_accepted_at'
+  >,
+): boolean {
+  return (
+    req.production_location_id != null &&
+    req.status === 'CHECK_PRODUCTION_INPUT' &&
+    !req.fulfiller_accepted_at
+  );
+}
+
+/**
+ * Derive the Jira column of a request (phase F-G §2, extended in F-L §1):
  *
  *   yopilgan      → Yopildi
  *   yuborilgan    → Jo'natildi
  *   qabul_qilingan→ Tayyor
+ *   production-input gate (not yet accepted) → **Kutuvda** (F-L §1 override)
  *   soralgan      → Tayyorlanmoqda
  *   kutuvda + fulfiller_accepted_at → **Tasdiqlandi**
  *   kutuvda (else)→ Kutuvda
  *
  * Everything routes through {@link pipelineStageOf} first (backend
  * `pipeline_stage`, status fallback), so a row never lands in two columns and
- * legacy rows still bucket sanely. The extra split only ever applies inside the
- * `kutuvda` stage, so it cannot move a row backwards.
+ * legacy rows still bucket sanely.
+ *
+ * TWO client-only splits layer on top, and they are mutually exclusive by
+ * construction:
+ *   1. F-L §1 PULL-BACK — a gated production row resolves to `soralgan` via
+ *      `pipelineStageOf` (CHECK_PRODUCTION_INPUT), but {@link isProductionInputWaiting}
+ *      pulls it BACK to `kutuvda` until the отдел accepts. It can only ever move
+ *      a row from soralgan → kutuvda (one step back, deterministic), never
+ *      forward, and it requires `!fulfiller_accepted_at`.
+ *   2. F-G PUSH-FORWARD — the `kutuvda` + `fulfiller_accepted_at` → `tasdiqlandi`
+ *      split, which requires the stamp to be SET.
+ * Because (1) needs the stamp UNSET and (2) needs it SET, no row triggers both;
+ * applying the pull-back first keeps a freshly-accepted gate row flowing onward
+ * by the normal rules.
  *
  * Imported lazily via the caller (`pipeline.ts`) to avoid a cycle — callers
  * pass the already-resolved `stage`.
  */
 export function kanbanColumnFromStage(
   stage: PipelineStage,
-  req: Pick<FlowRequest, 'fulfiller_accepted_at'>,
+  req: Pick<
+    FlowRequest,
+    'production_location_id' | 'status' | 'fulfiller_accepted_at'
+  >,
 ): KanbanColumn {
+  // F-L §1: hold a not-yet-accepted production-assigned row in Kutuvda even
+  // though its CHECK_PRODUCTION_INPUT status resolves to soralgan.
+  if (isProductionInputWaiting(req)) return 'kutuvda';
   if (stage === 'kutuvda' && req.fulfiller_accepted_at) return 'tasdiqlandi';
   return stage;
 }
@@ -253,6 +319,51 @@ export function isRawPosterWaiting(
     Boolean(req.fulfiller_accepted_at) &&
     stage === 'kutuvda'
   );
+}
+
+/** A two-part qty chip: a primary figure and an optional muted suffix. */
+export interface QtyChip {
+  /** The headline quantity, formatted (e.g. "4 000 gr (4 kg)"). */
+  primary: string;
+  /**
+   * The muted "/ <needed>" comparison, formatted, or `null` when there is
+   * nothing to compare (full ship, or not a ship column).
+   */
+  suffix: string | null;
+}
+
+/**
+ * The qty chip for a request, shared by the card and the modal header (phase
+ * F-L §3) so they read identically.
+ *
+ * On the Jo'natildi / Yopildi columns a row that actually SHIPPED a known amount
+ * (`shipped_qty != null`) shows that SHIPPED figure as the primary, with a muted
+ * `/ <qty_needed>` suffix ONLY when the two differ (a partial ship: "4 000 gr
+ * (4 kg)" + "/ 10 kg"). A full ship (`shipped_qty === qty_needed`) shows just
+ * the one figure. Every OTHER column — and any row with no `shipped_qty` (null /
+ * absent on the wire, the pre-backend default) — falls back to plain
+ * `qty_needed`, so nothing changes until the backend embeds the field.
+ *
+ * The suffix deliberately re-uses {@link formatQtyUnit} (full "gr (kg)" form) so
+ * the unit reads the same on both halves; callers render `primary` in the chip
+ * and `suffix` as muted text beside it.
+ */
+export function qtyChipFor(
+  req: Pick<FlowRequest, 'qty_needed' | 'product_unit' | 'shipped_qty'>,
+  column: KanbanColumn,
+): QtyChip {
+  const isShipColumn = column === 'yuborilgan' || column === 'yopilgan';
+  const shipped = req.shipped_qty;
+  if (isShipColumn && shipped != null && Number.isFinite(shipped)) {
+    return {
+      primary: formatQtyUnit(shipped, req.product_unit),
+      suffix:
+        shipped !== req.qty_needed
+          ? `/ ${formatQtyUnit(req.qty_needed, req.product_unit)}`
+          : null,
+    };
+  }
+  return { primary: formatQtyUnit(req.qty_needed, req.product_unit), suffix: null };
 }
 
 // ---------------------------------------------------------------------------

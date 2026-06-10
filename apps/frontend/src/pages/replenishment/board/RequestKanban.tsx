@@ -9,6 +9,7 @@ import {
   CLOSURE_REASON_VARIANT,
   isRawPosterWaiting,
   KANBAN_COLUMNS,
+  qtyChipFor,
   REQUEST_ORIGIN_LABELS,
   REQUEST_ORIGIN_VARIANT,
   type FlowRequest,
@@ -162,6 +163,7 @@ interface RequestCardProps {
 
 export function RequestCard({ req, column, action, onOpen }: RequestCardProps) {
   const stage = pipelineStageOf(req);
+  const qtyChip = qtyChipFor(req, column);
   const origin = req.origin ?? null;
   const closure = column === 'yopilgan' ? req.closure_reason ?? null : null;
   const brak = req.brak_qty != null && req.brak_qty > 0 ? req.brak_qty : null;
@@ -213,14 +215,22 @@ export function RequestCard({ req, column, action, onOpen }: RequestCardProps) {
         <span className="tabular-nums">{formatDate(req.created_at)}</span>
       </div>
 
-      {/* product + qty */}
+      {/* product + qty — on Jo'natildi/Yopildi a partial ship shows the SHIPPED
+          amount as the chip, with a muted "/ needed" suffix (phase F-L §3). */}
       <div className="mt-1 flex items-start justify-between gap-2">
         <p className="min-w-0 truncate text-sm font-semibold leading-tight">
           {req.product_name}
         </p>
-        <Badge variant="outline" className="shrink-0 tabular-nums">
-          {formatQtyUnit(req.qty_needed, req.product_unit)}
-        </Badge>
+        <span className="flex shrink-0 items-baseline gap-1">
+          <Badge variant="outline" className="tabular-nums">
+            {qtyChip.primary}
+          </Badge>
+          {qtyChip.suffix !== null && (
+            <span className="text-[10px] text-muted-foreground tabular-nums">
+              {qtyChip.suffix}
+            </span>
+          )}
+        </span>
       </div>
 
       {/* requester → target */}

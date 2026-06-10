@@ -176,6 +176,56 @@ export function rejectInternal(
   );
 }
 
+/**
+ * `POST /api/replenishment/:id/accept-production` envelope (phase F-L §1, PINNED
+ * backend contract). The отдел operator accepts a production-ASSIGNED request
+ * that was holding at the gate (CHECK_PRODUCTION_INPUT, not yet accepted). The
+ * accept stamps `fulfiller_accepted_at`; the replenishment ENGINE then takes
+ * over on its next cron pass (зг-check → transfers → PO), so this is just the
+ * one-shot gate release — no cascade runs synchronously here. `accepted` echoes
+ * whether the stamp was applied. RBAC: operator of the row's
+ * `production_location_id`; PM → 403.
+ */
+export interface AcceptProductionResponse {
+  request: ReplenishmentRequest;
+  accepted: boolean;
+}
+
+/** `POST /api/replenishment/:id/reject-production` envelope (phase F-L §1). */
+export interface RejectProductionResponse {
+  request: ReplenishmentRequest;
+}
+
+/**
+ * Accept a production-assigned request as its making отдел (phase F-L §1).
+ * Releases the отдел gate: the engine runs зг-check / transfers / PO on the next
+ * cron pass. `:id` is the replenishment_request id. RBAC: operator of the row's
+ * `production_location_id` only; PM → 403.
+ */
+export function acceptProduction(
+  id: number,
+): Promise<AcceptProductionResponse> {
+  return apiRequest<AcceptProductionResponse>(
+    `/api/replenishment/${id}/accept-production`,
+    { method: 'POST', body: {} },
+  );
+}
+
+/**
+ * Reject a production-assigned request as its making отдел (phase F-L §1).
+ * `:id` is the replenishment_request id; `reason` is optional. RBAC: operator of
+ * the row's `production_location_id` only; PM → 403.
+ */
+export function rejectProduction(
+  id: number,
+  reason?: string,
+): Promise<RejectProductionResponse> {
+  return apiRequest<RejectProductionResponse>(
+    `/api/replenishment/${id}/reject-production`,
+    { method: 'POST', body: { reason } },
+  );
+}
+
 /** `POST /api/replenishment` envelope (single-request create — 201). */
 interface CreateReplenishmentResponse {
   request: ReplenishmentRequest;

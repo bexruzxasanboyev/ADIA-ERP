@@ -6,6 +6,7 @@ import {
   Factory,
   Info,
   Loader2,
+  PackageCheck,
   Sparkles,
 } from 'lucide-react';
 import {
@@ -24,17 +25,21 @@ import { useCanAct } from '@/hooks/useCanAct';
 import { ApiError } from '@/lib/api-client';
 import { formatDateTime, formatQty, formatQtyUnit } from '@/lib/format';
 import { PIPELINE_STAGE_LABELS } from '@/lib/labels';
-import { pipelineStageOf } from '@/lib/pipeline';
+import { kanbanColumnOf, pipelineStageOf } from '@/lib/pipeline';
 import {
   acceptFulfiller,
   acceptInternal,
+  acceptProduction,
   rejectFulfiller,
   rejectInternal,
+  rejectProduction,
 } from '@/lib/replenishmentActions';
 import {
   CLOSURE_REASON_LABELS,
   CLOSURE_REASON_VARIANT,
+  isProductionInputWaiting,
   isRawPosterWaiting,
+  qtyChipFor,
   REQUEST_ORIGIN_LABELS,
   REQUEST_ORIGIN_VARIANT,
   type FlowRequest,
@@ -93,6 +98,14 @@ export interface RequestDetailModalProps {
    * not offered.
    */
   onCancel?: (req: FlowRequest) => void;
+  /**
+   * Store-requester hook (phase F-L §2): open the existing StoreReceiveDialog for
+   * a reserved-shipped row so the do'kon can confirm receipt (brak flow included).
+   * Only the store workspace passes it; on every other host (central / production
+   * / replenishment pages) it is absent → the «Qabul qilish (yetkazib berildi)»
+   * button is not rendered.
+   */
+  onReceive?: (req: FlowRequest) => void;
 }
 
 /** Small Uzbek caption for a location type (route-line sub-label). */
@@ -125,6 +138,7 @@ export function RequestDetailModal({
   onFulfill,
   onManbaReja,
   onCancel,
+  onReceive,
 }: RequestDetailModalProps) {
   const id = request?.id ?? null;
 
@@ -139,6 +153,7 @@ export function RequestDetailModal({
             onFulfill={onFulfill}
             onManbaReja={onManbaReja}
             onCancel={onCancel}
+            onReceive={onReceive}
             onClose={() => onOpenChange(false)}
           />
         ) : null}
@@ -154,6 +169,7 @@ interface ModalBodyProps {
   onFulfill?: (req: FlowRequest) => void;
   onManbaReja?: (req: FlowRequest) => void;
   onCancel?: (req: FlowRequest) => void;
+  onReceive?: (req: FlowRequest) => void;
   onClose: () => void;
 }
 
@@ -164,6 +180,7 @@ function ModalBody({
   onFulfill,
   onManbaReja,
   onCancel,
+  onReceive,
   onClose,
 }: ModalBodyProps) {
   const { notify } = useToast();
@@ -180,6 +197,10 @@ function ModalBody({
   const [busy, setBusy] = useState<'accept' | 'reject' | null>(null);
 
   const stage = useMemo(() => pipelineStageOf(live), [live]);
+  // The kanban column drives the header qty chip (shipped vs. needed), mirroring
+  // the card exactly (phase F-L §3).
+  const column = useMemo(() => kanbanColumnOf(live), [live]);
+  const qtyChip = useMemo(() => qtyChipFor(live, column), [live, column]);
   const rawWaiting = isRawPosterWaiting(live, stage);
   const isTerminal = TERMINAL_REPLENISHMENT_STATUSES.includes(live.status);
 
@@ -192,6 +213,18 @@ function ModalBody({
   const canAcceptFulfiller =
     isTargetOperator && !isTerminal && !alreadyAccepted && stage === 'kutuvda';
 
+  // F-L §1: the отдел GATE. A production-assigned row holding at
+  // CHECK_PRODUCTION_INPUT (not yet accepted) — its making отдел's operator may
+  // accept (releases the engine) or reject. Gated by the row's
+  // `production_location_id`, NOT its target (which still points at central), so
+  // it never overlaps `canAcceptFulfiller` (that one needs stage===kutuvda; a
+  // gate row resolves to soralgan). `isProductionInputWaiting` already guards the
+  // status + unaccepted state; we add the operator scope + a non-terminal check.
+  const canAcceptProduction =
+    canActOn(live.production_location_id) &&
+    !isTerminal &&
+    isProductionInputWaiting(live);
+
   // Central manager fulfilling a downstream (store) request from central stock.
   const isStoreRequest = live.requester_location_type === 'store';
   const canCentralFulfill =
@@ -201,20 +234,44 @@ function ModalBody({
     isStoreRequest &&
     stage === 'kutuvda';
 
-  // Production incoming → Manba reja (source plan).
+  // Production incoming → Manba reja (source plan, the manual override tool).
+  // Two operator shapes reach it (F-L §1 keeps it visible ALONGSIDE the gate's
+  // accept/reject): the classic case where the отдел IS the target
+  // (target_location_type === 'production'), AND the production-ASSIGNED case
+  // where the target still points at central but `production_location_id` is the
+  // viewer's отдел (a routed central shortfall). The latter reuses the same
+  // operator-of-production_location scope as the accept gate.
+  const isProductionOperator =
+    (isTargetOperator && live.target_location_type === 'production') ||
+    canActOn(live.production_location_id);
   const canManbaReja =
-    onManbaReja !== undefined &&
-    isTargetOperator &&
-    !isTerminal &&
-    live.target_location_type === 'production';
+    onManbaReja !== undefined && isProductionOperator && !isTerminal;
 
   // Requester side may cancel its own OPEN request.
   const canCancel =
     onCancel !== undefined && canActOn(live.requester_location_id) && !isTerminal;
 
+  // F-L §2: the do'kon RECEIVE. A reserved-shipped row (central partial-fulfill
+  // path: CLOSED, no closure_reason, fulfiller_accepted_at stamped — the SAME
+  // predicate the store's "Qabul qiluvchi" tab uses) whose requester is the
+  // viewer's store → the green «Qabul qilish (yetkazib berildi)» opens the
+  // EXISTING StoreReceiveDialog (brak flow included). Only mounted where the host
+  // passes `onReceive` (the store workspace); absent elsewhere by design.
+  const isReservedShipped =
+    live.status === 'CLOSED' &&
+    live.closure_reason == null &&
+    live.fulfiller_accepted_at != null;
+  const canStoreReceive =
+    onReceive !== undefined &&
+    canActOn(live.requester_location_id) &&
+    isReservedShipped;
+
   // Store receive/accept/return flows are rich + live on the detail page —
-  // link there instead of recreating them here.
+  // link there instead of recreating them here. Suppressed when the dedicated
+  // F-L §2 receive button is already offered (a reserved-shipped CLOSED row), so
+  // the modal does not show BOTH "To'liq sahifa" receive and the inline receive.
   const showFullPageReceive =
+    !canStoreReceive &&
     canActOn(live.requester_location_id) &&
     (live.status === 'SHIP_TO_REQUESTER' ||
       live.status === 'DONE_TO_WAREHOUSE' ||
@@ -256,6 +313,42 @@ function ModalBody({
     }
   }
 
+  // F-L §1 — release the отдел gate. Accept stamps `fulfiller_accepted_at`; the
+  // replenishment engine then runs зг-check / transfers / PO on its NEXT cron
+  // pass (this POST does no synchronous cascade), hence the toast wording. After
+  // the refetch the row moves out of Kutuvda by the normal rules.
+  async function runAcceptProduction() {
+    setBusy('accept');
+    try {
+      await acceptProduction(requestId);
+      notify('success', `#${requestId} qabul qilindi — зг tekshiruvi boshlandi.`);
+      detail.refetch();
+      onActed?.();
+    } catch (err: unknown) {
+      notify('error', acceptError(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runRejectProduction() {
+    const reason = window.prompt('Rad etish sababi (ixtiyoriy):') ?? undefined;
+    setBusy('reject');
+    try {
+      await rejectProduction(
+        requestId,
+        reason && reason.trim() !== '' ? reason.trim() : undefined,
+      );
+      notify('success', `#${requestId} rad etildi.`);
+      detail.refetch();
+      onActed?.();
+    } catch (err: unknown) {
+      notify('error', acceptError(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   const origin = live.origin ?? null;
   const closure = stage === 'yopilgan' ? live.closure_reason ?? null : null;
   const brak = live.brak_qty != null && live.brak_qty > 0 ? live.brak_qty : null;
@@ -270,8 +363,13 @@ function ModalBody({
           </span>
           <span className="text-base font-semibold">{live.product_name}</span>
           <Badge variant="outline" className="tabular-nums">
-            {formatQtyUnit(live.qty_needed, live.product_unit)}
+            {qtyChip.primary}
           </Badge>
+          {qtyChip.suffix !== null && (
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {qtyChip.suffix}
+            </span>
+          )}
           <Badge variant={STAGE_VARIANT[stage]}>
             {PIPELINE_STAGE_LABELS[stage]}
           </Badge>
@@ -435,6 +533,33 @@ function ModalBody({
           </>
         )}
 
+        {/* F-L §1 — отдел gate: accept (green, releases the engine) / reject
+            (red). Colour carries meaning, no emojis (owner). */}
+        {canAcceptProduction && (
+          <>
+            <Button
+              variant="success"
+              onClick={runAcceptProduction}
+              disabled={busy !== null}
+            >
+              {busy === 'accept' ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+              ) : null}
+              Qabul qilish
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={runRejectProduction}
+              disabled={busy !== null}
+            >
+              {busy === 'reject' ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+              ) : null}
+              Rad etish
+            </Button>
+          </>
+        )}
+
         {canCentralFulfill && (
           <Button
             onClick={() => {
@@ -443,6 +568,21 @@ function ModalBody({
             }}
           >
             Jo‘natish (qisman)
+          </Button>
+        )}
+
+        {/* F-L §2 — do'kon receive: closes the modal, opens StoreReceiveDialog
+            (brak flow inside). Green = accept/receive. */}
+        {canStoreReceive && (
+          <Button
+            variant="success"
+            onClick={() => {
+              onReceive?.(live);
+              onClose();
+            }}
+          >
+            <PackageCheck className="size-4" aria-hidden="true" />
+            Qabul qilish (yetkazib berildi)
           </Button>
         )}
 

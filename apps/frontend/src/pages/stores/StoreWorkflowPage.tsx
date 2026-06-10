@@ -1582,6 +1582,10 @@ export function StoreWorkflowPage() {
           stock.refetch();
         }}
         onCancel={(req) => setCancelTarget(req)}
+        // F-L §2 — a reserved-shipped board card opens the existing
+        // StoreReceiveDialog (brak flow inside). The modal closes itself first,
+        // then we queue the receive target. Only the store workspace wires this.
+        onReceive={(req) => setReceiveTarget(req)}
       />
 
       <CancelDialog
