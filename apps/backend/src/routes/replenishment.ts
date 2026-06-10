@@ -61,6 +61,7 @@ import {
   enqueueCentralDecrementWriteback,
   enqueuePosterReceiveWriteback,
 } from '../services/posterWriteback.js';
+import { attachJourneys } from '../services/replenishmentJourney.js';
 
 export const replenishmentRouter: Router = Router();
 
@@ -184,7 +185,10 @@ replenishmentRouter.get(
        ORDER BY r.id DESC`,
       params,
     );
-    res.status(200).json(rows);
+    // Variant A + mini-map — every item carries a server-computed `journey`
+    // (stations / current_index / wait_reason). ONE extra batched query
+    // (open children per parent) — no N+1.
+    res.status(200).json(await attachJourneys(rows));
   }),
 );
 
@@ -371,8 +375,12 @@ replenishmentRouter.get(
       created_at: po.created_at,
     }));
 
+    // Variant A + mini-map — the detail row carries the same server-computed
+    // `journey` as the list items (one batched open-children lookup).
+    const [requestWithJourney] = await attachJourneys([request]);
+
     res.status(200).json({
-      request,
+      request: requestWithJourney,
       transitions,
       production_order: productionOrder,
       purchase_orders: purchaseOrders,
@@ -560,9 +568,13 @@ replenishmentRouter.get(
       [rootId],
     );
 
+    // Variant A + mini-map — the root AND every node carry a server-computed
+    // `journey`. ONE batched open-children lookup over [root, ...nodes].
+    const [rootWithJourney, ...nodesWithJourney] = await attachJourneys([root, ...nodes]);
+
     res.status(200).json({
-      root,
-      nodes,
+      root: rootWithJourney,
+      nodes: nodesWithJourney,
       waiters: waiters.map((w) => ({
         child_request_id: Number(w.child_request_id),
         waiter_request_id: Number(w.waiter_request_id),
@@ -859,6 +871,9 @@ replenishmentRouter.get(
       assertLocationAccess(principal, centralId);
     }
 
+    // Variant A + mini-map — the SELECT also carries the journey-input columns
+    // (requester/target types + production location + PO link) so each item can
+    // embed the server-computed `journey` with ONE batched extra query.
     const { rows } = await query<{
       id: number;
       product_id: number;
@@ -866,6 +881,16 @@ replenishmentRouter.get(
       product_unit: string;
       requester_location_id: number;
       requester_location_name: string | null;
+      requester_location_type: string | null;
+      target_location_id: number | null;
+      target_location_name: string | null;
+      target_location_type: string | null;
+      production_location_id: number | null;
+      production_location_name: string | null;
+      production_order_id: number | null;
+      purchase_order_id: number | null;
+      route_to_production_manual: boolean;
+      closure_reason: string | null;
       qty_needed: string;
       status: string;
       batch_id: string | null;
@@ -877,6 +902,16 @@ replenishmentRouter.get(
               p.unit AS product_unit,
               r.requester_location_id,
               rl.name AS requester_location_name,
+              rl.type::text AS requester_location_type,
+              r.target_location_id,
+              tl.name AS target_location_name,
+              tl.type::text AS target_location_type,
+              COALESCE(po.location_id, p.workshop_location_id)::int AS production_location_id,
+              pl.name AS production_location_name,
+              r.production_order_id,
+              r.purchase_order_id,
+              r.route_to_production_manual,
+              r.closure_reason,
               r.qty_needed,
               r.status,
               r.batch_id,
@@ -884,6 +919,9 @@ replenishmentRouter.get(
          FROM replenishment_requests r
          JOIN products p ON p.id = r.product_id
          LEFT JOIN locations rl ON rl.id = r.requester_location_id
+         LEFT JOIN locations tl ON tl.id = r.target_location_id
+         LEFT JOIN production_orders po ON po.id = r.production_order_id
+         LEFT JOIN locations pl ON pl.id = COALESCE(po.location_id, p.workshop_location_id)
         WHERE r.status NOT IN ('CLOSED', 'CANCELLED')
           AND (
             r.target_location_id = $1
@@ -897,8 +935,10 @@ replenishmentRouter.get(
       [centralId],
     );
 
+    const withJourneys = await attachJourneys(rows);
+
     res.status(200).json({
-      items: rows.map((r) => ({
+      items: withJourneys.map((r) => ({
         id: Number(r.id),
         product_id: Number(r.product_id),
         product_name: r.product_name,
@@ -909,6 +949,7 @@ replenishmentRouter.get(
         status: r.status,
         batch_id: r.batch_id === null ? null : Number(r.batch_id),
         created_at: r.created_at,
+        journey: r.journey,
       })),
     });
   }),
