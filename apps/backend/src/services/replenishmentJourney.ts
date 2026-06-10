@@ -173,8 +173,14 @@ export function deriveJourney(row: JourneyInput, openChild?: OpenChildInfo | nul
       fulfiller = { location_id: null, name: 'Markaz', type: 'central_warehouse' };
     } else if (production === null) {
       // An internal (sex / sex_storage / central) request with no pinned target
-      // and no production leg — the natural source is the raw warehouse.
-      fulfiller = { location_id: null, name: 'Ombor', type: 'raw_warehouse' };
+      // and no production leg — the natural source is the raw warehouse. When
+      // the requester IS the raw warehouse, its source is the external supplier
+      // (a purchase), so the logical station is named "Ta'minotchi" instead of
+      // the absurd "Ombor -> Ombor".
+      fulfiller =
+        requesterType === 'raw_warehouse'
+          ? { location_id: null, name: "Ta'minotchi", type: 'raw_warehouse' }
+          : { location_id: null, name: 'Ombor', type: 'raw_warehouse' };
     }
     // else: production ships straight to the internal requester — 2 stations.
   }

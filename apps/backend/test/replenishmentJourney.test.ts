@@ -129,6 +129,18 @@ describe('deriveJourney — station paths', () => {
     expect(j.wait_reason).toBe("Ombor tasdig'i kutilmoqda");
   });
 
+  it("raw-warehouse's own request (untargeted): the logical source is the external Ta'minotchi, not Ombor->Ombor", () => {
+    const j = deriveJourney(
+      storeRow({
+        requester_location_id: 11,
+        requester_location_name: 'Основной склад',
+        requester_location_type: 'raw_warehouse',
+      }),
+    );
+    expect(j.stations.map((s) => s.name)).toEqual(["Ta'minotchi", 'Основной склад']);
+    expect(j.stations[0]?.location_id).toBeNull();
+  });
+
   it('sub-request pinned to a producer sex: [Producer sexi skladi, Soʻragan sex] — no duplicate production station', () => {
     const j = deriveJourney({
       status: 'CHECK_STORE_SUPPLIER',
