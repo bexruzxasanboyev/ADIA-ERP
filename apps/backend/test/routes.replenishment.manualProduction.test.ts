@@ -24,7 +24,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { createTestContext, type TestContext } from './helpers/context.js';
 import { getQty, makeLocation, makeProduct, makeUser, setStock } from './helpers/fixtures.js';
-import { advance } from '../src/services/replenishment.js';
+import { advance, runEngineCycle } from '../src/services/replenishment.js';
 import { finishProductionOrder } from '../src/services/productionOrder.js';
 
 let ctx: TestContext;
@@ -339,7 +339,25 @@ describe('manual central -> production: workshop resolution', () => {
       .set('Authorization', `Bearer ${cwm.token}`)
       .send({ location_id: central });
     expect(toProd.status).toBe(200);
-    expect(toProd.body.status).toBe('CREATE_PRODUCTION_ORDER');
+    // F-L owner gate: a workshop-linked product now WAITS at
+    // CHECK_PRODUCTION_INPUT until the отдел manager accepts — the synchronous
+    // hop only remains for products with no resolvable production location.
+    expect(toProd.body.status).toBe('CHECK_PRODUCTION_INPUT');
+
+    // The отдел manager accepts — the accept itself DRIVES the BOM/raw check
+    // (store-requester rows never ride the cron), so the production order
+    // exists the moment the accept returns.
+    const wsManager = await makeUser(ctx.db, {
+      role: 'production_manager',
+      locationId: workshop,
+    });
+    const accept = await request(ctx.app)
+      .post(`/api/replenishment/${reqId}/accept-production`)
+      .set('Authorization', `Bearer ${wsManager.token}`)
+      .send({});
+    expect(accept.status).toBe(200);
+    expect(accept.body.accepted).toBe(true);
+    expect(accept.body.request.status).toBe('CREATE_PRODUCTION_ORDER');
 
     // The production order's location_id must be the linked WORKSHOP, NOT the
     // chain's own production location.

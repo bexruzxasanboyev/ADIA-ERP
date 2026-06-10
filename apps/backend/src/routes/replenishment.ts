@@ -33,6 +33,7 @@ import {
   acceptByCentral,
   acceptByFulfiller,
   acceptInternal,
+  acceptProduction,
   acceptShipment,
   advance,
   cancelRequest,
@@ -46,8 +47,10 @@ import {
   receiveFromProduction,
   receiveShipment,
   rejectInternal,
+  rejectProduction,
   rejectShipment,
   REPLENISHMENT_COLUMNS,
+  resolveProductionLocationId,
   returnShipment,
   sendToProduction,
   shipToStore,
@@ -138,6 +141,7 @@ replenishmentRouter.get(
         production_location_name: string | null;
         requester_location_type: string | null;
         target_location_type: string | null;
+        shipped_qty: number | null;
         pipeline_stage: PipelineStage;
       }
     >(
@@ -152,6 +156,12 @@ replenishmentRouter.get(
       // assigned workshop. production_location_name resolves from the SAME source
       // (pl now joins the COALESCE, not just po.location_id). ::int coerces the
       // BIGINT like its waiters_count neighbour.
+      //
+      // F-L — shipped_qty is the PINNED actually-shipped qty: the linked shipment
+      // movement's qty (`sm.qty` via shipment_movement_id), NULL until a shipment
+      // exists. Cards must show what was REALLY shipped (a partial fulfil ships 4 of
+      // 10) instead of qty_needed. ::float8 yields a JS number (fractional-safe);
+      // the LEFT JOIN gives NULL pre-ship.
       `SELECT ${qualifiedCols},
               p.name AS product_name,
               p.unit AS product_unit,
@@ -161,6 +171,7 @@ replenishmentRouter.get(
               pl.name AS production_location_name,
               rl.type::text AS requester_location_type,
               tl.type::text AS target_location_type,
+              sm.qty::float8 AS shipped_qty,
               ${PIPELINE_STAGE_SQL} AS pipeline_stage
        FROM replenishment_requests r
        JOIN products p ON p.id = r.product_id
@@ -168,6 +179,7 @@ replenishmentRouter.get(
        LEFT JOIN locations tl ON tl.id = r.target_location_id
        LEFT JOIN production_orders po ON po.id = r.production_order_id
        LEFT JOIN locations pl ON pl.id = COALESCE(po.location_id, p.workshop_location_id)
+       LEFT JOIN stock_movements sm ON sm.id = r.shipment_movement_id
        ${where}
        ORDER BY r.id DESC`,
       params,
@@ -212,6 +224,7 @@ replenishmentRouter.get(
         production_location_name: string | null;
         requester_location_type: string | null;
         target_location_type: string | null;
+        shipped_qty: number | null;
         pipeline_stage: PipelineStage;
       }
     >(
@@ -222,6 +235,8 @@ replenishmentRouter.get(
       // `COALESCE(po.location_id, p.workshop_location_id)` (see list). The field
       // also feeds the RBAC guard below (requestTouchesLocation) so the workshop
       // manager may READ a production-bound row it is assigned to.
+      //
+      // F-L — shipped_qty: the linked shipment movement's qty (see list endpoint).
       `SELECT ${qualifiedCols},
               p.name AS product_name,
               p.unit AS product_unit,
@@ -231,6 +246,7 @@ replenishmentRouter.get(
               pl.name AS production_location_name,
               rl.type::text AS requester_location_type,
               tl.type::text AS target_location_type,
+              sm.qty::float8 AS shipped_qty,
               ${PIPELINE_STAGE_SQL} AS pipeline_stage
        FROM replenishment_requests r
        JOIN products p ON p.id = r.product_id
@@ -238,6 +254,7 @@ replenishmentRouter.get(
        LEFT JOIN locations tl ON tl.id = r.target_location_id
        LEFT JOIN production_orders po ON po.id = r.production_order_id
        LEFT JOIN locations pl ON pl.id = COALESCE(po.location_id, p.workshop_location_id)
+       LEFT JOIN stock_movements sm ON sm.id = r.shipment_movement_id
        WHERE r.id = $1`,
       [id],
     );
@@ -349,9 +366,11 @@ replenishmentRouter.get(
         production_location_name: string | null;
         requester_location_type: string | null;
         target_location_type: string | null;
+        shipped_qty: number | null;
         pipeline_stage: PipelineStage;
       }
     >(
+      // F-L — shipped_qty: the linked shipment movement's qty (see list endpoint).
       `SELECT ${qualifiedCols},
               p.name AS product_name,
               p.unit AS product_unit,
@@ -361,6 +380,7 @@ replenishmentRouter.get(
               pl.name AS production_location_name,
               rl.type::text AS requester_location_type,
               tl.type::text AS target_location_type,
+              sm.qty::float8 AS shipped_qty,
               ${PIPELINE_STAGE_SQL} AS pipeline_stage
          FROM replenishment_requests r
          JOIN products p ON p.id = r.product_id
@@ -368,6 +388,7 @@ replenishmentRouter.get(
          LEFT JOIN locations tl ON tl.id = r.target_location_id
          LEFT JOIN production_orders po ON po.id = r.production_order_id
          LEFT JOIN locations pl ON pl.id = COALESCE(po.location_id, p.workshop_location_id)
+         LEFT JOIN stock_movements sm ON sm.id = r.shipment_movement_id
         WHERE r.id = $1`,
       [rootId],
     );
@@ -397,12 +418,14 @@ replenishmentRouter.get(
         production_location_name: string | null;
         requester_location_type: string | null;
         target_location_type: string | null;
+        shipped_qty: number | null;
         pipeline_stage: PipelineStage;
         waiters_count: number;
       }
     >(
       // cross-dept-flow §4/§6 — production_location_id (+ name) on every node for
       // display parity with the list/single endpoints.
+      // F-L — shipped_qty on every node too (the linked shipment movement's qty).
       `WITH RECURSIVE descendants AS (
          SELECT id FROM replenishment_requests WHERE parent_request_id = $1
          UNION ALL
@@ -419,6 +442,7 @@ replenishmentRouter.get(
               pl.name AS production_location_name,
               rl.type::text AS requester_location_type,
               tl.type::text AS target_location_type,
+              sm.qty::float8 AS shipped_qty,
               ${PIPELINE_STAGE_SQL} AS pipeline_stage,
               (SELECT count(*) FROM request_waiters w WHERE w.child_request_id = r.id)::int
                 AS waiters_count
@@ -429,6 +453,7 @@ replenishmentRouter.get(
          LEFT JOIN locations tl ON tl.id = r.target_location_id
          LEFT JOIN production_orders po ON po.id = r.production_order_id
          LEFT JOIN locations pl ON pl.id = COALESCE(po.location_id, p.workshop_location_id)
+         LEFT JOIN stock_movements sm ON sm.id = r.shipment_movement_id
         ORDER BY r.depth ASC, r.id ASC`,
       [rootId],
     );
@@ -1893,6 +1918,103 @@ replenishmentRouter.post(
     await requireLocationOperator(principal, fulfillerLocationId);
 
     const updated = await cancelRequestByFulfiller(id, principal.userId, reason);
+    res.status(200).json({ request: updated });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// F-L / cross-dept-flow — production accept / reject (gate class d)
+// ---------------------------------------------------------------------------
+// A request the central manager routed to production is parked at
+// CHECK_PRODUCTION_INPUT with its PRODUCTION assigned to an отдел
+// (`COALESCE(po.location_id, p.workshop_location_id)`). The `runEngineCycle` gate
+// (class d) holds it there until the отдел manager accepts; these two routes ARE
+// that accept / reject. RBAC: the acting operator must manage the PRODUCTION
+// location (the отдел). PM is 403 (write guard + requireLocationOperator); an
+// operator of a foreign отдел is 403; an unknown id is 404; a wrong status is 409.
+
+// POST /api/replenishment/:id/accept-production
+//   body: {}  (no fields)
+//
+// The отдел manager accepts -> stamps fulfiller_accepted_at (NO status change; the
+// stamp itself unblocks the cron, which runs advanceCheckProductionInput on its
+// next pass). Idempotent: a re-call returns { accepted:false, reason:'already
+// accepted' }. Response: { request, accepted }.
+replenishmentRouter.post(
+  '/:id/accept-production',
+  authenticate,
+  authorizeWrite(
+    'raw_warehouse_manager',
+    'production_manager',
+    'supply_manager',
+    'central_warehouse_manager',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+
+    // RBAC: resolve the request + its production location (the отдел). 404 for an
+    // unknown id; 422 when the request has no resolvable production location (no
+    // production order and the product has no workshop — there is no отдел to own
+    // it). The operator must manage that отдел — PM/foreign are 403 inside
+    // requireLocationOperator.
+    const resolved = await resolveProductionLocationId(id);
+    if (resolved === null) {
+      throw AppError.notFound('Replenishment request not found.');
+    }
+    if (resolved.productionLocationId === null) {
+      throw AppError.validation(
+        'This request has no production location (no production order and the product has no workshop).',
+      );
+    }
+    await requireLocationOperator(principal, resolved.productionLocationId);
+
+    const result = await acceptProduction({ requestId: id, actorUserId: principal.userId });
+    res.status(200).json({
+      request: result.request,
+      accepted: result.accepted,
+      reason: result.reason,
+    });
+  }),
+);
+
+// POST /api/replenishment/:id/reject-production
+//   body: { reason?: string }
+//
+// The отдел manager refuses -> CANCELLED (closure_reason='cancelled_by_fulfiller');
+// post-commit chainWaiters fires (as on every terminal). Response: { request }.
+replenishmentRouter.post(
+  '/:id/reject-production',
+  authenticate,
+  authorizeWrite(
+    'raw_warehouse_manager',
+    'production_manager',
+    'supply_manager',
+    'central_warehouse_manager',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+    const body = (req.body as Record<string, unknown> | null) ?? {};
+    const reason =
+      typeof body.reason === 'string' && body.reason.trim() !== ''
+        ? body.reason.trim()
+        : null;
+
+    // RBAC mirrors accept-production: the operator must manage the отдел. Same
+    // 404 / 422 / 403 split.
+    const resolved = await resolveProductionLocationId(id);
+    if (resolved === null) {
+      throw AppError.notFound('Replenishment request not found.');
+    }
+    if (resolved.productionLocationId === null) {
+      throw AppError.validation(
+        'This request has no production location (no production order and the product has no workshop).',
+      );
+    }
+    await requireLocationOperator(principal, resolved.productionLocationId);
+
+    const updated = await rejectProduction({ requestId: id, actorUserId: principal.userId, reason });
     res.status(200).json({ request: updated });
   }),
 );

@@ -2588,6 +2588,166 @@ export async function rejectInternal(opts: {
 }
 
 // -----------------------------------------------------------------------------
+// F-L / cross-dept-flow — PRODUCTION accept-gate (gate class d)
+// -----------------------------------------------------------------------------
+// When the central manager routes a store shortfall to production, the request
+// is parked at CHECK_PRODUCTION_INPUT with its PRODUCTION assigned to the отдел
+// (`COALESCE(po.location_id, p.workshop_location_id)`). Owner's round-2 finding:
+// the cron used to auto-run `advanceCheckProductionInput` on the NEXT pass —
+// consuming зг, transferring raw, creating the production order / raw POs — WITHOUT
+// the отдел manager ever accepting. The required flow: the row WAITS at the отдел
+// (Kutuvda) until the отдел manager ACCEPTS; only then does the engine proceed
+// (the existing `advanceCheckProductionInput` semantics, driven by the next cron
+// pass). The `runEngineCycle` gate (class d) implements the WAIT; this is the
+// ACCEPT that unblocks it.
+
+/**
+ * Resolve the PRODUCTION location of a request — the SAME source the cron gate
+ * and the F-J workshop-visibility joins use: the linked production order's
+ * `location_id` when one exists, else the product's `workshop_location_id`. NULL
+ * when neither resolves (no production order and the product has no отдел). The
+ * route's RBAC reads this so it can require the отдел's operator.
+ *
+ * tx-scoped so `acceptProduction` resolves it under the same FOR UPDATE lock.
+ */
+async function resolveProductionLocationIdTx(
+  tx: TxClient,
+  request: ReplenishmentRow,
+): Promise<number | null> {
+  if (request.production_order_id !== null) {
+    const { rows } = await tx.query<{ location_id: number }>(
+      'SELECT location_id FROM production_orders WHERE id = $1',
+      [request.production_order_id],
+    );
+    if (rows[0] !== undefined) {
+      return Number(rows[0].location_id);
+    }
+  }
+  // No production order yet — fall back to the product's assigned отдел.
+  return resolveWorkshopLocationId(tx, request.product_id);
+}
+
+/** Non-tx convenience for the route's RBAC pre-check (own connection). */
+export async function resolveProductionLocationId(requestId: number): Promise<{
+  request: ReplenishmentRow;
+  productionLocationId: number | null;
+} | null> {
+  return withTransaction(async (tx) => {
+    const { rows } = await tx.query<ReplenishmentRow>(
+      `SELECT ${REPLENISHMENT_COLUMNS} FROM replenishment_requests WHERE id = $1`,
+      [requestId],
+    );
+    const request = rows[0];
+    if (request === undefined) {
+      return null;
+    }
+    const productionLocationId = await resolveProductionLocationIdTx(tx, request);
+    return { request, productionLocationId };
+  });
+}
+
+/**
+ * PRODUCTION ACCEPT (F-L / gate class d) — the отдел manager accepts a request
+ * that the central manager routed to production and that is now parked at
+ * CHECK_PRODUCTION_INPUT. This is a PURE STAMP: it sets `fulfiller_accepted_at/by`
+ * (first-accept-wins, via `stampFulfillerAccept`) and changes NO status. The
+ * stamp itself is the unblock — the `runEngineCycle` gate (class d) skips a
+ * CHECK_PRODUCTION_INPUT row WHILE `fulfiller_accepted_at IS NULL`; once stamped,
+ * the very next cron pass runs `advanceCheckProductionInput` exactly as before
+ * (зг buffer first, transfers, production order, raw POs as needed). No transition
+ * row is written here precisely because there is no status change — the accept is
+ * recorded by the audit row + the `fulfiller_accepted_*` stamp the Kanban reads.
+ *
+ * Guards (FOR UPDATE): `status='CHECK_PRODUCTION_INPUT'` AND a production location
+ * resolves (otherwise the gate could never have held it). Idempotent: a re-call on
+ * an already-stamped row updates 0 rows and returns `{ accepted:false,
+ * reason:'already accepted' }`; a terminal / wrong-status row returns a friendly
+ * no-op so a double-tap is harmless. The row is re-read so the response carries the
+ * stamp.
+ */
+export async function acceptProduction(opts: {
+  requestId: number;
+  actorUserId: number | null;
+}): Promise<{ request: ReplenishmentRow; accepted: boolean; reason: string }> {
+  return withTransaction(async (tx) => {
+    const order = await lockRequest(tx, opts.requestId);
+    if (TERMINAL_STATUSES.includes(order.status)) {
+      return { request: order, accepted: false, reason: `request already ${order.status}` };
+    }
+    // Gate scope: only a CHECK_PRODUCTION_INPUT row can be production-accepted
+    // (that is the only state the class-d cron gate holds). Any other status is a
+    // wrong-status 409 at the route — surfaced here as INVALID_TRANSITION.
+    if (order.status !== 'CHECK_PRODUCTION_INPUT') {
+      throw new AppError(
+        'INVALID_TRANSITION',
+        `accept-production is only valid at CHECK_PRODUCTION_INPUT; request is ${order.status}.`,
+      );
+    }
+    const productionLocationId = await resolveProductionLocationIdTx(tx, order);
+    if (productionLocationId === null) {
+      throw new AppError(
+        'INVALID_TRANSITION',
+        'accept-production requires a resolvable production location (production order or product workshop).',
+      );
+    }
+    // Idempotent no-op: already accepted (the gate is already open). The re-read
+    // below still returns the stamped row so the caller sees who/when.
+    if (order.fulfiller_accepted_at !== null) {
+      return { request: order, accepted: false, reason: 'already accepted' };
+    }
+
+    await writeAudit(tx, {
+      actorUserId: opts.actorUserId,
+      action: 'replenishment.accept_production',
+      entity: 'replenishment_requests',
+      entityId: opts.requestId,
+      payload: {
+        production_location_id: productionLocationId,
+        from_status: order.status,
+      },
+    });
+
+    // The STAMP is the unblock…
+    await stampFulfillerAccept(tx, opts.requestId, opts.actorUserId);
+    let updated = await lockRequest(tx, opts.requestId);
+    // …and the accept itself DRIVES the first hop. STORE-requester rows are
+    // excluded from the cron loop entirely (the F-C central gate), so waiting
+    // for "the next pass" would wait forever for the owner's main scenario
+    // (store shortfall routed to production). Running the BOM/raw check here —
+    // in the SAME transaction as the stamp — also gives the отдел manager
+    // instant feedback: qabul → зг tekshiruv → zayafka/xarid darhol.
+    const advanced = await advanceCheckProductionInput(tx, updated, opts.actorUserId);
+    updated = advanced.request;
+    return {
+      request: updated,
+      accepted: true,
+      reason: `production accepted — ${advanced.reason}`,
+    };
+  });
+}
+
+/**
+ * PRODUCTION REJECT (F-L / gate class d) — the отдел manager refuses a request
+ * routed to production. Cancels it with `closure_reason='cancelled_by_fulfiller'`
+ * (the отдел is the fulfilling side), the reason recorded on the transition. Thin
+ * wrapper over `cancelRequestByFulfiller` — which is FOR-UPDATE, idempotent on an
+ * already-terminal row, and ALREADY fires the post-commit `fireWaiterChain` on
+ * every terminal — so a double-tap is a harmless no-op and any waiting roots are
+ * notified exactly as on any other fulfiller cancel.
+ */
+export async function rejectProduction(opts: {
+  requestId: number;
+  actorUserId: number | null;
+  reason?: string | null;
+}): Promise<ReplenishmentRow> {
+  const reason =
+    typeof opts.reason === 'string' && opts.reason.trim() !== ''
+      ? opts.reason.trim()
+      : 'production reject';
+  return cancelRequestByFulfiller(opts.requestId, opts.actorUserId, reason);
+}
+
+// -----------------------------------------------------------------------------
 // F-D / cross-dept-flow §8 — waiter chaining when a sub-request goes terminal
 // -----------------------------------------------------------------------------
 
@@ -2834,6 +2994,24 @@ async function sendToProductionTx(
         'routed to production (manual)',
         opts.actorUserId,
       );
+    }
+
+    // F-L owner gate — when the product has a producing отдел, the routed
+    // request must WAIT here (Kutuvda at the отдел) until that отдел's manager
+    // presses «Qabul qilish» (accept-production stamps fulfiller_accepted_at;
+    // the next cron pass then runs the BOM/raw check). Running the check
+    // synchronously here made the зг consumption + raw POs fire BEFORE the
+    // отдел ever saw the job — the exact bug the owner hit on round-2 E2E
+    // (store shortfall #35074). Products with no resolvable production
+    // location (no workshop link, no order) keep the legacy synchronous hop —
+    // there is nobody to ask.
+    const gateLocationId = await resolveProductionLocationIdTx(tx, current);
+    if (gateLocationId !== null && current.fulfiller_accepted_at === null) {
+      return {
+        request: current,
+        advanced: false,
+        reason: 'waiting for production accept (otdel gate)',
+      };
     }
 
     // Run the BOM/raw check -> creates the production order (or a purchase order
@@ -3507,11 +3685,29 @@ export async function runEngineCycle(opts: { actorUserId?: number | null } = {})
   // FALSE)` keeps the predicate two-valued — without it `NOT (NEW AND (NULL OR
   // …))` evaluates to NULL, which a WHERE treats as FALSE and would wrongly DROP
   // every untargeted NEW internal row from the auto-advance loop.
+  //
+  // F-L / gate class (d) — the PRODUCTION accept-gate. A request parked at
+  // CHECK_PRODUCTION_INPUT whose PRODUCTION resolves to an отдел
+  // (`COALESCE(po.location_id, p.workshop_location_id)` — the production order's
+  // location, else the product's `workshop_location_id`) must NOT be auto-advanced
+  // by the cron while the отдел has not yet accepted (`fulfiller_accepted_at IS
+  // NULL`). Without this the next cron pass runs `advanceCheckProductionInput`
+  // (зг consume, raw transfer, PO / zayafka) BEFORE the отдел manager accepts —
+  // the owner's round-2 bug. `acceptProduction` stamps `fulfiller_accepted_at`,
+  // which clears this skip so the very next pass advances exactly as today. The
+  // fulfill-shortfall fresh row's stamp is NULL (only the ORIGINAL is stamped at
+  // fulfil), so the discriminator never re-gates an already-accepted request. Same
+  // `COALESCE(…, FALSE)` three-valued guard: `po.location_id`/`p.workshop_location_id`
+  // are NULL for a row with no production order and a product with no отдел, so the
+  // bare `IS NOT NULL` is already two-valued — the wrapping COALESCE keeps the
+  // whole `NOT (… AND …)` predicate FALSE-safe for consistency with class (a)/(b).
   const { rows: open } = await query<{ id: number }>(
     `SELECT r.id
        FROM replenishment_requests r
        JOIN locations rl ON rl.id = r.requester_location_id
+       JOIN products p ON p.id = r.product_id
        LEFT JOIN locations tl ON tl.id = r.target_location_id
+       LEFT JOIN production_orders po ON po.id = r.production_order_id
       WHERE r.status NOT IN ('CLOSED','CANCELLED')
         AND rl.type <> 'store'::location_type
         AND NOT (
@@ -3520,6 +3716,11 @@ export async function runEngineCycle(opts: { actorUserId?: number | null } = {})
             COALESCE(tl.type IN ('sex_storage'::location_type, 'raw_warehouse'::location_type), FALSE)
             OR rl.type = 'sex_storage'::location_type
           )
+        )
+        AND NOT (
+          r.status = 'CHECK_PRODUCTION_INPUT'
+          AND COALESCE(po.location_id, p.workshop_location_id) IS NOT NULL
+          AND r.fulfiller_accepted_at IS NULL
         )`,
   );
   let advanced = 0;
