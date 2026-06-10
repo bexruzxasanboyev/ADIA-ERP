@@ -160,6 +160,51 @@ describe('GET /api/stock — query + RBAC branches', () => {
       (res.body as { location_id: number }[]).every((r) => Number(r.location_id) === wh),
     ).toBe(true);
   });
+
+  // F-J — catalog=finished: the STORE products view shows the WHOLE finished
+  // catalogue, with synthetic qty/min/max = 0 rows for products that have no
+  // stock row at the location yet (the НАПОЛЕОН-(ЦЕЛЫЙ)-invisible-at-Кукча bug).
+  it('catalog=finished returns finished products without a stock row (qty 0)', async () => {
+    const store = await makeLocation(ctx.db, { type: 'store' });
+    const sm = await makeUser(ctx.db, { role: 'store_manager', locationId: store });
+    const stocked = await makeProduct(ctx.db, { type: 'finished' });
+    const unstocked = await makeProduct(ctx.db, { type: 'finished' });
+    const raw = await makeProduct(ctx.db, { type: 'raw' });
+    await setStock(ctx.db, {
+      locationId: store, productId: stocked, qty: 5, minLevel: 1, maxLevel: 9,
+    });
+
+    const res = await request(ctx.app)
+      .get(`/api/stock?location_id=${store}&catalog=finished`)
+      .set('Authorization', `Bearer ${sm.token}`);
+    expect(res.status).toBe(200);
+    const rows = res.body as {
+      product_id: number; qty: string | number;
+      min_level: string | number; max_level: string | number;
+      updated_at: string | null;
+    }[];
+    const stockedRow = rows.find((r) => Number(r.product_id) === stocked);
+    const unstockedRow = rows.find((r) => Number(r.product_id) === unstocked);
+    // The real row keeps its numbers; the catalog-only row synthesises zeros.
+    expect(Number(stockedRow?.qty)).toBe(5);
+    expect(Number(stockedRow?.max_level)).toBe(9);
+    expect(unstockedRow).toBeDefined();
+    expect(Number(unstockedRow?.qty)).toBe(0);
+    expect(Number(unstockedRow?.min_level)).toBe(0);
+    expect(Number(unstockedRow?.max_level)).toBe(0);
+    expect(unstockedRow?.updated_at).toBeNull();
+    // Non-finished products never appear in the catalogue view.
+    expect(rows.some((r) => Number(r.product_id) === raw)).toBe(false);
+  });
+
+  it('catalog=finished without location_id is rejected (422)', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const res = await request(ctx.app)
+      .get('/api/stock?catalog=finished')
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(422);
+    expect(res.body.error?.code).toBe('VALIDATION_ERROR');
+  });
 });
 
 // ---------------------------------------------------------------------------

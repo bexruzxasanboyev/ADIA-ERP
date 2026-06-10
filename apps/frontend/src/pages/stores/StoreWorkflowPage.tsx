@@ -475,11 +475,16 @@ export function StoreWorkflowPage() {
 
   const products = useApiQuery<Product[]>('/api/products');
 
-  // Stock: a single store is fetched precisely; several stores fetch the
-  // (RBAC-scoped) full list and filter client-side to the selection.
+  // Stock: a single store is fetched precisely — WITH the full finished
+  // catalogue (F-J, owner: "nega НАПОЛЕОН (ЦЕЛЫЙ) chiqmayapti?"): products
+  // with no stock row at this store come back as synthetic qty/min/max = 0
+  // rows, so they are searchable and requestable; the first min/max edit
+  // upserts the real row. Several stores keep the legacy rows-only list.
   const stockUrl = useMemo(() => {
     if (!hasSelection) return null;
-    if (singleStoreId !== null) return `/api/stock?location_id=${singleStoreId}`;
+    if (singleStoreId !== null) {
+      return `/api/stock?location_id=${singleStoreId}&catalog=finished`;
+    }
     return '/api/stock';
   }, [hasSelection, singleStoreId]);
   const stock = useApiQuery<StockRow[]>(stockUrl);

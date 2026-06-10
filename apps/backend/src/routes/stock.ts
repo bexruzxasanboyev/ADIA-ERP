@@ -67,7 +67,8 @@ type StockRow = {
   min_level: number;
   max_level: number;
   minmax_mode: string;
-  updated_at: Date;
+  /** NULL on a `catalog=finished` synthetic row (no stock row exists yet). */
+  updated_at: Date | null;
   product_name: string;
   product_unit: string;
 };
@@ -98,6 +99,22 @@ stockRouter.get(
     const locationTypeParam = parseOptionalLocationType(
       typeof req.query.location_type === 'string' ? req.query.location_type : undefined,
     );
+    // F-J (owner 2026-06-10): `catalog=finished` — the STORE products view must
+    // show the WHOLE finished catalogue, not just the (location, product) pairs
+    // that happen to have a stock row (Poster only seeds rows for storages with
+    // leftovers, so e.g. НАПОЛЕОН (ЦЕЛЫЙ) was invisible at Кукча and could not
+    // be requested). Synthetic rows carry qty/min/max = 0 and updated_at NULL;
+    // PATCH /minmax already upserts the real row on first edit.
+    const catalogParam =
+      typeof req.query.catalog === 'string' ? req.query.catalog : undefined;
+    if (catalogParam !== undefined && catalogParam !== 'finished') {
+      throw AppError.validation('Query "catalog" only supports the value "finished".');
+    }
+    if (catalogParam !== undefined && locationTypeParam !== undefined) {
+      throw AppError.validation(
+        'Use either "catalog" (with location_id) or "location_type", not both.',
+      );
+    }
 
     // F4.6 — `location_type` filter aggregates every location of the given
     // type (raw_warehouse / production / supply / central_warehouse / store).
@@ -146,6 +163,32 @@ stockRouter.get(
         throw AppError.forbidden('You may only view stock for your own location.');
       }
       effectiveLocationId = principal.locationId;
+    }
+
+    // catalog=finished — full finished catalogue LEFT JOINed with the one
+    // location's stock. Requires a concrete location (a chain-wide PM must
+    // pass location_id explicitly; a scoped manager is already locked above).
+    if (catalogParam === 'finished') {
+      if (effectiveLocationId === undefined) {
+        throw AppError.validation('Query "catalog=finished" requires "location_id".');
+      }
+      const { rows } = await query<StockRow>(
+        `SELECT $1::bigint AS location_id, p.id AS product_id,
+                COALESCE(s.qty, 0)        AS qty,
+                COALESCE(s.min_level, 0)  AS min_level,
+                COALESCE(s.max_level, 0)  AS max_level,
+                COALESCE(s.minmax_mode, 'manual') AS minmax_mode,
+                s.updated_at,
+                p.name AS product_name, p.unit AS product_unit
+           FROM products p
+           LEFT JOIN stock s
+                  ON s.product_id = p.id AND s.location_id = $1
+          WHERE p.type = 'finished'::product_type
+          ORDER BY p.name`,
+        [effectiveLocationId],
+      );
+      res.status(200).json(rows);
+      return;
     }
 
     // Each row embeds product_name/product_unit via a JOIN (no N+1).
