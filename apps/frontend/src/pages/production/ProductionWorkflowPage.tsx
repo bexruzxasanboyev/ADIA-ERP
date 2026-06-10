@@ -2,9 +2,9 @@ import { useState } from 'react';
 import { Tabs } from '@/components/ui/tabs';
 import { PageHeader } from '@/components/PageState';
 import { useAuth } from '@/hooks/useAuth';
-import { ProductsPage } from '@/pages/products/ProductsPage';
 import { ProductionDashboardTab } from './ProductionDashboardTab';
 import { ProductionRequestsTab } from './ProductionRequestsTab';
+import { YarimTayyorTab } from './YarimTayyorTab';
 
 /**
  * Ishlab chiqarish bo'limi ish joyi — a clean, production-отдел-scoped unified
@@ -21,9 +21,9 @@ import { ProductionRequestsTab } from './ProductionRequestsTab';
  *                          category donut + request dynamics. See
  *                          ProductionDashboardTab. Forked from CentralDashboardTab.
  *   2. Yarim tayyor      — the отдел's зг (semi-finished) catalogue WITH on-hand
- *                          qoldiq. REUSES the existing /yarim-tayyor view verbatim
- *                          (ProductsPage with forcedType="semi" +
- *                          dataEndpoint="/api/products/yarim-tayyor" + showStock).
+ *                          qoldiq AND a per-card "To'ldirish" self-fill (opens a
+ *                          zagatovka). A dedicated production-scoped grid
+ *                          (YarimTayyorTab) fed by /api/products/yarim-tayyor.
  *   3. So'rovlar         — mirrors central's So'rovlar LOOK (5-stage pipeline +
  *                          date-range + charts), read-only, fed by the отдел's
  *                          own /api/replenishment. See ProductionRequestsTab.
@@ -73,17 +73,11 @@ export function ProductionWorkflowPage() {
         <ProductionDashboardTab productionId={productionId} />
       )}
 
-      {/* TAB: Yarim tayyor — REUSE the existing /yarim-tayyor view verbatim. The
-          ProductsPage scopes the зг list server-side (auto-scoped to the отдел
-          for a production_manager; PM sees all type='semi'). */}
+      {/* TAB: Yarim tayyor — the отдел's зг grid WITH on-hand qoldiq + a per-card
+          "To'ldirish" self-fill (opens a zagatovka). Server-scoped to the отдел
+          for a production_manager; PM sees all type='semi' (read-only, no fill). */}
       {pageTab === 'semi' && (
-        <ProductsPage
-          forcedType="semi"
-          dataEndpoint="/api/products/yarim-tayyor"
-          showStock
-          title="Yarim tayyor mahsulotlar"
-          description="Bo‘limingizning yarim tayyor mahsulotlari (зг) va ularning qoldig‘i."
-        />
+        <YarimTayyorTab productionId={productionId} canFill={!isPm} />
       )}
 
       {/* TAB: So'rovlar — central-style pipeline LOOK, read-only (owner edits later). */}

@@ -83,8 +83,6 @@ import {
 } from './StoreStockDashboard';
 import { StoreSalesAnalytics } from './StoreSalesAnalytics';
 import { StoreWorkspaceSkeleton } from './StoreWorkspaceSkeleton';
-import { StoreRequestsStatusDonut } from './StoreRequestsStatusDonut';
-import { StoreRequestsTrendChart } from './StoreRequestsTrendChart';
 import {
   batchSuccessMessage,
   submitStoreRequestBatch,
@@ -793,12 +791,19 @@ export function StoreWorkflowPage() {
       const isTerminal = TERMINAL_REPLENISHMENT_STATUSES.includes(row.status);
 
       if (isRequester && !isTerminal) sentRows.push(row);
-      // "Qabul qiluvchi" = shipped, awaiting the store's receive. TWO ship
-      // shapes exist: the legacy/manual hop parks at SHIP_TO_REQUESTER, while
-      // the central partial-fulfill path (0058) ships as CLOSED with
+      // "Qabul qiluvchi" = shipped-RESERVED, awaiting the store's receive. TWO
+      // ship shapes exist: the legacy/manual hop parks at SHIP_TO_REQUESTER,
+      // while the central partial-fulfill path (0058) ships as CLOSED with
       // closure_reason NULL (pipeline "yuborilgan" — reserved, store has NOT
       // accepted). The owner shipped 5 kg via fulfill and the store saw
-      // "Qabul qiluvchi · 0" — this branch was the gap.
+      // "Qabul qiluvchi · 0" — that gap is now closed.
+      //
+      // But `CLOSED + closure_reason==null` ALSO matches LEGACY completed orders
+      // that simply closed without recording a closure_reason (they were already
+      // received). The discriminator is `fulfiller_accepted_at`: the central's
+      // reserved-ship stamps it (shipped, store not yet accepted) and a finished
+      // order leaves it null. Require it so only genuinely-awaiting rows surface
+      // (e.g. #31994), not a pile of historical closed orders.
       if (
         (isTarget || isRequester) &&
         row.status === 'SHIP_TO_REQUESTER'
@@ -807,8 +812,10 @@ export function StoreWorkflowPage() {
       } else if (
         isRequester &&
         row.status === 'CLOSED' &&
-        // closure_reason lives on the FlowRequest superset (0058 fields).
-        (row as FlowRequest).closure_reason == null
+        // closure_reason + fulfiller_accepted_at live on the FlowRequest
+        // superset (0058 / F-G fields).
+        (row as FlowRequest).closure_reason == null &&
+        (row as FlowRequest).fulfiller_accepted_at != null
       ) {
         incomingRows.push(row);
       }
@@ -860,23 +867,6 @@ export function StoreWorkflowPage() {
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [movements.data, selectedStoreSet, hasSelection, bounds]);
-
-  // Charts dataset (owner): every request THIS store originated within the
-  // active range, regardless of terminal status — so the donut can count
-  // CLOSED ("Qabul qilingan") and CANCELLED ("Qabul qilinmagan") too. The
-  // `sent` set above intentionally drops terminal rows (it's the open-work
-  // list), so the charts need this broader, status-agnostic set. Same store
-  // scope + same `bounds` as the list, so the charts match the filter.
-  const chartRequests = useMemo<ReplenishmentRequest[]>(() => {
-    const rows = replen.data ?? [];
-    if (!hasSelection) return [];
-    return rows.filter(
-      (row) =>
-        selectedStoreSet.has(row.requester_location_id) &&
-        inRange(row.created_at),
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [replen.data, selectedStoreSet, hasSelection, bounds]);
 
   // Board rows — EVERY request touching the selected store(s) in the active
   // date range (requester OR target), split into 📥 Kelgan (target ∈ stores) and
@@ -1164,18 +1154,8 @@ export function StoreWorkflowPage() {
           {/* TAB: So'rovlar (So'rov / Qabul qiluvchi / Tranzaksiyalar). */}
           {pageTab === 'requests' && (
             <div className="space-y-6">
-              {/* Charts row (owner): donut by status + per-day trend, both
-                  derived from `chartRequests` so they follow the SAME date
-                  filter as the list below. Side by side on lg+, stacked on
-                  small screens. Sits above the sub-tab strip so it reads as
-                  the So'rovlar section header. */}
-              {!replen.isLoading && !replen.error && (
-                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                  <StoreRequestsStatusDonut requests={chartRequests} />
-                  <StoreRequestsTrendChart requests={chartRequests} />
-                </div>
-              )}
-
+              {/* (Owner 2026-06-10: request charts live on the Dashboard tab
+                  only — the So'rovlar view holds nothing but requests.) */}
               <Card>
               <header className="flex flex-col gap-3 border-b border-border/60 p-5 sm:flex-row sm:items-center sm:justify-between">
                 <div className="space-y-0.5">

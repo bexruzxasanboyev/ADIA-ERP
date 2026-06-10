@@ -48,13 +48,14 @@ import type {
   ReplenishmentRequest,
   StockMovement,
 } from '@/lib/types';
-import { StoreRequestsStatusDonut } from '@/pages/stores/StoreRequestsStatusDonut';
-import { StoreRequestsTrendChart } from '@/pages/stores/StoreRequestsTrendChart';
 import { Button } from '@/components/ui/button';
 import { Sparkles } from 'lucide-react';
 import { BoardWorkspace } from '@/pages/replenishment/board/BoardWorkspace';
 import { RequestDetailModal } from '@/pages/replenishment/RequestDetailModal';
-import { splitBoards } from '@/pages/replenishment/board/boardFilters';
+import {
+  splitBoards,
+  type ProductionAssignment,
+} from '@/pages/replenishment/board/boardFilters';
 import type { FlowRequest } from '@/lib/replenishmentFlow';
 import { ManbaRejaModal } from './ManbaRejaModal';
 
@@ -78,9 +79,8 @@ import { ManbaRejaModal } from './ManbaRejaModal';
  *
  * Reuse: the pipeline bucketing (`requestsInStage`, `pipelineStageOf` in
  * lib/pipeline.ts) is location-id-parameterised — NOT central-specific — so it
- * buckets the отдел's requests verbatim. The generic chart widgets
- * (`StoreRequestsStatusDonut`, `StoreRequestsTrendChart`) are the same ones the
- * store + central pages use.
+ * buckets the отдел's requests verbatim. (Owner 2026-06-10: request charts
+ * live on the Dashboard tab only — this view holds nothing but requests.)
  */
 
 type PipelineTab =
@@ -173,6 +173,23 @@ export function ProductionRequestsTab({
     return ids;
   }, [productionId, locations]);
 
+  // Production-assignment matcher (phase F-J §1): a production-bound row keeps
+  // its target on the central warehouse, but the отдел that will MAKE it must
+  // see it on "Kelgan". We merge any row whose `production_location_id` ∈ scope
+  // (PINNED backend field) — with a null-safe fallback on the embedded отдел
+  // NAME so #34811-shaped rows surface even before that column lands. PM
+  // (productionId null) needs no matcher: a null scope already shows everything.
+  const productionAssignment = useMemo<ProductionAssignment | undefined>(() => {
+    if (productionId === null) return undefined;
+    const ids = new Set<number>([productionId]);
+    const names = new Set<string>();
+    for (const loc of locations) {
+      ids.add(loc.id);
+      if (loc.type === 'production') names.add(loc.name.toLowerCase());
+    }
+    return { ids, names };
+  }, [productionId, locations]);
+
   const allRequests = useApiQuery<ReplenishmentRequest[]>('/api/replenishment');
 
   // Movements touching the отдел. Scoped manager fetches their precise location;
@@ -203,30 +220,17 @@ export function ProductionRequestsTab({
     return t >= bounds.from && t <= bounds.to;
   };
 
-  // Charts dataset — requests touching the отдел within the active range.
-  const chartRequests = useMemo<ReplenishmentRequest[]>(() => {
-    const rows = allRequests.data ?? [];
-    return rows.filter((r) => {
-      if (!isProductionFlow(r)) return false;
-      if (!inRange(r.created_at)) return false;
-      if (productionId === null) return true;
-      return (
-        r.target_location_id === productionId ||
-        r.requester_location_id === productionId
-      );
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allRequests.data, productionId, bounds]);
-
   const allRows = useMemo(
     () => (allRequests.data ?? []).filter(isProductionFlow),
     [allRequests.data],
   );
 
-  // 📥 Kelgan (target = my scope) + 📤 Chiqgan (requester = my scope) boards.
+  // 📥 Kelgan (target = my scope OR production-assigned to me) + 📤 Chiqgan
+  // (requester = my scope) boards. The production-assignment merge dedupes by
+  // id, so the Kelgan count + every kanban column count agree with the board.
   const boards = useMemo(
-    () => splitBoards(allRows as FlowRequest[], scope),
-    [allRows, scope],
+    () => splitBoards(allRows as FlowRequest[], scope, productionAssignment),
+    [allRows, scope, productionAssignment],
   );
 
   // ----- Pipeline buckets (reused central bucketing, отдел-scoped) ----------
@@ -309,16 +313,11 @@ export function ProductionRequestsTab({
 
   return (
     <div className="space-y-6">
-      {/* Charts row + date filter — donut + trend follow the date filter. */}
+      {/* Date filter. (Owner 2026-06-10: charts live on the Dashboard tab
+          only; the So'rovlar view holds nothing but requests.) */}
       <div className="flex items-center justify-end">
         <DateRangeFilter value={dateRange} onChange={setDateRange} />
       </div>
-      {!listLoading && !listError && (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <StoreRequestsStatusDonut requests={chartRequests} />
-          <StoreRequestsTrendChart requests={chartRequests} />
-        </div>
-      )}
 
       {/* зг ombor qoldig'i — compact summary strip. When a request reaches
           production the manager must see the зг buffer at a glance. */}

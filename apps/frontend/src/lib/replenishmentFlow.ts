@@ -62,6 +62,19 @@ export type ClosureReason =
  * casting through `any`.
  */
 export interface FlowRequest extends ReplenishmentRequest {
+  /**
+   * The production location the request is ASSIGNED to (phase F-J, PINNED
+   * backend contract): `production_orders.location_id` when a making order
+   * already exists, else the product's `workshop_location_id`. It is what lets
+   * a scoped WORKSHOP manager see a production-bound row (e.g. a central
+   * shortfall #34811 in CREATE_PURCHASE_ORDER) on their "Kelgan" board even
+   * though the request's `target_location_id` still points at the central
+   * warehouse. `production_location_name` (already on `ReplenishmentRequest`)
+   * resolves from the same source. Optional + null-safe on the wire: absent
+   * reads as "not yet production-assigned" and the row is bucketed purely by
+   * `target_location_id` / `requester_location_id` as before.
+   */
+  production_location_id?: number | null;
   /** Direct parent in the request tree, or `null`/absent for a root. */
   parent_request_id?: number | null;
   /** The tree root (self for a root), or `null`/absent on legacy rows. */
