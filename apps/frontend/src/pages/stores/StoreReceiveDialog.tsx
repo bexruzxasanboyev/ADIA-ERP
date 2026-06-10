@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Loader2 } from 'lucide-react';
+import type { FlowRequest } from '@/lib/replenishmentFlow';
 import {
   Dialog,
   DialogContent,
@@ -58,11 +59,14 @@ export function StoreReceiveDialog({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Pre-fill the received qty with the requested amount on open — the common
-  // case is the full shipment arrives; the cashier only edits on a shortfall.
+  // Pre-fill the received qty with what was actually SHIPPED (a partial
+  // fulfilment ships less than asked — owner: "4 yuborgan edi, nega 10
+  // chiqyapti?"); fall back to the requested amount on legacy rows without a
+  // shipment movement. The cashier only edits on a shortfall/brak.
   useEffect(() => {
     if (open && request) {
-      setReceivedQty(request.qty_needed);
+      const shipped = (request as FlowRequest).shipped_qty;
+      setReceivedQty(shipped != null && shipped > 0 ? shipped : request.qty_needed);
       setBrakQty(null);
       setBrakReason('');
       setError(null);
@@ -154,7 +158,9 @@ export function StoreReceiveDialog({
               #{request.id} · {request.product_name}
             </p>
             <p className="text-xs text-muted-foreground">
-              So‘ralgan miqdor: {formatQty(request.qty_needed)} {unit}
+              {(request as FlowRequest).shipped_qty != null
+                ? `Yuborilgan: ${formatQty((request as FlowRequest).shipped_qty as number)} ${unit} · So‘ralgan: ${formatQty(request.qty_needed)} ${unit}`
+                : `So‘ralgan miqdor: ${formatQty(request.qty_needed)} ${unit}`}
             </p>
           </div>
 
