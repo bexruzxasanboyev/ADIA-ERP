@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Loader2, Sparkles } from 'lucide-react';
 import {
   Dialog,
@@ -42,6 +42,17 @@ export interface AiProposal {
 interface ProposalsResponse {
   proposals: AiProposal[];
 }
+
+/**
+ * The last proposals payload fetched per store, kept module-level so RE-opening
+ * the dialog for a store already seen this session paints instantly from the
+ * cache and revalidates silently — no skeleton flash. (Owner: rapidly toggling
+ * the AI takliflari dialog read as "yoqilib-o'chib" because every open showed a
+ * fresh spinner.) The dialog stays fully lazy: nothing is fetched until it is
+ * actually opened. The cache is invalidated implicitly by a successful approve
+ * (the parent refetches its lists; the next open revalidates here too).
+ */
+const proposalsCache = new Map<number, AiProposal[]>();
 
 /**
  * `POST /api/replenishment/proposals/approve` result row — one per item the
@@ -89,25 +100,47 @@ export function StoreAiProposalsDialog({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Load proposals each time the dialog opens.
+  /** Apply a freshly-loaded proposal set to state + seed the editable qtys. */
+  const applyRows = useCallback((rows: AiProposal[]) => {
+    setProposals(rows);
+    const seed: Record<number, number | null> = {};
+    for (const p of rows) seed[p.product_id] = p.suggested_qty;
+    setQtyByProduct(seed);
+  }, []);
+
+  // Load proposals when the dialog opens. A cached set for this store (from an
+  // earlier open this session) paints immediately with NO spinner, then we
+  // revalidate silently in the background — so re-opening never flashes a
+  // skeleton. A first-ever open shows the LoadingState as before.
   useEffect(() => {
     if (!open || storeLocationId <= 0) return;
     let cancelled = false;
-    setIsLoading(true);
-    setLoadError(null);
+
+    const cached = proposalsCache.get(storeLocationId);
+    if (cached) {
+      applyRows(cached);
+      setLoadError(null);
+      setIsLoading(false);
+    } else {
+      setIsLoading(true);
+      setLoadError(null);
+    }
+
     apiRequest<ProposalsResponse>(
       `/api/replenishment/proposals?location_id=${storeLocationId}`,
     )
       .then((res) => {
         if (cancelled) return;
         const rows = res.proposals ?? [];
-        setProposals(rows);
-        const seed: Record<number, number | null> = {};
-        for (const p of rows) seed[p.product_id] = p.suggested_qty;
-        setQtyByProduct(seed);
+        proposalsCache.set(storeLocationId, rows);
+        applyRows(rows);
+        setLoadError(null);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
+        // A failed background revalidation over cached rows stays silent — keep
+        // showing the cached proposals. Errors only surface on a cold open.
+        if (cached) return;
         setLoadError(
           err instanceof ApiError
             ? err.message
@@ -120,7 +153,7 @@ export function StoreAiProposalsDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, storeLocationId]);
+  }, [open, storeLocationId, applyRows]);
 
   // Items with a positive, finite qty are eligible for approval.
   const approvableItems = useMemo(() => {
@@ -155,6 +188,9 @@ export function StoreAiProposalsDialog({
         'success',
         parts.length > 0 ? parts.join(', ') + '.' : 'Takliflar tasdiqlandi.',
       );
+      // Approved items are now covered by open requests — drop the cached set so
+      // the next open re-fetches a fresh (smaller) proposal list, not stale rows.
+      proposalsCache.delete(storeLocationId);
       onOpenChange(false);
       onApproved();
     } catch (err: unknown) {
@@ -188,8 +224,6 @@ export function StoreAiProposalsDialog({
           <ErrorState
             message={loadError}
             onRetry={() => {
-              // Re-trigger the effect by toggling a no-op state — simplest is
-              // to clear and rely on the parent re-open; here we just refetch.
               setLoadError(null);
               setIsLoading(true);
               apiRequest<ProposalsResponse>(
@@ -197,10 +231,8 @@ export function StoreAiProposalsDialog({
               )
                 .then((res) => {
                   const rows = res.proposals ?? [];
-                  setProposals(rows);
-                  const seed: Record<number, number | null> = {};
-                  for (const p of rows) seed[p.product_id] = p.suggested_qty;
-                  setQtyByProduct(seed);
+                  proposalsCache.set(storeLocationId, rows);
+                  applyRows(rows);
                 })
                 .catch((err: unknown) =>
                   setLoadError(

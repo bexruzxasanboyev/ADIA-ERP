@@ -1175,27 +1175,42 @@ export function StoreWorkflowPage() {
                     ariaLabel="So‘rovlar ko‘rinishi"
                   />
                   {/* Action affordances are store_manager-only; pm views
-                      read-only (owner RBAC split). Shown on the request-creating
-                      views (Doska + So'rov), not on Qabul qiluvchi / Tranzaksiyalar. */}
-                  {isStoreManager &&
-                    (requestTab === 'board' || requestTab === 'sent') && (
-                      <>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setAiProposalsOpen(true)}
-                        >
-                          <Sparkles className="size-4" aria-hidden="true" />
-                          AI takliflari
-                        </Button>
-                        <Button onClick={() => setCreateOpen(true)} size="sm">
-                          <Plus className="size-4" aria-hidden="true" />
-                          So‘rov qo‘shish
-                        </Button>
-                      </>
-                    )}
+                      read-only (owner RBAC split). Kept mounted on EVERY So'rovlar
+                      sub-tab — they create store-scoped requests, valid from any
+                      view. (Owner: previously they were shown only on Doska /
+                      So'rov, so switching to Qabul qiluvchi / Tranzaksiyalar
+                      removed them and reflowed the header — the "AI takliflari"
+                      button "yoqilib-o'chib" flicker. Always-on stops that jitter;
+                      the AI dialog stays fully lazy, fetching only on open.) */}
+                  {isStoreManager && (
+                    <>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setAiProposalsOpen(true)}
+                      >
+                        <Sparkles className="size-4" aria-hidden="true" />
+                        AI takliflari
+                      </Button>
+                      <Button onClick={() => setCreateOpen(true)} size="sm">
+                        <Plus className="size-4" aria-hidden="true" />
+                        So‘rov qo‘shish
+                      </Button>
+                    </>
+                  )}
                 </div>
               </header>
+
+              {/* Stable content geometry: the four sub-tab panels have wildly
+                  different intrinsic heights — the Doska board fills a tall
+                  clamp, Tranzaksiyalar is a ~100-row table, while So'rov /
+                  Qabul qiluvchi are short. Without a shared floor the card (and
+                  everything below it) snapped to each panel's height, so rapid
+                  tab switching jumped the page ("sakraydi"). A single min-height
+                  matched to the board's resting height pins the floor; the
+                  loading / empty states (py-16, centred) sit inside it, so no
+                  switch — or skeleton — ever collapses the section. */}
+              <div className="min-h-[34rem]">
 
               {/* DOSKA — one board area + a 📥 Kelgan | 📤 Chiqgan toggle
                   (cross-department-flow §9.2). Stores mostly REQUEST, so Chiqgan
@@ -1466,6 +1481,7 @@ export function StoreWorkflowPage() {
                     </Table>
                   </div>
                 )}
+              </div>
 
               {requestTab === 'incoming' && isStoreManager && (
                 <p className="flex items-center gap-2 border-t border-border/60 px-5 py-3 text-xs text-muted-foreground">

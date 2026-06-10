@@ -44,8 +44,6 @@ import type {
   StockRow,
   Unit,
 } from '@/lib/types';
-import { StoreRequestsStatusDonut } from '@/pages/stores/StoreRequestsStatusDonut';
-import { StoreRequestsTrendChart } from '@/pages/stores/StoreRequestsTrendChart';
 import { BoardWorkspace } from '@/pages/replenishment/board/BoardWorkspace';
 import { RequestDetailModal } from '@/pages/replenishment/RequestDetailModal';
 import type { FlowRequest } from '@/lib/replenishmentFlow';
@@ -188,20 +186,6 @@ export function CentralRequestsTab({
     stock.refetch();
     movements.refetch();
   }
-
-  // Charts dataset — requests touching the central within the active range.
-  const chartRequests = useMemo<ReplenishmentRequest[]>(() => {
-    const rows = allRequests.data ?? [];
-    return rows.filter((r) => {
-      if (!inRange(r.created_at)) return false;
-      if (centralId === null) return true;
-      return (
-        r.target_location_id === centralId ||
-        r.requester_location_id === centralId
-      );
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allRequests.data, centralId, bounds]);
 
   const allRows = useMemo(() => allRequests.data ?? [], [allRequests.data]);
 
@@ -401,13 +385,13 @@ export function CentralRequestsTab({
         </div>
       </div>
 
-      {/* 4. Content — charts row, then the active view. */}
-      {!listLoading && !listError && (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <StoreRequestsStatusDonut requests={chartRequests} />
-          <StoreRequestsTrendChart requests={chartRequests} />
-        </div>
-      )}
+      {/* 4. Content — the active view. (Owner 2026-06-10: charts live on the
+          Dashboard tab only; the So'rovlar view holds nothing but requests.)
+
+          Shared min-height floor (parity with the store So'rovlar fix): the
+          Doska board fills a tall clamp while Tranzaksiyalar may be short or
+          empty — without a floor, switching tabs jumped the page. */}
+      <div className="min-h-[34rem]">
 
       {/* DOSKA — ONE board area + a 📥 Kelgan | 📤 Chiqgan toggle
           (cross-department-flow §9.2; owner: no more stacked duplicate). */}
@@ -551,6 +535,7 @@ export function CentralRequestsTab({
             )}
         </Card>
       )}
+      </div>
 
       {/* The Jira card — opened on any board card click. Its central section
           opens the partial-fulfilment modal for a store order. */}
