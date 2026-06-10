@@ -1234,6 +1234,7 @@ export function StoreWorkflowPage() {
                       onOpen={(req) => setOpenRequest(req)}
                       incomingEmptyLabel="Do‘konga atalgan so‘rov yo‘q."
                       outgoingEmptyLabel="Do‘kon yuborgan so‘rov yo‘q."
+                      actionScope={selectedStoreSet}
                     />
                   )}
                 </div>

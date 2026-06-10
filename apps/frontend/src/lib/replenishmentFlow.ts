@@ -300,6 +300,70 @@ export function kanbanColumnFromStage(
   return stage;
 }
 
+// ---------------------------------------------------------------------------
+// Action ownership (phase F-M). Owner feedback: the central and store boards
+// showed the SAME two cards and read as "omborlar bitta bo'lib qolibdi" — the
+// missing signal was WHOSE MOVE each card waits on. Every column maps to the
+// side that must act next; the board (which knows the viewer's side + location
+// scope) renders "Harakat sizda" on the viewer's cards and dims the rest with a
+// "… kutilmoqda" chip naming the other side.
+// ---------------------------------------------------------------------------
+
+/** Which side of the request must act next. */
+export type ActionOwner = 'requester' | 'target' | 'production' | 'none';
+
+/**
+ * The next-action owner per Jira column:
+ *   yopilgan       → none      (terminal)
+ *   yuborilgan     → requester (receive/accept the shipment)
+ *   qabul_qilingan → target    (forward from the warehouse)
+ *   soralgan / tasdiqlandi → production when an отдел is assigned, else target
+ *   kutuvda        → production when it is the F-L gate, else target (accept)
+ */
+export function actionOwnerOf(
+  req: Pick<
+    FlowRequest,
+    'production_location_id' | 'status' | 'fulfiller_accepted_at'
+  >,
+  column: KanbanColumn,
+): ActionOwner {
+  switch (column) {
+    case 'yopilgan':
+      return 'none';
+    case 'yuborilgan':
+      return 'requester';
+    case 'qabul_qilingan':
+      return 'target';
+    case 'soralgan':
+    case 'tasdiqlandi':
+      return req.production_location_id != null ? 'production' : 'target';
+    case 'kutuvda':
+    default:
+      return isProductionInputWaiting(req) ? 'production' : 'target';
+  }
+}
+
+/** Uzbek "waiting on the other side" chip text for a NOT-mine card. */
+export function waitingOnLabel(
+  req: Pick<
+    FlowRequest,
+    'requester_location_name' | 'target_location_name' | 'production_location_name'
+  >,
+  owner: ActionOwner,
+): string {
+  switch (owner) {
+    case 'requester':
+      return `${req.requester_location_name ?? "So‘rovchi"} qabuli kutilmoqda`;
+    case 'production':
+      return `${req.production_location_name ?? 'Отдел'} kutilmoqda`;
+    case 'target':
+      return `${req.target_location_name ?? 'Qabul'} kutilmoqda`;
+    case 'none':
+    default:
+      return '';
+  }
+}
+
 /**
  * True when a request is a `raw_warehouse`-targeted row that the raw manager has
  * ACCEPTED but the Поставка has not yet synced from Poster — it sits accepted

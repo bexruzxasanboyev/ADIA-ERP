@@ -47,6 +47,14 @@ export interface BoardWorkspaceProps {
    * with charts above them, unlike the dedicated /replenishment Doska).
    */
   heightClassName?: string;
+  /**
+   * F-M action-ownership signal: the viewer's own location ids. When given,
+   * every card states whose move it waits on — "Harakat sizda" on the viewer's
+   * cards, a dimmed "… kutilmoqda" naming the other side elsewhere. This is
+   * what makes the central and store boards read DIFFERENTLY for the same
+   * request (owner: "doskalar bir xil ma'lumot ko'rsatyapti").
+   */
+  actionScope?: ReadonlySet<number>;
 }
 
 export function BoardWorkspace({
@@ -59,6 +67,7 @@ export function BoardWorkspace({
   incomingEmptyLabel = 'Kelgan so‘rov yo‘q.',
   outgoingEmptyLabel = 'Chiqgan so‘rov yo‘q.',
   heightClassName = 'h-[clamp(28rem,calc(100dvh-30rem),60rem)]',
+  actionScope,
 }: BoardWorkspaceProps) {
   const [side, setSide] = useState<BoardSide>(defaultSide);
 
@@ -90,6 +99,9 @@ export function BoardWorkspace({
           renderAction={renderAction}
           onOpen={onOpen}
           emptyLabel={emptyLabel}
+          viewer={
+            actionScope !== undefined ? { side, scope: actionScope } : undefined
+          }
         />
       </div>
     </div>

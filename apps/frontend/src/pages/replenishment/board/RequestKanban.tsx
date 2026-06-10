@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils';
 import { formatDate, formatQtyUnit } from '@/lib/format';
 import { kanbanColumnOf, pipelineStageOf } from '@/lib/pipeline';
 import {
+  actionOwnerOf,
   CLOSURE_REASON_LABELS,
   CLOSURE_REASON_VARIANT,
   isRawPosterWaiting,
@@ -12,9 +13,23 @@ import {
   qtyChipFor,
   REQUEST_ORIGIN_LABELS,
   REQUEST_ORIGIN_VARIANT,
+  waitingOnLabel,
   type FlowRequest,
   type KanbanColumn,
 } from '@/lib/replenishmentFlow';
+
+/**
+ * Viewer context for the ACTION-OWNERSHIP signal (phase F-M). The board side
+ * ('incoming' = men ta'minotchiman, 'outgoing' = men so'rovchiman) plus the
+ * viewer's location ids decide whether a card's next action is MINE
+ * ("Harakat sizda", full strength) or the OTHER side's ("… kutilmoqda", dimmed).
+ * Absent → the signal is off (e.g. the mixed /replenishment Doska).
+ */
+export interface BoardViewerContext {
+  side: 'incoming' | 'outgoing';
+  /** The viewer's own location ids (otdel/sklad/do'kon scope). */
+  scope: ReadonlySet<number>;
+}
 
 /**
  * The Jira-like 6-column Kanban board (phase F-G §2) shared by every
@@ -60,6 +75,8 @@ export interface RequestKanbanProps {
    * page scrolls as a whole.
    */
   fill?: boolean;
+  /** F-M action-ownership signal — see {@link BoardViewerContext}. */
+  viewer?: BoardViewerContext;
 }
 
 export function RequestKanban({
@@ -68,6 +85,7 @@ export function RequestKanban({
   onOpen,
   emptyLabel,
   fill = false,
+  viewer,
 }: RequestKanbanProps) {
   const byColumn = useMemo(() => {
     const map: Record<KanbanColumn, FlowRequest[]> = {
@@ -137,6 +155,7 @@ export function RequestKanban({
                     column={column}
                     action={renderAction?.(req)}
                     onOpen={onOpen ? () => onOpen(req) : undefined}
+                    viewer={viewer}
                   />
                 ))
               )}
@@ -159,9 +178,16 @@ interface RequestCardProps {
   column: KanbanColumn;
   action?: ReactNode;
   onOpen?: () => void;
+  viewer?: BoardViewerContext;
 }
 
-export function RequestCard({ req, column, action, onOpen }: RequestCardProps) {
+export function RequestCard({
+  req,
+  column,
+  action,
+  onOpen,
+  viewer,
+}: RequestCardProps) {
   const stage = pipelineStageOf(req);
   const qtyChip = qtyChipFor(req, column);
   const origin = req.origin ?? null;
@@ -172,6 +198,30 @@ export function RequestCard({ req, column, action, onOpen }: RequestCardProps) {
     req.open_children_count != null && req.open_children_count > 0
       ? req.open_children_count
       : null;
+
+  // F-M action-ownership: is the NEXT action on this card the viewer's?
+  // (Same data, two boards — this chip is what makes them read differently:
+  // owner "do'kon va markaziy ombor doskalari bir xil ma'lumot ko'rsatyapti".)
+  const owner = actionOwnerOf(req, column);
+  let mine: boolean | null = null; // null = signal off (no viewer context)
+  if (viewer !== undefined && owner !== 'none') {
+    if (owner === 'requester') {
+      mine =
+        viewer.side === 'outgoing' &&
+        viewer.scope.has(req.requester_location_id);
+    } else if (owner === 'target') {
+      mine =
+        viewer.side === 'incoming' &&
+        req.target_location_id != null &&
+        viewer.scope.has(req.target_location_id);
+    } else {
+      // production отдел acts — mine only when I AM that отдел.
+      mine =
+        viewer.side === 'incoming' &&
+        req.production_location_id != null &&
+        viewer.scope.has(req.production_location_id);
+    }
+  }
 
   const interactive = onOpen !== undefined;
 
@@ -184,6 +234,8 @@ export function RequestCard({ req, column, action, onOpen }: RequestCardProps) {
         'relative shrink-0 overflow-hidden rounded-lg border border-border/70 bg-card pl-3 pr-3 py-2.5 text-left transition-shadow',
         interactive &&
           'cursor-pointer hover:-translate-y-px hover:border-border-strong hover:shadow-card-hover',
+        // F-M: waiting on the OTHER side → the whole card recedes a step.
+        mine === false && 'opacity-75',
       )}
       onClick={onOpen}
       onKeyDown={
@@ -241,8 +293,20 @@ export function RequestCard({ req, column, action, onOpen }: RequestCardProps) {
       </p>
 
       {/* chips row */}
-      {(origin || rawWaiting || closure || brak || openChildren) && (
+      {(origin || rawWaiting || closure || brak || openChildren || mine !== null) && (
         <div className="mt-2 flex flex-wrap items-center gap-1">
+          {/* F-M action-ownership chip — the FIRST chip so the eye catches it:
+              mine → "Harakat sizda" (info); other side → who we wait on. */}
+          {mine === true && (
+            <Badge variant="info" className="text-[10px]">
+              Harakat sizda
+            </Badge>
+          )}
+          {mine === false && (
+            <Badge variant="secondary" className="text-[10px]">
+              {waitingOnLabel(req, owner)}
+            </Badge>
+          )}
           {origin && (
             <Badge variant={REQUEST_ORIGIN_VARIANT[origin]} className="text-[10px]">
               {REQUEST_ORIGIN_LABELS[origin]}

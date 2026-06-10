@@ -168,6 +168,7 @@ export function SupplySkladDrill({
         onOpen={(req) => setOpenRequest(req)}
         incomingEmptyLabel="Bu skladga kelgan so‘rov yo‘q."
         outgoingEmptyLabel="Bu skladning chiqgan so‘rovi yo‘q."
+        actionScope={scope}
       />
 
       {/* Min'dan past panel — below-min products at this sklad. */}

@@ -340,6 +340,7 @@ export function ProductionRequestsTab({
           onOpen={(req) => setOpenRequest(req)}
           incomingEmptyLabel="Kelgan so‘rov yo‘q."
           outgoingEmptyLabel="Chiqgan so‘rov yo‘q."
+          actionScope={scope ?? undefined}
           renderIncomingAction={(req) => (
             <Button
               size="sm"

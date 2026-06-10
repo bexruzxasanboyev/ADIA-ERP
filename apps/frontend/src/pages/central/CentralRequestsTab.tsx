@@ -416,6 +416,9 @@ export function CentralRequestsTab({
               renderIncomingAction={renderIncomingAction}
               incomingEmptyLabel="Kelgan so‘rov yo‘q."
               outgoingEmptyLabel="Chiqgan so‘rov yo‘q."
+              actionScope={
+                centralId !== null ? new Set([centralId]) : undefined
+              }
             />
           )}
         </>
