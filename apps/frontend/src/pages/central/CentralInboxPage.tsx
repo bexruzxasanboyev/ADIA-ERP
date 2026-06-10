@@ -505,8 +505,8 @@ export function CentralInboxPage({
           {!incoming.isLoading &&
             !incoming.error &&
             exceptionGroups.length > 0 && (
-              <Card className="border-warning/40">
-                <header className="flex items-center gap-2 border-b border-warning/30 bg-warning/5 p-5">
+              <Card>
+                <header className="flex items-center gap-2 border-b border-border/60 p-5">
                   <AlertTriangle
                     className="size-4 text-warning"
                     aria-hidden="true"
@@ -830,12 +830,14 @@ function OrderCard({
   return (
     <section
       className={cn(
-        'rounded-lg border bg-surface-3',
-        exception ? 'border-warning/40' : 'border-border/60',
+        'overflow-hidden rounded-lg border border-border/60 bg-surface-3',
+        // Calm status discipline (DESIGN.md §8): a needs-attention order gets a
+        // THIN left accent + its warning badges — never a full tinted border.
+        exception && 'border-l-2 border-l-warning',
       )}
       aria-label={`${storeName} — ${group.lines.length} mahsulot`}
     >
-      <header className="flex flex-col gap-3 border-b border-border/60 p-4 sm:flex-row sm:items-center sm:justify-between">
+      <header className="flex flex-col gap-3 border-b border-border/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-start gap-3">
           {/* Group select-all checkbox (only when the manager can act). */}
           {!isPm && (
@@ -910,7 +912,7 @@ function OrderCard({
           return (
             <li
               key={line.id}
-              className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between"
+              className="flex flex-col gap-2 px-4 py-2.5 sm:flex-row sm:items-center sm:justify-between"
             >
               <div className="flex min-w-0 flex-1 items-start gap-3">
                 {/* Per-line checkbox (only when the manager can act). */}

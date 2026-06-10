@@ -2,8 +2,6 @@ import { useMemo, useState } from 'react';
 import {
   ArrowDownLeft,
   ArrowUpRight,
-  Clock,
-  Factory,
   History,
   Loader2,
   PackageCheck,
@@ -13,7 +11,6 @@ import {
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Tabs } from '@/components/ui/tabs';
 import {
   Table,
   TableBody,
@@ -28,14 +25,10 @@ import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
 import { ApiError } from '@/lib/api-client';
 import { shipToStore } from '@/lib/replenishmentActions';
-import { formatDateTime, formatQty, formatQtyUnit } from '@/lib/format';
-import {
-  REPLENISHMENT_STATUS_LABELS,
-  REPLENISHMENT_STATUS_VARIANT,
-  movementCounterpartyLabel,
-} from '@/lib/labels';
-import { groupByBatch, type BatchGroup } from '@/lib/groupByBatch';
-import { requestsInStage } from '@/lib/pipeline';
+import { formatDateTime, formatQtyUnit } from '@/lib/format';
+import { movementCounterpartyLabel } from '@/lib/labels';
+import { groupByBatch } from '@/lib/groupByBatch';
+import { pipelineStageOf } from '@/lib/pipeline';
 import {
   DateRangeFilter,
   type DateRangeValue,
@@ -53,6 +46,7 @@ import type {
 import { StoreRequestsStatusDonut } from '@/pages/stores/StoreRequestsStatusDonut';
 import { StoreRequestsTrendChart } from '@/pages/stores/StoreRequestsTrendChart';
 import { RequestKanban } from '@/pages/replenishment/board/RequestKanban';
+import { RequestDetailModal } from '@/pages/replenishment/RequestDetailModal';
 import type { FlowRequest } from '@/lib/replenishmentFlow';
 import { ProductionReceiveDialog } from './ProductionReceiveDialog';
 import { FulfillmentModal } from './FulfillmentModal';
@@ -74,31 +68,26 @@ interface IncomingItem {
 }
 
 /**
- * Markaziy sklad ish joyi — "So'rovlar" tab, restructured into a clean
- * 5-status PIPELINE (owner's corrected single-flow logic).
+ * Markaziy sklad ish joyi — "So'rovlar" tab, rebuilt on the SHARED Jira board
+ * (phase F-G). The owner's "messy" five-tab pipeline is replaced by:
  *
- * The chain is ONE connected flow: every request lives in exactly ONE pipeline
- * tab, shows ONE action, and MOVES to the next tab when acted on (no stale
- * lingering buttons). The five tabs:
+ *   - 📥 Kelgan  — the canonical 6-column RequestKanban of every request
+ *                 targeting this central (store orders + production deliveries +
+ *                 in-flight + closed). A card click opens the shared
+ *                 RequestDetailModal; the modal's central section exposes
+ *                 "Jo'natish (qisman)" (the partial-fulfilment modal). Two
+ *                 stage-specific one-click affordances stay on the card via
+ *                 `renderAction`: "Qabul qildim" (receive a production delivery)
+ *                 and "Do'konga yuborish" (forward received goods to the store).
+ *   - 📤 Chiqgan — the requests the central RAISED toward production (unchanged).
  *
- *   - Kutuvda        — store requests awaiting fulfilment + production
- *                      deliveries awaiting confirm-receipt.
- *       • store order      → "Qabul qilish"  (opens the partial-fulfilment modal)
- *       • production deliv. → "Qabul qildim"  (brak modal)
- *   - So'ralgan      — the shortfall is being produced. Status badge only.
- *   - Qabul qilingan — received from production, ready to forward → "Do'konga
- *                      yuborish".
- *   - Yuborilgan     — shipped to a store, awaiting the store's acceptance
- *                      (read-only).
- *   - Tranzaksiyalar — every stock movement touching the central warehouse.
- *
- * Each request is bucketed by {@link pipelineStageOf}, which prefers the
- * backend's `pipeline_stage` field and falls back to a status heuristic until
- * that field is live. EVERY action refetches `allRequests` + central stock so
- * the handled request drops out of its tab into the next one.
+ * The summary tiles (status donut + trend) and the Tranzaksiyalar table are
+ * kept. EVERY action refetches the list + central stock so a handled card moves
+ * to its new column.
  *
  * Backend contracts:
  *   - GET  /api/replenishment                       (RBAC-scoped, central)
+ *   - GET  /api/replenishment/incoming?location_id  (not-yet-targeted NEW)
  *   - GET  /api/stock?location_id=<central>         (central on-hand → modal)
  *   - GET  /api/stock/movements?location_id=…
  *   - POST /api/replenishment/:id/fulfill           (partial fulfilment)
@@ -106,35 +95,7 @@ interface IncomingItem {
  *   - POST /api/replenishment/:id/ship-to-store     (forward to store)
  */
 
-type PipelineTab =
-  | 'kutuvda'
-  | 'soralgan'
-  | 'qabul_qilingan'
-  | 'yuborilgan'
-  | 'transactions';
-
-/**
- * Clean status badge text for the central PIPELINE (owner: remove the "Sotib
- * olish so'rovi" framing — there is no standalone purchase request at central).
- * The production-pipeline statuses (`CHECK_PRODUCTION_INPUT` /
- * `CREATE_PURCHASE_ORDER` / `CREATE_PRODUCTION_ORDER` / `PRODUCING`) all mean
- * the SAME thing here — the shortfall is being produced — so they collapse to a
- * single "Ishlab chiqarilmoqda" badge instead of leaking the raw state machine
- * wording. Every other status keeps its standard label. The shared global
- * `REPLENISHMENT_STATUS_LABELS` is left untouched (the raw-warehouse purchase
- * flow still labels `CREATE_PURCHASE_ORDER` legitimately).
- */
-function pipelineStatusLabel(req: ReplenishmentRequest): string {
-  switch (req.status) {
-    case 'CHECK_PRODUCTION_INPUT':
-    case 'CREATE_PURCHASE_ORDER':
-    case 'CREATE_PRODUCTION_ORDER':
-    case 'PRODUCING':
-      return 'Ishlab chiqarilmoqda';
-    default:
-      return REPLENISHMENT_STATUS_LABELS[req.status];
-  }
-}
+type CentralTab = 'board' | 'transactions';
 
 /**
  * A central-warehouse stock movement, classified relative to the warehouse as
@@ -158,7 +119,7 @@ export function CentralRequestsTab({
   // Only the scoped central manager acts; PM is read-only across the pipeline.
   const canWrite = user?.role === 'central_warehouse_manager';
 
-  const [tab, setTab] = useState<PipelineTab>('kutuvda');
+  const [tab, setTab] = useState<CentralTab>('board');
   const [dateRange, setDateRange] = useState<DateRangeValue>({ range: 'month' });
   // A single busy key locks the ship buttons while one is in flight (`s<id>`).
   const [shipBusyKey, setShipBusyKey] = useState<string | null>(null);
@@ -169,6 +130,8 @@ export function CentralRequestsTab({
   const [fulfillLines, setFulfillLines] = useState<ReplenishmentRequest[] | null>(
     null,
   );
+  // The card whose Jira detail modal is open.
+  const [openRequest, setOpenRequest] = useState<FlowRequest | null>(null);
 
   const allRequests = useApiQuery<ReplenishmentRequest[]>('/api/replenishment');
 
@@ -211,7 +174,7 @@ export function CentralRequestsTab({
     return t >= bounds.from && t <= bounds.to;
   };
 
-  /** After ANY action: drop the row out of its tab into the next + refresh. */
+  /** After ANY action: drop the row out of its column into the next + refresh. */
   function refreshAll() {
     allRequests.refetch();
     incoming.refetch();
@@ -243,35 +206,17 @@ export function CentralRequestsTab({
     return rows.filter((r) => r.requester_location_id === centralId);
   }, [allRows, centralId]);
 
-  // ----- Pipeline buckets ---------------------------------------------------
-  // Kutuvda is NOT date-bound (an in-flight request must not drop off as the
-  // range narrows); the downstream stages mirror that so a request never
-  // vanishes between stages. The charts above still follow the date filter.
-
-  // KUTUVDA — split into the two kinds the manager acts on differently:
-  //   • store orders awaiting fulfilment  → "Qabul qilish" (fulfilment modal)
-  //   • production deliveries (DONE_TO_WAREHOUSE) → "Qabul qildim" (brak modal)
-  const kutuvda = useMemo(
-    () => requestsInStage(allRows, 'kutuvda', centralId),
-    [allRows, centralId],
-  );
-  const productionDeliveries = useMemo(
-    () => kutuvda.filter((r) => r.status === 'DONE_TO_WAREHOUSE'),
-    [kutuvda],
-  );
-  // Store orders awaiting fulfilment — grouped by batch so the modal handles
-  // the whole order at once. Anything that isn't a production delivery and is
-  // requested by someone other than this central (a downstream store).
-  const storeOrders = useMemo<ReplenishmentRequest[]>(() => {
-    // Targeted store orders already visible via /api/replenishment.
-    const fromAll = kutuvda.filter(
-      (r) =>
-        r.status !== 'DONE_TO_WAREHOUSE' &&
-        (centralId === null || r.requester_location_id !== centralId),
+  // 📥 KELGAN board — every request TARGETING this central, across all stages,
+  // PLUS the not-yet-targeted NEW store requests from /incoming (so the manager
+  // sees an order before accepting). PM (centralId null) → chain-wide incoming.
+  const incomingBoard = useMemo<FlowRequest[]>(() => {
+    const fromAll = (allRows as FlowRequest[]).filter((r) =>
+      centralId === null
+        ? r.target_location_id !== null
+        : r.target_location_id === centralId,
     );
-    // Plus not-yet-targeted NEW store requests from /incoming (scoped manager).
     const seen = new Set(fromAll.map((r) => r.id));
-    const fromIncoming = (incoming.data?.items ?? [])
+    const fromIncoming: FlowRequest[] = (incoming.data?.items ?? [])
       .filter(
         (i) =>
           (i.status === 'NEW' || i.status === 'CHECK_STORE_SUPPLIER') &&
@@ -284,34 +229,34 @@ export function CentralRequestsTab({
             ...i,
             product_unit: i.unit,
             target_location_id: centralId,
+            requester_location_type: 'store',
+            target_location_type: 'central_warehouse',
             pipeline_stage: 'kutuvda',
-          }) as unknown as ReplenishmentRequest,
+          }) as unknown as FlowRequest,
       );
     return [...fromAll, ...fromIncoming];
-  }, [kutuvda, incoming.data, centralId]);
-  const storeOrderGroups = useMemo(
-    () => groupByBatch(storeOrders),
-    [storeOrders],
-  );
-  const kutuvdaCount = productionDeliveries.length + storeOrderGroups.length;
+  }, [allRows, incoming.data, centralId]);
 
-  // SO'RALGAN — the shortfall is being produced (raw check / order / making).
-  const soralgan = useMemo(
-    () => requestsInStage(allRows, 'soralgan', centralId),
-    [allRows, centralId],
-  );
+  // Store-order batch lookup — the fulfilment modal handles the WHOLE order at
+  // once, so when the modal asks to fulfil a single card we resolve its batch
+  // siblings from the kutuvda store orders.
+  const storeOrderGroups = useMemo(() => {
+    const storeOrders = incomingBoard.filter(
+      (r) =>
+        pipelineStageOf(r) === 'kutuvda' &&
+        r.status !== 'DONE_TO_WAREHOUSE' &&
+        (centralId === null || r.requester_location_id !== centralId),
+    );
+    return groupByBatch(storeOrders as ReplenishmentRequest[]);
+  }, [incomingBoard, centralId]);
 
-  // QABUL QILINGAN — received from production, ready to forward to the store.
-  const qabulQilingan = useMemo(
-    () => requestsInStage(allRows, 'qabul_qilingan', centralId),
-    [allRows, centralId],
-  );
-
-  // YUBORILGAN — shipped to a store, awaiting the store's acceptance.
-  const yuborilgan = useMemo(
-    () => requestsInStage(allRows, 'yuborilgan', centralId),
-    [allRows, centralId],
-  );
+  /** Resolve the full batch group for a clicked store-order card. */
+  function fulfilLinesFor(req: FlowRequest): ReplenishmentRequest[] {
+    const group = storeOrderGroups.find((g) =>
+      g.lines.some((l) => l.id === req.id),
+    );
+    return group ? group.lines : [req as ReplenishmentRequest];
+  }
 
   // TRANZAKSIYALAR — every movement touching central, newest first (date-bound).
   const centralMovements = useMemo<CentralMovement[]>(() => {
@@ -359,13 +304,50 @@ export function CentralRequestsTab({
     }
   }
 
-  const tabOptions: { value: PipelineTab; label: string }[] = [
-    { value: 'kutuvda', label: `Kutuvda (${kutuvdaCount})` },
-    { value: 'soralgan', label: `So‘ralgan (${soralgan.length})` },
-    { value: 'qabul_qilingan', label: `Qabul qilingan (${qabulQilingan.length})` },
-    { value: 'yuborilgan', label: `Yuborilgan (${yuborilgan.length})` },
-    { value: 'transactions', label: 'Tranzaksiyalar' },
-  ];
+  /**
+   * Per-card affordance on the 📥 Kelgan board — the two one-click central
+   * actions that don't belong in the generic modal action bar:
+   *   • DONE_TO_WAREHOUSE          → "Qabul qildim" (brak-receive dialog)
+   *   • SHIP_TO_REQUESTER + received → "Do'konga yuborish" (forward to store)
+   * The fulfil/partial action lives in the modal's central section.
+   */
+  function renderIncomingAction(req: FlowRequest) {
+    if (isPm) return null;
+    if (req.status === 'DONE_TO_WAREHOUSE') {
+      return (
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-xs"
+          onClick={() => setReceiveTarget(req as ReplenishmentRequest)}
+        >
+          <PackageCheck className="size-3.5" aria-hidden="true" />
+          Qabul qildim
+        </Button>
+      );
+    }
+    if (
+      req.status === 'SHIP_TO_REQUESTER' &&
+      req.received_from_production_at !== null
+    ) {
+      return (
+        <Button
+          size="sm"
+          className="h-7 text-xs"
+          disabled={shipBusyKey !== null}
+          onClick={() => handleShipToStore(req as ReplenishmentRequest)}
+        >
+          {shipBusyKey === `s${req.id}` ? (
+            <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+          ) : (
+            <Store className="size-3.5" aria-hidden="true" />
+          )}
+          Do‘konga yuborish
+        </Button>
+      );
+    }
+    return null;
+  }
 
   const listLoading = allRequests.isLoading;
   const listError = allRequests.error;
@@ -383,7 +365,7 @@ export function CentralRequestsTab({
         </div>
       )}
 
-      {/* Section header + pipeline tabs. */}
+      {/* Section header + Doska / Tranzaksiyalar toggle. */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-0.5">
           <h2 className="flex items-center gap-2 text-base font-semibold">
@@ -391,17 +373,37 @@ export function CentralRequestsTab({
             So‘rovlar
           </h2>
           <p className="text-xs text-muted-foreground">
-            Do‘konlardan kelgan so‘rovlar — bitta oqim: kutuvda → so‘ralgan →
-            qabul qilingan → yuborilgan.
+            Do‘konlardan kelgan so‘rovlar — bosqich ustunlari bo‘yicha; kartani
+            bosib to‘liq ma’lumot va amallarni oching.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <Tabs
-            value={tab}
-            onValueChange={setTab}
-            options={tabOptions}
-            ariaLabel="So‘rovlar oqimi"
-          />
+          <div
+            className="flex overflow-hidden rounded-lg border border-border/70"
+            role="group"
+            aria-label="Ko‘rinish"
+          >
+            <Button
+              type="button"
+              variant={tab === 'board' ? 'default' : 'ghost'}
+              size="sm"
+              aria-pressed={tab === 'board'}
+              className="rounded-none"
+              onClick={() => setTab('board')}
+            >
+              Doska
+            </Button>
+            <Button
+              type="button"
+              variant={tab === 'transactions' ? 'default' : 'ghost'}
+              size="sm"
+              aria-pressed={tab === 'transactions'}
+              className="rounded-none"
+              onClick={() => setTab('transactions')}
+            >
+              Tranzaksiyalar
+            </Button>
+          </div>
           {isPm && (
             <Badge
               variant="secondary"
@@ -414,150 +416,72 @@ export function CentralRequestsTab({
         </div>
       </div>
 
-      {/* KUTUVDA — store orders to fulfil + production deliveries to receive. */}
-      {tab === 'kutuvda' && (
-        <Card>
-          {listLoading && <LoadingState />}
+      {/* DOSKA — 📥 Kelgan + 📤 Chiqgan boards (cross-department-flow §9.2). */}
+      {tab === 'board' && (
+        <>
+          {listLoading && (
+            <Card>
+              <LoadingState />
+            </Card>
+          )}
           {!listLoading && listError && (
-            <ErrorState message={listError} onRetry={allRequests.refetch} />
+            <Card>
+              <ErrorState message={listError} onRetry={allRequests.refetch} />
+            </Card>
           )}
-          {!listLoading && !listError && kutuvdaCount === 0 && (
-            <EmptyState message="Kutuvda turgan so‘rov yo‘q." />
-          )}
-          {!listLoading && !listError && kutuvdaCount > 0 && (
-            <div className="space-y-4 p-5">
-              {/* Production deliveries first — they unblock the rest of the
-                  pipeline (received goods can then be forwarded). */}
-              {productionDeliveries.map((req) => (
-                <ProductionDeliveryRow
-                  key={`pd-${req.id}`}
-                  req={req}
-                  isPm={isPm}
-                  onReceive={() => setReceiveTarget(req)}
+          {!listLoading && !listError && (
+            <div className="space-y-6">
+              <section className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="flex items-center gap-2 text-sm font-semibold">
+                    <ArrowDownLeft
+                      className="size-4 text-primary"
+                      aria-hidden="true"
+                    />
+                    📥 Kelgan
+                  </h3>
+                  <Badge variant="outline" className="tabular-nums">
+                    {incomingBoard.length}
+                  </Badge>
+                  <p className="w-full text-xs text-muted-foreground sm:w-auto">
+                    Do‘konlardan kelgan so‘rovlar — qabul qilish, qisman
+                    jo‘natish, ishlab chiqarishdan qabul.
+                  </p>
+                </div>
+                <RequestKanban
+                  requests={incomingBoard}
+                  emptyLabel="Kelgan so‘rov yo‘q."
+                  onOpen={(req) => setOpenRequest(req)}
+                  renderAction={renderIncomingAction}
                 />
-              ))}
-              {/* Store orders — one card per order, one "Qabul qilish" action. */}
-              {storeOrderGroups.map((group) => (
-                <StoreOrderCard
-                  key={group.key}
-                  group={group}
-                  isPm={isPm}
-                  availableByProduct={availableByProduct}
-                  onFulfill={() => setFulfillLines(group.lines)}
+              </section>
+
+              <section className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="flex items-center gap-2 text-sm font-semibold">
+                    <ArrowUpRight
+                      className="size-4 text-primary"
+                      aria-hidden="true"
+                    />
+                    📤 Chiqgan
+                  </h3>
+                  <Badge variant="outline" className="tabular-nums">
+                    {outgoing.length}
+                  </Badge>
+                  <p className="w-full text-xs text-muted-foreground sm:w-auto">
+                    Markaz ishlab chiqarishga yuborgan so‘rovlar — har bosqich
+                    bo‘yicha.
+                  </p>
+                </div>
+                <RequestKanban
+                  requests={outgoing}
+                  emptyLabel="Chiqgan so‘rov yo‘q."
+                  onOpen={(req) => setOpenRequest(req)}
                 />
-              ))}
+              </section>
             </div>
           )}
-          <PipelineFootnote icon={<Clock className="size-3.5" aria-hidden="true" />}>
-            «Qabul qilish» borini do‘konga jo‘natadi, yetishmaganini ishlab
-            chiqarishga so‘rov qiladi. Ishlab chiqarishdan kelgan tovarni «Qabul
-            qildim» bilan tasdiqlang.
-          </PipelineFootnote>
-        </Card>
-      )}
-
-      {/* SO'RALGAN — shortfall being produced. Status badge only. */}
-      {tab === 'soralgan' && (
-        <Card>
-          {listLoading && <LoadingState />}
-          {!listLoading && listError && (
-            <ErrorState message={listError} onRetry={allRequests.refetch} />
-          )}
-          {!listLoading && !listError && soralgan.length === 0 && (
-            <EmptyState message="Ishlab chiqarishga so‘ralgan so‘rov yo‘q." />
-          )}
-          {!listLoading && !listError && soralgan.length > 0 && (
-            <PipelineList
-              rows={soralgan}
-              renderMeta={(req) =>
-                req.production_location_name ? (
-                  <Badge variant="outline" className="gap-1">
-                    <Factory className="size-3" aria-hidden="true" />
-                    {req.production_location_name}
-                  </Badge>
-                ) : null
-              }
-            />
-          )}
-          <PipelineFootnote
-            icon={<Factory className="size-3.5" aria-hidden="true" />}
-          >
-            Markazda qoldiq yetmagani uchun ishlab chiqarishga yuborilgan
-            qism — tayyor bo‘lgach «Qabul qilingan»ga o‘tadi.
-          </PipelineFootnote>
-        </Card>
-      )}
-
-      {/* QABUL QILINGAN — received from production, ready to forward. */}
-      {tab === 'qabul_qilingan' && (
-        <Card>
-          {listLoading && <LoadingState />}
-          {!listLoading && listError && (
-            <ErrorState message={listError} onRetry={allRequests.refetch} />
-          )}
-          {!listLoading && !listError && qabulQilingan.length === 0 && (
-            <EmptyState message="Do‘konga yuborishga tayyor so‘rov yo‘q." />
-          )}
-          {!listLoading && !listError && qabulQilingan.length > 0 && (
-            <PipelineList
-              rows={qabulQilingan}
-              renderAction={(req) =>
-                isPm ? null : (
-                  <Button
-                    size="sm"
-                    onClick={() => handleShipToStore(req)}
-                    disabled={shipBusyKey !== null}
-                  >
-                    {shipBusyKey === `s${req.id}` ? (
-                      <Loader2
-                        className="size-4 animate-spin"
-                        aria-hidden="true"
-                      />
-                    ) : (
-                      <Store className="size-4" aria-hidden="true" />
-                    )}
-                    Do‘konga yuborish
-                  </Button>
-                )
-              }
-            />
-          )}
-          <PipelineFootnote
-            icon={<PackageCheck className="size-3.5" aria-hidden="true" />}
-          >
-            Ishlab chiqarishdan qabul qilingan — do‘konga yuborilgach
-            «Yuborilgan»ga o‘tadi.
-          </PipelineFootnote>
-        </Card>
-      )}
-
-      {/* YUBORILGAN — shipped to a store, awaiting the store's acceptance. */}
-      {tab === 'yuborilgan' && (
-        <Card>
-          {listLoading && <LoadingState />}
-          {!listLoading && listError && (
-            <ErrorState message={listError} onRetry={allRequests.refetch} />
-          )}
-          {!listLoading && !listError && yuborilgan.length === 0 && (
-            <EmptyState message="Do‘kon qabulini kutayotgan so‘rov yo‘q." />
-          )}
-          {!listLoading && !listError && yuborilgan.length > 0 && (
-            <PipelineList
-              rows={yuborilgan}
-              renderMeta={() => (
-                <Badge variant="secondary" className="gap-1">
-                  <Clock className="size-3" aria-hidden="true" />
-                  Do‘kon qabuli kutilmoqda
-                </Badge>
-              )}
-            />
-          )}
-          <PipelineFootnote
-            icon={<Truck className="size-3.5" aria-hidden="true" />}
-          >
-            Do‘konga jo‘natildi — do‘kon qabul qilgach so‘rov yopiladi.
-          </PipelineFootnote>
-        </Card>
+        </>
       )}
 
       {/* TRANZAKSIYALAR — every stock movement touching the central warehouse. */}
@@ -663,39 +587,29 @@ export function CentralRequestsTab({
                 </Table>
               </div>
             )}
-          <PipelineFootnote
-            icon={<History className="size-3.5" aria-hidden="true" />}
-          >
-            Markaziy sklad harakatlari (qabul qildi / chiqardi) — eng yangisi
-            yuqorida.
-          </PipelineFootnote>
+          {!movements.isLoading &&
+            !movements.error &&
+            centralMovements.length > 0 && (
+              <p className="flex items-center gap-2 border-t border-border/60 px-5 py-3 text-xs text-muted-foreground">
+                <History className="size-3.5" aria-hidden="true" />
+                Markaziy sklad harakatlari (qabul qildi / chiqardi) — eng yangisi
+                yuqorida.
+              </p>
+            )}
         </Card>
       )}
 
-      {/* 📤 CHIQGAN — the canonical 5-column board of requests the central
-          RAISED toward production (cross-department-flow §9.2). The detailed
-          actionable «Kelgan» flow stays the pipeline tabs above; this board is
-          the outbound mirror so a request is visible from both sides. */}
-      {!listLoading && !listError && (
-        <section className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="flex items-center gap-2 text-base font-semibold">
-              <ArrowUpRight className="size-4 text-primary" aria-hidden="true" />
-              📤 Chiqgan
-            </h2>
-            <Badge variant="outline" className="tabular-nums">
-              {outgoing.length}
-            </Badge>
-            <p className="w-full text-xs text-muted-foreground sm:w-auto">
-              Markaz ishlab chiqarishga yuborgan so‘rovlar — har bosqich bo‘yicha.
-            </p>
-          </div>
-          <RequestKanban
-            requests={outgoing}
-            emptyLabel="Chiqgan so‘rov yo‘q."
-          />
-        </section>
-      )}
+      {/* The Jira card — opened on any board card click. Its central section
+          opens the partial-fulfilment modal for a store order. */}
+      <RequestDetailModal
+        open={openRequest !== null}
+        onOpenChange={(next) => {
+          if (!next) setOpenRequest(null);
+        }}
+        request={openRequest}
+        onActed={refreshAll}
+        onFulfill={(req) => setFulfillLines(fulfilLinesFor(req))}
+      />
 
       {/* "Qabul qilish" — partial-fulfilment modal for a store order. */}
       <FulfillmentModal
@@ -725,211 +639,5 @@ export function CentralRequestsTab({
         }}
       />
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// PipelineFootnote — the muted explanatory strip at the bottom of each card.
-// ---------------------------------------------------------------------------
-
-function PipelineFootnote({
-  icon,
-  children,
-}: {
-  icon: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <p className="flex items-center gap-2 border-t border-border/60 px-5 py-3 text-xs text-muted-foreground">
-      {icon}
-      {children}
-    </p>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// PipelineList — a simple, aligned list of single requests for a stage.
-// One clean row per request: id · product · qty · status badge, plus an
-// optional per-row meta badge and/or a single trailing action.
-// ---------------------------------------------------------------------------
-
-function PipelineList({
-  rows,
-  renderMeta,
-  renderAction,
-}: {
-  rows: ReplenishmentRequest[];
-  /** Optional extra badge shown next to the status (e.g. the sex name). */
-  renderMeta?: (req: ReplenishmentRequest) => React.ReactNode;
-  /** Optional single trailing action for the row. */
-  renderAction?: (req: ReplenishmentRequest) => React.ReactNode;
-}) {
-  return (
-    <ul className="divide-y divide-border/40">
-      {rows.map((req) => (
-        <li
-          key={req.id}
-          className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between"
-        >
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
-            <span className="text-xs text-muted-foreground">#{req.id}</span>
-            <span className="font-medium">{req.product_name}</span>
-            <span className="tabular-nums text-muted-foreground">
-              {formatQtyUnit(req.qty_needed, req.product_unit)}
-            </span>
-            <span className="text-xs text-muted-foreground">
-              → {req.requester_location_name}
-            </span>
-            <Badge variant={REPLENISHMENT_STATUS_VARIANT[req.status]}>
-              {pipelineStatusLabel(req)}
-            </Badge>
-            {renderMeta?.(req)}
-          </div>
-          {renderAction && (
-            <div className="flex items-center gap-2 sm:justify-end">
-              {renderAction(req)}
-            </div>
-          )}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// ProductionDeliveryRow — one DONE_TO_WAREHOUSE delivery awaiting "Qabul
-// qildim" (brak receipt). PM is read-only.
-// ---------------------------------------------------------------------------
-
-function ProductionDeliveryRow({
-  req,
-  isPm,
-  onReceive,
-}: {
-  req: ReplenishmentRequest;
-  isPm: boolean;
-  onReceive: () => void;
-}) {
-  return (
-    <section
-      className="rounded-lg border border-border/60 bg-surface-3"
-      aria-label={`Ishlab chiqarishdan keldi — ${req.product_name}`}
-    >
-      <div className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
-          <Badge variant="outline" className="gap-1">
-            <Factory className="size-3" aria-hidden="true" />
-            Ishlab chiqarishdan
-          </Badge>
-          <span className="text-xs text-muted-foreground">#{req.id}</span>
-          <span className="font-medium">{req.product_name}</span>
-          <span className="tabular-nums text-muted-foreground">
-            {formatQtyUnit(req.qty_needed, req.product_unit)}
-          </span>
-          <span className="text-xs text-muted-foreground">
-            → {req.requester_location_name}
-          </span>
-        </div>
-        {!isPm && (
-          <div className="flex items-center gap-2 sm:justify-end">
-            <Button size="sm" onClick={onReceive}>
-              <PackageCheck className="size-4" aria-hidden="true" />
-              Qabul qildim
-            </Button>
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// StoreOrderCard — one store order (batch) awaiting the manager. A single
-// "Qabul qilish" opens the partial-fulfilment modal for the whole order. Each
-// line shows what the store needs vs. what central holds. PM is read-only.
-// ---------------------------------------------------------------------------
-
-function StoreOrderCard({
-  group,
-  isPm,
-  availableByProduct,
-  onFulfill,
-}: {
-  group: BatchGroup<ReplenishmentRequest>;
-  isPm: boolean;
-  availableByProduct: Map<number, number>;
-  onFulfill: () => void;
-}) {
-  const storeName = group.lines[0]?.requester_location_name ?? 'Noma‘lum';
-  const isGroup = group.batch_id !== null;
-
-  return (
-    <section
-      className="rounded-lg border border-border/60 bg-surface-3"
-      aria-label={`${storeName} — ${group.lines.length} mahsulot`}
-    >
-      <header className="flex flex-col gap-3 border-b border-border/60 p-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0 space-y-0.5">
-          <h3 className="flex flex-wrap items-center gap-2 text-sm font-semibold">
-            <Store className="size-4 text-primary" aria-hidden="true" />
-            {storeName}
-            <Badge variant="outline" className="tabular-nums">
-              {group.lines.length} mahsulot
-            </Badge>
-            {!isGroup && <Badge variant="secondary">Yakka so‘rov</Badge>}
-          </h3>
-          <p className="text-xs text-muted-foreground">
-            {formatDateTime(group.created_at)}
-          </p>
-        </div>
-        {!isPm && (
-          <div className="flex items-center gap-2">
-            <Button size="sm" onClick={onFulfill}>
-              <PackageCheck className="size-4" aria-hidden="true" />
-              Qabul qilish
-            </Button>
-          </div>
-        )}
-      </header>
-
-      <div className="scrollbar-thin overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Mahsulot</TableHead>
-              <TableHead className="text-right">So‘ralgan</TableHead>
-              <TableHead className="text-right">Markaz mavjud</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {group.lines.map((line) => {
-              const available = availableByProduct.get(line.product_id) ?? 0;
-              const short = available < line.qty_needed;
-              const unit = line.product_unit;
-              return (
-                <TableRow key={line.id}>
-                  <TableCell className="font-medium">
-                    {line.product_name}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatQty(line.qty_needed)} {unit}
-                  </TableCell>
-                  <TableCell
-                    className={cn(
-                      'text-right tabular-nums',
-                      short
-                        ? 'font-medium text-warning'
-                        : 'text-muted-foreground',
-                    )}
-                  >
-                    {formatQty(available)} {unit}
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </div>
-    </section>
   );
 }

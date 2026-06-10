@@ -15,6 +15,7 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
+import { StockMeter, type StockTone } from '@/components/ui/stock-meter';
 import { Tabs } from '@/components/ui/tabs';
 import {
   FilterPopover,
@@ -115,6 +116,13 @@ function stockStatusOf(row: StockRow): StockStatusKey {
   if (row.qty <= row.min_level) return 'below_min';
   if (isLowStock(row)) return 'low';
   return 'enough';
+}
+
+/** StockMeter fill tone — DESIGN.md §8: 0 → danger, below min → warning. */
+function stockToneOf(row: StockRow): StockTone {
+  if (row.qty <= 0) return 'danger';
+  if (row.qty <= row.min_level) return 'warning';
+  return 'success';
 }
 
 function StockStatusPill({ row }: { row: StockRow }) {
@@ -582,55 +590,64 @@ function CentralProductsTab({
               </div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
                 {group.items.map((row) => {
-                  const danger = row.qty <= 0 || row.qty <= row.min_level;
                   const basketItem = basket[row.product_id];
+                  const hasMeter = row.max_level > 0;
                   return (
-                    <div
+                    <Card
                       key={`${row.location_id}-${row.product_id}`}
                       className={cn(
-                        'flex flex-col gap-3 rounded-lg border border-border/60 bg-surface-3 p-3 transition-colors hover:border-border-strong',
-                        danger && 'border-destructive/40 bg-destructive/5',
-                        basketItem && 'border-primary/50 bg-primary/5',
+                        'flex flex-col gap-2.5 p-4 transition-colors hover:border-border-strong hover:shadow-card-hover',
+                        basketItem && 'ring-1 ring-primary/40',
                       )}
                     >
                       <div className="flex items-start justify-between gap-2">
-                        <p className="min-w-0 text-sm font-semibold leading-tight">
+                        <p
+                          className="min-w-0 truncate text-sm font-medium leading-tight"
+                          title={row.product_name}
+                        >
                           {row.product_name}
                         </p>
                         <StockStatusPill row={row} />
                       </div>
 
                       {multiLocation && (
-                        <Badge variant="outline" className="w-fit gap-1">
-                          <Warehouse className="size-3" aria-hidden="true" />
-                          {locationNameById.get(row.location_id) ??
-                            `#${row.location_id}`}
-                        </Badge>
+                        <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                          <Warehouse
+                            className="size-3 shrink-0"
+                            aria-hidden="true"
+                          />
+                          <span className="truncate">
+                            {locationNameById.get(row.location_id) ??
+                              `#${row.location_id}`}
+                          </span>
+                        </p>
                       )}
 
-                      <div>
-                        <p className="text-xs text-muted-foreground">Qoldiq</p>
-                        <p
-                          className={cn(
-                            'text-lg font-semibold tabular-nums',
-                            danger && 'text-destructive',
-                          )}
-                        >
-                          {formatQtyUnit(row.qty, row.product_unit)}
-                        </p>
-                      </div>
+                      <p
+                        className={cn(
+                          'text-xl font-semibold tabular-nums tracking-tight',
+                          row.qty <= 0
+                            ? 'text-destructive'
+                            : row.qty <= row.min_level && 'text-warning',
+                        )}
+                      >
+                        {formatQtyUnit(row.qty, row.product_unit)}
+                      </p>
 
-                      <div className="flex items-end justify-between gap-2 border-t border-border/40 pt-2">
-                        <div>
-                          <p className="text-xs text-muted-foreground">
-                            Min / Max
-                          </p>
-                          <p className="text-xs tabular-nums text-muted-foreground">
-                            {formatQtyUnit(row.min_level, row.product_unit)}
-                            {' / '}
-                            {formatQtyUnit(row.max_level, row.product_unit)}
-                          </p>
-                        </div>
+                      {hasMeter && (
+                        <StockMeter
+                          ratio={row.qty / row.max_level}
+                          minRatio={row.min_level / row.max_level}
+                          tone={stockToneOf(row)}
+                        />
+                      )}
+                      <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                        <span className="tabular-nums">
+                          Min {formatQtyUnit(row.min_level, row.product_unit)}
+                        </span>
+                        <span className="tabular-nums">
+                          Max {formatQtyUnit(row.max_level, row.product_unit)}
+                        </span>
                       </div>
 
                       {/* Direct per-product actions (owner feedback): act
@@ -640,7 +657,7 @@ function CentralProductsTab({
                           The basket stays as a SECONDARY batching control.
                           central manager only. */}
                       {canShip && (
-                        <div className="space-y-1.5 border-t border-border/40 pt-2">
+                        <div className="mt-auto space-y-1.5 border-t border-border/40 pt-2.5">
                           <div className="flex flex-col gap-1.5 sm:flex-row">
                             <Button
                               type="button"
@@ -745,7 +762,7 @@ function CentralProductsTab({
                           )}
                         </div>
                       )}
-                    </div>
+                    </Card>
                   );
                 })}
               </div>

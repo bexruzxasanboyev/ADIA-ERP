@@ -5,7 +5,6 @@ import {
   Inbox,
   PackageCheck,
 } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { formatPlainNumber } from '@/lib/format';
@@ -145,28 +144,23 @@ interface TileModel {
 function NumberSkeleton() {
   return (
     <span
-      className="inline-block h-9 w-10 animate-pulse rounded-md bg-muted sm:h-10"
+      className="inline-block h-6 w-9 animate-pulse rounded-md bg-muted"
       aria-hidden="true"
     />
   );
 }
 
 /**
- * A single control-tower tile. Exception tiles (`tone='danger'`) with a
- * non-zero count light up RED — both the number and a small "diqqat" badge —
- * so the manager's eye lands on what needs action. A zero count stays neutral
- * even on a danger tile (nothing to flag → no alarm).
+ * A single control-tower tile. The card itself stays NEUTRAL (DESIGN.md §8 —
+ * no border/bg tinting); an exception tile (`tone='danger'`) with a non-zero
+ * count carries ONE accent: the icon + the value turn destructive. A zero
+ * count stays neutral even on a danger tile (nothing to flag → no alarm).
  */
 function Tile({ tile }: { tile: TileModel }) {
   const alarm = tile.tone === 'danger' && tile.value > 0;
 
   return (
-    <Card
-      className={cn(
-        'flex min-w-[150px] flex-1 flex-col justify-between gap-2 p-4 transition-colors sm:p-5',
-        alarm ? 'border-destructive/50 bg-destructive/5' : 'border-border/60',
-      )}
-    >
+    <Card className="flex min-w-[150px] flex-1 flex-col justify-between gap-2 p-4 sm:p-5">
       <div className="flex items-start justify-between gap-2">
         <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           {tile.label}
@@ -174,27 +168,20 @@ function Tile({ tile }: { tile: TileModel }) {
         <tile.Icon
           aria-hidden="true"
           className={cn(
-            'size-5 shrink-0',
+            'size-4 shrink-0',
             alarm ? 'text-destructive' : 'text-muted-foreground',
           )}
         />
       </div>
 
-      <div className="flex items-end justify-between gap-2">
-        <span
-          className={cn(
-            'text-3xl font-bold leading-none tabular-nums sm:text-4xl',
-            alarm && 'text-destructive',
-          )}
-        >
-          {tile.loading ? <NumberSkeleton /> : formatPlainNumber(tile.value)}
-        </span>
-        {alarm && (
-          <Badge variant="danger" className="mb-0.5">
-            Diqqat
-          </Badge>
+      <span
+        className={cn(
+          'text-2xl font-semibold leading-none tabular-nums tracking-tight',
+          alarm && 'text-destructive',
         )}
-      </div>
+      >
+        {tile.loading ? <NumberSkeleton /> : formatPlainNumber(tile.value)}
+      </span>
 
       <p className="text-xs text-muted-foreground">{tile.caption}</p>
     </Card>

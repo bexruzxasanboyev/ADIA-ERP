@@ -141,26 +141,23 @@ function KpiCard({
   iconClass?: string;
 }) {
   return (
-    <Card className="flex min-h-[140px] flex-col justify-between gap-3 border-border/60 p-5">
+    <Card className="flex flex-col justify-between gap-3 p-5">
       <div className="flex items-start justify-between gap-3">
         <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           {label}
         </p>
-        <Icon
-          aria-hidden="true"
-          className={cn('size-6 shrink-0 sm:size-7', iconClass)}
-        />
+        <Icon aria-hidden="true" className={cn('size-4 shrink-0', iconClass)} />
       </div>
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <span
           className={cn(
-            'text-4xl font-bold leading-none tabular-nums sm:text-5xl',
+            'text-2xl font-semibold leading-none tabular-nums tracking-tight',
             valueClass,
           )}
         >
           {formatPlainNumber(value)}
         </span>
-        <span className="text-sm text-muted-foreground">{caption}</span>
+        <span className="text-xs text-muted-foreground">{caption}</span>
       </div>
     </Card>
   );
