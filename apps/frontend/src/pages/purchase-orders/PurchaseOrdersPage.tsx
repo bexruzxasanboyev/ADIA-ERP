@@ -46,6 +46,11 @@ import {
 import { AdminPurchaseOrderFormDialog } from './AdminPurchaseOrderFormDialog';
 import { ApprovalPanel } from './ApprovalPanel';
 import { PurchaseSignalsSection } from './PurchaseSignalsSection';
+import { BoardWorkspace } from '@/pages/replenishment/board/BoardWorkspace';
+import { RequestDetailModal } from '@/pages/replenishment/RequestDetailModal';
+import { splitBoards } from '@/pages/replenishment/board/boardFilters';
+import type { FlowRequest } from '@/lib/replenishmentFlow';
+import type { ReplenishmentRequest } from '@/lib/types';
 import type { PurchaseSignal } from '@/lib/replenishmentFlow';
 
 /**
@@ -112,6 +117,29 @@ export function PurchaseOrdersPage() {
   // /api/purchase-orders/admin (authorize('pm')). This is the only write
   // the PM performs on this page, so it gets its own dialog + button.
   const isPm = user?.role === 'pm';
+
+  // F-S (owner: "ishlab chiqarish mahsulot so'ragan edi — shular chiqmayapti")
+  // — the raw warehouse is a chain link like every other: the requests the
+  // sexes route AT it (F-G: pinned raw target, manager accepts, then adds the
+  // Поставка in Poster) must live on the SAME unified board here. The PO
+  // table below stays the purchase/approval surface; this board is the
+  // incoming-request surface.
+  const { locations: myLocations } = useAuth();
+  const rawScope = useMemo(() => {
+    const ids = new Set<number>();
+    for (const loc of myLocations) {
+      if (loc.type === 'raw_warehouse') ids.add(loc.id);
+    }
+    return ids;
+  }, [myLocations]);
+  const replen = useApiQuery<ReplenishmentRequest[]>(
+    rawScope.size > 0 ? '/api/replenishment' : null,
+  );
+  const rawBoards = useMemo(
+    () => splitBoards((replen.data ?? []) as FlowRequest[], rawScope),
+    [replen.data, rawScope],
+  );
+  const [openRequest, setOpenRequest] = useState<FlowRequest | null>(null);
 
   // EPIC 6.2 — status is now one dimension inside the shared
   // FilterPopover (held as a string[] keyed by 'status'). We still send a
@@ -257,6 +285,36 @@ export function PurchaseOrdersPage() {
       {/* F-F — below-min raw-material signals; self-hides on 404/403. */}
       <PurchaseSignalsSection
         onCreatePo={canCreate ? handleCreatePoFromSignal : null}
+      />
+
+      {/* F-S — bo'limlardan kelgan so'rovlar (pinned raw target): the same
+          unified board every other link has. Accept/reject lives in the shared
+          modal (accept-fulfiller); after accept the row shows the «Poster
+          postavka kutilmoqda» state until the sync lands the stock. */}
+      {rawScope.size > 0 && !replen.isLoading && !replen.error && (
+        <section className="space-y-2">
+          <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Bo‘limlardan kelgan so‘rovlar
+          </h2>
+          <BoardWorkspace
+            incoming={rawBoards.incoming}
+            outgoing={rawBoards.outgoing}
+            onlySide="incoming"
+            onOpen={(req) => setOpenRequest(req)}
+            incomingEmptyLabel="Bo‘limlardan so‘rov yo‘q."
+            actionScope={rawScope}
+            heightClassName="h-[clamp(20rem,38dvh,30rem)]"
+          />
+        </section>
+      )}
+
+      <RequestDetailModal
+        open={openRequest !== null}
+        onOpenChange={(next) => {
+          if (!next) setOpenRequest(null);
+        }}
+        request={openRequest}
+        onActed={() => replen.refetch()}
       />
 
       <Card>
