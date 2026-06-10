@@ -5,7 +5,7 @@ import { AssistantButton } from './AssistantButton';
 import { LocationSwitcher } from './LocationSwitcher';
 import { PageTabs } from './PageTabs';
 import { StoreManagerTabs } from './StoreManagerTabs';
-import { findGroupForPath } from '@/lib/navigation';
+import { findGroupForPath, pageOwnsHeaderTabs } from '@/lib/navigation';
 import { useAuth } from '@/hooks/useAuth';
 import {
   HeaderSlotProvider,
@@ -102,8 +102,16 @@ function AppLayoutShell() {
   // when present. PageTabs itself returns null if the group has no
   // secondary (non-home-tile) screens for this role.
   const group = findGroupForPath(location.pathname);
-  // For non-store_manager roles the centred sub-tabs follow the active group.
-  const showTabs = !isStoreManager && !centerSlot && group?.hasTabs === true;
+  // For non-store_manager roles the centred sub-tabs follow the active group —
+  // UNLESS the current page owns its own in-page workspace tabs (e.g. /supply),
+  // in which case the global group strip would stack a second tab layer on top
+  // of the page's own and is suppressed (owner: "tepada headerdagi bo'limlar
+  // kerak emas").
+  const showTabs =
+    !isStoreManager &&
+    !centerSlot &&
+    group?.hasTabs === true &&
+    !pageOwnsHeaderTabs(location.pathname);
   // store_manager gets a FIXED three-tab top nav (Do'kon / Kassa / Bashorat)
   // as their PRIMARY navigation — they never see the /home launcher. The
   // page-supplied center slot (e.g. the dashboard greeting) still wins.

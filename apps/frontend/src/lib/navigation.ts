@@ -529,6 +529,40 @@ export function findGroupForPath(pathname: string): NavSection | null {
 }
 
 /**
+ * Routes whose PAGE owns its own in-page workspace tabs and must therefore
+ * SUPPRESS the global group tab strip (PageTabs) in the app header.
+ *
+ * Background — the dedicated workspace groups (`store` / `central` /
+ * `production`) already carry `hasTabs: false`, so their pages never render the
+ * header strip. But a few chain-layer screens live INSIDE the tabbed `modules`
+ * group while still being self-contained workspaces with their own on-page tab
+ * row. For those, the `modules` header strip (Xom-ashyo ombori · Ishlab
+ * chiqarish omborlari · Markaziy sklad · So'rovlar · Inventarizatsiya) "leaks"
+ * onto the page on top of the page's own tabs — two tab layers stacked (owner:
+ * "tepada headerdagi bo'limlar kerak emas").
+ *
+ * `/supply` ("Ishlab chiqarish omborlari") is the first such workspace: it owns
+ * a "Dashboard | Qoldiq va so'rovlar" tab row, so the global modules strip is
+ * redundant there and is suppressed. Other bare modules entries
+ * (`/raw-warehouse`, `/central-warehouse`, `/inventory`) keep the strip — they
+ * are NOT in this set, so this change is surgical and does not touch the central
+ * workspace's OWN header tabs. Matched by exact path or nested prefix, mirroring
+ * {@link findGroupForPath}.
+ */
+const SELF_TABBED_WORKSPACE_PATHS: readonly string[] = ['/supply'];
+
+/**
+ * True when the page at `pathname` renders its OWN workspace tabs and the global
+ * group PageTabs strip should be hidden for it. Keeps tab OWNERSHIP declared in
+ * the nav config (single source of truth) instead of hard-coded in the layout.
+ */
+export function pageOwnsHeaderTabs(pathname: string): boolean {
+  return SELF_TABBED_WORKSPACE_PATHS.some(
+    (path) => pathname === path || pathname.startsWith(`${path}/`),
+  );
+}
+
+/**
  * Resolve the landing path for a group icon click — the group's
  * `defaultPath` if the role can see it, otherwise the first visible
  * item, otherwise `null` (meaning: the group has no items for this

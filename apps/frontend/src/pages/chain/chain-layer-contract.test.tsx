@@ -8,10 +8,12 @@
  * loudly instead of silently rendering empty cards.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import { renderWithProviders, jsonResponse } from '@/test/render-helpers';
 import type {
   ChainLayerOverview,
+  DashboardRawDetail,
+  Location,
   ProductionOrder,
   PurchaseOrder,
   ReplenishmentRequest,
@@ -74,6 +76,42 @@ const RAW_STOCK: StockRow[] = [
     product_unit: 'kg',
   },
 ];
+
+/** Default "Dashboard" tab payload (`GET /api/dashboard/raw`). */
+const RAW_DETAIL: DashboardRawDetail = {
+  kpis: {
+    raw_product_types: 1,
+    total_stock_by_unit: [{ unit: 'kg', qty: 4 }],
+    below_min_count: 1,
+    open_purchase_orders: 1,
+  },
+  below_min_items: [
+    {
+      product_id: 1,
+      product_name: 'Un',
+      unit: 'kg',
+      qty: 4,
+      min_level: 10,
+      max_level: 50,
+      location_id: 1,
+      location_name: 'Asosiy xom-ashyo ombori',
+    },
+  ],
+  daily_movements: [
+    { date: '2026-05-22', received: 200, issued: 30 },
+  ],
+  daily_granularity: 'day',
+  pending_purchase_orders: [
+    {
+      id: 11,
+      product_id: 1,
+      product_name: 'Un',
+      qty: 200,
+      supplier_id: null,
+      created_at: '2026-05-22T07:30:00.000Z',
+    },
+  ],
+};
 
 const APPROVED_PURCHASE: PurchaseOrder = {
   id: 11,
@@ -147,8 +185,8 @@ const SUPPLY_OVERVIEW: ChainLayerOverview = {
   locations: [
     {
       id: 3,
-      name: 'Tort bo‘limi',
-      type: 'supply',
+      name: 'Tort skladi',
+      type: 'sex_storage',
       total_products: 18,
       below_min_count: 1,
       open_requests_count: 2,
@@ -164,11 +202,28 @@ const SUPPLY_OVERVIEW: ChainLayerOverview = {
   recent_movements: [],
 };
 
+const SUPPLY_LOCATIONS: Location[] = [
+  {
+    id: 3,
+    name: 'Tort skladi',
+    type: 'sex_storage',
+    parent_id: 36,
+    manager_user_id: null,
+    poster_storage_id: null,
+    lead_time_days: 1,
+    review_days: 2,
+    safety_factor: 1.3,
+    is_active: true,
+  },
+];
+
+// One below-min row (qty ≤ min) so the бо'g'in card shows MIN'DAN PAST and the
+// drill-in "Min'dan past" panel has content.
 const SUPPLY_STOCK: StockRow[] = [
   {
     location_id: 3,
     product_id: 20,
-    qty: 25,
+    qty: 3,
     min_level: 5,
     max_level: 40,
     minmax_mode: 'dynamic',
@@ -196,7 +251,7 @@ const SUPPLY_REPLEN: ReplenishmentRequest = {
   product_name: 'Tort qoplama',
   product_unit: 'kg',
   requester_location_name: 'Do‘kon #2',
-  target_location_name: 'Tort bo‘limi',
+  target_location_name: 'Tort skladi',
   production_location_name: null,
   route_to_production_manual: false,
   received_from_production_at: null,
@@ -260,6 +315,10 @@ describe('RawWarehousePage — contract', () => {
 
   it('renders header, KPI numbers, locations and incoming-purchases widget', async () => {
     installFetch((url) => {
+      // The default "Dashboard" tab fetches the detail endpoint on mount.
+      if (url.includes('/api/dashboard/raw')) {
+        return jsonResponse(200, RAW_DETAIL);
+      }
       if (url.includes('/api/dashboard/chain-layer/raw_warehouse')) {
         return jsonResponse(200, RAW_OVERVIEW);
       }
@@ -281,6 +340,11 @@ describe('RawWarehousePage — contract', () => {
       locationId: 1,
       locationType: 'raw_warehouse',
     });
+
+    // The page now opens on the "Dashboard" tab; the chain-layer content
+    // (locations grid, incoming-purchases widget, KPI strip) lives in the
+    // "Qoldiq va qabul" tab. Switch to it before asserting that content.
+    fireEvent.click(screen.getByRole('tab', { name: 'Qoldiq va qabul' }));
 
     // Locations grid renders the only raw warehouse location once
     // the chain-layer endpoint resolves. We anchor on the location
@@ -362,15 +426,20 @@ describe('ProductionPage — contract', () => {
 describe('SupplyPage — contract', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it('renders header, locations, ready-to-ship and pending replen widgets', async () => {
+  it('header renders; flow tab shows true tiles + a drillable бо‘g‘in card', async () => {
     installFetch((url) => {
       if (url.includes('/api/dashboard/chain-layer/supply')) {
         return jsonResponse(200, SUPPLY_OVERVIEW);
       }
-      if (url.includes('/api/stock?location_type=supply')) {
+      // The flow workspace fetches the sex_storage stock list (not ?supply).
+      if (url.includes('/api/stock?location_type=sex_storage')) {
         return jsonResponse(200, SUPPLY_STOCK);
       }
-      if (url.includes('/api/replenishment?status=CHECK_STORE_SUPPLIER')) {
+      if (url.includes('/api/locations')) {
+        return jsonResponse(200, SUPPLY_LOCATIONS);
+      }
+      // Unfiltered list — the SO'ROVLAR / Kelayotgan tiles derive from it.
+      if (url.includes('/api/replenishment')) {
         return jsonResponse(200, [SUPPLY_REPLEN]);
       }
       return undefined;
@@ -378,16 +447,31 @@ describe('SupplyPage — contract', () => {
 
     renderWithProviders(<SupplyPage />, { role: 'pm' });
 
-    const supplyMatches = await screen.findAllByText('Tort bo‘limi');
-    expect(supplyMatches.length).toBeGreaterThan(0);
+    // Page identity unchanged.
     expect(
       screen.getByRole('heading', { level: 1 }).textContent,
     ).toMatch(/Ishlab chiqarish omborlari/);
+
+    // Switch from the default Dashboard tab to the flow workspace.
+    fireEvent.click(await screen.findByRole('tab', { name: /Qoldiq va so/ }));
+
+    // The бо'g'in card surfaces the sklad and its derived counts.
+    const card = await screen.findByRole('button', {
+      name: /Tort skladi — batafsil/,
+    });
+    expect(card).toBeInTheDocument();
+    // Flow tiles present (true numbers, not the old static counters).
+    expect(screen.getByText('Kelayotgan so‘rovlar')).toBeInTheDocument();
     expect(screen.getAllByText('Jo‘natmaga tayyor').length).toBeGreaterThan(0);
-    // Ready-to-ship surfaces the in-stock product.
+
+    // Drill in → the per-sklad board + "Min'dan past" panel render; the
+    // below-min product and its open request id (#77) appear.
+    fireEvent.click(card);
+    expect(
+      (await screen.findAllByText('Min’dan past')).length,
+    ).toBeGreaterThan(0);
     expect(screen.getAllByText('Tort qoplama').length).toBeGreaterThan(0);
-    // Pending replenishment widget shows the requester store.
-    expect(screen.getByText('Do‘kon #2')).toBeInTheDocument();
+    expect(screen.getByText(/So‘rov: #77/)).toBeInTheDocument();
   });
 });
 
