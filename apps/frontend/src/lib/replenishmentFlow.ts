@@ -135,6 +135,59 @@ export interface FlowRequest extends ReplenishmentRequest {
    * back to `qty_needed` everywhere — see {@link RequestCard} / the modal header.
    */
   shipped_qty?: number | null;
+  /**
+   * Mini chain-map (Variant A + mini-xarita, PINNED backend contract — built in
+   * parallel): the product-flow stations this request travels (source →
+   * requester, 2..4 stations) with the current hop highlighted, plus a
+   * plain-Uzbek `wait_reason` when the row is blocked on someone else. Embedded
+   * on GET /api/replenishment, /:id, /incoming and /:id/tree nodes. Optional +
+   * null-safe on the wire: absent/`null` (or a malformed payload) hides the
+   * strip — see {@link isRenderableJourney}. The UI must never crash before
+   * the backend lands.
+   */
+  journey?: Journey | null;
+}
+
+// ---------------------------------------------------------------------------
+// Journey — the mini chain-map strip (Variant A + mini-xarita).
+// ---------------------------------------------------------------------------
+
+/** One station on a request's product-flow journey (source → requester). */
+export interface JourneyStation {
+  /** The station's location id, or `null` for a virtual/unknown station. */
+  location_id: number | null;
+  /** Display name (e.g. "Markaziy sklad", "Tort sexi", "Kukcha"). */
+  name: string;
+  type: LocationType;
+  /** Where this station sits relative to the order's current position. */
+  state: 'done' | 'current' | 'pending';
+}
+
+/** The mini chain-map payload — see {@link FlowRequest.journey}. */
+export interface Journey {
+  /** Product-flow order (source → requester), 2..4 stations. */
+  stations: JourneyStation[];
+  /** Index into {@link stations} of the `current` station. */
+  current_index: number;
+  /** Plain-Uzbek line when blocked; `null` when actionable. */
+  wait_reason: string | null;
+}
+
+/**
+ * True when a journey payload is well-formed enough to draw the strip: at
+ * least two stations (a one-station "chain" carries no information). Guards
+ * the wire defensively — the backend ships this field in parallel, so absent /
+ * `null` / malformed payloads must silently hide the strip, never crash.
+ */
+export function isRenderableJourney(
+  journey: Journey | null | undefined,
+): journey is Journey {
+  return (
+    journey != null &&
+    Array.isArray(journey.stations) &&
+    journey.stations.length >= 2 &&
+    journey.stations.every((s) => typeof s?.name === 'string')
+  );
 }
 
 /** Uzbek labels for the request-origin provenance badge. */
