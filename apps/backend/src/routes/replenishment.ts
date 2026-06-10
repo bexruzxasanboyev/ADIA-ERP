@@ -31,6 +31,7 @@ import {
 } from '../lib/validate.js';
 import {
   acceptByCentral,
+  acceptByFulfiller,
   acceptInternal,
   acceptShipment,
   advance,
@@ -123,15 +124,23 @@ replenishmentRouter.get(
         requester_location_name: string | null;
         target_location_name: string | null;
         production_location_name: string | null;
+        requester_location_type: string | null;
+        target_location_type: string | null;
         pipeline_stage: PipelineStage;
       }
     >(
+      // F-G — requester_location_type + target_location_type are PINNED field
+      // names: the Jira-style Kanban derives its "Tasdiqlandi" column (from
+      // fulfiller_accepted_at, already in the columns) and the "Poster kutilmoqda"
+      // chip (a raw_warehouse target still holding) from them.
       `SELECT ${qualifiedCols},
               p.name AS product_name,
               p.unit AS product_unit,
               rl.name AS requester_location_name,
               tl.name AS target_location_name,
               pl.name AS production_location_name,
+              rl.type::text AS requester_location_type,
+              tl.type::text AS target_location_type,
               ${PIPELINE_STAGE_SQL} AS pipeline_stage
        FROM replenishment_requests r
        JOIN products p ON p.id = r.product_id
@@ -180,15 +189,21 @@ replenishmentRouter.get(
         requester_location_name: string | null;
         target_location_name: string | null;
         production_location_name: string | null;
+        requester_location_type: string | null;
+        target_location_type: string | null;
         pipeline_stage: PipelineStage;
       }
     >(
+      // F-G — requester_location_type + target_location_type carried for the
+      // Kanban (PINNED field names; see the list endpoint).
       `SELECT ${qualifiedCols},
               p.name AS product_name,
               p.unit AS product_unit,
               rl.name AS requester_location_name,
               tl.name AS target_location_name,
               pl.name AS production_location_name,
+              rl.type::text AS requester_location_type,
+              tl.type::text AS target_location_type,
               ${PIPELINE_STAGE_SQL} AS pipeline_stage
        FROM replenishment_requests r
        JOIN products p ON p.id = r.product_id
@@ -298,6 +313,8 @@ replenishmentRouter.get(
         product_unit: string;
         requester_location_name: string | null;
         target_location_name: string | null;
+        requester_location_type: string | null;
+        target_location_type: string | null;
         pipeline_stage: PipelineStage;
       }
     >(
@@ -306,6 +323,8 @@ replenishmentRouter.get(
               p.unit AS product_unit,
               rl.name AS requester_location_name,
               tl.name AS target_location_name,
+              rl.type::text AS requester_location_type,
+              tl.type::text AS target_location_type,
               ${PIPELINE_STAGE_SQL} AS pipeline_stage
          FROM replenishment_requests r
          JOIN products p ON p.id = r.product_id
@@ -336,6 +355,8 @@ replenishmentRouter.get(
         product_unit: string;
         requester_location_name: string | null;
         target_location_name: string | null;
+        requester_location_type: string | null;
+        target_location_type: string | null;
         pipeline_stage: PipelineStage;
         waiters_count: number;
       }
@@ -352,6 +373,8 @@ replenishmentRouter.get(
               p.unit AS product_unit,
               rl.name AS requester_location_name,
               tl.name AS target_location_name,
+              rl.type::text AS requester_location_type,
+              tl.type::text AS target_location_type,
               ${PIPELINE_STAGE_SQL} AS pipeline_stage,
               (SELECT count(*) FROM request_waiters w WHERE w.child_request_id = r.id)::int
                 AS waiters_count
@@ -1706,6 +1729,124 @@ replenishmentRouter.post(
     await requireLocationOperator(principal, scope.workshopLocationId);
 
     const updated = await rejectInternal({ requestId: id, actorUserId: principal.userId, reason });
+    res.status(200).json({ request: updated });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// F-G — web fulfiller accept / reject (parity with the Telegram xreq path)
+// ---------------------------------------------------------------------------
+// A cross-dept request PINNED to a non-central fulfiller (a producer sex_storage
+// for cream, or the raw_warehouse for a mahsulot-ombori supply) is accepted /
+// rejected by that fulfiller. The Telegram `xreq:accept|reject` buttons already
+// drive this; these two routes give the WEB Kanban the same actions.
+//
+// RBAC mirrors `checkXreqRbac`: the acting operator must manage the request's
+// effective fulfiller location — the PINNED `target_location_id` when set, else
+// (a NEW request not yet pinned) the requester's topology parent (the location
+// the original notification was addressed to). PM is 403 (authorizeWrite write
+// guard); an operator of any OTHER location is 403; an unknown id is 404.
+
+/**
+ * Resolve the effective FULFILLER location for the web accept/reject-fulfiller
+ * RBAC: the pinned `target_location_id` when present, otherwise the requester's
+ * topology parent (mirrors `checkXreqRbac`). Throws 404 when the request is
+ * missing; throws a 422 validation error when neither can be resolved (a root
+ * requester with no parent has nobody to fulfil it).
+ */
+async function resolveFulfillerTarget(id: number): Promise<number> {
+  const { rows } = await query<{
+    target_location_id: number | null;
+    requester_location_id: number;
+  }>(
+    `SELECT target_location_id, requester_location_id
+       FROM replenishment_requests WHERE id = $1`,
+    [id],
+  );
+  const existing = rows[0];
+  if (existing === undefined) {
+    throw AppError.notFound('Replenishment request not found.');
+  }
+  if (existing.target_location_id !== null) {
+    return Number(existing.target_location_id);
+  }
+  const { rows: prows } = await query<{ parent_id: number | null }>(
+    `SELECT parent_id FROM locations WHERE id = $1`,
+    [existing.requester_location_id],
+  );
+  const parentId = prows[0]?.parent_id ?? null;
+  if (parentId === null) {
+    throw AppError.validation('Request has no fulfiller location (no pinned target and no parent).');
+  }
+  return Number(parentId);
+}
+
+// POST /api/replenishment/:id/accept-fulfiller
+//   body: {}  (no fields)
+//
+// The fulfilling отдел accepts the request: pin the target to the fulfiller (when
+// not already), ship from its own stock if it has any, else HOLD at
+// CHECK_STORE_SUPPLIER (a raw_warehouse target holds until its Поставка lands —
+// see the F-G "waiting for Poster supply" rule). Response mirrors accept-central:
+// { request, shipped }.
+replenishmentRouter.post(
+  '/:id/accept-fulfiller',
+  authenticate,
+  authorizeWrite(
+    'raw_warehouse_manager',
+    'production_manager',
+    'supply_manager',
+    'central_warehouse_manager',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+
+    // RBAC: the operator must manage the effective fulfiller (pinned target, else
+    // the requester's parent). 404 for an unknown id; 403 for a foreign location.
+    const fulfillerLocationId = await resolveFulfillerTarget(id);
+    await requireLocationOperator(principal, fulfillerLocationId);
+
+    const result = await acceptByFulfiller({
+      requestId: id,
+      fulfillerLocationId,
+      actorUserId: principal.userId,
+    });
+    res.status(200).json({
+      request: result.request,
+      shipped: result.shipped,
+      reason: result.reason,
+    });
+  }),
+);
+
+// POST /api/replenishment/:id/reject-fulfiller
+//   body: { reason?: string }
+//
+// The fulfilling отдел refuses the request -> CANCELLED
+// (closure_reason='cancelled_by_fulfiller'). Response: { request }.
+replenishmentRouter.post(
+  '/:id/reject-fulfiller',
+  authenticate,
+  authorizeWrite(
+    'raw_warehouse_manager',
+    'production_manager',
+    'supply_manager',
+    'central_warehouse_manager',
+  ),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+    const body = (req.body as Record<string, unknown> | null) ?? {};
+    const reason =
+      typeof body.reason === 'string' && body.reason.trim() !== ''
+        ? body.reason.trim()
+        : 'rejected by fulfiller';
+
+    const fulfillerLocationId = await resolveFulfillerTarget(id);
+    await requireLocationOperator(principal, fulfillerLocationId);
+
+    const updated = await cancelRequestByFulfiller(id, principal.userId, reason);
     res.status(200).json({ request: updated });
   }),
 );

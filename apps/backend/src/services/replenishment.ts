@@ -236,6 +236,15 @@ export type ReplenishmentRow = {
   depth: number;
   /** 0065 — how the request was born (origin domain). */
   origin: RequestOrigin;
+  /**
+   * 0066 — when the fulfilling отдел FIRST accepted this request (first accept
+   * wins; set inside acceptByCentral / acceptByFulfiller / acceptInternal, or
+   * implicitly by a partial fulfill). NULL = not yet accepted. Drives the
+   * Kanban "Tasdiqlandi" column independently of the technical status.
+   */
+  fulfiller_accepted_at: Date | null;
+  /** 0066 — the user who performed that first accept (NULL when none / cron). */
+  fulfiller_accepted_by: number | null;
 };
 
 export const REPLENISHMENT_COLUMNS = `id, product_id, requester_location_id,
@@ -244,7 +253,8 @@ export const REPLENISHMENT_COLUMNS = `id, product_id, requester_location_id,
   assigned_to_user_id, qty_accepted, qty_returned, accept_note, reject_reason,
   closure_reason, brak_qty, brak_reason, batch_id,
   route_to_production_manual, received_from_production_at,
-  parent_request_id, root_request_id, depth, origin`;
+  parent_request_id, root_request_id, depth, origin,
+  fulfiller_accepted_at, fulfiller_accepted_by`;
 
 /**
  * Possible outcomes of one `advance()` call. `advanced=false` means a wait
@@ -455,6 +465,31 @@ export async function createRequestInTx(
 function isUniqueViolation(err: unknown): boolean {
   return (
     typeof err === 'object' && err !== null && 'code' in err && (err as { code: unknown }).code === '23505'
+  );
+}
+
+/**
+ * 0066 / cross-dept-flow §3 — stamp the fulfiller acceptance (who + when) on a
+ * request, but ONLY when it is still NULL: the FIRST accept wins, so a later
+ * re-accept (or a fulfill that follows an accept) never overwrites the original
+ * "Tasdiqlandi" moment the Kanban shows. The `WHERE … IS NULL` guard makes this
+ * naturally idempotent — a second call on an already-stamped row updates 0 rows.
+ *
+ * tx-scoped: runs inside the caller's accept transaction so the stamp and the
+ * status flip / ship commit together (all-or-nothing). The audit note is left to
+ * the caller — the existing accept_* audit row already records the action.
+ */
+async function stampFulfillerAccept(
+  tx: TxClient,
+  requestId: number,
+  actorUserId: number | null,
+): Promise<void> {
+  await tx.query(
+    `UPDATE replenishment_requests
+        SET fulfiller_accepted_at = now(),
+            fulfiller_accepted_by = $2
+      WHERE id = $1 AND fulfiller_accepted_at IS NULL`,
+    [requestId, actorUserId],
   );
 }
 
@@ -1395,6 +1430,17 @@ async function advanceCheckStoreSupplier(
     );
     return { advanced: true, request: next, reason: 'enough at target' };
   }
+  // F-G — a `raw_warehouse` target has NO production below it (it IS the root of
+  // the supply chain). The shortfall is covered by the raw manager's Поставка in
+  // Poster, which `posterStockSync` lands LATER. So instead of cascading into
+  // CHECK_PRODUCTION_INPUT (which would try to make the product — wrong for raw),
+  // we HOLD here: stay at CHECK_STORE_SUPPLIER and return a no-op. The cron re-
+  // runs every cycle; once the synced qty covers `qty_needed` the branch above
+  // ships exactly like today (SHIP_TO_REQUESTER -> CLOSED).
+  const targetType = await readLocationType(tx, request.target_location_id);
+  if (targetType === 'raw_warehouse') {
+    return { advanced: false, request, reason: 'waiting for Poster supply (postavka)' };
+  }
   const next = await transitionStatus(
     tx,
     request,
@@ -2235,6 +2281,12 @@ export async function acceptByCentral(opts: {
       },
     });
 
+    // 0066 — stamp the acceptance (first accept wins), then re-read so every
+    // downstream branch (including an early "held — short stock" return) carries
+    // the fresh fulfiller_accepted_* on the row it returns.
+    await stampFulfillerAccept(tx, opts.requestId, opts.actorUserId);
+    current = await lockRequest(tx, opts.requestId);
+
     // NEW -> CHECK_STORE_SUPPLIER (target is pinned; bypass the topology-based
     // central resolution in `advanceNew`).
     if (current.status === 'NEW') {
@@ -2350,6 +2402,11 @@ export async function acceptByFulfiller(opts: {
         from_status: current.status,
       },
     });
+
+    // 0066 — stamp the acceptance (first accept wins), then re-read so the row
+    // returned on EVERY branch (ship or hold) reflects fulfiller_accepted_*.
+    await stampFulfillerAccept(tx, opts.requestId, opts.actorUserId);
+    current = await lockRequest(tx, opts.requestId);
 
     // NEW -> CHECK_STORE_SUPPLIER (target is pinned; bypass the topology-based
     // central resolution in `advanceNew`).
@@ -2470,6 +2527,10 @@ export async function acceptInternal(opts: {
       entityId: opts.requestId,
       payload: { from_status: order.status, requester_location_id: order.requester_location_id },
     });
+
+    // 0066 — stamp the acceptance (first accept wins) BEFORE the transition so
+    // the `next` row (RETURNING ...) already carries fulfiller_accepted_*.
+    await stampFulfillerAccept(tx, opts.requestId, opts.actorUserId);
 
     // Drive exactly ONE step (NEW -> CHECK_STORE_SUPPLIER). `advanceNew`
     // resolves the upward central target as usual; the note records the gate.
@@ -3152,6 +3213,13 @@ export async function fulfillStoreRequest(opts: {
       },
     });
 
+    // 0066 — fulfilling IS an acceptance: stamp it (first accept wins) BEFORE the
+    // ship/route steps so their RETURNING rows carry fulfiller_accepted_*. When a
+    // real partial spawns a NEW shortfall row, only the ORIGINAL is stamped here
+    // (the shortfall is a fresh request that gets its own accept downstream).
+    await stampFulfillerAccept(tx, opts.requestId, opts.actorUserId);
+    current = await lockRequest(tx, opts.requestId);
+
     // (a) Ship the available portion (when any) and close the original request.
     let originalAfter = current;
     if (shipQty > 0) {
@@ -3424,11 +3492,14 @@ export async function runEngineCycle(opts: { actorUserId?: number | null } = {})
   // for an explicit internal accept before the cron may touch them (the skip
   // predicate is `status='NEW'` only — past NEW both flow normally; the store
   // skip above is unconditional and untouched):
-  //   (a) a request PINNED to a `sex_storage` target (the producer-override /
-  //       Qaymoq case). Today `advanceNew` would CLOBBER that pinned target with
-  //       the central warehouse and ship without the producing отдел manager's
+  //   (a) a request PINNED to a `sex_storage` OR `raw_warehouse` target. For
+  //       `sex_storage` it is the producer-override / Qaymoq case; for
+  //       `raw_warehouse` it is the F-G mahsulot-ombori supply (a sex asking the
+  //       raw manager). In BOTH, `advanceNew` would CLOBBER that pinned target
+  //       with the central warehouse and ship without the fulfilling manager's
   //       accept — exactly the bug this gate closes. `acceptByFulfiller` (driven
-  //       by the existing xreq buttons) is the only forward path for them.
+  //       by the xreq buttons / the web accept-fulfiller route) is the only
+  //       forward path for them.
   //   (b) a `sex_storage` REQUESTER (the B-cycle buffer refill — the "tavsiya
   //       karta"). It waits for an explicit internal accept (`acceptInternal`,
   //       ireq buttons) so the producing отдел boss confirms the buffer top-up.
@@ -3446,7 +3517,7 @@ export async function runEngineCycle(opts: { actorUserId?: number | null } = {})
         AND NOT (
           r.status = 'NEW'
           AND (
-            COALESCE(tl.type = 'sex_storage'::location_type, FALSE)
+            COALESCE(tl.type IN ('sex_storage'::location_type, 'raw_warehouse'::location_type), FALSE)
             OR rl.type = 'sex_storage'::location_type
           )
         )`,

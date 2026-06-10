@@ -187,20 +187,30 @@ export async function createCrossDeptRequest(opts: {
     origin: opts.origin ?? 'voice',
   });
 
-  // TZ §6 — PIN the target on the request ONLY for the producer-override path.
-  // `createRequest` leaves a fresh request at NEW with target_location_id=NULL;
-  // for a store→central request the engine fills the central warehouse itself
-  // (advanceNew/resolveTopology), so we must NOT pin there or we would override
-  // the central-warehouse ship-from. For the cream-otdel case the producing
-  // sklad is NOT the topology parent and NOT reachable by resolveTopology, so
-  // we record it here. Pinning makes all three agree:
-  //   - checkXreqRbac reads the pinned target → the cream sklad manager may act;
+  // PIN the target on the request for the cases the engine would otherwise get
+  // WRONG. `createRequest` leaves a fresh request at NEW with
+  // target_location_id=NULL; for a store→central request the engine fills the
+  // central warehouse itself (advanceNew/resolveTopology), so we must NOT pin
+  // there or we would override the central-warehouse ship-from. Two cases DO need
+  // an explicit pin:
+  //   (1) TZ §6 producer-override (`via='producer_store'`) — the producing sklad
+  //       (e.g. cream → Qaymoq skladi) is NOT the topology parent and NOT
+  //       reachable by resolveTopology, so we record it here.
+  //   (2) F-G raw-warehouse parent (`target.type='raw_warehouse'`, the default
+  //       parent path for a sex asking the mahsulot ombori) — `advanceNew` walks
+  //       the chain UP to the CENTRAL warehouse and would CLOBBER the target,
+  //       making the raw manager's accept cosmetic (the SAME bug class F-C fixed
+  //       for sex_storage). Pinning the raw parent keeps the raw manager as the
+  //       fulfiller and lets the F-G "waiting for Poster supply" hold work.
+  // Pinning makes all three agree:
+  //   - checkXreqRbac / the web accept-fulfiller route read the pinned target →
+  //     the fulfilling manager may act;
   //   - acceptByFulfiller verifies fulfiller == pinned target → ships from the
-  //     cream sklad's own stock;
+  //     fulfiller's own stock;
   //   - the engine never re-resolves a non-NULL target.
   // The request was just created at NEW, so the UPDATE is a safe pin; the
   // RETURNING row keeps the in-memory `request` consistent with the DB.
-  if (target.via === 'producer_store') {
+  if (target.via === 'producer_store' || target.type === 'raw_warehouse') {
     const pinned = await withTransaction((tx) =>
       tx.query<ReplenishmentRow>(
         `UPDATE replenishment_requests
@@ -355,13 +365,15 @@ export async function createCrossDeptRequestInTx(
     origin: opts.origin,
   });
 
-  // PIN the target ONLY for the producer-override path — identical to the public
-  // function's reasoning: a parent-path (store→central) request must keep
-  // target NULL so the engine resolves the central warehouse itself; a
-  // producer-store target is not reachable by the engine's topology walk, so we
-  // record it. The row was just created at NEW, so the pin is safe.
+  // PIN the target for the producer-override path AND the raw_warehouse parent
+  // path — identical to the public function's reasoning: a store→central request
+  // must keep target NULL so the engine resolves the central warehouse itself; a
+  // producer-store target is not reachable by the engine's topology walk, and a
+  // raw_warehouse parent would be CLOBBERED by advanceNew (walks up to central) —
+  // so both are recorded here. The row was just created at NEW, so the pin is
+  // safe.
   let pinned = request;
-  if (target.via === 'producer_store') {
+  if (target.via === 'producer_store' || target.type === 'raw_warehouse') {
     const { rows } = await tx.query<ReplenishmentRow>(
       `UPDATE replenishment_requests
           SET target_location_id = $2
