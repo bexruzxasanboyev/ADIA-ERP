@@ -236,6 +236,65 @@ describe('GET /api/stock/movements — pagination + filter branches', () => {
         (m) => Number(m.product_id) === productA,
       ),
     ).toBe(true);
+    // Direction-chip contract: each row exposes BOTH location ids (alongside
+    // the names), so the Tranzaksiyalar list can derive Kirish / Chiqish /
+    // Ko‘chirish without a second round-trip. Here both endpoints are set.
+    const rowA = (
+      res.body.items as { from_location_id: number | null; to_location_id: number | null }[]
+    )[0];
+    expect(rowA).toBeDefined();
+    expect(rowA?.from_location_id).toBe(from);
+    expect(rowA?.to_location_id).toBe(to);
+  });
+
+  it('exposes from_location_id / to_location_id for every direction (Kirish / Chiqish / Ko‘chirish)', async () => {
+    // The Tranzaksiyalar list derives a direction chip purely from these two
+    // ids: from=null -> Kirish (receipt), to=null -> Chiqish (issue), both set
+    // -> Ko‘chirish (transfer). Pin all three shapes on the response items.
+    const wh = await makeLocation(ctx.db, { type: 'central_warehouse' });
+    const store = await makeLocation(ctx.db, { type: 'store' });
+    const cwm = await makeUser(ctx.db, {
+      role: 'central_warehouse_manager',
+      locationId: wh,
+    });
+    const product = await makeProduct(ctx.db);
+    await setStock(ctx.db, { locationId: wh, productId: product, qty: 100 });
+
+    // Ko‘chirish: wh -> store (both endpoints).
+    await request(ctx.app)
+      .post('/api/stock/movement')
+      .set('Authorization', `Bearer ${cwm.token}`)
+      .send({ product_id: product, from_location_id: wh, to_location_id: store, qty: 5, reason: 'transfer' });
+    // Chiqish: wh -> (none) — an adjust-out the warehouse manager owns.
+    await request(ctx.app)
+      .post('/api/stock/movement')
+      .set('Authorization', `Bearer ${cwm.token}`)
+      .send({ product_id: product, from_location_id: wh, qty: 2, reason: 'adjust' });
+    // Kirish: (none) -> wh — an adjust-in the warehouse manager owns.
+    await request(ctx.app)
+      .post('/api/stock/movement')
+      .set('Authorization', `Bearer ${cwm.token}`)
+      .send({ product_id: product, to_location_id: wh, qty: 3, reason: 'adjust' });
+
+    const res = await request(ctx.app)
+      .get(`/api/stock/movements?product_id=${product}`)
+      .set('Authorization', `Bearer ${cwm.token}`);
+    expect(res.status).toBe(200);
+
+    type Row = { from_location_id: number | null; to_location_id: number | null };
+    const items = res.body.items as Row[];
+    expect(items.length).toBe(3);
+    // Every row carries both keys (nullable) — the contract the chip relies on.
+    for (const m of items) {
+      expect(m).toHaveProperty('from_location_id');
+      expect(m).toHaveProperty('to_location_id');
+    }
+    const transfer = items.find((m) => m.from_location_id === wh && m.to_location_id === store);
+    const chiqish = items.find((m) => m.from_location_id === wh && m.to_location_id === null);
+    const kirish = items.find((m) => m.from_location_id === null && m.to_location_id === wh);
+    expect(transfer).toBeDefined(); // Ko‘chirish
+    expect(chiqish).toBeDefined(); // Chiqish
+    expect(kirish).toBeDefined(); // Kirish
   });
 
   it('a scoped manager asking for another location is forbidden (403)', async () => {
