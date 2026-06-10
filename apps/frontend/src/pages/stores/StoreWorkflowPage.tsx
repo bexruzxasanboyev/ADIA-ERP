@@ -93,6 +93,10 @@ import {
   basketItemFromStockRow,
   type BasketItem,
 } from './storeBasket';
+import {
+  StaffViewSwitch,
+  type StaffView,
+} from '@/pages/replenishment/inbox/StaffViewSwitch';
 import { BoardWorkspace } from '@/pages/replenishment/board/BoardWorkspace';
 import { RequestDetailModal } from '@/pages/replenishment/RequestDetailModal';
 import { CancelDialog } from '@/pages/replenishment/CancelDialog';
@@ -146,10 +150,13 @@ const PAGE_TABS: { value: PageTabKey; label: string }[] = [
   { value: 'requests', label: 'So‘rovlar' },
 ];
 
-// Variant A + mini-xarita: for the scoped store manager the «Ishlarim» feed
-// IS the page — the detail tabs (no Ishlarim entry; the feed is always on top)
-// appear only after the feed's single «Batafsil →» link.
-const STAFF_DETAIL_TABS = PAGE_TABS.filter((t) => t.value !== 'inbox');
+// Variant A + StaffViewSwitch (owner: "mahsulotlar tabi qani?"): staff get a
+// LARGE Ishlarim|Mahsulotlar segmented switch — products are first-class, so
+// they are NOT in the «Batafsil» detail tabs anymore (only Dashboard +
+// So'rovlar history live behind the feed's small «Batafsil →» link).
+const STAFF_DETAIL_TABS = PAGE_TABS.filter(
+  (t) => t.value !== 'inbox' && t.value !== 'products',
+);
 
 /**
  * F-W (owner: "nega 'Sotib olish so'rovi' deyapti — to'g'ri tushunarli emas")
@@ -549,15 +556,22 @@ export function StoreWorkflowPage() {
   }, [hasSelection, singleStoreId]);
   const movements = useApiQuery<MovementsResponse>(movementsUrl);
 
-  // Variant A single-screen staff mode: the store manager sees ONLY the
-  // «Ishlarim» feed until they open «Batafsil» (which reveals the detail tabs
-  // below, defaulting to So'rovlar). PM keeps the full tabbed workspace.
+  // Variant A single-screen staff mode + StaffViewSwitch: the store manager
+  // lands on the «Ishlarim» feed; the LARGE Ishlarim|Mahsulotlar segmented
+  // switch keeps the on-hand stock view first-class (owner: "mahsulotlar tabi
+  // qani?"). «Batafsil» (inside the Ishlarim segment) reveals the remaining
+  // detail tabs (Dashboard / So'rovlar). PM keeps the full tabbed workspace.
   const isStaff = isStoreManager;
+  const [staffView, setStaffView] = useState<StaffView>('inbox');
+  const staffOnProducts = isStaff && staffView === 'products';
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [pageTab, setPageTab] = useState<PageTabKey>(
     isStaff ? 'requests' : 'inbox',
   );
-  const showTabbed = !isStaff || detailsOpen;
+  const showTabbed = (!isStaff || detailsOpen) && !staffOnProducts;
+  // The Mahsulotlar surface: staff via the switch, PM via the tab row.
+  const productsVisible =
+    staffOnProducts || (showTabbed && pageTab === 'products');
   const [statusFilter, setStatusFilter] = useState<StockStatusKey>('all');
   const [productSearch, setProductSearch] = useState('');
   // Category + unit filter for the Mahsulotlar cards (owner: mirror /products).
@@ -1019,6 +1033,16 @@ export function StoreWorkflowPage() {
         description="Do‘kon qoldig‘i, yuborilgan so‘rovlar va qabul qilinadigan jo‘natmalar — bitta joyda."
       />
 
+      {/* StaffViewSwitch — the LARGE Ishlarim|Mahsulotlar segmented control
+          (owner: "mahsulotlar tabi qani?"). Staff only; PM keeps the tab row. */}
+      {hasSelection && isStaff && (
+        <StaffViewSwitch
+          value={staffView}
+          onChange={setStaffView}
+          inboxCount={inboxCount}
+        />
+      )}
+
       {/* Store picker + section tabs on the left; the So'rovlar date filter
           sits on the right of the SAME row (owner feedback) — shown only on
           the So'rovlar tab, where it drives the charts + request list. */}
@@ -1082,9 +1106,11 @@ export function StoreWorkflowPage() {
         </Card>
       ) : (
         <>
-          {/* «Ishlarim» (Variant A) — the staff's WHOLE page; PM reaches it
-              via its tab. «Batafsil →» reveals the detail tabs for staff. */}
+          {/* «Ishlarim» (Variant A) — the staff's primary segment; PM reaches
+              it via its tab. Kept MOUNTED (hidden) on the Mahsulotlar segment
+              so polling + the live badge keep running. */}
           {(isStaff || pageTab === 'inbox') && (
+            <div hidden={staffOnProducts}>
             <StoreWorkInbox
               requests={replen.data ?? []}
               storeScope={selectedStoreSet}
@@ -1101,6 +1127,7 @@ export function StoreWorkflowPage() {
                 else setPageTab('requests');
               }}
             />
+            </div>
           )}
 
           {/* TAB: Dashboard — real-time KPI cards + status bars + sales. */}
@@ -1136,7 +1163,7 @@ export function StoreWorkflowPage() {
           {/* TAB: Mahsulotlar — toolbar (segmented status filter + search)
               over open category sections of v2 stock cards. No wrapping
               mega-card: the cards ARE the surface (DESIGN.md §8). */}
-          {showTabbed && pageTab === 'products' && (
+          {productsVisible && (
             <div className="space-y-5">
               {/* Filter row (DESIGN.md §9): status filters left; search +
                   Filter + result count pushed right via ml-auto — one row. */}
@@ -1245,7 +1272,7 @@ export function StoreWorkflowPage() {
 
           {/* Sticky basket bar — visible on Mahsulotlar while the draft has
               lines; opens the Savat slide-over to review + confirm. */}
-          {showTabbed && pageTab === 'products' && isStoreManager && basketCount > 0 && (
+          {productsVisible && isStoreManager && basketCount > 0 && (
             <div className="sticky bottom-4 z-10 flex items-center justify-between gap-3 rounded-lg border border-primary/40 bg-card/95 px-4 py-3 pr-[5.5rem] shadow-pop backdrop-blur sm:pr-[11rem]">
               <span className="flex items-center gap-2 text-sm font-medium">
                 <ShoppingCart className="size-4 text-primary" aria-hidden="true" />
@@ -1629,7 +1656,9 @@ export function StoreWorkflowPage() {
           confirm={confirmBasket}
           onGoToProducts={() => {
             setBasketOpen(false);
-            setPageTab('products');
+            // Staff reach Mahsulotlar via the segmented switch; PM via the tab.
+            if (isStaff) setStaffView('products');
+            else setPageTab('products');
           }}
         />
       )}
