@@ -241,19 +241,37 @@ export function ProductionWorkInbox({
           />
         ))}
 
-        {/* (2) Making rows — «… tayyormi?» → Tayyor (done) / Manba reja. */}
+        {/* (2) Making rows — «… tayyormi?» → Tayyor (done) / Manba reja.
+            F-W follow-up (owner: "qanday yakunlayman?"): a row stuck at
+            CREATE_PURCHASE_ORDER has NO zayafka yet because it is WAITING ON
+            RAW MATERIALS — say so in plain words instead of dead-ending. The
+            «Tayyor» button appears by itself once the purchase is received
+            and the zayafka opens. */}
         {makingRows.map((req) => {
           const hasOrder = req.production_order_id != null;
+          const waitingRaw =
+            !hasOrder && req.status === 'CREATE_PURCHASE_ORDER';
           return (
             <WorkCard
               key={req.id}
               headline={
-                <>
-                  {formatQtyUnit(req.qty_needed, req.product_unit)}{' '}
-                  {req.product_name} tayyormi?
-                </>
+                waitingRaw ? (
+                  <>
+                    {formatQtyUnit(req.qty_needed, req.product_unit)}{' '}
+                    {req.product_name} — xom-ashyo kutilmoqda
+                  </>
+                ) : (
+                  <>
+                    {formatQtyUnit(req.qty_needed, req.product_unit)}{' '}
+                    {req.product_name} tayyormi?
+                  </>
+                )
               }
-              subline={`so‘rov #${req.id}`}
+              subline={
+                waitingRaw
+                  ? `so‘rov #${req.id} · xarid homashyo omborida tasdiqlanib qabul qilingach, bu yerda «Tayyor» tugmasi chiqadi`
+                  : `so‘rov #${req.id}`
+              }
               busy={busyKey === `d${req.id}`}
               primary={
                 !canAct
