@@ -78,19 +78,27 @@ export function StoreReceiveDialog({
   const unit = UNIT_LABELS[request.product_unit];
   const brakValue = brakQty ?? 0;
   const showBrakReason = brakValue > 0;
-  // Brak can never exceed what physically arrived (the received qty) — the
-  // modal must not allow e.g. 21M kg on a 3 kg item (owner bug). Clamp on entry
-  // against the current received value so the field can't hold an over-cap
-  // number; submit re-checks as a backstop.
-  const brakMax = receivedQty ?? 0;
+  // The fixed budget is what PHYSICALLY shipped: yaroqli (received) + brak must
+  // equal it (owner: "4 keldi, 2 brak bo'lsa qabul 2 bo'lishi kerak — do'konga
+  // 2 qo'shiladi"). Entering a brak AUTO-REBALANCES the good qty down, and
+  // raising the good qty squeezes brak — the pair can never exceed shipped.
+  const shippedBudget =
+    (request as FlowRequest).shipped_qty ?? request.qty_needed;
   function handleBrakChange(next: number | null) {
-    if (next != null && next > brakMax) {
-      setBrakQty(brakMax > 0 ? brakMax : 0);
+    const b = Math.min(Math.max(next ?? 0, 0), shippedBudget);
+    setBrakQty(next == null ? null : b);
+    setReceivedQty(shippedBudget - b);
+  }
+  function handleReceivedChange(next: number | null) {
+    if (next == null) {
+      setReceivedQty(null);
       return;
     }
-    setBrakQty(next);
+    const r = Math.min(Math.max(next, 0), shippedBudget);
+    setReceivedQty(r);
+    if (brakValue > shippedBudget - r) setBrakQty(shippedBudget - r);
   }
-  const brakOverMax = brakValue > brakMax;
+  const brakOverMax = (receivedQty ?? 0) + brakValue > shippedBudget;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -172,14 +180,7 @@ export function StoreReceiveDialog({
                 decimals
                 min={0}
                 value={receivedQty}
-                onValueChange={(next) => {
-                  setReceivedQty(next);
-                  // Lowering received below an entered brak must reclamp brak.
-                  const cap = next ?? 0;
-                  if (brakQty != null && brakQty > cap) {
-                    setBrakQty(cap > 0 ? cap : 0);
-                  }
-                }}
+                onValueChange={handleReceivedChange}
                 disabled={isSubmitting}
                 required
               />
@@ -194,7 +195,7 @@ export function StoreReceiveDialog({
                 id="receive-brak"
                 decimals
                 min={0}
-                max={brakMax}
+                max={shippedBudget}
                 value={brakQty}
                 onValueChange={handleBrakChange}
                 placeholder="0"
@@ -202,12 +203,18 @@ export function StoreReceiveDialog({
               />
               <span className="shrink-0 text-xs text-muted-foreground">{unit}</span>
             </div>
-            {brakOverMax && (
-              <p className="text-xs text-destructive">
-                Brak qabul qilingan sonidan oshmasligi kerak — eng ko‘pi{' '}
-                {formatQty(brakMax)} {unit}.
-              </p>
-            )}
+            {/* Live balance line — the owner's rule made visible: yaroqli +
+                brak = yuborilgan, the good qty auto-drops as brak is typed. */}
+            <p
+              className={
+                brakOverMax
+                  ? 'text-xs text-destructive'
+                  : 'text-xs text-muted-foreground'
+              }
+            >
+              Yaroqli {formatQty(receivedQty ?? 0)} + brak {formatQty(brakValue)} ={' '}
+              {formatQty(shippedBudget)} {unit} yuborilgan.
+            </p>
           </div>
 
           {showBrakReason && (

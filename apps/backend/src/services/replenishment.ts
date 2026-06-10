@@ -804,14 +804,34 @@ export async function cancelRequestByFulfiller(
  */
 
 /**
+ * The qty that PHYSICALLY shipped to the requester — the shipment movement's
+ * qty when one is linked, else `qty_needed` (the legacy full-ship paths).
+ * F-L follow-up: a PARTIAL fulfil ships less than asked (4 of 10), and basing
+ * the receive/accept remainder on `qty_needed` made the store counter-return
+ * goods it never got ("Insufficient stock at location 6" — the owner's bug).
+ */
+async function resolveShippedQtyTx(
+  tx: TxClient,
+  order: ReplenishmentRow,
+): Promise<number> {
+  if (order.shipment_movement_id !== null) {
+    const { rows } = await tx.query<{ qty: string | number }>(
+      'SELECT qty FROM stock_movements WHERE id = $1',
+      [order.shipment_movement_id],
+    );
+    if (rows[0] !== undefined) return Number(rows[0].qty);
+  }
+  return Number(order.qty_needed);
+}
+
+/**
  * Accept the shipment (fully or partially).
  *
- * `qtyAccepted` is bounded by the request's `qty_needed` (or its
- * `shipment` qty when the request was partially shipped — Phase 2). When
- * `qtyAccepted === qty_needed` the closure_reason is `accepted_full`;
- * any value strictly less is `accepted_partial`, and the difference is
- * counter-shipped back to the target_location_id (so the ledger stays
- * net-zero against the original ship).
+ * `qtyAccepted` is bounded by the SHIPPED qty (the movement qty on a partial
+ * fulfil, `qty_needed` on the legacy full-ship paths). When everything shipped
+ * is accepted the closure_reason is `accepted_full`; any value strictly less
+ * is `accepted_partial`, and the difference is counter-shipped back to the
+ * target_location_id (so the ledger stays net-zero against the original ship).
  */
 export async function acceptShipment(opts: {
   requestId: number;
@@ -836,16 +856,16 @@ export async function acceptShipment(opts: {
         `Cannot accept a shipment for a request in status ${order.status} — wait for SHIP_TO_REQUESTER to land.`,
       );
     }
-    const qtyNeeded = Number(order.qty_needed);
-    if (opts.qtyAccepted > qtyNeeded) {
+    const shippedForAccept = await resolveShippedQtyTx(tx, order);
+    if (opts.qtyAccepted > shippedForAccept) {
       throw AppError.validation(
-        `qty_accepted (${opts.qtyAccepted}) cannot exceed qty_needed (${qtyNeeded}).`,
+        `qty_accepted (${opts.qtyAccepted}) cannot exceed the shipped qty (${shippedForAccept}).`,
       );
     }
     if (order.target_location_id === null) {
       throw AppError.internal('Cannot accept — request has no target_location_id.');
     }
-    const remainder = qtyNeeded - opts.qtyAccepted;
+    const remainder = shippedForAccept - opts.qtyAccepted;
     const closureReason: ReplenishmentClosureReason =
       remainder === 0 ? 'accepted_full' : 'accepted_partial';
 
@@ -1177,7 +1197,7 @@ export async function receiveShipment(opts: {
     if (order.target_location_id === null) {
       throw AppError.internal('Cannot receive — request has no target_location_id.');
     }
-    const shippedQty = Number(order.qty_needed);
+    const shippedQty = await resolveShippedQtyTx(tx, order);
     if (opts.receivedQty + brakQty > shippedQty) {
       throw AppError.validation(
         `received_qty (${opts.receivedQty}) + brak_qty (${brakQty}) cannot exceed shipped qty (${shippedQty}).`,
