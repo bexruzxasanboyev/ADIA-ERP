@@ -84,21 +84,29 @@ export function StoreReceiveDialog({
   // raising the good qty squeezes brak — the pair can never exceed shipped.
   const shippedBudget =
     (request as FlowRequest).shipped_qty ?? request.qty_needed;
+  // NO silent clamping (owner: "ko'p yozsam ham error bermayapti") — the
+  // formatted NumberInput keeps showing whatever was typed, so a quiet
+  // state-clamp HIDES the problem. Instead: a within-budget brak auto-balances
+  // the good qty (4 keldi, brak 2 → qabul 2), an OVER-budget entry stays in
+  // the field, paints the balance line red and BLOCKS Tasdiqlash.
   function handleBrakChange(next: number | null) {
-    const b = Math.min(Math.max(next ?? 0, 0), shippedBudget);
-    setBrakQty(next == null ? null : b);
-    setReceivedQty(shippedBudget - b);
+    setBrakQty(next);
+    if (next != null && next >= 0 && next <= shippedBudget) {
+      setReceivedQty(shippedBudget - next);
+    }
   }
   function handleReceivedChange(next: number | null) {
-    if (next == null) {
-      setReceivedQty(null);
-      return;
+    setReceivedQty(next);
+    if (
+      next != null &&
+      next >= 0 &&
+      next <= shippedBudget &&
+      brakValue > shippedBudget - next
+    ) {
+      setBrakQty(shippedBudget - next);
     }
-    const r = Math.min(Math.max(next, 0), shippedBudget);
-    setReceivedQty(r);
-    if (brakValue > shippedBudget - r) setBrakQty(shippedBudget - r);
   }
-  const brakOverMax = (receivedQty ?? 0) + brakValue > shippedBudget;
+  const overBudget = (receivedQty ?? 0) + brakValue > shippedBudget;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -204,17 +212,18 @@ export function StoreReceiveDialog({
               <span className="shrink-0 text-xs text-muted-foreground">{unit}</span>
             </div>
             {/* Live balance line — the owner's rule made visible: yaroqli +
-                brak = yuborilgan, the good qty auto-drops as brak is typed. */}
-            <p
-              className={
-                brakOverMax
-                  ? 'text-xs text-destructive'
-                  : 'text-xs text-muted-foreground'
-              }
-            >
-              Yaroqli {formatQty(receivedQty ?? 0)} + brak {formatQty(brakValue)} ={' '}
-              {formatQty(shippedBudget)} {unit} yuborilgan.
-            </p>
+                brak = yuborilgan; over-budget turns red and blocks submit. */}
+            {overBudget ? (
+              <p className="text-xs text-destructive">
+                Yaroqli {formatQty(receivedQty ?? 0)} + brak {formatQty(brakValue)}{' '}
+                — yuborilgan {formatQty(shippedBudget)} {unit} dan oshib ketdi.
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Yaroqli {formatQty(receivedQty ?? 0)} + brak {formatQty(brakValue)} ={' '}
+                {formatQty(shippedBudget)} {unit} yuborilgan.
+              </p>
+            )}
           </div>
 
           {showBrakReason && (
@@ -251,7 +260,11 @@ export function StoreReceiveDialog({
           >
             Bekor qilish
           </Button>
-          <Button type="submit" form="store-receive-form" disabled={isSubmitting}>
+          <Button
+            type="submit"
+            form="store-receive-form"
+            disabled={isSubmitting || overBudget}
+          >
             {isSubmitting && (
               <Loader2 className="size-4 animate-spin" aria-hidden="true" />
             )}
