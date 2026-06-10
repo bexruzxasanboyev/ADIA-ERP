@@ -1,9 +1,11 @@
 import { type ReactNode } from 'react';
-import { CheckCircle2, Loader2 } from 'lucide-react';
+import { CheckCircle2, Clock, Loader2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
+import type { Journey } from '@/lib/replenishmentFlow';
+import { ChainStrip } from './ChainStrip';
 
 /**
  * Phase F-V — the SHARED simple-mode «Ishlarim» kit (owner: "tizim oson va
@@ -44,6 +46,13 @@ export interface WorkFeedProps {
   /** Plain-language empty-state line (defaults to a calm "nothing waiting"). */
   emptyTitle?: string;
   emptyHint?: string;
+  /**
+   * Total cards VISIBLE across the feed's sections (actionable + watch-only).
+   * The success empty-state hides while anything is on screen, even when the
+   * actionable `count` is 0 (e.g. only Jarayonda watch cards remain). Defaults
+   * to `count`.
+   */
+  visibleCount?: number;
   /** The cards (and any trailing actions) the host renders into the feed. */
   children?: ReactNode;
   /** Trailing actions row under the feed (e.g. So'rov yuborish / AI takliflari). */
@@ -57,10 +66,12 @@ export function WorkFeed({
   flash = false,
   emptyTitle = 'Sizda kutilayotgan ish yo‘q',
   emptyHint = 'Yangi ish kelsa shu yerda chiqadi.',
+  visibleCount,
   children,
   footer,
 }: WorkFeedProps) {
   const hasWork = count > 0;
+  const hasCards = (visibleCount ?? count) > 0;
   return (
     <div className="mx-auto max-w-2xl space-y-4">
       {/* Header — a count the staff can read at a glance; pulses on a new task. */}
@@ -89,7 +100,7 @@ export function WorkFeed({
       {children}
 
       {/* Calm empty state — the staff knows nothing is waiting on them. */}
-      {!hasWork && (
+      {!hasWork && !hasCards && (
         <Card className="flex flex-col items-center gap-2 p-8 text-center">
           <CheckCircle2 className="size-8 text-success" aria-hidden="true" />
           <p className="text-sm font-medium">{emptyTitle}</p>
@@ -99,6 +110,47 @@ export function WorkFeed({
 
       {footer}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// <WorkSection> — one of the three feed groups (YANGI / JARAYONDA / TAYYOR).
+// ---------------------------------------------------------------------------
+
+export interface WorkSectionProps {
+  /** Group label — «Yangi», «Jarayonda» or «Tayyor». */
+  label: string;
+  /** Cards inside the group; `0` collapses the section to a thin label. */
+  count: number;
+  children?: ReactNode;
+}
+
+/**
+ * Variant A + mini-xarita: every frontline feed renders the SAME three groups
+ * in the SAME order — Yangi (kartani qabul qilaman) → Jarayonda (kutilmoqda)
+ * → Tayyor (yakuniy harakat). An empty group collapses to a thin muted label
+ * so the grammar stays visible without stealing space.
+ */
+export function WorkSection({ label, count, children }: WorkSectionProps) {
+  if (count === 0) {
+    return (
+      <p className="px-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/40">
+        {label} · 0
+      </p>
+    );
+  }
+  return (
+    <section aria-label={`${label} — ${count} ta`} className="space-y-2">
+      <div className="flex items-center gap-2 px-1">
+        <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+          {label}
+        </h3>
+        <Badge variant="secondary" className="tabular-nums">
+          {count}
+        </Badge>
+      </div>
+      {children}
+    </section>
   );
 }
 
@@ -133,6 +185,19 @@ export interface WorkCardProps {
   busy?: boolean;
   /** Optional StatusTracker (or any node) under the headline block. */
   tracker?: ReactNode;
+  /**
+   * Mini chain-map (Variant A + mini-xarita): when present and well-formed,
+   * a {@link ChainStrip} renders on TOP of the card showing where the order
+   * sits in the chain. Absent/malformed → no strip (backend lands in parallel).
+   */
+  journey?: Journey | null;
+  /**
+   * Plain-Uzbek "why am I waiting" line. Rendered as a calm muted status line
+   * ONLY when there is no primary action — a blocked card explains itself
+   * instead of dead-ending. Hosts typically pass
+   * `journey?.wait_reason ?? <fallback>`.
+   */
+  waitReason?: string | null;
 }
 
 export function WorkCard({
@@ -144,9 +209,12 @@ export function WorkCard({
   secondaryVariant = 'destructive',
   busy = false,
   tracker,
+  journey,
+  waitReason,
 }: WorkCardProps) {
   return (
     <Card className="flex flex-col gap-3 p-4">
+      <ChainStrip journey={journey} />
       <div className="flex items-center justify-between gap-4">
         <div className="min-w-0 space-y-0.5">
           <p className="text-sm font-semibold leading-snug">{headline}</p>
@@ -185,6 +253,13 @@ export function WorkCard({
           </div>
         )}
       </div>
+      {/* The calm wait line — only on a card with no button (no dead-ends). */}
+      {!primary && waitReason && (
+        <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+          <Clock className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+          <span>{waitReason}</span>
+        </p>
+      )}
       {tracker}
     </Card>
   );
