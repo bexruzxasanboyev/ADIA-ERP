@@ -2,14 +2,9 @@ import { useMemo, useState } from 'react';
 import {
   ArrowDownLeft,
   ArrowUpRight,
-  Clock,
-  Factory,
   History,
   Layers,
-  PackageCheck,
   ShoppingCart,
-  Store,
-  Truck,
   Warehouse,
 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
@@ -30,11 +25,8 @@ import { formatDateTime, formatPlainNumber, formatQtyUnit } from '@/lib/format';
 import {
   PURCHASE_ORDER_STATUS_LABELS,
   PURCHASE_ORDER_STATUS_VARIANT,
-  REPLENISHMENT_STATUS_LABELS,
-  REPLENISHMENT_STATUS_VARIANT,
   movementCounterpartyLabel,
 } from '@/lib/labels';
-import { requestsInStage } from '@/lib/pipeline';
 import {
   DateRangeFilter,
   type DateRangeValue,
@@ -83,13 +75,10 @@ import { ManbaRejaModal } from './ManbaRejaModal';
  * live on the Dashboard tab only — this view holds nothing but requests.)
  */
 
-type PipelineTab =
-  | 'kutuvda'
-  | 'soralgan'
-  | 'qabul_qilingan'
-  | 'yuborilgan'
-  | 'transactions'
-  | 'xom_ashyo';
+// F-O (owner: "nega 2 ta kanban? murakkab bo'lib ketibdi") — the legacy
+// stage-list strip duplicated the board's columns 1:1 and is GONE; only the
+// two non-board views survive as a compact secondary row.
+type PipelineTab = 'transactions' | 'xom_ashyo';
 
 /** A movement classified relative to the отдел (receipt / issue). */
 type DeptMovement = StockMovement & {
@@ -129,22 +118,9 @@ function isProductionFlow(r: ReplenishmentRequest): boolean {
 }
 
 /**
- * Clean pipeline status label — collapse the production state-machine statuses
- * to one "Ishlab chiqarilmoqda" badge (mirrors central's pipelineStatusLabel),
- * keeping the standard label for every other status.
+ * (The stage-list strip and its pipelineStatusLabel helper are gone — F-O:
+ * the board IS the flow; only Tranzaksiyalar + Xom-ashyo survive below it.)
  */
-function pipelineStatusLabel(req: ReplenishmentRequest): string {
-  switch (req.status) {
-    case 'CHECK_PRODUCTION_INPUT':
-    case 'CREATE_PURCHASE_ORDER':
-    case 'CREATE_PRODUCTION_ORDER':
-    case 'PRODUCING':
-      return 'Ishlab chiqarilmoqda';
-    default:
-      return REPLENISHMENT_STATUS_LABELS[req.status];
-  }
-}
-
 export function ProductionRequestsTab({
   productionId,
 }: {
@@ -156,7 +132,7 @@ export function ProductionRequestsTab({
   // Only a scoped production manager may run a Manba reja; PM is read-only.
   const canExecute = user?.role === 'production_manager';
 
-  const [tab, setTab] = useState<PipelineTab>('kutuvda');
+  const [tab, setTab] = useState<PipelineTab>('xom_ashyo');
   const [dateRange, setDateRange] = useState<DateRangeValue>({ range: 'month' });
   // The incoming production request whose "Manba reja" modal is open.
   const [planTarget, setPlanTarget] = useState<FlowRequest | null>(null);
@@ -233,24 +209,6 @@ export function ProductionRequestsTab({
     [allRows, scope, productionAssignment],
   );
 
-  // ----- Pipeline buckets (reused central bucketing, отдел-scoped) ----------
-  const kutuvda = useMemo(
-    () => requestsInStage(allRows, 'kutuvda', productionId),
-    [allRows, productionId],
-  );
-  const soralgan = useMemo(
-    () => requestsInStage(allRows, 'soralgan', productionId),
-    [allRows, productionId],
-  );
-  const qabulQilingan = useMemo(
-    () => requestsInStage(allRows, 'qabul_qilingan', productionId),
-    [allRows, productionId],
-  );
-  const yuborilgan = useMemo(
-    () => requestsInStage(allRows, 'yuborilgan', productionId),
-    [allRows, productionId],
-  );
-
   // TRANZAKSIYALAR — every movement touching the отдел, newest first (date-bound).
   const deptMovements = useMemo<DeptMovement[]>(() => {
     const rows = movements.data?.items ?? [];
@@ -300,12 +258,8 @@ export function ProductionRequestsTab({
   }, [purchaseOrders.data, purchaseOrders.error]);
 
   const tabOptions: { value: PipelineTab; label: string }[] = [
-    { value: 'kutuvda', label: `Kutuvda · ${kutuvda.length}` },
-    { value: 'soralgan', label: `So‘ralgan · ${soralgan.length}` },
-    { value: 'qabul_qilingan', label: `Qabul qilingan · ${qabulQilingan.length}` },
-    { value: 'yuborilgan', label: `Yuborilgan · ${yuborilgan.length}` },
-    { value: 'transactions', label: 'Tranzaksiyalar' },
     { value: 'xom_ashyo', label: `Xom-ashyo so‘rovlari · ${poRows.length}` },
+    { value: 'transactions', label: 'Tranzaksiyalar' },
   ];
 
   const listLoading = allRequests.isLoading;
@@ -358,22 +312,15 @@ export function ProductionRequestsTab({
         />
       )}
 
-      {/* Section header (kicker + count) — tabs sit on their OWN row below,
-          left-aligned (DESIGN.md §9). */}
-      <div className="flex items-start justify-between gap-4">
-        <div className="space-y-0.5">
-          <h2 className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            <Truck className="size-3.5" aria-hidden="true" />
-            So‘rovlar
-            <Badge variant="secondary" className="tabular-nums">
-              {allRows.length}
-            </Badge>
-          </h2>
-          <p className="text-xs text-muted-foreground">
-            Bo‘limning so‘rovlari — bitta oqim: kutuvda → so‘ralgan → qabul
-            qilingan → yuborilgan.
-          </p>
-        </div>
+      {/* F-O: the board above IS the request flow — no second stage strip.
+          Only the two non-board views remain on a compact secondary row. */}
+      <div className="flex items-center justify-between gap-4">
+        <Tabs
+          value={tab}
+          onValueChange={setTab}
+          options={tabOptions}
+          ariaLabel="Qo‘shimcha ro‘yxatlar"
+        />
         {isPm && (
           <Badge
             variant="secondary"
@@ -384,121 +331,8 @@ export function ProductionRequestsTab({
           </Badge>
         )}
       </div>
-      <Tabs
-        value={tab}
-        onValueChange={setTab}
-        options={tabOptions}
-        ariaLabel="So‘rovlar oqimi"
-      />
 
       {/* KUTUVDA — requests awaiting the next step. */}
-      {tab === 'kutuvda' && (
-        <Card>
-          {listLoading && <LoadingState />}
-          {!listLoading && listError && (
-            <ErrorState message={listError} onRetry={allRequests.refetch} />
-          )}
-          {!listLoading && !listError && kutuvda.length === 0 && (
-            <EmptyState message="Kutuvda turgan so‘rov yo‘q." />
-          )}
-          {!listLoading && !listError && kutuvda.length > 0 && (
-            <PipelineList rows={kutuvda} />
-          )}
-          <PipelineFootnote icon={<Clock className="size-3.5" aria-hidden="true" />}>
-            Kelgan so‘rovlar — keyingi qadamni kutmoqda.
-          </PipelineFootnote>
-        </Card>
-      )}
-
-      {/* SO'RALGAN — being produced. */}
-      {tab === 'soralgan' && (
-        <Card>
-          {listLoading && <LoadingState />}
-          {!listLoading && listError && (
-            <ErrorState message={listError} onRetry={allRequests.refetch} />
-          )}
-          {!listLoading && !listError && soralgan.length === 0 && (
-            <EmptyState message="Ishlab chiqarishga so‘ralgan so‘rov yo‘q." />
-          )}
-          {!listLoading && !listError && soralgan.length > 0 && (
-            <PipelineList
-              rows={soralgan}
-              renderMeta={(req) =>
-                req.production_location_name ? (
-                  <Badge variant="outline" className="gap-1">
-                    <Factory className="size-3" aria-hidden="true" />
-                    {req.production_location_name}
-                  </Badge>
-                ) : null
-              }
-            />
-          )}
-          <PipelineFootnote
-            icon={<Factory className="size-3.5" aria-hidden="true" />}
-          >
-            Ishlab chiqarilmoqda — tayyor bo‘lgach «Qabul qilingan»ga o‘tadi.
-          </PipelineFootnote>
-        </Card>
-      )}
-
-      {/* QABUL QILINGAN — received from production, ready to forward. */}
-      {tab === 'qabul_qilingan' && (
-        <Card>
-          {listLoading && <LoadingState />}
-          {!listLoading && listError && (
-            <ErrorState message={listError} onRetry={allRequests.refetch} />
-          )}
-          {!listLoading && !listError && qabulQilingan.length === 0 && (
-            <EmptyState message="Yuborishga tayyor so‘rov yo‘q." />
-          )}
-          {!listLoading && !listError && qabulQilingan.length > 0 && (
-            <PipelineList
-              rows={qabulQilingan}
-              renderMeta={() => (
-                <Badge variant="success" className="gap-1">
-                  <PackageCheck className="size-3" aria-hidden="true" />
-                  Qabul qilingan
-                </Badge>
-              )}
-            />
-          )}
-          <PipelineFootnote
-            icon={<PackageCheck className="size-3.5" aria-hidden="true" />}
-          >
-            Qabul qilingan — yuborilgach «Yuborilgan»ga o‘tadi.
-          </PipelineFootnote>
-        </Card>
-      )}
-
-      {/* YUBORILGAN — shipped onward, awaiting acceptance. */}
-      {tab === 'yuborilgan' && (
-        <Card>
-          {listLoading && <LoadingState />}
-          {!listLoading && listError && (
-            <ErrorState message={listError} onRetry={allRequests.refetch} />
-          )}
-          {!listLoading && !listError && yuborilgan.length === 0 && (
-            <EmptyState message="Qabulni kutayotgan so‘rov yo‘q." />
-          )}
-          {!listLoading && !listError && yuborilgan.length > 0 && (
-            <PipelineList
-              rows={yuborilgan}
-              renderMeta={() => (
-                <Badge variant="secondary" className="gap-1">
-                  <Clock className="size-3" aria-hidden="true" />
-                  Qabul kutilmoqda
-                </Badge>
-              )}
-            />
-          )}
-          <PipelineFootnote
-            icon={<Truck className="size-3.5" aria-hidden="true" />}
-          >
-            Jo‘natildi — qabul qilingach so‘rov yopiladi.
-          </PipelineFootnote>
-        </Card>
-      )}
-
       {/* TRANZAKSIYALAR — every stock movement touching the отдел. */}
       {tab === 'transactions' && (
         <Card>
@@ -756,52 +590,9 @@ function PipelineFootnote({
 }
 
 // ---------------------------------------------------------------------------
-// PipelineList — a simple, aligned list of single requests for a stage.
-// One clean row per request: id · product · qty · → requester · status badge,
-// plus an optional per-row meta badge. (Mirrors CentralRequestsTab's
-// PipelineList, action column dropped — this отдел view is read-only.)
-// ---------------------------------------------------------------------------
-
-function PipelineList({
-  rows,
-  renderMeta,
-}: {
-  rows: ReplenishmentRequest[];
-  /** Optional extra badge shown next to the status. */
-  renderMeta?: (req: ReplenishmentRequest) => React.ReactNode;
-}) {
-  return (
-    <ul className="divide-y divide-border/40">
-      {rows.map((req) => (
-        <li
-          key={req.id}
-          className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between"
-        >
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
-            <span className="text-xs text-muted-foreground">#{req.id}</span>
-            <span className="font-medium">{req.product_name}</span>
-            <span className="tabular-nums text-muted-foreground">
-              {formatQtyUnit(req.qty_needed, req.product_unit)}
-            </span>
-            <span className="flex items-center gap-1 text-xs text-muted-foreground">
-              <Store className="size-3" aria-hidden="true" />
-              {req.requester_location_name}
-            </span>
-            <Badge variant={REPLENISHMENT_STATUS_VARIANT[req.status]}>
-              {pipelineStatusLabel(req)}
-            </Badge>
-            {renderMeta?.(req)}
-          </div>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// PurchaseOrderList — one row per xom-ashyo purchase order, in the same row
-// style as PipelineList: id · product · qty · → target raw warehouse · status
-// badge · date, with the supplier name when known.
+// PurchaseOrderList — one row per xom-ashyo purchase order: id · product ·
+// qty · → target raw warehouse · status badge · date, with the supplier name
+// when known. (The stage-row PipelineList it once mirrored is gone — F-O.)
 // ---------------------------------------------------------------------------
 
 function PurchaseOrderList({ rows }: { rows: PurchaseOrder[] }) {
