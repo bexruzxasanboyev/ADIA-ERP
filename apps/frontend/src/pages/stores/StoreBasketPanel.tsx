@@ -211,7 +211,6 @@ function BasketLineCard({
     <div
       className={cn(
         'space-y-2.5 rounded-lg border border-border/60 bg-surface-3 p-3.5 transition-colors',
-        belowMin && 'border-destructive/30',
         !reducedMotion && 'transition-opacity duration-150',
         leaving && 'opacity-0',
       )}
@@ -230,7 +229,13 @@ function BasketLineCard({
       {showMeta && (
         <p className="text-xs text-muted-foreground tabular-nums">
           Qoldiq{' '}
-          <span className={cn(belowMin && 'font-medium text-destructive')}>
+          <span
+            className={cn(
+              item.current_qty <= 0
+                ? 'font-medium text-destructive'
+                : belowMin && 'font-medium text-warning',
+            )}
+          >
             {formatQty(item.current_qty)} {unitLabel}
           </span>{' '}
           · min {formatQty(item.min_level)} · maks {formatQty(item.max_level)}
@@ -305,6 +310,6 @@ function BasketLineCard({
 /** Minimal stock-status pill mirroring the page's StockStatusPill heuristic. */
 function BasketStatusPill({ belowMin, qty }: { belowMin: boolean; qty: number }) {
   if (qty <= 0) return <Badge variant="danger">Tugagan</Badge>;
-  if (belowMin) return <Badge variant="danger">Min’dan past</Badge>;
+  if (belowMin) return <Badge variant="warning">Min’dan past</Badge>;
   return <Badge variant="success">Yetarli</Badge>;
 }

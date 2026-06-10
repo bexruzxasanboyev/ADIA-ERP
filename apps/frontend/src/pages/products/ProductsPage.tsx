@@ -36,7 +36,7 @@ import {
   effectiveType,
   isResaleCategory,
 } from '@/lib/productCategory';
-import { formatQty, formatSom } from '@/lib/format';
+import { formatPlainNumber, formatQty, formatSom } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import type { Product, Unit } from '@/lib/types';
 import { ProductCostDialog } from './ProductCostDialog';
@@ -318,50 +318,26 @@ const ProductCard = memo(function ProductCard({
   // (raw/resale items have no sex), and only to users who may edit it.
   const canHaveWorkshop = type === 'finished' || type === 'semi';
   const showAssign = canEditWorkshop && canHaveWorkshop;
+  const cost = displayCost(p);
   return (
     <Card
       className={cn(
-        'flex h-full flex-col gap-3 border-l-4 border-border/60 p-4',
+        'flex h-full flex-col gap-2 border-l-4 border-border/60 p-3',
         style.accent,
       )}
     >
+      {/* Row 1 — thumbnail + name (truncate) | type badge at the right. */}
       <div className="flex items-start justify-between gap-2">
-        <div className="flex min-w-0 items-start gap-2.5">
-          <ProductThumbnail src={p.image_url} alt={p.name} className="size-11" />
+        <div className="flex min-w-0 items-center gap-2">
+          <ProductThumbnail src={p.image_url} alt={p.name} className="size-9" />
           <div className="min-w-0">
-            <p className="truncate text-sm font-semibold" title={p.name}>
+            <p className="truncate text-sm font-medium" title={p.name}>
               {p.name}
             </p>
             {p.sku && (
-              <p className="truncate text-xs text-muted-foreground">
+              <p className="truncate text-[11px] text-muted-foreground">
                 SKU: {p.sku}
               </p>
-            )}
-            <WorkshopLine
-              workshop={p.workshop}
-              edit={
-                showAssign && p.workshop != null ? (
-                  <WorkshopPicker
-                    productId={p.id}
-                    currentWorkshopId={p.workshop.id}
-                    workshops={workshops}
-                    variant="compact"
-                    onAssigned={onWorkshopAssigned}
-                  />
-                ) : undefined
-              }
-            />
-            {/* No sex yet → offer to assign one (produced products only). */}
-            {showAssign && p.workshop == null && (
-              <div className="mt-1">
-                <WorkshopPicker
-                  productId={p.id}
-                  currentWorkshopId={null}
-                  workshops={workshops}
-                  variant="button"
-                  onAssigned={onWorkshopAssigned}
-                />
-              </div>
             )}
           </div>
         </div>
@@ -374,47 +350,76 @@ const ProductCard = memo(function ProductCard({
           {needsRecipeWarn(p) && <RecipelessBadge />}
         </div>
       </div>
-      <dl className="grid grid-cols-2 gap-2 text-xs">
+
+      {/* Row 2 — producing sex (or the assign affordance), one quiet line. */}
+      <WorkshopLine
+        workshop={p.workshop}
+        edit={
+          showAssign && p.workshop != null ? (
+            <WorkshopPicker
+              productId={p.id}
+              currentWorkshopId={p.workshop.id}
+              workshops={workshops}
+              variant="compact"
+              onAssigned={onWorkshopAssigned}
+            />
+          ) : undefined
+        }
+      />
+      {/* No sex yet → offer to assign one (produced products only). */}
+      {showAssign && p.workshop == null && (
         <div>
-          <dt className="text-muted-foreground">Birlik</dt>
-          <dd>{UNIT_LABELS[p.unit]}</dd>
+          <WorkshopPicker
+            productId={p.id}
+            currentWorkshopId={null}
+            workshops={workshops}
+            variant="button"
+            onAssigned={onWorkshopAssigned}
+          />
         </div>
-        <div className="min-w-0">
-          <dt className="text-muted-foreground">Narx</dt>
-          <dd className="flex items-center gap-1.5">
-            <span className="truncate tabular-nums">
-              {displayCost(p) != null
-                ? formatSom(displayCost(p) as number)
-                : '—'}
-            </span>
-            {type === 'raw' ? (
-              p.manual_cost_per_unit != null && <ManualPriceBadge />
-            ) : (
-              <ComputedPriceHint />
-            )}
-          </dd>
-        </div>
-        {/* «Qoldiq» (ostatka) — the зг's on-hand stock. Shown only in a
-            stock-aware section; 0 is a valid value and renders as "0 dona". */}
-        {stockQty !== undefined && (
-          <div className="min-w-0">
-            <dt className="text-muted-foreground">Qoldiq</dt>
-            <dd className="truncate tabular-nums">
-              {formatQty(stockQty)} {UNIT_LABELS[p.unit]}
-            </dd>
-          </div>
-        )}
-      </dl>
-      {/* Narx (edit, RAW only) + Retsept (view, non-raw) side by side at the
-          card foot. Only xom-ashyo price is editable; semi/finished show a
-          read-only computed price (the «hisoblangan» hint above). */}
+      )}
+
+      {/* Value row — Narx big with a muted so‘m suffix; Birlik inline muted. */}
+      <div className="mt-auto flex items-baseline justify-between gap-2 pt-0.5">
+        <p className="flex min-w-0 items-baseline gap-1.5">
+          <span className="truncate text-lg font-semibold tabular-nums tracking-tight">
+            {cost != null ? formatPlainNumber(Math.round(cost)) : '—'}
+          </span>
+          {cost != null && (
+            <span className="shrink-0 text-xs text-muted-foreground">so‘m</span>
+          )}
+          {type === 'raw' ? (
+            p.manual_cost_per_unit != null && <ManualPriceBadge />
+          ) : (
+            <ComputedPriceHint />
+          )}
+        </p>
+        <span className="shrink-0 text-xs text-muted-foreground">
+          {UNIT_LABELS[p.unit]}
+        </span>
+      </div>
+
+      {/* «Qoldiq» (ostatka) — the зг's on-hand stock. Shown only in a
+          stock-aware section; 0 is a valid value and renders as "0 dona". */}
+      {stockQty !== undefined && (
+        <p className="text-xs text-muted-foreground">
+          Qoldiq:{' '}
+          <span className="font-medium tabular-nums text-foreground">
+            {formatQty(stockQty)} {UNIT_LABELS[p.unit]}
+          </span>
+        </p>
+      )}
+
+      {/* Foot — quiet left-aligned ghost actions (no boxed full-width button).
+          Only xom-ashyo price is editable; semi/finished show a read-only
+          computed price (the «hisoblangan» hint above). */}
       {((canEditCost && type === 'raw') || type !== 'raw') && (
-        <div className="mt-auto flex flex-wrap items-center gap-2">
+        <div className="-mb-1 -ml-2 flex items-center gap-1">
           {canEditCost && type === 'raw' && (
             <Button
-              variant="secondary"
+              variant="ghost"
               size="sm"
-              className="h-8 flex-1"
+              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
               onClick={() => onEditCost(p)}
             >
               <Pencil className="size-3.5" aria-hidden="true" />
@@ -423,12 +428,12 @@ const ProductCard = memo(function ProductCard({
           )}
           {type !== 'raw' && (
             <Button
-              variant="outline"
+              variant="ghost"
               size="sm"
-              className="h-8 flex-1"
+              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
               onClick={() => onOpenRecipe(p)}
             >
-              <ScrollText className="size-4" aria-hidden="true" />
+              <ScrollText className="size-3.5" aria-hidden="true" />
               Retseptni ko‘rish
             </Button>
           )}
@@ -965,10 +970,10 @@ export function ProductsPage({
               {t.label}
               {/* Only the ACTIVE tab carries a count — in server-paginated mode
                   the page holds a partial set, so a per-tab whole-catalogue
-                  count is not known client-side. */}
+                  count is not known client-side. Compact «· N» per DESIGN §8. */}
               {active && (
-                <span className="rounded-full bg-primary/20 px-1.5 text-xs tabular-nums">
-                  {activeTabCount}
+                <span className="text-xs tabular-nums text-primary/70">
+                  · {activeTabCount}
                 </span>
               )}
             </Button>
@@ -1022,12 +1027,14 @@ export function ProductsPage({
           <EmptyState message="Mahsulot topilmadi." />
         )}
 
-        {/* «Ko'rsatildi N / total» — how many of the matching products are
-            currently rendered. In paginated mode this counts up as pages are
-            appended; at the end items.length === total. */}
+        {/* Result count — «N ta mahsulot» once everything matching is on
+            screen; while pages are still appending it reads
+            «Ko'rsatildi N / total» so the user sees the progress. */}
         {!isLoading && !error && items.length > 0 && (
           <p className="mb-3 text-xs text-muted-foreground tabular-nums">
-            Ko‘rsatildi {items.length} / {total}
+            {items.length === total
+              ? `${total} ta mahsulot`
+              : `Ko‘rsatildi ${items.length} / ${total}`}
           </p>
         )}
 
@@ -1175,7 +1182,7 @@ export function ProductsPage({
                       {group.items.length}
                     </Badge>
                   </div>
-                  <div className="grid grid-cols-1 items-stretch gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+                  <div className="grid grid-cols-1 items-stretch gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 min-[1920px]:grid-cols-6">
                     {group.items.map((p) => (
                       <ProductCard
                         key={p.id}

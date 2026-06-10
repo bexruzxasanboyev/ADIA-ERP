@@ -22,6 +22,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { NumberInput } from '@/components/ui/number-input';
+import { StockMeter, type StockTone } from '@/components/ui/stock-meter';
 import { Tabs } from '@/components/ui/tabs';
 import {
   FilterPopover,
@@ -156,19 +157,263 @@ function stockStatusOf(row: StockRow): Exclude<StockStatusKey, 'all'> {
   return 'enough';
 }
 
+/**
+ * Status v2 (DESIGN.md §8): the badge is the ONLY status-coloured chip on a
+ * card — `danger` is reserved for a truly empty shelf, everything below min
+ * reads as `warning`. No red borders / backgrounds anywhere.
+ */
 function StockStatusPill({ row }: { row: StockRow }) {
   const status = stockStatusOf(row);
   switch (status) {
     case 'out':
       return <Badge variant="danger">Tugagan</Badge>;
     case 'below_min':
-      return <Badge variant="danger">Min’dan past</Badge>;
+      return <Badge variant="warning">Min’dan past</Badge>;
     case 'low':
       return <Badge variant="warning">Kam</Badge>;
     case 'enough':
     default:
       return <Badge variant="success">Yetarli</Badge>;
   }
+}
+
+/** Dot colour per status — used by the segmented filter strip. */
+const STATUS_DOT: Record<Exclude<StockStatusKey, 'all'>, string> = {
+  out: 'bg-destructive',
+  below_min: 'bg-warning',
+  low: 'bg-warning/60',
+  enough: 'bg-success',
+};
+
+/**
+ * Compact inline segmented status filter (DESIGN.md §8 — fullWidth stretched
+ * tabs are banned). Mirrors the `Tabs` primitive's container/active classes
+ * but carries a status dot + live count inside each label: `● Tugagan · 12`.
+ */
+function StockStatusFilter({
+  value,
+  onChange,
+  counts,
+}: {
+  value: StockStatusKey;
+  onChange: (value: StockStatusKey) => void;
+  counts: StockStatusCounts;
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Qoldiq holati bo‘yicha filtr"
+      className="inline-flex max-w-full items-center gap-1 self-start overflow-x-auto rounded-xl border border-border/70 bg-surface-1 p-1"
+    >
+      {STOCK_STATUS_TABS.map((opt) => {
+        const isActive = opt.value === value;
+        const count = opt.value === 'all' ? counts.total : counts[opt.value];
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            onClick={() => onChange(opt.value)}
+            className={cn(
+              'flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              isActive
+                ? 'bg-primary/15 text-primary ring-1 ring-inset ring-primary/25'
+                : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
+            )}
+          >
+            {opt.value !== 'all' && (
+              <span
+                className={cn(
+                  'size-1.5 rounded-full',
+                  STATUS_DOT[opt.value],
+                )}
+                aria-hidden="true"
+              />
+            )}
+            {opt.label}
+            <span
+              className={cn(
+                'tabular-nums',
+                isActive ? 'text-primary/70' : 'text-muted-foreground/60',
+              )}
+            >
+              · {count}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+interface StockCardProps {
+  row: StockRow;
+  /** Store name chip — shown only in the PM's multi-store view. */
+  storeLabel: string | null;
+  /** store_manager only — min/max edit + basket affordances. */
+  canEdit: boolean;
+  basketItem: BasketItem | undefined;
+  onEditMinMax: () => void;
+  onToggleBasket: () => void;
+  onStepQty: (delta: number) => void;
+  onSetQty: (qty: number) => void;
+  onRemove: () => void;
+}
+
+/**
+ * Stock card v2 (DESIGN.md §8): a NEUTRAL <Card> — status never tints the
+ * border/background. The state reads from exactly three quiet signals: the
+ * pill badge (top-right), the qty colour (red only at 0, amber below min)
+ * and the <StockMeter> fill with a tick at the min threshold.
+ */
+function StockCard({
+  row,
+  storeLabel,
+  canEdit,
+  basketItem,
+  onEditMinMax,
+  onToggleBasket,
+  onStepQty,
+  onSetQty,
+  onRemove,
+}: StockCardProps) {
+  const status = stockStatusOf(row);
+  const tone: StockTone =
+    status === 'out' ? 'danger' : status === 'below_min' ? 'warning' : 'success';
+  const hasMeter = row.max_level > 0;
+  return (
+    <Card
+      className={cn(
+        'flex flex-col gap-2.5 p-4 transition-colors hover:border-border-strong hover:shadow-card-hover',
+        basketItem && 'ring-1 ring-primary/35',
+      )}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <p
+          className="min-w-0 truncate text-sm font-medium"
+          title={row.product_name}
+        >
+          {row.product_name}
+        </p>
+        <span className="shrink-0">
+          <StockStatusPill row={row} />
+        </span>
+      </div>
+
+      {storeLabel !== null && (
+        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Store className="size-3 shrink-0" aria-hidden="true" />
+          <span className="truncate">{storeLabel}</span>
+        </p>
+      )}
+
+      <p
+        className={cn(
+          'text-xl font-semibold tabular-nums tracking-tight',
+          row.qty <= 0
+            ? 'text-destructive'
+            : row.qty <= row.min_level
+              ? 'text-warning'
+              : 'text-foreground',
+        )}
+      >
+        {formatQtyUnit(row.qty, row.product_unit)}
+      </p>
+
+      {hasMeter && (
+        <StockMeter
+          ratio={row.qty / row.max_level}
+          minRatio={row.min_level / row.max_level}
+          tone={tone}
+        />
+      )}
+
+      <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+        <span className="tabular-nums">
+          Min {formatQtyUnit(row.min_level, row.product_unit)}
+        </span>
+        <span className="flex items-center gap-0.5 tabular-nums">
+          Max {formatQtyUnit(row.max_level, row.product_unit)}
+          {canEdit && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-6 text-muted-foreground hover:text-foreground"
+              onClick={onEditMinMax}
+              aria-label={`${row.product_name} — min/max tahrir`}
+            >
+              <Pencil className="size-3" aria-hidden="true" />
+            </Button>
+          )}
+        </span>
+      </div>
+
+      {/* Basket control (store_manager only). Empty → "So'rov yuborish";
+          in basket → qty stepper + remove. */}
+      {canEdit &&
+        (basketItem ? (
+          <div className="flex items-center justify-between gap-2 rounded-md bg-primary/10 px-2 py-1">
+            <span className="flex items-center gap-1 text-xs font-medium text-primary">
+              <Check className="size-3.5" aria-hidden="true" />
+              Savatda
+            </span>
+            <div className="flex items-center gap-0.5">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-6"
+                onClick={() => onStepQty(-1)}
+                aria-label={`${row.product_name} sonini kamaytirish`}
+              >
+                <Minus className="size-3.5" aria-hidden="true" />
+              </Button>
+              <NumberInput
+                decimals
+                value={basketItem.qty}
+                onValueChange={(v) => onSetQty(v ?? Number.NaN)}
+                aria-label={`${row.product_name} soni`}
+                className="h-6 w-14 px-1 text-center text-xs tabular-nums"
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-6"
+                onClick={() => onStepQty(1)}
+                aria-label={`${row.product_name} sonini oshirish`}
+              >
+                <Plus className="size-3.5" aria-hidden="true" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-6 text-muted-foreground hover:text-destructive"
+                onClick={onRemove}
+                aria-label={`${row.product_name} ni savatdan olib tashlash`}
+              >
+                <Trash2 className="size-3.5" aria-hidden="true" />
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 w-full text-xs"
+            onClick={onToggleBasket}
+          >
+            <ShoppingCart className="size-3.5" aria-hidden="true" />
+            So‘rov yuborish
+          </Button>
+        ))}
+    </Card>
+  );
 }
 
 export function StoreWorkflowPage() {
@@ -387,13 +632,13 @@ export function StoreWorkflowPage() {
     return m;
   }, [products.data]);
 
-  const filteredStock = useMemo(() => {
+  // Search + category/unit filtered rows, STATUS-AGNOSTIC — the segmented
+  // status filter derives its per-tab counts from this set, so every tab
+  // label shows exactly how many cards it would render.
+  const searchedStock = useMemo(() => {
     const cats = productFilter.category ?? [];
     const units = productFilter.unit ?? [];
     return stockRows.filter((r) => {
-      if (statusFilter !== 'all' && stockStatusOf(r) !== statusFilter) {
-        return false;
-      }
       if (!matchesSearch(r.product_name, productSearch)) return false;
       const p = productById.get(r.product_id);
       if (
@@ -405,7 +650,28 @@ export function StoreWorkflowPage() {
       if (units.length > 0 && !units.includes(r.product_unit)) return false;
       return true;
     });
-  }, [stockRows, statusFilter, productSearch, productFilter, productById]);
+  }, [stockRows, productSearch, productFilter, productById]);
+
+  const filteredStock = useMemo(
+    () =>
+      statusFilter === 'all'
+        ? searchedStock
+        : searchedStock.filter((r) => stockStatusOf(r) === statusFilter),
+    [searchedStock, statusFilter],
+  );
+
+  // Live counts for the segmented status filter (search/category-scoped).
+  const filterCounts = useMemo<StockStatusCounts>(() => {
+    const c: StockStatusCounts = {
+      total: searchedStock.length,
+      out: 0,
+      below_min: 0,
+      low: 0,
+      enough: 0,
+    };
+    for (const r of searchedStock) c[stockStatusOf(r)] += 1;
+    return c;
+  }, [searchedStock]);
 
   // Distinct Poster categories across the scoped stock rows (most-populated
   // first) — feeds the Filter popover's searchable category group.
@@ -582,8 +848,8 @@ export function StoreWorkflowPage() {
   }, [replen.data, selectedStoreSet, hasSelection, bounds]);
 
   const requestTabOptions: { value: RequestTabKey; label: string }[] = [
-    { value: 'sent', label: `So‘rov (${sent.length})` },
-    { value: 'incoming', label: `Qabul qiluvchi (${incoming.length})` },
+    { value: 'sent', label: `So‘rov · ${sent.length}` },
+    { value: 'incoming', label: `Qabul qiluvchi · ${incoming.length}` },
     { value: 'transactions', label: 'Tranzaksiyalar' },
   ];
 
@@ -694,263 +960,109 @@ export function StoreWorkflowPage() {
             </>
           )}
 
-          {/* TAB: Mahsulotlar — searchable cards + status filter. */}
+          {/* TAB: Mahsulotlar — toolbar (segmented status filter + search)
+              over open category sections of v2 stock cards. No wrapping
+              mega-card: the cards ARE the surface (DESIGN.md §8). */}
           {pageTab === 'products' && (
-            <Card>
-              <header className="flex flex-col gap-3 border-b border-border/60 p-5">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="space-y-0.5">
-                    <h2 className="flex items-center gap-2 text-base font-semibold">
-                      <Store className="size-4 text-primary" aria-hidden="true" />
-                      Mahsulotlar
-                    </h2>
-                    <p className="text-xs text-muted-foreground">
-                      Do‘kon qoldig‘i va har bir mahsulot holati.
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <div className="relative w-full sm:w-72">
-                      <Search
-                        className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground"
-                        aria-hidden="true"
-                      />
-                      <Input
-                        value={productSearch}
-                        onChange={(e) => setProductSearch(e.target.value)}
-                        placeholder="Qidirish (lotin yoki kirill)…"
-                        aria-label="Mahsulot qidirish"
-                        className="pl-9 pr-9"
-                      />
-                      {productSearch !== '' && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => setProductSearch('')}
-                          aria-label="Qidiruvni tozalash"
-                          className="absolute right-1.5 top-1.5 size-6 text-muted-foreground"
-                        >
-                          <X className="size-4" />
-                        </Button>
-                      )}
-                    </div>
-                    <FilterPopover
-                      groups={STOCK_FILTER_GROUPS}
-                      value={productFilter}
-                      onApply={setProductFilter}
-                    />
-                  </div>
-                </div>
-                <Tabs
+            <div className="space-y-5">
+              <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                <StockStatusFilter
                   value={statusFilter}
-                  onValueChange={setStatusFilter}
-                  options={STOCK_STATUS_TABS}
-                  ariaLabel="Qoldiq holati bo‘yicha filtr"
-                  fullWidth
+                  onChange={setStatusFilter}
+                  counts={filterCounts}
                 />
-              </header>
+                <div className="flex items-center gap-2">
+                  <div className="relative w-full sm:w-72">
+                    <Search
+                      className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground"
+                      aria-hidden="true"
+                    />
+                    <Input
+                      value={productSearch}
+                      onChange={(e) => setProductSearch(e.target.value)}
+                      placeholder="Qidirish (lotin yoki kirill)…"
+                      aria-label="Mahsulot qidirish"
+                      className="pl-9 pr-9"
+                    />
+                    {productSearch !== '' && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setProductSearch('')}
+                        aria-label="Qidiruvni tozalash"
+                        className="absolute right-1.5 top-1.5 size-6 text-muted-foreground"
+                      >
+                        <X className="size-4" />
+                      </Button>
+                    )}
+                  </div>
+                  <FilterPopover
+                    groups={STOCK_FILTER_GROUPS}
+                    value={productFilter}
+                    onApply={setProductFilter}
+                  />
+                </div>
+              </div>
 
-              {stock.isLoading && <LoadingState />}
+              {stock.isLoading && (
+                <Card>
+                  <LoadingState />
+                </Card>
+              )}
               {!stock.isLoading && stock.error && (
-                <ErrorState message={stock.error} onRetry={stock.refetch} />
+                <Card>
+                  <ErrorState message={stock.error} onRetry={stock.refetch} />
+                </Card>
               )}
               {!stock.isLoading && !stock.error && filteredStock.length === 0 && (
-                <EmptyState
-                  message={
-                    stockRows.length === 0
-                      ? 'Qoldiq ma’lumotlari topilmadi.'
-                      : 'Bu shart bo‘yicha mahsulot yo‘q.'
-                  }
-                />
+                <Card>
+                  <EmptyState
+                    message={
+                      stockRows.length === 0
+                        ? 'Qoldiq ma’lumotlari topilmadi.'
+                        : 'Bu shart bo‘yicha mahsulot yo‘q.'
+                    }
+                  />
+                </Card>
               )}
               {!stock.isLoading && !stock.error && filteredStock.length > 0 && (
-                <div className="space-y-6 p-5">
+                <div className="space-y-6">
                   {stockGroups.map((group) => (
                     <section key={group.key} className="space-y-3">
                       <div className="flex items-center gap-2">
                         <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                           {group.name}
                         </h3>
-                        <Badge variant="outline" className="tabular-nums">
+                        <Badge variant="secondary" className="tabular-nums">
                           {group.items.length}
                         </Badge>
                       </div>
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
-                        {group.items.map((row) => {
-                          const danger =
-                            row.qty <= 0 || row.qty <= row.min_level;
-                          const basketItem = basket[row.product_id];
-                          return (
-                            <div
-                              key={`${row.location_id}-${row.product_id}`}
-                              className={cn(
-                                'flex flex-col gap-3 rounded-lg border border-border/60 bg-surface-3 p-4 transition-colors hover:border-border-strong',
-                                danger && 'border-destructive/40 bg-destructive/5',
-                                basketItem && 'border-primary/50 bg-primary/5',
-                              )}
-                            >
-                              <div className="flex items-start justify-between gap-2">
-                                <p className="min-w-0 text-sm font-semibold leading-tight">
-                                  {row.product_name}
-                                </p>
-                                <StockStatusPill row={row} />
-                              </div>
-
-                              {multiStore && (
-                                <Badge variant="outline" className="w-fit gap-1">
-                                  <Store
-                                    className="size-3"
-                                    aria-hidden="true"
-                                  />
-                                  {storeName(row.location_id)}
-                                </Badge>
-                              )}
-
-                              <div>
-                                <p className="text-xs text-muted-foreground">
-                                  Qoldiq
-                                </p>
-                                <p
-                                  className={cn(
-                                    'text-lg font-semibold tabular-nums',
-                                    danger && 'text-destructive',
-                                  )}
-                                >
-                                  {formatQtyUnit(row.qty, row.product_unit)}
-                                </p>
-                              </div>
-
-                              <div className="flex items-end justify-between gap-2 border-t border-border/40 pt-2">
-                                <div>
-                                  <p className="text-xs text-muted-foreground">
-                                    Min / Max
-                                  </p>
-                                  <p className="text-xs tabular-nums text-muted-foreground">
-                                    {formatQtyUnit(
-                                      row.min_level,
-                                      row.product_unit,
-                                    )}
-                                    {' / '}
-                                    {formatQtyUnit(
-                                      row.max_level,
-                                      row.product_unit,
-                                    )}
-                                  </p>
-                                </div>
-                                {isStoreManager && (
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    className="h-7 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground"
-                                    onClick={() => setMinMaxTarget(row)}
-                                  >
-                                    <Pencil
-                                      className="size-3.5"
-                                      aria-hidden="true"
-                                    />
-                                    Tahrir
-                                  </Button>
-                                )}
-                              </div>
-
-                              {/* Basket control (store_manager only). Empty →
-                                  "So'rov yuborish"; in basket → qty stepper +
-                                  remove. Adding/removing keeps the page-level
-                                  draft which the So'rovlar tab confirms. */}
-                              {isStoreManager &&
-                                (basketItem ? (
-                                  <div className="flex items-center justify-between gap-2 rounded-md border border-primary/40 bg-primary/10 px-2 py-1.5">
-                                    <span className="flex items-center gap-1 text-xs font-medium text-primary">
-                                      <Check
-                                        className="size-3.5"
-                                        aria-hidden="true"
-                                      />
-                                      Savatda
-                                    </span>
-                                    <div className="flex items-center gap-1">
-                                      <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="icon"
-                                        className="size-6"
-                                        onClick={() =>
-                                          stepBasketQty(row.product_id, -1)
-                                        }
-                                        aria-label={`${row.product_name} sonini kamaytirish`}
-                                      >
-                                        <Minus
-                                          className="size-3.5"
-                                          aria-hidden="true"
-                                        />
-                                      </Button>
-                                      <NumberInput
-                                        decimals
-                                        value={basketItem.qty}
-                                        onValueChange={(v) =>
-                                          setBasketQty(
-                                            row.product_id,
-                                            v ?? Number.NaN,
-                                          )
-                                        }
-                                        aria-label={`${row.product_name} soni`}
-                                        className="h-6 w-14 px-1 text-center text-xs tabular-nums"
-                                      />
-                                      <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="icon"
-                                        className="size-6"
-                                        onClick={() =>
-                                          stepBasketQty(row.product_id, 1)
-                                        }
-                                        aria-label={`${row.product_name} sonini oshirish`}
-                                      >
-                                        <Plus
-                                          className="size-3.5"
-                                          aria-hidden="true"
-                                        />
-                                      </Button>
-                                      <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="icon"
-                                        className="size-6 text-muted-foreground hover:text-destructive"
-                                        onClick={() =>
-                                          removeBasketItem(row.product_id)
-                                        }
-                                        aria-label={`${row.product_name} ni savatdan olib tashlash`}
-                                      >
-                                        <Trash2
-                                          className="size-3.5"
-                                          aria-hidden="true"
-                                        />
-                                      </Button>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    className="h-8 w-full text-xs"
-                                    onClick={() => toggleBasket(row)}
-                                  >
-                                    <ShoppingCart
-                                      className="size-3.5"
-                                      aria-hidden="true"
-                                    />
-                                    So‘rov yuborish
-                                  </Button>
-                                ))}
-                            </div>
-                          );
-                        })}
+                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                        {group.items.map((row) => (
+                          <StockCard
+                            key={`${row.location_id}-${row.product_id}`}
+                            row={row}
+                            storeLabel={
+                              multiStore ? storeName(row.location_id) : null
+                            }
+                            canEdit={isStoreManager}
+                            basketItem={basket[row.product_id]}
+                            onEditMinMax={() => setMinMaxTarget(row)}
+                            onToggleBasket={() => toggleBasket(row)}
+                            onStepQty={(delta) =>
+                              stepBasketQty(row.product_id, delta)
+                            }
+                            onSetQty={(qty) => setBasketQty(row.product_id, qty)}
+                            onRemove={() => removeBasketItem(row.product_id)}
+                          />
+                        ))}
                       </div>
                     </section>
                   ))}
                 </div>
               )}
-            </Card>
+            </div>
           )}
 
           {/* Sticky basket bar — visible on Mahsulotlar while the draft has

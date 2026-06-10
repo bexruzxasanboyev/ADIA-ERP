@@ -14,6 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { StockMeter, type StockTone } from '@/components/ui/stock-meter';
 import {
   Table,
   TableBody,
@@ -54,6 +55,24 @@ interface RecalcResponse {
 }
 
 type StockTab = 'stock' | 'history';
+
+/**
+ * DESIGN §8 status v2 — the row stays neutral; only ONE element carries the
+ * status. Value colour rule: `text-destructive` ONLY at qty = 0, `text-warning`
+ * below min, otherwise the default foreground. The matching StockMeter fill
+ * tone follows the same thresholds.
+ */
+function qtyToneClass(qty: number, min: number): string | undefined {
+  if (qty <= 0) return 'font-semibold text-destructive';
+  if (qty <= min) return 'font-medium text-warning';
+  return undefined;
+}
+
+function stockTone(qty: number, min: number): StockTone {
+  if (qty <= 0) return 'danger';
+  if (qty <= min) return 'warning';
+  return 'success';
+}
 
 const TAB_OPTIONS: { value: StockTab; label: string }[] = [
   { value: 'stock', label: 'Qoldiq' },
@@ -206,9 +225,11 @@ export function StockPage({
         </div>
       </div>
 
+      {/* DESIGN §8 — a neutral strip; ONLY the count badge carries the danger
+          accent (no full-red banner paint). */}
       {tab === 'stock' && belowMin > 0 && (
         <div
-          className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          className="flex items-center gap-2 rounded-lg border border-border/60 bg-surface-3 px-3 py-2 text-sm text-foreground"
           role="alert"
         >
           <Badge variant="danger">{belowMin}</Badge>
@@ -243,23 +264,31 @@ export function StockPage({
                       {rows.map((row) => {
                         const isLow = row.qty <= row.min_level;
                         const unit = UNIT_LABELS[row.product_unit];
+                        const hasMeter = row.max_level > 0;
                         return (
-                          <TableRow
-                            key={`${row.location_id}-${row.product_id}`}
-                            className={cn(
-                              isLow && 'bg-destructive/10 hover:bg-destructive/15',
-                            )}
-                          >
+                          <TableRow key={`${row.location_id}-${row.product_id}`}>
                             <TableCell className="font-medium">
                               {row.product_name}
                             </TableCell>
-                            <TableCell
-                              className={cn(
-                                'text-right tabular-nums',
-                                isLow && 'font-semibold text-destructive',
-                              )}
-                            >
-                              {formatQty(row.qty)} {unit}
+                            <TableCell className="text-right">
+                              <div className="flex items-center justify-end gap-2.5">
+                                {hasMeter && (
+                                  <StockMeter
+                                    className="w-16 shrink-0"
+                                    ratio={row.qty / row.max_level}
+                                    minRatio={row.min_level / row.max_level}
+                                    tone={stockTone(row.qty, row.min_level)}
+                                  />
+                                )}
+                                <span
+                                  className={cn(
+                                    'whitespace-nowrap tabular-nums',
+                                    qtyToneClass(row.qty, row.min_level),
+                                  )}
+                                >
+                                  {formatQty(row.qty)} {unit}
+                                </span>
+                              </div>
                             </TableCell>
                             <TableCell>
                               <MinMaxCell
@@ -292,12 +321,12 @@ export function StockPage({
                   items={rows.map((row) => {
                     const isLow = row.qty <= row.min_level;
                     const unit = UNIT_LABELS[row.product_unit];
+                    const hasMeter = row.max_level > 0;
                     return {
                       id: `${row.location_id}-${row.product_id}`,
                       title: row.product_name,
-                      accentClassName: isLow
-                        ? 'border-destructive/40 bg-destructive/10'
-                        : undefined,
+                      // DESIGN §8 — the card stays NEUTRAL; the status reads
+                      // from the badge + the meter fill, never the card paint.
                       badge: isLow ? (
                         <Badge variant="danger">Min dan past</Badge>
                       ) : (
@@ -307,12 +336,23 @@ export function StockPage({
                         {
                           label: 'Qoldiq',
                           value: (
-                            <span
-                              className={cn(
-                                isLow && 'font-semibold text-destructive',
+                            <span className="inline-flex items-center gap-2">
+                              {hasMeter && (
+                                <StockMeter
+                                  className="w-16 shrink-0"
+                                  ratio={row.qty / row.max_level}
+                                  minRatio={row.min_level / row.max_level}
+                                  tone={stockTone(row.qty, row.min_level)}
+                                />
                               )}
-                            >
-                              {formatQty(row.qty)} {unit}
+                              <span
+                                className={cn(
+                                  'tabular-nums',
+                                  qtyToneClass(row.qty, row.min_level),
+                                )}
+                              >
+                                {formatQty(row.qty)} {unit}
+                              </span>
                             </span>
                           ),
                         },

@@ -285,23 +285,24 @@ export function RecipePage() {
             )
           ) : grouped ? (
             <div className="space-y-6">
-              {/* Grand total (itogo) over all stages, shown once. */}
-              <Card className="border-primary/30 bg-primary/5 p-5">
+              {/* Grand total (itogo) over all stages, shown once — a calm
+                  neutral KPI card; the value alone carries the accent. */}
+              <Card className="p-5">
                 <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                   Umumiy tannarx (itogo)
                 </p>
-                <p className="mt-1 text-3xl font-bold tabular-nums text-primary">
+                <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-primary">
                   {totalCost === null ? '—' : formatSom(totalCost)}
                 </p>
               </Card>
 
               {stageGroups.map((g) => (
                 <section key={g.stage} className="space-y-3">
-                  <div className="flex items-center justify-between gap-3 border-b border-border pb-1.5">
-                    <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">
+                  <div className="flex items-baseline justify-between gap-3 border-b border-border/60 pb-1.5">
+                    <h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                       {RECIPE_STAGE_LABELS[g.stage]}
                     </h2>
-                    <span className="shrink-0 text-sm font-semibold tabular-nums text-muted-foreground">
+                    <span className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
                       {g.subtotal === null ? '—' : formatSom(g.subtotal)}
                     </span>
                   </div>

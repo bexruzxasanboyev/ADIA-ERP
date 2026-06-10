@@ -91,43 +91,45 @@ const barTooltipStyle = {
   color: 'hsl(var(--popover-foreground))',
 };
 
-/** A KPI card styled like the executive dashboard HeroStrip (owner). */
+/**
+ * KPI card — DESIGN.md §1 contract typography (kicker label + text-2xl
+ * value). Status v2: the VALUE is the only status-coloured element; the
+ * icon stays muted so a wall of five cards reads calm.
+ */
 function KpiCard({
   label,
   value,
   caption,
   Icon,
   valueClass,
-  iconClass,
 }: {
   label: string;
   value: number;
   caption: string;
   Icon: ComponentType<{ className?: string }>;
   valueClass?: string;
-  iconClass?: string;
 }) {
   return (
-    <Card className="flex min-h-[140px] flex-col justify-between gap-3 border-border/60 p-5 sm:p-6">
+    <Card className="flex flex-col justify-between gap-4 border-border/60 p-5">
       <div className="flex items-start justify-between gap-3">
-        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           {label}
         </p>
         <Icon
           aria-hidden="true"
-          className={cn('size-6 shrink-0 sm:size-7', iconClass)}
+          className="size-5 shrink-0 text-muted-foreground"
         />
       </div>
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+      <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1">
         <span
           className={cn(
-            'text-4xl font-bold leading-none tabular-nums sm:text-5xl',
+            'text-2xl font-semibold leading-none tabular-nums tracking-tight',
             valueClass,
           )}
         >
           {formatPlainNumber(value)}
         </span>
-        <span className="text-sm text-muted-foreground">{caption}</span>
+        <span className="text-xs text-muted-foreground">{caption}</span>
       </div>
     </Card>
   );
@@ -154,7 +156,6 @@ export function StoreStockDashboard({ counts }: { counts: StockStatusCounts }) {
           value={counts.total}
           caption="mahsulot"
           Icon={Package}
-          iconClass="text-primary"
         />
         <KpiCard
           label={STATUS_META.below_min.label}
@@ -162,7 +163,6 @@ export function StoreStockDashboard({ counts }: { counts: StockStatusCounts }) {
           caption="pozitsiya"
           Icon={TrendingDown}
           valueClass={STATUS_META.below_min.value}
-          iconClass={STATUS_META.below_min.value}
         />
         <KpiCard
           label={STATUS_META.low.label}
@@ -170,7 +170,6 @@ export function StoreStockDashboard({ counts }: { counts: StockStatusCounts }) {
           caption="pozitsiya"
           Icon={AlertTriangle}
           valueClass={STATUS_META.low.value}
-          iconClass={STATUS_META.low.value}
         />
         <KpiCard
           label={STATUS_META.out.label}
@@ -178,7 +177,6 @@ export function StoreStockDashboard({ counts }: { counts: StockStatusCounts }) {
           caption="pozitsiya"
           Icon={XCircle}
           valueClass={STATUS_META.out.value}
-          iconClass={STATUS_META.out.value}
         />
         <KpiCard
           label={STATUS_META.enough.label}
@@ -186,7 +184,6 @@ export function StoreStockDashboard({ counts }: { counts: StockStatusCounts }) {
           caption="pozitsiya"
           Icon={CheckCircle2}
           valueClass={STATUS_META.enough.value}
-          iconClass={STATUS_META.enough.value}
         />
       </div>
 
@@ -195,7 +192,7 @@ export function StoreStockDashboard({ counts }: { counts: StockStatusCounts }) {
       <Card className="space-y-4 p-5 sm:p-6">
         <header className="flex items-baseline justify-between gap-3">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Holat bo‘yicha taqsimot
             </p>
             <p className="mt-0.5 text-xs text-muted-foreground">

@@ -209,7 +209,7 @@ function StoreSalesAnalyticsView({
                     </p>
                   </div>
                   <div className="flex items-baseline gap-1.5">
-                    <span className="text-2xl font-bold leading-none tabular-nums text-chain-store">
+                    <span className="text-2xl font-semibold leading-none tabular-nums tracking-tight text-chain-store">
                       {formatCurrencyCompact(store.sales_sum)}
                     </span>
                     <span className="text-xs text-muted-foreground">so'm</span>
@@ -283,26 +283,23 @@ function KpiCard({
     <Card
       role="region"
       aria-label={label}
-      className={cn(
-        'flex min-h-[120px] flex-col justify-between gap-3 p-5 sm:p-6',
-        'border-border/60',
-      )}
+      className="flex flex-col justify-between gap-4 border-border/60 p-5"
     >
       <div className="flex items-start justify-between gap-3">
-        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           {label}
         </p>
         <Icon
           aria-hidden="true"
-          className="size-6 shrink-0 text-muted-foreground sm:size-7"
+          className="size-5 shrink-0 text-muted-foreground"
         />
       </div>
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <span className="text-3xl font-bold leading-none tabular-nums text-foreground sm:text-4xl">
+      <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1">
+        <span className="text-2xl font-semibold leading-none tabular-nums tracking-tight text-foreground">
           {value}
         </span>
         {caption !== undefined && (
-          <span className="text-sm text-muted-foreground">{caption}</span>
+          <span className="text-xs text-muted-foreground">{caption}</span>
         )}
       </div>
     </Card>

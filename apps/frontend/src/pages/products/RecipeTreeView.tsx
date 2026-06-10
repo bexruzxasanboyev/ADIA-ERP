@@ -148,7 +148,7 @@ function SectionCard({
         depth > 0 && 'border-l-2 border-l-primary/40',
       )}
     >
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/40 px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 bg-surface-3 px-4 py-3">
         <div className="flex min-w-0 items-center gap-2">
           <h3
             className="min-w-0 truncate text-sm font-semibold text-foreground"
@@ -277,11 +277,11 @@ export function RecipeBreakdown({
   return (
     <div className="space-y-4">
       {showSummary && (
-        <Card className="border-primary/30 bg-primary/5 p-5">
+        <Card className="p-5">
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Jami tannarx · {perUnitCaption}
           </p>
-          <p className="mt-1 text-3xl font-bold tabular-nums text-primary">
+          <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-primary">
             {costCell(totalCost)}
           </p>
           <p className="mt-2 text-xs text-muted-foreground">
