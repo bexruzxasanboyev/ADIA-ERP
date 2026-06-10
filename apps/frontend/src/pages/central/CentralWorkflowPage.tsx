@@ -55,6 +55,10 @@ import {
   basketItemFromStockRow,
   type BasketItem,
 } from '@/pages/stores/storeBasket';
+import {
+  StaffViewSwitch,
+  type StaffView,
+} from '@/pages/replenishment/inbox/StaffViewSwitch';
 
 /**
  * Markaziy sklad ish joyi — a clean, central-warehouse-scoped unified
@@ -91,10 +95,13 @@ const PAGE_TABS: { value: PageTabKey; label: string }[] = [
   { value: 'requests', label: 'So‘rovlar' },
 ];
 
-// Variant A + mini-xarita: for the scoped central manager the «Ishlarim» feed
-// IS the page — the detail tabs (no Ishlarim entry; the feed is always on top)
-// appear only after the feed's single «Batafsil →» link.
-const STAFF_DETAIL_TABS = PAGE_TABS.filter((t) => t.value !== 'inbox');
+// Variant A + StaffViewSwitch (owner: "mahsulotlar tabi qani?"): staff get a
+// LARGE Ishlarim|Mahsulotlar segmented switch — products are first-class, so
+// they are NOT in the «Batafsil» detail tabs anymore (only Dashboard +
+// So'rovlar history live behind the feed's small «Batafsil →» link).
+const STAFF_DETAIL_TABS = PAGE_TABS.filter(
+  (t) => t.value !== 'inbox' && t.value !== 'products',
+);
 
 /** A concrete stock-status bucket (the "Hammasi" pseudo-status is gone — an
  * empty status filter now means "all", living inside the Filter popover). */
@@ -161,15 +168,24 @@ export function CentralWorkflowPage() {
   const pinnedCentralId = activeLocationId ?? user?.location_id ?? null;
   const centralId = isPm ? null : pinnedCentralId;
 
-  // Variant A single-screen staff mode: the scoped manager sees ONLY the
-  // «Ishlarim» feed until they open «Batafsil» (which reveals the detail tabs
-  // below, defaulting to So'rovlar). PM keeps the full tabbed workspace.
+  // Variant A single-screen staff mode + StaffViewSwitch: the scoped manager
+  // lands on the «Ishlarim» feed; the LARGE Ishlarim|Mahsulotlar segmented
+  // switch keeps the on-hand stock view first-class (owner: "mahsulotlar tabi
+  // qani?"). «Batafsil» (inside the Ishlarim segment) reveals the remaining
+  // detail tabs (Dashboard / So'rovlar). PM keeps the full tabbed workspace.
   const isStaff = canShip;
+  const [staffView, setStaffView] = useState<StaffView>('inbox');
+  const staffOnProducts = isStaff && staffView === 'products';
+  // Live actionable count from the feed — drives the switch's badge.
+  const [feedCount, setFeedCount] = useState(0);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [pageTab, setPageTab] = useState<PageTabKey>(
     isStaff ? 'requests' : 'dashboard',
   );
-  const showTabbed = !isStaff || detailsOpen;
+  const showTabbed = (!isStaff || detailsOpen) && !staffOnProducts;
+  // The Mahsulotlar surface: staff via the switch, PM via the tab row.
+  const productsVisible =
+    staffOnProducts || (showTabbed && pageTab === 'products');
 
   // Ship-to-store basket (owner feedback #15). The central manager queues
   // finished products on the Mahsulotlar cards, picks a destination store in
@@ -283,17 +299,31 @@ export function CentralWorkflowPage() {
         }
       />
 
-      {/* «Ishlarim» (Variant A) — the staff's WHOLE page; PM reaches it via
-          its tab. «Batafsil →» reveals the detail tabs below for staff. */}
-      {(isStaff || pageTab === 'inbox') && (
-        <CentralWorkInbox
-          centralId={centralId}
-          canWrite={canShip}
-          onOpenDetails={() => {
-            if (isStaff) setDetailsOpen((v) => !v);
-            else setPageTab('requests');
-          }}
+      {/* StaffViewSwitch — the LARGE Ishlarim|Mahsulotlar segmented control
+          (owner: "mahsulotlar tabi qani?"). Staff only; PM keeps the tab row. */}
+      {isStaff && (
+        <StaffViewSwitch
+          value={staffView}
+          onChange={setStaffView}
+          inboxCount={feedCount}
         />
+      )}
+
+      {/* «Ishlarim» (Variant A) — the staff's primary segment; PM reaches it
+          via its tab. Kept MOUNTED (hidden) on the Mahsulotlar segment so
+          polling + the live badge keep running. */}
+      {(isStaff || pageTab === 'inbox') && (
+        <div hidden={staffOnProducts}>
+          <CentralWorkInbox
+            centralId={centralId}
+            canWrite={canShip}
+            onOpenDetails={() => {
+              if (isStaff) setDetailsOpen((v) => !v);
+              else setPageTab('requests');
+            }}
+            onActionableCount={setFeedCount}
+          />
+        </div>
       )}
 
       {/* 2. TAB QATORI — PM always; staff only inside the Batafsil disclosure. */}
@@ -306,9 +336,9 @@ export function CentralWorkflowPage() {
         />
       )}
 
-      {/* KONTENT — the hero KPI strip leads the content on every NON-inbox tab,
-          AFTER the tab layer (DESIGN.md §9 scaffold order). */}
-      {showTabbed && pageTab !== 'inbox' && (
+      {/* KONTENT — the hero KPI strip leads the content on every NON-inbox tab
+          AND the staff Mahsulotlar segment (DESIGN.md §9 scaffold order). */}
+      {((showTabbed && pageTab !== 'inbox') || staffOnProducts) && (
         <CentralSummaryTiles centralId={centralId} />
       )}
 
@@ -317,8 +347,9 @@ export function CentralWorkflowPage() {
         <CentralDashboardTab centralId={centralId} />
       )}
 
-      {/* TAB: Mahsulotlar — finished-only stock as searchable cards + basket. */}
-      {showTabbed && pageTab === 'products' && (
+      {/* Mahsulotlar — finished-only stock as searchable cards + basket.
+          Staff via the segmented switch; PM via the tab row. */}
+      {productsVisible && (
         <>
           <CentralProductsTab
             centralId={centralId}
