@@ -101,6 +101,14 @@ replenishmentRouter.get(
       conditions.push(`r.status = $${params.length}`);
     }
     // RBAC: location-scoped roles see only requests that touch their location.
+    // cross-dept-flow §4/§6 — the location clause is widened with a PRODUCTION
+    // bind: a workshop (отдел) also sees a request whose PRODUCTION is assigned
+    // to it — `COALESCE(po.location_id, p.workshop_location_id)` (the production
+    // location, before a production order exists it falls back to the product's
+    // `workshop_location_id`) — but ONLY while the request is in a
+    // production-bound state. Closed / store-side rows stay invisible to the
+    // workshop. `po`/`p` are referenced here, so the joins below MUST precede
+    // this WHERE (they do — JOIN products p + LEFT JOIN production_orders po).
     if (!isSuperAdmin(principal) && principal.role !== 'ai_assistant') {
       if (principal.locationId === null) {
         res.status(200).json([]);
@@ -108,7 +116,10 @@ replenishmentRouter.get(
       }
       params.push(principal.locationId);
       conditions.push(
-        `(r.requester_location_id = $${params.length} OR r.target_location_id = $${params.length})`,
+        `(r.requester_location_id = $${params.length} OR r.target_location_id = $${params.length}` +
+          ` OR (COALESCE(po.location_id, p.workshop_location_id) = $${params.length}` +
+          ` AND r.status IN ('CHECK_PRODUCTION_INPUT','CREATE_PURCHASE_ORDER',` +
+          `'CREATE_PRODUCTION_ORDER','PRODUCING','DONE_TO_WAREHOUSE')))`,
       );
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -123,6 +134,7 @@ replenishmentRouter.get(
         product_unit: string;
         requester_location_name: string | null;
         target_location_name: string | null;
+        production_location_id: number | null;
         production_location_name: string | null;
         requester_location_type: string | null;
         target_location_type: string | null;
@@ -133,11 +145,19 @@ replenishmentRouter.get(
       // names: the Jira-style Kanban derives its "Tasdiqlandi" column (from
       // fulfiller_accepted_at, already in the columns) and the "Poster kutilmoqda"
       // chip (a raw_warehouse target still holding) from them.
+      //
+      // cross-dept-flow §4/§6 — production_location_id is the PINNED workshop link
+      // (`COALESCE(po.location_id, p.workshop_location_id)`): once a production
+      // order exists it is that order's location, otherwise the product's
+      // assigned workshop. production_location_name resolves from the SAME source
+      // (pl now joins the COALESCE, not just po.location_id). ::int coerces the
+      // BIGINT like its waiters_count neighbour.
       `SELECT ${qualifiedCols},
               p.name AS product_name,
               p.unit AS product_unit,
               rl.name AS requester_location_name,
               tl.name AS target_location_name,
+              COALESCE(po.location_id, p.workshop_location_id)::int AS production_location_id,
               pl.name AS production_location_name,
               rl.type::text AS requester_location_type,
               tl.type::text AS target_location_type,
@@ -147,7 +167,7 @@ replenishmentRouter.get(
        LEFT JOIN locations rl ON rl.id = r.requester_location_id
        LEFT JOIN locations tl ON tl.id = r.target_location_id
        LEFT JOIN production_orders po ON po.id = r.production_order_id
-       LEFT JOIN locations pl ON pl.id = po.location_id
+       LEFT JOIN locations pl ON pl.id = COALESCE(po.location_id, p.workshop_location_id)
        ${where}
        ORDER BY r.id DESC`,
       params,
@@ -188,6 +208,7 @@ replenishmentRouter.get(
         product_unit: string;
         requester_location_name: string | null;
         target_location_name: string | null;
+        production_location_id: number | null;
         production_location_name: string | null;
         requester_location_type: string | null;
         target_location_type: string | null;
@@ -196,11 +217,17 @@ replenishmentRouter.get(
     >(
       // F-G — requester_location_type + target_location_type carried for the
       // Kanban (PINNED field names; see the list endpoint).
+      //
+      // cross-dept-flow §4/§6 — production_location_id + its name resolve from
+      // `COALESCE(po.location_id, p.workshop_location_id)` (see list). The field
+      // also feeds the RBAC guard below (requestTouchesLocation) so the workshop
+      // manager may READ a production-bound row it is assigned to.
       `SELECT ${qualifiedCols},
               p.name AS product_name,
               p.unit AS product_unit,
               rl.name AS requester_location_name,
               tl.name AS target_location_name,
+              COALESCE(po.location_id, p.workshop_location_id)::int AS production_location_id,
               pl.name AS production_location_name,
               rl.type::text AS requester_location_type,
               tl.type::text AS target_location_type,
@@ -210,7 +237,7 @@ replenishmentRouter.get(
        LEFT JOIN locations rl ON rl.id = r.requester_location_id
        LEFT JOIN locations tl ON tl.id = r.target_location_id
        LEFT JOIN production_orders po ON po.id = r.production_order_id
-       LEFT JOIN locations pl ON pl.id = po.location_id
+       LEFT JOIN locations pl ON pl.id = COALESCE(po.location_id, p.workshop_location_id)
        WHERE r.id = $1`,
       [id],
     );
@@ -307,12 +334,19 @@ replenishmentRouter.get(
 
     // The ROOT row, enriched with its pipeline_stage + the embedded names (parity
     // with GET /:id so the frontend renders identically).
+    //
+    // cross-dept-flow §4/§6 — production_location_id (+ name) carried here too,
+    // both for display parity and because the RBAC guard below
+    // (requestTouchesLocation(root, own)) reads it to let the workshop manager
+    // open a production-bound tree assigned to it.
     const { rows: rootFull } = await query<
       ReplenishmentRow & {
         product_name: string;
         product_unit: string;
         requester_location_name: string | null;
         target_location_name: string | null;
+        production_location_id: number | null;
+        production_location_name: string | null;
         requester_location_type: string | null;
         target_location_type: string | null;
         pipeline_stage: PipelineStage;
@@ -323,6 +357,8 @@ replenishmentRouter.get(
               p.unit AS product_unit,
               rl.name AS requester_location_name,
               tl.name AS target_location_name,
+              COALESCE(po.location_id, p.workshop_location_id)::int AS production_location_id,
+              pl.name AS production_location_name,
               rl.type::text AS requester_location_type,
               tl.type::text AS target_location_type,
               ${PIPELINE_STAGE_SQL} AS pipeline_stage
@@ -330,6 +366,8 @@ replenishmentRouter.get(
          JOIN products p ON p.id = r.product_id
          LEFT JOIN locations rl ON rl.id = r.requester_location_id
          LEFT JOIN locations tl ON tl.id = r.target_location_id
+         LEFT JOIN production_orders po ON po.id = r.production_order_id
+         LEFT JOIN locations pl ON pl.id = COALESCE(po.location_id, p.workshop_location_id)
         WHERE r.id = $1`,
       [rootId],
     );
@@ -355,12 +393,16 @@ replenishmentRouter.get(
         product_unit: string;
         requester_location_name: string | null;
         target_location_name: string | null;
+        production_location_id: number | null;
+        production_location_name: string | null;
         requester_location_type: string | null;
         target_location_type: string | null;
         pipeline_stage: PipelineStage;
         waiters_count: number;
       }
     >(
+      // cross-dept-flow §4/§6 — production_location_id (+ name) on every node for
+      // display parity with the list/single endpoints.
       `WITH RECURSIVE descendants AS (
          SELECT id FROM replenishment_requests WHERE parent_request_id = $1
          UNION ALL
@@ -373,6 +415,8 @@ replenishmentRouter.get(
               p.unit AS product_unit,
               rl.name AS requester_location_name,
               tl.name AS target_location_name,
+              COALESCE(po.location_id, p.workshop_location_id)::int AS production_location_id,
+              pl.name AS production_location_name,
               rl.type::text AS requester_location_type,
               tl.type::text AS target_location_type,
               ${PIPELINE_STAGE_SQL} AS pipeline_stage,
@@ -383,6 +427,8 @@ replenishmentRouter.get(
          JOIN products p ON p.id = r.product_id
          LEFT JOIN locations rl ON rl.id = r.requester_location_id
          LEFT JOIN locations tl ON tl.id = r.target_location_id
+         LEFT JOIN production_orders po ON po.id = r.production_order_id
+         LEFT JOIN locations pl ON pl.id = COALESCE(po.location_id, p.workshop_location_id)
         ORDER BY r.depth ASC, r.id ASC`,
       [rootId],
     );
@@ -1893,10 +1939,29 @@ async function decrementCentralOnAccept(opts: {
 }
 
 /**
+ * The request statuses in which a workshop may READ a row whose PRODUCTION is
+ * assigned to it (cross-dept-flow §4/§6 — the same production-bound set the list
+ * WHERE uses). Closed / store-side rows stay invisible to the workshop.
+ */
+const PRODUCTION_BOUND_STATUSES: readonly ReplenishmentStatus[] = [
+  'CHECK_PRODUCTION_INPUT',
+  'CREATE_PURCHASE_ORDER',
+  'CREATE_PRODUCTION_ORDER',
+  'PRODUCING',
+  'DONE_TO_WAREHOUSE',
+];
+
+/**
  * Spec §6 "W(bog'liq)" — a scoped role touches a request when its location
  * matches the requester, the target, OR the location_id of a linked
  * production_order / target_location_id of a linked purchase_order. The two
  * extra checks fire only when the request has been linked (lazy join).
+ *
+ * cross-dept-flow §4/§6 — a workshop ALSO touches a request whose PRODUCTION is
+ * assigned to it: `production_location_id` (COALESCE(po.location_id,
+ * p.workshop_location_id), passed in on the row) matches its location AND the
+ * status is production-bound. This is the READ-side mirror of the widened list
+ * WHERE, so GET /:id and /:id/tree let the workshop manager open such a row.
  */
 async function requestTouchesLocation(
   request: {
@@ -1904,12 +1969,23 @@ async function requestTouchesLocation(
     target_location_id: number | null;
     production_order_id?: number | null;
     purchase_order_id?: number | null;
+    production_location_id?: number | null;
+    status?: ReplenishmentStatus;
   },
   ownLocationId: number,
 ): Promise<boolean> {
   if (
     ownLocationId === request.requester_location_id ||
     ownLocationId === request.target_location_id
+  ) {
+    return true;
+  }
+  // Workshop production binding — only while the request is production-bound.
+  if (
+    request.production_location_id != null &&
+    ownLocationId === request.production_location_id &&
+    request.status !== undefined &&
+    PRODUCTION_BOUND_STATUSES.includes(request.status)
   ) {
     return true;
   }

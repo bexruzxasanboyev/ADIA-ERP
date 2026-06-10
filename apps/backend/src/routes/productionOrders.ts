@@ -38,6 +38,7 @@ import {
   PRODUCTION_ORDER_COLUMNS,
   type ProductionOrderRow,
 } from '../services/productionOrder.js';
+import { insertZagatovkaOrder } from '../services/productionDialog.js';
 import { advance } from '../services/replenishment.js';
 import {
   createNotificationsForRecipients,
@@ -206,6 +207,118 @@ productionOrdersRouter.post(
             ],
           },
         });
+      }
+      return row;
+    });
+
+    res.status(201).json({ production_order: inserted });
+  }),
+);
+
+// POST /api/production-orders/zagatovka
+//   body: { location_id, product_id, qty }   (qty > 0)
+//
+// cross-dept-flow §6 (owner: "ishlab chiqarish o'zining yarim-tayyor omborini
+// to'ldira olsin") — a workshop self-fills its OWN yarim-tayyor (зг) buffer: it
+// produces `qty` of a `semi` product AT the workshop and outputs it INTO the
+// workshop's own sex_storage child. This is the manual, web-driven sibling of
+// the production dialog's "0dan" path — it reuses the EXACT same creation helper
+// (`insertZagatovkaOrder`: stage_role='zagatovka', location=workshop,
+// target=sex_storage child) so there is one creation path, not two.
+//
+// RBAC mirrors the plan/execute write: only the `production_manager` who OWNS
+// `location_id` may act (requireLocationOperator); PM is 403 (read-and-recommend
+// write guard — authorizeWrite excludes PM); a foreign отдел's manager is 403.
+//
+// 422 cases: the product is not `type='semi'`, or the workshop has no active
+// sex_storage child to output the зг into.
+productionOrdersRouter.post(
+  '/zagatovka',
+  authenticate,
+  authorizeWrite('production_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const body = asObject(req.body);
+    const locationId = requireId(body, 'location_id');
+    const productId = requireId(body, 'product_id');
+    const qty = requirePositiveNumber(body, 'qty');
+
+    // The acting operator must own the workshop the зг is produced AT. PM is
+    // already 403 via authorizeWrite; a foreign отдел manager is 403 here.
+    await requireLocationOperator(principal, locationId);
+
+    const inserted = await withTransaction(async (tx) => {
+      // The product must be a semi (only зг / yarim-tayyor is self-filled).
+      const { rows: prodRows } = await tx.query<{ type: string }>(
+        `SELECT type::text AS type FROM products WHERE id = $1`,
+        [productId],
+      );
+      const product = prodRows[0];
+      if (product === undefined) {
+        throw AppError.notFound('Product not found.');
+      }
+      if (product.type !== 'semi') {
+        throw AppError.validation(
+          'Only a semi (yarim tayyor / зг) product can be self-filled into a sex_storage buffer.',
+        );
+      }
+
+      // Resolve the workshop's OWN sex_storage child — its lowest-id active one
+      // (the LATERAL pattern from crossDeptRequest / productionPlan). This is the
+      // зг buffer the output lands in.
+      const { rows: storageRows } = await tx.query<{ id: string }>(
+        `SELECT s.id
+           FROM locations s
+          WHERE s.parent_id = $1
+            AND s.type = 'sex_storage'::location_type
+            AND s.is_active = TRUE
+          ORDER BY s.id
+          LIMIT 1`,
+        [locationId],
+      );
+      const sexStorageId = storageRows[0] !== undefined ? Number(storageRows[0].id) : null;
+      if (sexStorageId === null) {
+        throw AppError.validation(
+          'This workshop has no active sex_storage child to fill (no зг buffer to output into).',
+        );
+      }
+
+      // Create the зг sub-order via the SAME helper the dialog uses
+      // (stage_role='zagatovka', location=workshop, target=sex_storage child).
+      // A standalone self-fill has no parent production order / replenishment.
+      const orderId = await insertZagatovkaOrder(tx, {
+        productId,
+        qty,
+        productionLocationId: locationId,
+        sexStorageId,
+        parentProductionOrderId: null,
+        replenishmentId: null,
+        actorUserId: principal.userId,
+      });
+
+      // Audit the self-fill action (distinct from the dialog's create, so the
+      // trail shows a workshop manually topping up its own buffer).
+      await writeAudit(tx, {
+        actorUserId: principal.userId,
+        action: 'production_order.zagatovka_selffill',
+        entity: 'production_orders',
+        entityId: orderId,
+        payload: {
+          product_id: productId,
+          qty,
+          location_id: locationId,
+          target_location_id: sexStorageId,
+        },
+      });
+
+      // Return the full PRODUCTION_ORDER_COLUMNS shape (parity with POST /).
+      const { rows } = await tx.query<ProductionOrderRow>(
+        `SELECT ${PRODUCTION_ORDER_COLUMNS} FROM production_orders WHERE id = $1`,
+        [orderId],
+      );
+      const row = rows[0];
+      if (row === undefined) {
+        throw AppError.internal('Zagatovka self-fill returned no row.');
       }
       return row;
     });
