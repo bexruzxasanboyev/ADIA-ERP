@@ -53,6 +53,7 @@ import { StoreRequestsTrendChart } from '@/pages/stores/StoreRequestsTrendChart'
 import { Button } from '@/components/ui/button';
 import { Sparkles } from 'lucide-react';
 import { RequestKanban } from '@/pages/replenishment/board/RequestKanban';
+import { RequestDetailModal } from '@/pages/replenishment/RequestDetailModal';
 import { splitBoards } from '@/pages/replenishment/board/boardFilters';
 import type { FlowRequest } from '@/lib/replenishmentFlow';
 import { ManbaRejaModal } from './ManbaRejaModal';
@@ -159,6 +160,8 @@ export function ProductionRequestsTab({
   const [dateRange, setDateRange] = useState<DateRangeValue>({ range: 'month' });
   // The incoming production request whose "Manba reja" modal is open.
   const [planTarget, setPlanTarget] = useState<FlowRequest | null>(null);
+  // The card whose Jira detail modal is open.
+  const [openRequest, setOpenRequest] = useState<FlowRequest | null>(null);
 
   // Board scope — the отдел id PLUS every location the user is assigned to (so
   // a request pinned to the отдел's sex_storage by the producer-override still
@@ -293,12 +296,12 @@ export function ProductionRequestsTab({
   }, [purchaseOrders.data, purchaseOrders.error]);
 
   const tabOptions: { value: PipelineTab; label: string }[] = [
-    { value: 'kutuvda', label: `Kutuvda (${kutuvda.length})` },
-    { value: 'soralgan', label: `So‘ralgan (${soralgan.length})` },
-    { value: 'qabul_qilingan', label: `Qabul qilingan (${qabulQilingan.length})` },
-    { value: 'yuborilgan', label: `Yuborilgan (${yuborilgan.length})` },
+    { value: 'kutuvda', label: `Kutuvda · ${kutuvda.length}` },
+    { value: 'soralgan', label: `So‘ralgan · ${soralgan.length}` },
+    { value: 'qabul_qilingan', label: `Qabul qilingan · ${qabulQilingan.length}` },
+    { value: 'yuborilgan', label: `Yuborilgan · ${yuborilgan.length}` },
     { value: 'transactions', label: 'Tranzaksiyalar' },
-    { value: 'xom_ashyo', label: `Xom-ashyo so‘rovlari (${poRows.length})` },
+    { value: 'xom_ashyo', label: `Xom-ashyo so‘rovlari · ${poRows.length}` },
   ];
 
   const listLoading = allRequests.isLoading;
@@ -336,6 +339,7 @@ export function ProductionRequestsTab({
             description="Menga ta'minotchi sifatida kelgan so‘rovlar — markaz va boshqa sexlardan."
             requests={boards.incoming}
             emptyLabel="Kelgan so‘rov yo‘q."
+            onOpen={(req) => setOpenRequest(req)}
             renderAction={(req) => (
               <Button
                 size="sm"
@@ -356,40 +360,43 @@ export function ProductionRequestsTab({
             description="Men mijoz sifatida yuborgan so‘rovlar — xom-ashyo va producer-sexlarga."
             requests={boards.outgoing}
             emptyLabel="Chiqgan so‘rov yo‘q."
+            onOpen={(req) => setOpenRequest(req)}
           />
         </div>
       )}
 
-      {/* Section header + pipeline tabs. */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      {/* Section header (kicker + count) — tabs sit on their OWN row below,
+          left-aligned (DESIGN.md §9). */}
+      <div className="flex items-start justify-between gap-4">
         <div className="space-y-0.5">
-          <h2 className="flex items-center gap-2 text-base font-semibold">
-            <Truck className="size-4 text-primary" aria-hidden="true" />
+          <h2 className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            <Truck className="size-3.5" aria-hidden="true" />
             So‘rovlar
+            <Badge variant="secondary" className="tabular-nums">
+              {allRows.length}
+            </Badge>
           </h2>
           <p className="text-xs text-muted-foreground">
             Bo‘limning so‘rovlari — bitta oqim: kutuvda → so‘ralgan → qabul
             qilingan → yuborilgan.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <Tabs
-            value={tab}
-            onValueChange={setTab}
-            options={tabOptions}
-            ariaLabel="So‘rovlar oqimi"
-          />
-          {isPm && (
-            <Badge
-              variant="secondary"
-              aria-label="Faqat ko‘rish rejimi"
-              className="h-9 items-center px-3"
-            >
-              Faqat ko‘rish
-            </Badge>
-          )}
-        </div>
+        {isPm && (
+          <Badge
+            variant="secondary"
+            aria-label="Faqat ko‘rish rejimi"
+            className="h-9 shrink-0 items-center px-3"
+          >
+            Faqat ko‘rish
+          </Badge>
+        )}
       </div>
+      <Tabs
+        value={tab}
+        onValueChange={setTab}
+        options={tabOptions}
+        ariaLabel="So‘rovlar oqimi"
+      />
 
       {/* KUTUVDA — requests awaiting the next step. */}
       {tab === 'kutuvda' && (
@@ -631,6 +638,21 @@ export function ProductionRequestsTab({
         </Card>
       )}
 
+      {/* The Jira card — opened on any board card click. Production incoming
+          gets the "Manba reja" action inside the modal too. */}
+      <RequestDetailModal
+        open={openRequest !== null}
+        onOpenChange={(next) => {
+          if (!next) setOpenRequest(null);
+        }}
+        request={openRequest}
+        onActed={() => {
+          allRequests.refetch();
+          movements.refetch();
+        }}
+        onManbaReja={(req) => setPlanTarget(req)}
+      />
+
       {/* "Manba reja" — N-component source plan for an incoming production
           request (opened from a 📥 Kelgan card). PM gets read-and-recommend. */}
       <ManbaRejaModal
@@ -662,18 +684,22 @@ function ProductionBoard({
   requests,
   emptyLabel,
   renderAction,
+  onOpen,
 }: {
   title: string;
   description: string;
   requests: FlowRequest[];
   emptyLabel: string;
   renderAction?: (req: FlowRequest) => React.ReactNode;
+  onOpen?: (req: FlowRequest) => void;
 }) {
   return (
     <section className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <h3 className="text-sm font-semibold">{title}</h3>
-        <Badge variant="outline" className="tabular-nums">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          {title}
+        </h3>
+        <Badge variant="secondary" className="tabular-nums">
           {requests.length}
         </Badge>
         <p className="w-full text-xs text-muted-foreground sm:w-auto">
@@ -684,6 +710,7 @@ function ProductionBoard({
         requests={requests}
         emptyLabel={emptyLabel}
         renderAction={renderAction}
+        onOpen={onOpen}
       />
     </section>
   );

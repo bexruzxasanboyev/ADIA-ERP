@@ -141,14 +141,14 @@ describe('Replenishment screens', () => {
   it('renders the list from a bare ReplenishmentRequest[]', async () => {
     mockFetch();
     renderWithProviders(<ReplenishmentPage />, { role: 'pm' });
+    // Default view is the Jira Doska — the row is a card bucketed by stage.
     expect(await screen.findByText('#1001')).toBeInTheDocument();
     // Embedded `product_name` / `requester_location_name` are rendered
-    // directly — no client-side join.
+    // directly on the card — no client-side join.
     expect(screen.getByText('Un')).toBeInTheDocument();
     expect(screen.getByText('Markaziy sklad')).toBeInTheDocument();
-    // The status pill is rendered inside the table row — at least one
-    // "Yangi" label is present (status is now a tab strip, not a select).
-    expect(screen.getAllByText('Yangi').length).toBeGreaterThan(0);
+    // The NEW row lands in the "Kutuvda" column (column header is present).
+    expect(screen.getAllByText('Kutuvda').length).toBeGreaterThan(0);
   });
 
   it('hides "Qo‘lda so‘rov" for non-pm/non-central-warehouse roles', async () => {

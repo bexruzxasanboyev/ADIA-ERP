@@ -19,6 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { Tabs } from '@/components/ui/tabs';
 import { EmptyState, ErrorState, LoadingState } from '@/components/PageState';
 import { useToast } from '@/components/ui/toast';
 import { useApiQuery } from '@/hooks/useApiQuery';
@@ -96,6 +97,12 @@ interface IncomingItem {
  */
 
 type CentralTab = 'board' | 'transactions';
+
+/** Doska / Tranzaksiyalar view tabs — standard compact segmented strip. */
+const VIEW_TABS: { value: CentralTab; label: string }[] = [
+  { value: 'board', label: 'Doska' },
+  { value: 'transactions', label: 'Tranzaksiyalar' },
+];
 
 /**
  * A central-warehouse stock movement, classified relative to the warehouse as
@@ -354,19 +361,9 @@ export function CentralRequestsTab({
 
   return (
     <div className="space-y-6">
-      {/* Charts row + date filter — donut + trend follow the date filter. */}
-      <div className="flex items-center justify-end">
-        <DateRangeFilter value={dateRange} onChange={setDateRange} />
-      </div>
-      {!listLoading && !listError && (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <StoreRequestsStatusDonut requests={chartRequests} />
-          <StoreRequestsTrendChart requests={chartRequests} />
-        </div>
-      )}
-
-      {/* Section header + Doska / Tranzaksiyalar toggle. */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      {/* 1. Section heading row — title + description left, PM badge right
+          (DESIGN.md §9: headings and tabs never share a row). */}
+      <div className="flex items-start justify-between gap-4">
         <div className="space-y-0.5">
           <h2 className="flex items-center gap-2 text-base font-semibold">
             <Truck className="size-4 text-primary" aria-hidden="true" />
@@ -377,44 +374,40 @@ export function CentralRequestsTab({
             bosib to‘liq ma’lumot va amallarni oching.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <div
-            className="flex overflow-hidden rounded-lg border border-border/70"
-            role="group"
-            aria-label="Ko‘rinish"
+        {isPm && (
+          <Badge
+            variant="secondary"
+            aria-label="Faqat ko‘rish rejimi"
+            className="h-9 items-center px-3"
           >
-            <Button
-              type="button"
-              variant={tab === 'board' ? 'default' : 'ghost'}
-              size="sm"
-              aria-pressed={tab === 'board'}
-              className="rounded-none"
-              onClick={() => setTab('board')}
-            >
-              Doska
-            </Button>
-            <Button
-              type="button"
-              variant={tab === 'transactions' ? 'default' : 'ghost'}
-              size="sm"
-              aria-pressed={tab === 'transactions'}
-              className="rounded-none"
-              onClick={() => setTab('transactions')}
-            >
-              Tranzaksiyalar
-            </Button>
-          </div>
-          {isPm && (
-            <Badge
-              variant="secondary"
-              aria-label="Faqat ko‘rish rejimi"
-              className="h-9 items-center px-3"
-            >
-              Faqat ko‘rish
-            </Badge>
-          )}
+            Faqat ko‘rish
+          </Badge>
+        )}
+      </div>
+
+      {/* 2. Tab row — compact segmented Doska / Tranzaksiyalar, left-aligned. */}
+      <Tabs
+        value={tab}
+        onValueChange={setTab}
+        options={VIEW_TABS}
+        ariaLabel="Ko‘rinish"
+      />
+
+      {/* 3. Filter row — the date range filter right-aligned via ml-auto;
+          donut + trend + Tranzaksiyalar follow it. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="ml-auto">
+          <DateRangeFilter value={dateRange} onChange={setDateRange} />
         </div>
       </div>
+
+      {/* 4. Content — charts row, then the active view. */}
+      {!listLoading && !listError && (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <StoreRequestsStatusDonut requests={chartRequests} />
+          <StoreRequestsTrendChart requests={chartRequests} />
+        </div>
+      )}
 
       {/* DOSKA — 📥 Kelgan + 📤 Chiqgan boards (cross-department-flow §9.2). */}
       {tab === 'board' && (
@@ -432,15 +425,16 @@ export function CentralRequestsTab({
           {!listLoading && !listError && (
             <div className="space-y-6">
               <section className="space-y-3">
+                {/* Section heading — kicker + secondary count (DESIGN.md §9). */}
                 <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="flex items-center gap-2 text-sm font-semibold">
+                  <h3 className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     <ArrowDownLeft
                       className="size-4 text-primary"
                       aria-hidden="true"
                     />
                     📥 Kelgan
                   </h3>
-                  <Badge variant="outline" className="tabular-nums">
+                  <Badge variant="secondary" className="tabular-nums">
                     {incomingBoard.length}
                   </Badge>
                   <p className="w-full text-xs text-muted-foreground sm:w-auto">
@@ -457,15 +451,16 @@ export function CentralRequestsTab({
               </section>
 
               <section className="space-y-3">
+                {/* Section heading — kicker + secondary count (DESIGN.md §9). */}
                 <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="flex items-center gap-2 text-sm font-semibold">
+                  <h3 className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     <ArrowUpRight
                       className="size-4 text-primary"
                       aria-hidden="true"
                     />
                     📤 Chiqgan
                   </h3>
-                  <Badge variant="outline" className="tabular-nums">
+                  <Badge variant="secondary" className="tabular-nums">
                     {outgoing.length}
                   </Badge>
                   <p className="w-full text-xs text-muted-foreground sm:w-auto">

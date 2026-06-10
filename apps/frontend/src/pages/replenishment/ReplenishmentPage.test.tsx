@@ -7,14 +7,25 @@
  * signed-in user, and "So'rov qo'shish" is gated by role + active location.
  * The pure status→bucket mapping is unit-tested separately in
  * `statusBuckets.test.ts`.
+ *
+ * Phase F-G — the So'rovlar default view is now the Jira "Doska" (Kanban); the
+ * status bucket sub-tab strip + the legacy table live behind the "Jadval"
+ * toggle. The bucket-strip tests below switch to Jadval first via
+ * {@link switchToJadval}.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { UserEvent } from '@testing-library/user-event';
 import { jsonResponse, renderWithProviders } from '@/test/render-helpers';
 import { __clearApiQueryCache } from '@/hooks/useApiQuery';
 import { ReplenishmentPage } from './ReplenishmentPage';
 import type { ReplenishmentRequest, ReplenishmentStatus } from '@/lib/types';
+
+/** Flip the So'rovlar view to "Jadval" so the bucket strip + table render. */
+async function switchToJadval(user: UserEvent): Promise<void> {
+  await user.click(screen.getByRole('button', { name: 'Jadval' }));
+}
 
 function makeRow(
   id: number,
@@ -90,9 +101,11 @@ describe('ReplenishmentPage — redesign', () => {
   });
 
   it('labels the status sub-tabs with counts reflecting the data', async () => {
+    const user = userEvent.setup();
     mockList();
     renderWithProviders(<ReplenishmentPage />, { role: 'pm' });
     await screen.findByText('#1');
+    await switchToJadval(user);
     // 5 rows → stages: NEW=kutuvda(1), PRODUCING=soralgan(1),
     // SHIP=yuborilgan(1), CLOSED+CANCELLED=yopilgan(2).
     expect(screen.getByRole('tab', { name: 'Hammasi (5)' })).toBeInTheDocument();
@@ -113,6 +126,7 @@ describe('ReplenishmentPage — redesign', () => {
     mockList();
     renderWithProviders(<ReplenishmentPage />, { role: 'pm' });
     await screen.findByText('#1');
+    await switchToJadval(user);
     // Default "Hammasi" shows all five (incl. CANCELLED #5).
     expect(screen.getByText('#5')).toBeInTheDocument();
     // Switch to "Kutuvda" → only NEW (#1).
@@ -128,6 +142,7 @@ describe('ReplenishmentPage — redesign', () => {
     mockList();
     renderWithProviders(<ReplenishmentPage />, { role: 'pm' }); // user.id = 1
     await screen.findByText('#1');
+    await switchToJadval(user);
     await user.click(screen.getByRole('button', { name: /mening so.rovlarim/i }));
     // Only rows with created_by === 1 survive: #1, #3, #5.
     await waitFor(() => expect(screen.queryByText('#2')).toBeNull());

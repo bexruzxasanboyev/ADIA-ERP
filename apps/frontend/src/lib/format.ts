@@ -116,6 +116,22 @@ export function formatDateTime(iso: string): string {
   return dateTimeFormatter.format(date);
 }
 
+const dateFormatter = new Intl.DateTimeFormat('uz-UZ', {
+  day: '2-digit',
+  month: '2-digit',
+});
+
+/**
+ * Format an ISO timestamp as a compact local date (`dd.MM`, no year) — for
+ * space-constrained surfaces like Kanban card headers where the year adds
+ * noise. Same invalid-input guard as {@link formatDateTime}.
+ */
+export function formatDate(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return dateFormatter.format(date);
+}
+
 /**
  * Format an ISO timestamp as a relative Uzbek string ("hozir",
  * "5 daqiqa oldin", "2 soat oldin", "3 kun oldin"). Falls back to

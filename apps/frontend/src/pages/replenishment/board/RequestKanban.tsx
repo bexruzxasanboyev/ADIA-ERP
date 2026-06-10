@@ -1,55 +1,52 @@
 import { useMemo, type ReactNode } from 'react';
-import { ArrowRight, Package } from 'lucide-react';
+import { ArrowRight, Sparkles } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
-import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
-import { formatQtyUnit } from '@/lib/format';
-import { pipelineStageOf } from '@/lib/pipeline';
-import type { PipelineStage } from '@/lib/types';
+import { formatDate, formatQtyUnit } from '@/lib/format';
+import { kanbanColumnOf, pipelineStageOf } from '@/lib/pipeline';
 import {
   CLOSURE_REASON_LABELS,
   CLOSURE_REASON_VARIANT,
+  isRawPosterWaiting,
+  KANBAN_COLUMNS,
   REQUEST_ORIGIN_LABELS,
   REQUEST_ORIGIN_VARIANT,
   type FlowRequest,
+  type KanbanColumn,
 } from '@/lib/replenishmentFlow';
 
 /**
- * The canonical 5-column Kanban board (cross-department-flow §9) shared by every
- * workspace's 📥 Kelgan / 📤 Chiqgan boards. A board is exactly five
+ * The Jira-like 6-column Kanban board (phase F-G §2) shared by every
+ * workspace's 📥 Kelgan / 📤 Chiqgan boards. A board is exactly six
  * stage-columns of request cards; each request sits in ONE column resolved by
- * {@link pipelineStageOf} (backend `pipeline_stage`, status fallback). Pure
- * presentation — the parent decides WHICH requests feed it (the 📥/📤 filter)
- * and supplies an optional per-card action via `renderAction`.
+ * {@link kanbanColumnOf} (backend `pipeline_stage` + the client "Tasdiqlandi"
+ * split on `fulfiller_accepted_at`). Pure presentation — the parent decides
+ * WHICH requests feed it (the 📥/📤 filter) and what a click does (`onOpen`,
+ * which opens the shared RequestDetailModal everywhere).
+ *
+ * Look: a left accent rail per column colour, a tidy header with a count badge,
+ * horizontal scroll with a fixed min column width, an empty-column placeholder,
+ * and a hover-lift on each (clickable) card.
  */
 
-/** The five canonical columns, in flow order, with the owner's §9.1 labels. */
-const COLUMNS: readonly { stage: PipelineStage; label: string }[] = [
-  { stage: 'kutuvda', label: 'Kutuvda' },
-  { stage: 'soralgan', label: 'Tayyorlanmoqda' },
-  { stage: 'qabul_qilingan', label: 'Tayyor' },
-  { stage: 'yuborilgan', label: "Jo‘natildi" },
-  { stage: 'yopilgan', label: 'Yopildi' },
-];
-
-/** Per-stage column accent (header dot + subtle top rail). */
-const STAGE_ACCENT: Record<PipelineStage, string> = {
-  kutuvda: 'bg-warning',
-  soralgan: 'bg-info',
-  qabul_qilingan: 'bg-success',
-  yuborilgan: 'bg-primary',
-  yopilgan: 'bg-muted-foreground',
-};
+/** Per-column left-rail / header-dot accent — keyed off the 6-column list. */
+const COLUMN_ACCENT: Record<KanbanColumn, string> = KANBAN_COLUMNS.reduce(
+  (acc, c) => {
+    acc[c.column] = c.accent;
+    return acc;
+  },
+  {} as Record<KanbanColumn, string>,
+);
 
 export interface RequestKanbanProps {
-  /** The requests to lay out across the five columns (already 📥/📤-filtered). */
+  /** The requests to lay out across the six columns (already 📥/📤-filtered). */
   requests: FlowRequest[];
   /**
    * Optional per-card trailing action (e.g. "Manba reja" on an incoming
    * production card). Returning `null` renders no action for that card.
    */
   renderAction?: (req: FlowRequest) => ReactNode;
-  /** Optional per-card click → navigate to detail (whole card is the target). */
+  /** Per-card click → open the detail modal (the whole card is the target). */
   onOpen?: (req: FlowRequest) => void;
   /** Empty-column copy (defaults to a dash). */
   emptyLabel?: string;
@@ -61,29 +58,30 @@ export function RequestKanban({
   onOpen,
   emptyLabel,
 }: RequestKanbanProps) {
-  const byStage = useMemo(() => {
-    const map: Record<PipelineStage, FlowRequest[]> = {
+  const byColumn = useMemo(() => {
+    const map: Record<KanbanColumn, FlowRequest[]> = {
       kutuvda: [],
+      tasdiqlandi: [],
       soralgan: [],
       qabul_qilingan: [],
       yuborilgan: [],
       yopilgan: [],
     };
-    for (const req of requests) map[pipelineStageOf(req)].push(req);
+    for (const req of requests) map[kanbanColumnOf(req)].push(req);
     // Newest first within each column.
-    for (const stage of Object.keys(map) as PipelineStage[]) {
-      map[stage].sort((a, b) => b.id - a.id);
+    for (const column of Object.keys(map) as KanbanColumn[]) {
+      map[column].sort((a, b) => b.id - a.id);
     }
     return map;
   }, [requests]);
 
   return (
     <div className="scrollbar-thin -mx-1 flex gap-3 overflow-x-auto px-1 pb-2">
-      {COLUMNS.map(({ stage, label }) => {
-        const items = byStage[stage];
+      {KANBAN_COLUMNS.map(({ column, label }) => {
+        const items = byColumn[column];
         return (
           <section
-            key={stage}
+            key={column}
             aria-label={label}
             className="flex w-72 shrink-0 flex-col rounded-xl border border-border/60 bg-muted/20"
           >
@@ -91,7 +89,7 @@ export function RequestKanban({
               <span className="flex items-center gap-2 text-sm font-semibold">
                 <span
                   aria-hidden="true"
-                  className={cn('size-2 rounded-full', STAGE_ACCENT[stage])}
+                  className={cn('size-2 rounded-full', COLUMN_ACCENT[column])}
                 />
                 {label}
               </span>
@@ -109,6 +107,7 @@ export function RequestKanban({
                   <RequestCard
                     key={req.id}
                     req={req}
+                    column={column}
                     action={renderAction?.(req)}
                     onOpen={onOpen ? () => onOpen(req) : undefined}
                   />
@@ -123,21 +122,24 @@ export function RequestKanban({
 }
 
 // ---------------------------------------------------------------------------
-// RequestCard — one request: product · qty · requester→target · origin badge ·
-// closure badge (Yopildi) · brak chip · sub-tree progress chip · action.
+// RequestCard — one request: left accent rail · top row (#id + created date) ·
+// product (bold, truncate) · qty chip · route line · chips (origin, brak,
+// "bolalar: N", "Poster kutilmoqda", closure) · optional action.
 // ---------------------------------------------------------------------------
 
 interface RequestCardProps {
   req: FlowRequest;
+  column: KanbanColumn;
   action?: ReactNode;
   onOpen?: () => void;
 }
 
-export function RequestCard({ req, action, onOpen }: RequestCardProps) {
+export function RequestCard({ req, column, action, onOpen }: RequestCardProps) {
   const stage = pipelineStageOf(req);
   const origin = req.origin ?? null;
-  const closure = stage === 'yopilgan' ? req.closure_reason ?? null : null;
+  const closure = column === 'yopilgan' ? req.closure_reason ?? null : null;
   const brak = req.brak_qty != null && req.brak_qty > 0 ? req.brak_qty : null;
+  const rawWaiting = isRawPosterWaiting(req, stage);
   const openChildren =
     req.open_children_count != null && req.open_children_count > 0
       ? req.open_children_count
@@ -146,11 +148,11 @@ export function RequestCard({ req, action, onOpen }: RequestCardProps) {
   const interactive = onOpen !== undefined;
 
   return (
-    <Card
+    <div
       className={cn(
-        'p-3 text-left',
+        'relative overflow-hidden rounded-lg border border-border/70 bg-card pl-3 pr-3 py-2.5 text-left transition-shadow',
         interactive &&
-          'cursor-pointer hover:border-border-strong hover:shadow-card-hover',
+          'cursor-pointer hover:-translate-y-px hover:border-border-strong hover:shadow-card-hover',
       )}
       onClick={onOpen}
       onKeyDown={
@@ -167,19 +169,30 @@ export function RequestCard({ req, action, onOpen }: RequestCardProps) {
       tabIndex={interactive ? 0 : undefined}
       aria-label={`So‘rov #${req.id} — ${req.product_name}`}
     >
-      <div className="flex items-start justify-between gap-2">
-        <p className="min-w-0 text-sm font-semibold leading-tight">
-          {req.product_name}
-        </p>
-        <span className="shrink-0 text-[11px] text-muted-foreground">
-          #{req.id}
-        </span>
+      {/* left accent rail */}
+      <span
+        aria-hidden="true"
+        className={cn(
+          'absolute inset-y-0 left-0 w-1',
+          COLUMN_ACCENT[column],
+        )}
+      />
+
+      {/* top row: #id + created date */}
+      <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+        <span className="tabular-nums">#{req.id}</span>
+        <span className="tabular-nums">{formatDate(req.created_at)}</span>
       </div>
 
-      <p className="mt-1 flex items-center gap-1 text-xs tabular-nums text-muted-foreground">
-        <Package className="size-3 shrink-0" aria-hidden="true" />
-        {formatQtyUnit(req.qty_needed, req.product_unit)}
-      </p>
+      {/* product + qty */}
+      <div className="mt-1 flex items-start justify-between gap-2">
+        <p className="min-w-0 truncate text-sm font-semibold leading-tight">
+          {req.product_name}
+        </p>
+        <Badge variant="outline" className="shrink-0 tabular-nums">
+          {formatQtyUnit(req.qty_needed, req.product_unit)}
+        </Badge>
+      </div>
 
       {/* requester → target */}
       <p className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
@@ -188,20 +201,18 @@ export function RequestCard({ req, action, onOpen }: RequestCardProps) {
         <span className="truncate">{req.target_location_name ?? '—'}</span>
       </p>
 
-      {/* badges row: origin · closure · brak · sub-tree progress */}
-      {(origin || closure || brak || openChildren) && (
+      {/* chips row */}
+      {(origin || rawWaiting || closure || brak || openChildren) && (
         <div className="mt-2 flex flex-wrap items-center gap-1">
           {origin && (
             <Badge variant={REQUEST_ORIGIN_VARIANT[origin]} className="text-[10px]">
               {REQUEST_ORIGIN_LABELS[origin]}
             </Badge>
           )}
-          {closure && (
-            <Badge
-              variant={CLOSURE_REASON_VARIANT[closure]}
-              className="text-[10px]"
-            >
-              {CLOSURE_REASON_LABELS[closure]}
+          {rawWaiting && (
+            <Badge variant="warning" className="gap-1 text-[10px]">
+              <Sparkles className="size-3" aria-hidden="true" />
+              Poster kutilmoqda
             </Badge>
           )}
           {brak !== null && (
@@ -214,10 +225,22 @@ export function RequestCard({ req, action, onOpen }: RequestCardProps) {
               bolalar: {openChildren}
             </Badge>
           )}
+          {closure && (
+            <Badge
+              variant={CLOSURE_REASON_VARIANT[closure]}
+              className="text-[10px]"
+            >
+              {CLOSURE_REASON_LABELS[closure]}
+            </Badge>
+          )}
         </div>
       )}
 
-      {action && <div className="mt-2 flex justify-end">{action}</div>}
-    </Card>
+      {action && (
+        <div className="mt-2 flex justify-end" onClick={(e) => e.stopPropagation()}>
+          {action}
+        </div>
+      )}
+    </div>
   );
 }

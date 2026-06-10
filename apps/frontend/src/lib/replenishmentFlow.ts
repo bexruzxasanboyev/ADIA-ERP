@@ -15,7 +15,7 @@
  *   - closure side-states: closure_reason + brak_qty/brak_reason.
  *   - GET /api/replenishment/:id/tree — see {@link RequestTreeResponse}.
  */
-import type { ReplenishmentRequest } from './types';
+import type { LocationType, PipelineStage, ReplenishmentRequest } from './types';
 
 /**
  * How a request was born (F-A `origin` column). Drives the small provenance
@@ -79,6 +79,37 @@ export interface FlowRequest extends ReplenishmentRequest {
    * when present (we never N+1 the list to compute it).
    */
   open_children_count?: number | null;
+  /**
+   * ISO timestamp the PINNED-target operator accepted the request
+   * (`POST /:id/accept-fulfiller` / `accept-internal`), or `null`/absent until
+   * then (phase F-G, FROZEN contract). It is what splits the "Kutuvda" column
+   * into Kutuvda (not yet accepted) vs. **Tasdiqlandi** (accepted, pre-ship):
+   * see {@link kanbanColumnOf}. For a `raw_warehouse` target it ALSO marks the
+   * "Poster postavka kutilmoqda" hold — see {@link isRawPosterWaiting}.
+   */
+  fulfiller_accepted_at?: string | null;
+  /**
+   * The requester location's type (`store` / `central_warehouse` / `production`
+   * / `sex_storage` / `raw_warehouse`), embedded for the route-line caption +
+   * role-aware modal actions. Optional on the wire — absent reads as unknown.
+   */
+  requester_location_type?: LocationType | null;
+  /**
+   * The target (fulfiller) location's type. Drives the raw-Poster waiting rule
+   * and the sex_storage-buffer accept variant (accept-internal vs.
+   * accept-fulfiller). Optional on the wire — absent reads as unknown.
+   */
+  target_location_type?: LocationType | null;
+  /**
+   * Accepted / returned quantities recorded on the receiver-side flow, surfaced
+   * in the detail modal's meta grid. Optional on the wire so older payloads
+   * stay strict-type-safe; absent reads as "not yet recorded".
+   */
+  qty_accepted?: number | null;
+  qty_returned?: number | null;
+  /** Free-text accept note / reject reason, when the backend embeds it. */
+  accept_note?: string | null;
+  reject_reason?: string | null;
 }
 
 /** Uzbek labels for the request-origin provenance badge. */
@@ -126,6 +157,90 @@ export const CLOSURE_REASON_VARIANT: Record<
   cancelled_by_requester: 'secondary',
   cancelled_by_fulfiller: 'secondary',
 };
+
+// ---------------------------------------------------------------------------
+// Kanban v2 — the Jira-like 6-column board (phase F-G). The 5 canonical
+// pipeline stages gain a "Tasdiqlandi" lane between Kutuvda and Tayyorlanmoqda,
+// because the owner wants the boshliq's ACCEPT to be a visible, distinct stage
+// (a pinned-target row that has been accepted but not yet shipped). The column
+// is a CLIENT derivation layered on top of `pipelineStageOf` + the FROZEN
+// `fulfiller_accepted_at` field — the backend `pipeline_stage` enum is
+// unchanged.
+// ---------------------------------------------------------------------------
+
+/**
+ * One of the six Jira columns. `tasdiqlandi` is UI-only (no backend enum
+ * value); every other id is the matching {@link PipelineStage}.
+ */
+export type KanbanColumn =
+  | 'kutuvda'
+  | 'tasdiqlandi'
+  | 'soralgan'
+  | 'qabul_qilingan'
+  | 'yuborilgan'
+  | 'yopilgan';
+
+/** The six columns in flow order, with their Uzbek labels + accent tokens. */
+export const KANBAN_COLUMNS: readonly {
+  column: KanbanColumn;
+  label: string;
+  /** Tailwind background token for the left accent rail + header dot. */
+  accent: string;
+}[] = [
+  { column: 'kutuvda', label: 'Kutuvda', accent: 'bg-warning' },
+  { column: 'tasdiqlandi', label: 'Tasdiqlandi', accent: 'bg-info' },
+  { column: 'soralgan', label: 'Tayyorlanmoqda', accent: 'bg-info' },
+  { column: 'qabul_qilingan', label: 'Tayyor', accent: 'bg-success' },
+  { column: 'yuborilgan', label: "Jo‘natildi", accent: 'bg-primary' },
+  { column: 'yopilgan', label: 'Yopildi', accent: 'bg-muted-foreground' },
+];
+
+/**
+ * Derive the Jira column of a request (phase F-G §2):
+ *
+ *   yopilgan      → Yopildi
+ *   yuborilgan    → Jo'natildi
+ *   qabul_qilingan→ Tayyor
+ *   soralgan      → Tayyorlanmoqda
+ *   kutuvda + fulfiller_accepted_at → **Tasdiqlandi**
+ *   kutuvda (else)→ Kutuvda
+ *
+ * Everything routes through {@link pipelineStageOf} first (backend
+ * `pipeline_stage`, status fallback), so a row never lands in two columns and
+ * legacy rows still bucket sanely. The extra split only ever applies inside the
+ * `kutuvda` stage, so it cannot move a row backwards.
+ *
+ * Imported lazily via the caller (`pipeline.ts`) to avoid a cycle — callers
+ * pass the already-resolved `stage`.
+ */
+export function kanbanColumnFromStage(
+  stage: PipelineStage,
+  req: Pick<FlowRequest, 'fulfiller_accepted_at'>,
+): KanbanColumn {
+  if (stage === 'kutuvda' && req.fulfiller_accepted_at) return 'tasdiqlandi';
+  return stage;
+}
+
+/**
+ * True when a request is a `raw_warehouse`-targeted row that the raw manager has
+ * ACCEPTED but the Поставка has not yet synced from Poster — it sits accepted
+ * (`fulfiller_accepted_at`) yet still pre-ship (`pipelineStageOf === 'kutuvda'`,
+ * so the engine has not auto-shipped on a stock landing). In that window the UI
+ * shows a "Poster postavka kutilmoqda" state (phase F-G, raw Poster story).
+ *
+ * Takes the resolved `stage` so it stays dependency-free (the caller already
+ * computed it for the column).
+ */
+export function isRawPosterWaiting(
+  req: Pick<FlowRequest, 'target_location_type' | 'fulfiller_accepted_at'>,
+  stage: PipelineStage,
+): boolean {
+  return (
+    req.target_location_type === 'raw_warehouse' &&
+    Boolean(req.fulfiller_accepted_at) &&
+    stage === 'kutuvda'
+  );
+}
 
 // ---------------------------------------------------------------------------
 // GET /api/replenishment/:id/tree — PINNED, FROZEN shape (F-D, parallel build).

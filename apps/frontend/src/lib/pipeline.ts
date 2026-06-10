@@ -20,6 +20,11 @@
  * action refetch (no stale lingering buttons — owner's complaint).
  */
 import type { PipelineStage, ReplenishmentRequest } from './types';
+import {
+  kanbanColumnFromStage,
+  type FlowRequest,
+  type KanbanColumn,
+} from './replenishmentFlow';
 
 /**
  * Resolve the pipeline stage of a request.
@@ -68,6 +73,19 @@ export function pipelineStageOf(req: ReplenishmentRequest): PipelineStage {
       // waiting bucket so it never silently vanishes from every tab.
       return 'kutuvda';
   }
+}
+
+/**
+ * Resolve the Jira KANBAN column of a request (phase F-G — the 6-column board).
+ *
+ * Thin composition of {@link pipelineStageOf} (the authoritative 5-stage
+ * bucket) + the client-only "Tasdiqlandi" split keyed on `fulfiller_accepted_at`
+ * (see {@link kanbanColumnFromStage}). Kept here so the board never re-derives
+ * the stage — one call covers both the legacy 5-stage surfaces (tree chips,
+ * counts) and the new 6-column Kanban.
+ */
+export function kanbanColumnOf(req: FlowRequest): KanbanColumn {
+  return kanbanColumnFromStage(pipelineStageOf(req), req);
 }
 
 /**

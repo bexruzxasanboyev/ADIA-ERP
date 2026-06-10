@@ -4,8 +4,10 @@ import {
   ArrowDownLeft,
   ArrowUpRight,
   History,
+  LayoutGrid,
   Plus,
   Search,
+  TableProperties,
   X,
 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
@@ -61,6 +63,12 @@ import {
   type ReplenishmentBucket,
 } from './statusBuckets';
 import { StoreRequestCreateDialog } from '../stores/StoreRequestCreateDialog';
+import { RequestKanban } from './board/RequestKanban';
+import { RequestDetailModal } from './RequestDetailModal';
+import { CancelDialog } from './CancelDialog';
+import { ApiError, apiRequest } from '@/lib/api-client';
+import { useToast } from '@/components/ui/toast';
+import type { FlowRequest } from '@/lib/replenishmentFlow';
 
 /**
  * EPIC — replenishment workspace (owner-directed redesign).
@@ -78,6 +86,9 @@ import { StoreRequestCreateDialog } from '../stores/StoreRequestCreateDialog';
  */
 
 type PageTab = 'requests' | 'transactions';
+
+/** So'rovlar layout — the Jira Kanban (default) or the legacy table. */
+type RequestsView = 'board' | 'table';
 
 const PAGE_TABS: { value: PageTab; label: string }[] = [
   { value: 'requests', label: 'So‘rovlar' },
@@ -99,13 +110,20 @@ export function ReplenishmentPage() {
   const showMobileCards = bp === 'xs';
   const { user, activeLocationId } = useAuth();
 
+  const { notify } = useToast();
   const [pageTab, setPageTab] = useState<PageTab>('requests');
+  const [view, setView] = useState<RequestsView>('board');
   const [filter, setFilter] = useState<FilterValue>(EMPTY_FILTER);
   const [search, setSearch] = useState('');
   const [dateRange, setDateRange] = useState<DateRangeValue>({ range: 'month' });
   const [bucket, setBucket] = useState<ReplenishmentBucket>('all');
   const [mineOnly, setMineOnly] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  // The card whose detail modal is open (Doska view), and the request queued
+  // for the CancelDialog (opened from inside the modal's requester action).
+  const [openRequest, setOpenRequest] = useState<FlowRequest | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<FlowRequest | null>(null);
+  const [isCancelling, setIsCancelling] = useState(false);
 
   const { data, isLoading, error, refetch } =
     useApiQuery<ReplenishmentRequest[]>('/api/replenishment');
@@ -211,6 +229,28 @@ export function ReplenishmentPage() {
     label: `${b.label} (${bucketCounts[b.value]})`,
   }));
 
+  // Cancel from inside the detail modal (requester action) → CancelDialog.
+  async function handleCancelConfirm(reason: string | undefined): Promise<void> {
+    if (cancelTarget === null) return;
+    setIsCancelling(true);
+    try {
+      await apiRequest(`/api/replenishment/${cancelTarget.id}/cancel`, {
+        method: 'POST',
+        body: { reason },
+      });
+      notify('success', 'So‘rov bekor qilindi.');
+      setCancelTarget(null);
+      refetch();
+    } catch (err: unknown) {
+      notify(
+        'error',
+        err instanceof ApiError ? err.message : 'Bekor qilib bo‘lmadi.',
+      );
+    } finally {
+      setIsCancelling(false);
+    }
+  }
+
   return (
     <div className="mx-auto max-w-[120rem] space-y-6">
       <PageHeader
@@ -282,24 +322,78 @@ export function ReplenishmentPage() {
                   So‘rov qo‘shish
                 </Button>
               )}
+              {/* Doska | Jadval view toggle (Doska default). */}
+              <div
+                className="flex overflow-hidden rounded-lg border border-border/70"
+                role="group"
+                aria-label="Ko‘rinish"
+              >
+                <Button
+                  type="button"
+                  variant={view === 'board' ? 'default' : 'ghost'}
+                  size="sm"
+                  aria-pressed={view === 'board'}
+                  className="rounded-none"
+                  onClick={() => setView('board')}
+                >
+                  <LayoutGrid className="size-4" aria-hidden="true" />
+                  Doska
+                </Button>
+                <Button
+                  type="button"
+                  variant={view === 'table' ? 'default' : 'ghost'}
+                  size="sm"
+                  aria-pressed={view === 'table'}
+                  className="rounded-none"
+                  onClick={() => setView('table')}
+                >
+                  <TableProperties className="size-4" aria-hidden="true" />
+                  Jadval
+                </Button>
+              </div>
             </div>
           </div>
 
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <Tabs
-              value={bucket}
-              onValueChange={setBucket}
-              options={bucketOptions}
-              ariaLabel="So‘rov holati"
-            />
-            <p
-              className="text-sm text-muted-foreground"
-              aria-live="polite"
-            >
-              {`${rows.length} ta so‘rov`}
-            </p>
-          </div>
+          {/* The bucket strip is a TABLE-mode affordance; in Doska mode the
+              column counts replace it. */}
+          {view === 'table' && (
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <Tabs
+                value={bucket}
+                onValueChange={setBucket}
+                options={bucketOptions}
+                ariaLabel="So‘rov holati"
+              />
+              <p className="text-sm text-muted-foreground" aria-live="polite">
+                {`${rows.length} ta so‘rov`}
+              </p>
+            </div>
+          )}
 
+          {/* DOSKA — the Jira Kanban fed by the SAME filtered (search / date /
+              filter / Mening so'rovlarim) rows; a card click opens the modal. */}
+          {view === 'board' &&
+            (isLoading ? (
+              <Card>
+                <LoadingState />
+              </Card>
+            ) : error ? (
+              <Card>
+                <ErrorState message={error} onRetry={refetch} />
+              </Card>
+            ) : baseRows.length === 0 ? (
+              <Card>
+                <EmptyState message="So‘rovlar topilmadi." />
+              </Card>
+            ) : (
+              <RequestKanban
+                requests={baseRows as FlowRequest[]}
+                emptyLabel="—"
+                onOpen={(req) => setOpenRequest(req)}
+              />
+            ))}
+
+          {view === 'table' && (
           <Card>
             {isLoading && <LoadingState />}
             {!isLoading && error && (
@@ -387,6 +481,7 @@ export function ReplenishmentPage() {
               </Table>
             )}
           </Card>
+          )}
         </>
       )}
 
@@ -515,6 +610,27 @@ export function ReplenishmentPage() {
           onSaved={refetch}
         />
       )}
+
+      {/* The Jira card — opened on a Doska card click. Its requester action
+          opens the CancelDialog below; accept/reject refetch the list. */}
+      <RequestDetailModal
+        open={openRequest !== null}
+        onOpenChange={(next) => {
+          if (!next) setOpenRequest(null);
+        }}
+        request={openRequest}
+        onActed={refetch}
+        onCancel={(req) => setCancelTarget(req)}
+      />
+
+      <CancelDialog
+        open={cancelTarget !== null}
+        onOpenChange={(next) => {
+          if (!isCancelling && !next) setCancelTarget(null);
+        }}
+        onConfirm={handleCancelConfirm}
+        isSubmitting={isCancelling}
+      />
     </div>
   );
 }

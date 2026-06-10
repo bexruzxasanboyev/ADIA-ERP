@@ -34,8 +34,8 @@ import { describeStatus } from '@/pages/dashboard/executive/requestTracer';
 import type { ReplenishmentRequest } from '@/lib/types';
 import { TERMINAL_REPLENISHMENT_STATUSES } from '@/lib/types';
 import { RequestKanban } from '@/pages/replenishment/board/RequestKanban';
+import { RequestDetailModal } from '@/pages/replenishment/RequestDetailModal';
 import type { FlowRequest } from '@/lib/replenishmentFlow';
-import { useNavigate } from 'react-router-dom';
 import {
   RequestActionDialog,
   type RequestActionMode,
@@ -66,7 +66,6 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 export function RequestsPage() {
   const bp = useBreakpoint();
   const isMobile = bp === 'xs';
-  const navigate = useNavigate();
   const { user, locations } = useAuth();
   const { canActOn } = useCanAct();
   const { notify } = useToast();
@@ -84,6 +83,8 @@ export function RequestsPage() {
     mode: RequestActionMode;
   } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // The Doska card whose Jira detail modal is open.
+  const [openRequest, setOpenRequest] = useState<FlowRequest | null>(null);
 
   const userLocationIds = useMemo(
     () => new Set(locations.map((loc) => loc.id)),
@@ -155,10 +156,10 @@ export function RequestsPage() {
   }, [data, userLocationIds]);
 
   const tabOptions: { value: TabKey; label: string }[] = [
-    { value: 'board', label: `Doska (${boardRows.length})` },
-    { value: 'incoming', label: `Menga keluvchi (${incoming.length})` },
-    { value: 'sent', label: `Men yuborganlar (${sent.length})` },
-    { value: 'archive', label: `Arxiv (${archive.length})` },
+    { value: 'board', label: `Doska · ${boardRows.length}` },
+    { value: 'incoming', label: `Menga keluvchi · ${incoming.length}` },
+    { value: 'sent', label: `Men yuborganlar · ${sent.length}` },
+    { value: 'archive', label: `Arxiv · ${archive.length}` },
   ];
 
   const rows = tab === 'incoming' ? incoming : tab === 'sent' ? sent : archive;
@@ -302,7 +303,7 @@ export function RequestsPage() {
           <RequestKanban
             requests={boardRows}
             emptyLabel="—"
-            onOpen={(req) => navigate(`/replenishment/${req.id}`)}
+            onOpen={(req) => setOpenRequest(req)}
           />
         ))}
 
@@ -350,6 +351,18 @@ export function RequestsPage() {
           isSubmitting={isSubmitting}
         />
       )}
+
+      {/* The Jira card — opened on a Doska card click. The requester's cancel
+          action runs directly (the modal closes, then the toast fires). */}
+      <RequestDetailModal
+        open={openRequest !== null}
+        onOpenChange={(next) => {
+          if (!next) setOpenRequest(null);
+        }}
+        request={openRequest}
+        onActed={refetch}
+        onCancel={(req) => void handleCancelByRequester(req)}
+      />
     </div>
   );
 }
@@ -513,50 +526,13 @@ function RowActions({
     row.status === 'SHIP_TO_REQUESTER' ||
     row.status === 'DONE_TO_WAREHOUSE';
 
+  // DESIGN.md §9 button order: ghost → outline → default; the reject of an
+  // approve/reject pair sits left, the single primary action sits rightmost.
   return (
     <div className="flex flex-wrap items-center justify-end gap-1.5">
       <Button variant="ghost" size="sm" asChild>
         <Link to={`/replenishment/${row.id}`}>Ochish</Link>
       </Button>
-
-      {tab === 'incoming' && canReceive && isAcceptable && (
-        <>
-          <Button
-            size="sm"
-            disabled={isSubmitting}
-            onClick={() => onAction(row, 'accept_full')}
-          >
-            To'liq qabul
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={isSubmitting}
-            onClick={() => onAction(row, 'accept_partial')}
-          >
-            Qisman
-          </Button>
-          <Button
-            variant="destructive"
-            size="sm"
-            disabled={isSubmitting}
-            onClick={() => onAction(row, 'reject')}
-          >
-            Kelmadi
-          </Button>
-        </>
-      )}
-
-      {canReceive && row.status === 'CLOSED' && (
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={isSubmitting}
-          onClick={() => onAction(row, 'return')}
-        >
-          Qaytarish
-        </Button>
-      )}
 
       {tab === 'sent' && canCancelAsRequester && (
         <Button
@@ -578,6 +554,45 @@ function RowActions({
         >
           Bekor qilish
         </Button>
+      )}
+
+      {canReceive && row.status === 'CLOSED' && (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={isSubmitting}
+          onClick={() => onAction(row, 'return')}
+        >
+          Qaytarish
+        </Button>
+      )}
+
+      {tab === 'incoming' && canReceive && isAcceptable && (
+        <>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={isSubmitting}
+            onClick={() => onAction(row, 'reject')}
+          >
+            Kelmadi
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={isSubmitting}
+            onClick={() => onAction(row, 'accept_partial')}
+          >
+            Qisman
+          </Button>
+          <Button
+            size="sm"
+            disabled={isSubmitting}
+            onClick={() => onAction(row, 'accept_full')}
+          >
+            To'liq qabul
+          </Button>
+        </>
       )}
     </div>
   );

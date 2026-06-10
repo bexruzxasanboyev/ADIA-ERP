@@ -111,6 +111,71 @@ export function fulfillRequest(
   });
 }
 
+/**
+ * `POST /api/replenishment/:id/accept-fulfiller` envelope (phase F-G, FROZEN
+ * contract). The operator of the PINNED target location accepts an incoming
+ * request. When the target holds stock the engine ships immediately
+ * (`shipped: true`); a `raw_warehouse` target instead HOLDS (`shipped: false`)
+ * until the Поставка syncs from Poster and the engine auto-ships. RBAC:
+ * operator of the pinned target location; PM → 403.
+ */
+export interface AcceptFulfillerResponse {
+  request: ReplenishmentRequest;
+  shipped: boolean;
+}
+
+/** `POST /api/replenishment/:id/reject-fulfiller` envelope (phase F-G). */
+export interface RejectFulfillerResponse {
+  request: ReplenishmentRequest;
+}
+
+/**
+ * Accept an incoming PINNED-target request as its fulfiller (phase F-G).
+ * `:id` is the replenishment_request id. RBAC: operator of the pinned target
+ * location only; PM is 403 (read-and-recommend).
+ */
+export function acceptFulfiller(id: number): Promise<AcceptFulfillerResponse> {
+  return apiRequest<AcceptFulfillerResponse>(
+    `/api/replenishment/${id}/accept-fulfiller`,
+    { method: 'POST', body: {} },
+  );
+}
+
+/** Reject an incoming PINNED-target request as its fulfiller (phase F-G). */
+export function rejectFulfiller(
+  id: number,
+  reason?: string,
+): Promise<RejectFulfillerResponse> {
+  return apiRequest<RejectFulfillerResponse>(
+    `/api/replenishment/${id}/reject-fulfiller`,
+    { method: 'POST', body: { reason } },
+  );
+}
+
+/**
+ * Accept an incoming INTERNAL buffer request as its fulfiller — the
+ * sex_storage-requester (B-cycle) variant of {@link acceptFulfiller}. Same
+ * shape; targets `POST /:id/accept-internal`. RBAC: operator of the pinned
+ * sex_storage; PM → 403.
+ */
+export function acceptInternal(id: number): Promise<AcceptFulfillerResponse> {
+  return apiRequest<AcceptFulfillerResponse>(
+    `/api/replenishment/${id}/accept-internal`,
+    { method: 'POST', body: {} },
+  );
+}
+
+/** Reject an incoming INTERNAL buffer request (`POST /:id/reject-internal`). */
+export function rejectInternal(
+  id: number,
+  reason?: string,
+): Promise<RejectFulfillerResponse> {
+  return apiRequest<RejectFulfillerResponse>(
+    `/api/replenishment/${id}/reject-internal`,
+    { method: 'POST', body: { reason } },
+  );
+}
+
 /** `POST /api/replenishment` envelope (single-request create — 201). */
 interface CreateReplenishmentResponse {
   request: ReplenishmentRequest;
