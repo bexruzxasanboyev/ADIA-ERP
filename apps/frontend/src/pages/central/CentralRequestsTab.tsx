@@ -46,7 +46,7 @@ import type {
 } from '@/lib/types';
 import { StoreRequestsStatusDonut } from '@/pages/stores/StoreRequestsStatusDonut';
 import { StoreRequestsTrendChart } from '@/pages/stores/StoreRequestsTrendChart';
-import { RequestKanban } from '@/pages/replenishment/board/RequestKanban';
+import { BoardWorkspace } from '@/pages/replenishment/board/BoardWorkspace';
 import { RequestDetailModal } from '@/pages/replenishment/RequestDetailModal';
 import type { FlowRequest } from '@/lib/replenishmentFlow';
 import { ProductionReceiveDialog } from './ProductionReceiveDialog';
@@ -409,7 +409,8 @@ export function CentralRequestsTab({
         </div>
       )}
 
-      {/* DOSKA — 📥 Kelgan + 📤 Chiqgan boards (cross-department-flow §9.2). */}
+      {/* DOSKA — ONE board area + a 📥 Kelgan | 📤 Chiqgan toggle
+          (cross-department-flow §9.2; owner: no more stacked duplicate). */}
       {tab === 'board' && (
         <>
           {listLoading && (
@@ -423,58 +424,15 @@ export function CentralRequestsTab({
             </Card>
           )}
           {!listLoading && !listError && (
-            <div className="space-y-6">
-              <section className="space-y-3">
-                {/* Section heading — kicker + secondary count (DESIGN.md §9). */}
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    <ArrowDownLeft
-                      className="size-4 text-primary"
-                      aria-hidden="true"
-                    />
-                    📥 Kelgan
-                  </h3>
-                  <Badge variant="secondary" className="tabular-nums">
-                    {incomingBoard.length}
-                  </Badge>
-                  <p className="w-full text-xs text-muted-foreground sm:w-auto">
-                    Do‘konlardan kelgan so‘rovlar — qabul qilish, qisman
-                    jo‘natish, ishlab chiqarishdan qabul.
-                  </p>
-                </div>
-                <RequestKanban
-                  requests={incomingBoard}
-                  emptyLabel="Kelgan so‘rov yo‘q."
-                  onOpen={(req) => setOpenRequest(req)}
-                  renderAction={renderIncomingAction}
-                />
-              </section>
-
-              <section className="space-y-3">
-                {/* Section heading — kicker + secondary count (DESIGN.md §9). */}
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    <ArrowUpRight
-                      className="size-4 text-primary"
-                      aria-hidden="true"
-                    />
-                    📤 Chiqgan
-                  </h3>
-                  <Badge variant="secondary" className="tabular-nums">
-                    {outgoing.length}
-                  </Badge>
-                  <p className="w-full text-xs text-muted-foreground sm:w-auto">
-                    Markaz ishlab chiqarishga yuborgan so‘rovlar — har bosqich
-                    bo‘yicha.
-                  </p>
-                </div>
-                <RequestKanban
-                  requests={outgoing}
-                  emptyLabel="Chiqgan so‘rov yo‘q."
-                  onOpen={(req) => setOpenRequest(req)}
-                />
-              </section>
-            </div>
+            <BoardWorkspace
+              incoming={incomingBoard}
+              outgoing={outgoing}
+              defaultSide="incoming"
+              onOpen={(req) => setOpenRequest(req)}
+              renderIncomingAction={renderIncomingAction}
+              incomingEmptyLabel="Kelgan so‘rov yo‘q."
+              outgoingEmptyLabel="Chiqgan so‘rov yo‘q."
+            />
           )}
         </>
       )}

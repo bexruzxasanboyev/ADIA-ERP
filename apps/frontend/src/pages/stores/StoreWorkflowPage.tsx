@@ -48,7 +48,7 @@ import { useToast } from '@/components/ui/toast';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { useAuth } from '@/hooks/useAuth';
 import { usePrefersReducedMotion } from '@/hooks/usePrefersReducedMotion';
-import { ApiError } from '@/lib/api-client';
+import { ApiError, apiRequest } from '@/lib/api-client';
 import { formatDateTime, formatQtyUnit } from '@/lib/format';
 import {
   REPLENISHMENT_STATUS_LABELS,
@@ -95,6 +95,11 @@ import {
   basketItemFromStockRow,
   type BasketItem,
 } from './storeBasket';
+import { BoardWorkspace } from '@/pages/replenishment/board/BoardWorkspace';
+import { RequestDetailModal } from '@/pages/replenishment/RequestDetailModal';
+import { CancelDialog } from '@/pages/replenishment/CancelDialog';
+import { splitBoards } from '@/pages/replenishment/board/boardFilters';
+import type { FlowRequest } from '@/lib/replenishmentFlow';
 
 /**
  * Do'kon ish joyi — a clean, store-scoped workflow page (owner feedback: the
@@ -129,7 +134,7 @@ const STOCK_STATUS_TABS: { value: StockStatusKey; label: string }[] = [
   { value: 'enough', label: 'Yetarli' },
 ];
 
-type RequestTabKey = 'sent' | 'incoming' | 'transactions';
+type RequestTabKey = 'board' | 'sent' | 'incoming' | 'transactions';
 
 /** Top-level page sections, surfaced as header tabs (owner feedback). */
 type PageTabKey = 'dashboard' | 'products' | 'requests';
@@ -504,7 +509,12 @@ export function StoreWorkflowPage() {
     category: [],
     unit: [],
   });
-  const [requestTab, setRequestTab] = useState<RequestTabKey>('sent');
+  const [requestTab, setRequestTab] = useState<RequestTabKey>('board');
+  // The board card whose detail modal is open, and the request queued for the
+  // CancelDialog (opened from inside the modal's requester action).
+  const [openRequest, setOpenRequest] = useState<FlowRequest | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<FlowRequest | null>(null);
+  const [isCancelling, setIsCancelling] = useState(false);
   // So'rovlar date filter (owner feedback) — applied to sent / incoming /
   // transactions by `created_at`. Defaults to the current month.
   const [dateRange, setDateRange] = useState<DateRangeValue>({ range: 'month' });
@@ -847,7 +857,30 @@ export function StoreWorkflowPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [replen.data, selectedStoreSet, hasSelection, bounds]);
 
+  // Board rows — EVERY request touching the selected store(s) in the active
+  // date range (requester OR target), split into 📥 Kelgan (target ∈ stores) and
+  // 📤 Chiqgan (requester ∈ stores) by the shared `splitBoards`. Unlike `sent`
+  // (open-only) this keeps terminal rows so the Kanban's Yopildi column fills.
+  const boardRows = useMemo<FlowRequest[]>(() => {
+    const rows = replen.data ?? [];
+    if (!hasSelection) return [];
+    return rows.filter((row) => {
+      if (!inRange(row.created_at)) return false;
+      const isRequester = selectedStoreSet.has(row.requester_location_id);
+      const isTarget =
+        row.target_location_id !== null &&
+        selectedStoreSet.has(row.target_location_id);
+      return isRequester || isTarget;
+    }) as FlowRequest[];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replen.data, selectedStoreSet, hasSelection, bounds]);
+  const boards = useMemo(
+    () => splitBoards(boardRows, selectedStoreSet),
+    [boardRows, selectedStoreSet],
+  );
+
   const requestTabOptions: { value: RequestTabKey; label: string }[] = [
+    { value: 'board', label: 'Doska' },
     { value: 'sent', label: `So‘rov · ${sent.length}` },
     { value: 'incoming', label: `Qabul qiluvchi · ${incoming.length}` },
     { value: 'transactions', label: 'Tranzaksiyalar' },
@@ -859,6 +892,29 @@ export function StoreWorkflowPage() {
   // instead of N scattered rows. Legacy null-batch rows render individually.
   const sentGroups = useMemo(() => groupByBatch(sent), [sent]);
   const storeName = (id: number) => storeNameById.get(id) ?? `#${id}`;
+
+  // Cancel from inside the board's detail modal (requester action) → CancelDialog.
+  async function handleCancelConfirm(reason: string | undefined): Promise<void> {
+    if (cancelTarget === null) return;
+    setIsCancelling(true);
+    try {
+      await apiRequest(`/api/replenishment/${cancelTarget.id}/cancel`, {
+        method: 'POST',
+        body: { reason },
+      });
+      notify('success', 'So‘rov bekor qilindi.');
+      setCancelTarget(null);
+      replen.refetch();
+      stock.refetch();
+    } catch (err: unknown) {
+      notify(
+        'error',
+        err instanceof ApiError ? err.message : 'Bekor qilib bo‘lmadi.',
+      );
+    } finally {
+      setIsCancelling(false);
+    }
+  }
 
   return (
     <div className="mx-auto w-full max-w-[120rem] space-y-6">
@@ -1118,35 +1174,65 @@ export function StoreWorkflowPage() {
                     ariaLabel="So‘rovlar ko‘rinishi"
                   />
                   {/* Action affordances are store_manager-only; pm views
-                      read-only (owner RBAC split). */}
-                  {isStoreManager && requestTab === 'sent' && (
-                    <>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setAiProposalsOpen(true)}
-                      >
-                        <Sparkles className="size-4" aria-hidden="true" />
-                        AI takliflari
-                      </Button>
-                      <Button onClick={() => setCreateOpen(true)} size="sm">
-                        <Plus className="size-4" aria-hidden="true" />
-                        So‘rov qo‘shish
-                      </Button>
-                    </>
-                  )}
+                      read-only (owner RBAC split). Shown on the request-creating
+                      views (Doska + So'rov), not on Qabul qiluvchi / Tranzaksiyalar. */}
+                  {isStoreManager &&
+                    (requestTab === 'board' || requestTab === 'sent') && (
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setAiProposalsOpen(true)}
+                        >
+                          <Sparkles className="size-4" aria-hidden="true" />
+                          AI takliflari
+                        </Button>
+                        <Button onClick={() => setCreateOpen(true)} size="sm">
+                          <Plus className="size-4" aria-hidden="true" />
+                          So‘rov qo‘shish
+                        </Button>
+                      </>
+                    )}
                 </div>
               </header>
 
-              {requestTab !== 'transactions' && replen.isLoading && (
-                <LoadingState />
+              {/* DOSKA — one board area + a 📥 Kelgan | 📤 Chiqgan toggle
+                  (cross-department-flow §9.2). Stores mostly REQUEST, so Chiqgan
+                  is the default side; Kelgan (jo'natmalar to'g'ri do'konga
+                  pinlangan kam holatlar) may be empty. Scoped to the selected
+                  store(s) via the same `splitBoards`. */}
+              {requestTab === 'board' && (
+                <div className="p-5">
+                  {replen.isLoading && <LoadingState />}
+                  {!replen.isLoading && replen.error && (
+                    <ErrorState
+                      message={replen.error}
+                      onRetry={replen.refetch}
+                    />
+                  )}
+                  {!replen.isLoading && !replen.error && (
+                    <BoardWorkspace
+                      incoming={boards.incoming}
+                      outgoing={boards.outgoing}
+                      defaultSide="outgoing"
+                      onOpen={(req) => setOpenRequest(req)}
+                      incomingEmptyLabel="Do‘konga atalgan so‘rov yo‘q."
+                      outgoingEmptyLabel="Do‘kon yuborgan so‘rov yo‘q."
+                    />
+                  )}
+                </div>
               )}
+
+              {requestTab !== 'transactions' && requestTab !== 'board' &&
+                replen.isLoading && <LoadingState />}
               {requestTab !== 'transactions' &&
+                requestTab !== 'board' &&
                 !replen.isLoading &&
                 replen.error && (
                   <ErrorState message={replen.error} onRetry={replen.refetch} />
                 )}
               {requestTab !== 'transactions' &&
+                requestTab !== 'board' &&
                 !replen.isLoading &&
                 !replen.error &&
                 requestRows.length === 0 && (
@@ -1464,6 +1550,30 @@ export function StoreWorkflowPage() {
           setMinMaxTarget(null);
           stock.refetch();
         }}
+      />
+
+      {/* The Jira card — opened on a Doska card click. Its requester action
+          opens the CancelDialog below; accept/reject refetch the list. */}
+      <RequestDetailModal
+        open={openRequest !== null}
+        onOpenChange={(next) => {
+          if (!next) setOpenRequest(null);
+        }}
+        request={openRequest}
+        onActed={() => {
+          replen.refetch();
+          stock.refetch();
+        }}
+        onCancel={(req) => setCancelTarget(req)}
+      />
+
+      <CancelDialog
+        open={cancelTarget !== null}
+        onOpenChange={(next) => {
+          if (!isCancelling && !next) setCancelTarget(null);
+        }}
+        onConfirm={handleCancelConfirm}
+        isSubmitting={isCancelling}
       />
     </div>
   );

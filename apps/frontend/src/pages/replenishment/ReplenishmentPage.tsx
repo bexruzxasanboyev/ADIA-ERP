@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ArrowDownLeft,
+  ArrowLeftRight,
   ArrowUpRight,
   History,
   LayoutGrid,
@@ -45,6 +46,8 @@ import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { rangeBounds } from '@/lib/dateRange';
 import { formatDateTime, formatQty, formatQtyUnit } from '@/lib/format';
 import {
+  MOVEMENT_FLOW_LABELS,
+  movementFlowKind,
   REPLENISHMENT_STATUS_LABELS,
   REPLENISHMENT_STATUS_VARIANT,
   UNIT_OPTIONS,
@@ -55,6 +58,7 @@ import type {
   MovementsResponse,
   Product,
   ReplenishmentRequest,
+  StockMovement,
   Unit,
 } from '@/lib/types';
 import {
@@ -115,7 +119,9 @@ export function ReplenishmentPage() {
   const [view, setView] = useState<RequestsView>('board');
   const [filter, setFilter] = useState<FilterValue>(EMPTY_FILTER);
   const [search, setSearch] = useState('');
-  const [dateRange, setDateRange] = useState<DateRangeValue>({ range: 'month' });
+  // Default to the WIDEST preset (owner: "So'rovlarga kirsam umumiy so'rovlarni
+  // ko'rishim kerak") so entry shows the general picture, not just this month.
+  const [dateRange, setDateRange] = useState<DateRangeValue>({ range: '6m' });
   const [bucket, setBucket] = useState<ReplenishmentBucket>('all');
   const [mineOnly, setMineOnly] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -522,6 +528,7 @@ export function ReplenishmentPage() {
                       <TableHead>Manba</TableHead>
                       <TableHead>Manzil</TableHead>
                       <TableHead className="text-right">Yaroqsiz</TableHead>
+                      <TableHead>Amal</TableHead>
                       {activeLocationId != null && <TableHead>Harakat</TableHead>}
                     </TableRow>
                   </TableHeader>
@@ -569,6 +576,11 @@ export function ReplenishmentPage() {
                             {hasBrak
                               ? formatQtyUnit(m.brak_qty as number, m.product_unit)
                               : '—'}
+                          </TableCell>
+                          {/* Amal — chain-level flow (Kirish / Chiqish /
+                              Ko'chirish), derived per row null-safely. */}
+                          <TableCell>
+                            <MovementFlowChip movement={m} />
                           </TableCell>
                           {activeLocationId != null && (
                             <TableCell>
@@ -642,5 +654,38 @@ export function ReplenishmentPage() {
         isSubmitting={isCancelling}
       />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// MovementFlowChip — the "Amal" cell: a chain-level flow chip derived per row.
+// Kirish (into the chain) green ↘, Chiqish (out of the chain) red ↗, Ko'chirish
+// (between locations) neutral ⇄. Direction is resolved null-safely from the
+// movement's endpoint ids, with the counterparty NAME fields as a fallback.
+// ---------------------------------------------------------------------------
+
+function MovementFlowChip({ movement }: { movement: StockMovement }) {
+  const kind = movementFlowKind(movement);
+  if (kind === 'kirish') {
+    return (
+      <Badge variant="success" className="gap-1">
+        <ArrowDownLeft className="size-3" aria-hidden="true" />
+        {MOVEMENT_FLOW_LABELS.kirish}
+      </Badge>
+    );
+  }
+  if (kind === 'chiqish') {
+    return (
+      <Badge variant="danger" className="gap-1">
+        <ArrowUpRight className="size-3" aria-hidden="true" />
+        {MOVEMENT_FLOW_LABELS.chiqish}
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="secondary" className="gap-1">
+      <ArrowLeftRight className="size-3" aria-hidden="true" />
+      {MOVEMENT_FLOW_LABELS.kochirish}
+    </Badge>
   );
 }

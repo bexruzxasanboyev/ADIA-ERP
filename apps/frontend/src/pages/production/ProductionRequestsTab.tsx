@@ -52,7 +52,7 @@ import { StoreRequestsStatusDonut } from '@/pages/stores/StoreRequestsStatusDonu
 import { StoreRequestsTrendChart } from '@/pages/stores/StoreRequestsTrendChart';
 import { Button } from '@/components/ui/button';
 import { Sparkles } from 'lucide-react';
-import { RequestKanban } from '@/pages/replenishment/board/RequestKanban';
+import { BoardWorkspace } from '@/pages/replenishment/board/BoardWorkspace';
 import { RequestDetailModal } from '@/pages/replenishment/RequestDetailModal';
 import { splitBoards } from '@/pages/replenishment/board/boardFilters';
 import type { FlowRequest } from '@/lib/replenishmentFlow';
@@ -329,40 +329,33 @@ export function ProductionRequestsTab({
         totals={semiSummary.totals}
       />
 
-      {/* TWO BOARDS — the canonical 5-column Kanban (cross-department-flow §9.2):
-          📥 Kelgan (markaz + boshqa sexlardan, krem!) and 📤 Chiqgan (homashyo +
-          producer-sexlarga). The incoming card carries the "Manba reja" action. */}
+      {/* ONE board area + a 📥 Kelgan | 📤 Chiqgan toggle (cross-department-flow
+          §9.2; owner: no more stacked duplicate). 📥 Kelgan = markaz + boshqa
+          sexlardan (krem!) — its card carries the "Manba reja" action; 📤 Chiqgan
+          = homashyo + producer-sexlarga. */}
       {!listLoading && !listError && (
-        <div className="space-y-6">
-          <ProductionBoard
-            title="📥 Kelgan"
-            description="Menga ta'minotchi sifatida kelgan so‘rovlar — markaz va boshqa sexlardan."
-            requests={boards.incoming}
-            emptyLabel="Kelgan so‘rov yo‘q."
-            onOpen={(req) => setOpenRequest(req)}
-            renderAction={(req) => (
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 text-xs"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setPlanTarget(req);
-                }}
-              >
-                <Sparkles className="size-3.5" aria-hidden="true" />
-                Manba reja
-              </Button>
-            )}
-          />
-          <ProductionBoard
-            title="📤 Chiqgan"
-            description="Men mijoz sifatida yuborgan so‘rovlar — xom-ashyo va producer-sexlarga."
-            requests={boards.outgoing}
-            emptyLabel="Chiqgan so‘rov yo‘q."
-            onOpen={(req) => setOpenRequest(req)}
-          />
-        </div>
+        <BoardWorkspace
+          incoming={boards.incoming}
+          outgoing={boards.outgoing}
+          defaultSide="incoming"
+          onOpen={(req) => setOpenRequest(req)}
+          incomingEmptyLabel="Kelgan so‘rov yo‘q."
+          outgoingEmptyLabel="Chiqgan so‘rov yo‘q."
+          renderIncomingAction={(req) => (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={(e) => {
+                e.stopPropagation();
+                setPlanTarget(req);
+              }}
+            >
+              <Sparkles className="size-3.5" aria-hidden="true" />
+              Manba reja
+            </Button>
+          )}
+        />
       )}
 
       {/* Section header (kicker + count) — tabs sit on their OWN row below,
@@ -670,49 +663,6 @@ export function ProductionRequestsTab({
         }}
       />
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// ProductionBoard — one labelled Kanban board (📥 Kelgan / 📤 Chiqgan): a
-// header (title + description + count) over the canonical 5-column board.
-// ---------------------------------------------------------------------------
-
-function ProductionBoard({
-  title,
-  description,
-  requests,
-  emptyLabel,
-  renderAction,
-  onOpen,
-}: {
-  title: string;
-  description: string;
-  requests: FlowRequest[];
-  emptyLabel: string;
-  renderAction?: (req: FlowRequest) => React.ReactNode;
-  onOpen?: (req: FlowRequest) => void;
-}) {
-  return (
-    <section className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          {title}
-        </h3>
-        <Badge variant="secondary" className="tabular-nums">
-          {requests.length}
-        </Badge>
-        <p className="w-full text-xs text-muted-foreground sm:w-auto">
-          {description}
-        </p>
-      </div>
-      <RequestKanban
-        requests={requests}
-        emptyLabel={emptyLabel}
-        renderAction={renderAction}
-        onOpen={onOpen}
-      />
-    </section>
   );
 }
 

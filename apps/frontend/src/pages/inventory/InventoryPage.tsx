@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Settings2 } from 'lucide-react';
+import { ClipboardList, Settings2, Store } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -26,10 +26,11 @@ import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/components/ui/toast';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import { cn } from '@/lib/utils';
-import { formatQty, todayIso } from '@/lib/format';
+import { formatDate, formatQty, todayIso } from '@/lib/format';
 import { INVENTORY_LABELS, formatWholePiece } from '@/lib/labels';
 import type {
   InventoryCount,
+  InventoryCountsResponse,
   InventoryEndOfDayItem,
   InventoryEndOfDayResponse,
   Location,
@@ -92,11 +93,41 @@ export function InventoryPage() {
   const { data, isLoading, error, refetch } =
     useApiQuery<InventoryEndOfDayResponse>(queryPath);
 
+  // Overview state — a store-picking principal who has NOT yet chosen a store
+  // sees a per-store summary grid instead of an empty prompt (owner: "asosiy
+  // sahifani ko'rsat"). Fed by the chain-wide count history (no location_id →
+  // every store the principal may see, RBAC-scoped server-side); a scoped store
+  // manager never reaches this branch (no picker → store auto-resolved).
+  const showOverview = canPickStore && storeId === '';
+  const counts = useApiQuery<InventoryCountsResponse>(
+    showOverview ? '/api/inventory/counts' : null,
+  );
+
   const items = data?.items ?? [];
   // The effective location id used in POST bodies — the picked store for a
   // PM/production_manager, or the location the backend resolved for the row.
   const effectiveLocationId =
     storeId !== '' ? Number(storeId) : (data?.location_id ?? null);
+
+  // Per-store overview rows: each store + its MOST-RECENT count (date + diff),
+  // or "hali yo'q" when it has never been counted. The counts come back newest
+  // first, so the first count seen per location is its latest.
+  const overviewRows = useMemo<StoreOverviewRow[]>(() => {
+    const latestByStore = new Map<number, InventoryCount>();
+    for (const c of counts.data?.items ?? []) {
+      if (!latestByStore.has(c.location_id)) latestByStore.set(c.location_id, c);
+    }
+    return storeOptions
+      .map((s) => ({ store: s, last: latestByStore.get(s.id) ?? null }))
+      .sort((a, b) => {
+        // Stores with a count first (most-recent count on top), then the rest
+        // alphabetically — so "hali yo'q" stores sink to the bottom.
+        const at = a.last ? a.last.count_date : '';
+        const bt = b.last ? b.last.count_date : '';
+        if (at !== bt) return bt.localeCompare(at);
+        return a.store.name.localeCompare(b.store.name, 'uz');
+      });
+  }, [counts.data, storeOptions]);
 
   // Coefficient editor target (pm / production_manager only).
   const [coeffTarget, setCoeffTarget] = useState<InventoryEndOfDayItem | null>(
@@ -168,11 +199,21 @@ export function InventoryPage() {
         )}
       </div>
 
+      {/* OVERVIEW — a store-picking principal who has not yet chosen a store
+          lands on a per-store summary grid (owner: "asosiy sahifani ko'rsat")
+          instead of an empty prompt. Each card opens that store's worksheet. */}
+      {showOverview && (
+        <StoreOverview
+          rows={overviewRows}
+          loading={counts.isLoading}
+          error={counts.error}
+          onRetry={counts.refetch}
+          onOpen={(id) => setStoreId(String(id))}
+        />
+      )}
+
+      {!showOverview && (
       <Card>
-        {/* A store-picking principal who has not yet chosen a store. */}
-        {canPickStore && storeId === '' && (
-          <EmptyState message="Inventarizatsiyani ko‘rish uchun do‘konni tanlang." />
-        )}
         {queryPath !== null && isLoading && <LoadingState />}
         {queryPath !== null && !isLoading && error && (
           <ErrorState message={error} onRetry={refetch} />
@@ -224,6 +265,7 @@ export function InventoryPage() {
           </div>
         )}
       </Card>
+      )}
 
       {canEditCoefficients && (
         <CoefficientDialog
@@ -235,6 +277,117 @@ export function InventoryPage() {
         />
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// StoreOverview — the main overview shown to a PM / production_manager before a
+// store is picked: a per-store summary grid (name · oxirgi sana · oxirgi farq
+// or "hali yo'q" · «Ochish»). Each card opens that store's count worksheet.
+// ---------------------------------------------------------------------------
+
+interface StoreOverviewRow {
+  store: { id: number; name: string };
+  /** The store's most-recent count, or `null` when never counted. */
+  last: InventoryCount | null;
+}
+
+function StoreOverview({
+  rows,
+  loading,
+  error,
+  onRetry,
+  onOpen,
+}: {
+  rows: StoreOverviewRow[];
+  loading: boolean;
+  error: string | null;
+  onRetry: () => void;
+  onOpen: (storeId: number) => void;
+}) {
+  if (loading) {
+    return (
+      <Card>
+        <LoadingState />
+      </Card>
+    );
+  }
+  if (error) {
+    return (
+      <Card>
+        <ErrorState message={error} onRetry={onRetry} />
+      </Card>
+    );
+  }
+  if (rows.length === 0) {
+    return (
+      <Card>
+        <EmptyState message="Do‘kon topilmadi." />
+      </Card>
+    );
+  }
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center gap-2">
+        <h2 className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          <ClipboardList className="size-3.5" aria-hidden="true" />
+          Do‘konlar bo‘yicha inventarizatsiya
+        </h2>
+        <Badge variant="secondary" className="tabular-nums">
+          {rows.length}
+        </Badge>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+        {rows.map(({ store, last }) => (
+          <Card
+            key={store.id}
+            className="flex flex-col gap-3 p-4 transition-colors hover:border-border-strong hover:shadow-card-hover"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <p
+                className="flex min-w-0 items-center gap-1.5 text-sm font-medium"
+                title={store.name}
+              >
+                <Store
+                  className="size-3.5 shrink-0 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <span className="truncate">{store.name}</span>
+              </p>
+              {last ? (
+                <Badge variant="outline" className="shrink-0 tabular-nums">
+                  {formatDate(last.count_date)}
+                </Badge>
+              ) : (
+                <Badge variant="secondary" className="shrink-0">
+                  Hali yo‘q
+                </Badge>
+              )}
+            </div>
+
+            {/* Oxirgi farq (qty) — sized/coloured by the shared DiffLine, or a
+                muted hint when this store has never been counted. */}
+            {last ? (
+              <DiffLine diff={last.diff_qty} />
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Hali inventarizatsiya qilinmagan.
+              </p>
+            )}
+
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-auto"
+              onClick={() => onOpen(store.id)}
+            >
+              Ochish
+            </Button>
+          </Card>
+        ))}
+      </div>
+    </section>
   );
 }
 

@@ -253,6 +253,51 @@ export function movementCounterpartyLabel(
 }
 
 /**
+ * "Amal" (chain-level flow direction) of a stock movement, classified by which
+ * endpoint is open:
+ *   - `kirish`     — `from_location_id == null`: stock ENTERED the chain
+ *     (production output, purchase, positive adjust) — green.
+ *   - `chiqish`    — `to_location_id == null`: stock LEFT the chain (sale,
+ *     consumption, negative adjust) — red.
+ *   - `kochirish`  — both endpoints set: a transfer BETWEEN two locations —
+ *     neutral, rendered with an arrow.
+ *
+ * Null-safe: the id fields are optional on the wire (the backend is adding them
+ * in parallel). When BOTH ids are absent/undefined we fall back to the
+ * `from_location_name` / `to_location_name` fields (a `null`/absent name reads
+ * as "no endpoint"), so the column degrades gracefully on older rows. When both
+ * endpoints read as null (shouldn't happen) we treat it as `kochirish` so the
+ * chip never disappears.
+ */
+export type MovementFlowKind = 'kirish' | 'chiqish' | 'kochirish';
+
+export const MOVEMENT_FLOW_LABELS: Record<MovementFlowKind, string> = {
+  kirish: 'Kirish',
+  chiqish: 'Chiqish',
+  kochirish: 'Ko‘chirish',
+};
+
+export function movementFlowKind(m: {
+  from_location_id?: number | null;
+  to_location_id?: number | null;
+  from_location_name?: string | null;
+  to_location_name?: string | null;
+}): MovementFlowKind {
+  // Prefer the explicit ids; fall back to the presence of a counterparty name
+  // when the backend has not (yet) sent the ids on this row.
+  const hasFrom =
+    m.from_location_id != null ||
+    (m.from_location_id === undefined && m.from_location_name != null);
+  const hasTo =
+    m.to_location_id != null ||
+    (m.to_location_id === undefined && m.to_location_name != null);
+  if (hasFrom && hasTo) return 'kochirish';
+  if (!hasFrom && hasTo) return 'kirish';
+  if (hasFrom && !hasTo) return 'chiqish';
+  return 'kochirish';
+}
+
+/**
  * Role picker options for forms. Excludes `ai_assistant` because the AI
  * assistant role is not provisioned by an admin in Faza-1 — its tokens
  * are minted server-side. Order matches the RBAC matrix in §6.
