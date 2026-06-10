@@ -113,6 +113,12 @@ interface ChainLayerLayoutProps {
   description: string;
   /** Action slot — e.g. a "Yangi so'rov" button on the right of the header. */
   headerAction?: ReactNode;
+  /**
+   * Suppress the built-in `PageHeader`. Used when the layout is embedded as a
+   * tab inside a workspace that already renders its own page header (so the
+   * title isn't duplicated) — e.g. RawWarehousePage's "Qoldiq va qabul" tab.
+   */
+  hideHeader?: boolean;
   totals: ChainLayerTotals;
   /** Caller-prepared KPIs (3–4). */
   kpis: ChainKpi[];
@@ -143,6 +149,7 @@ export function ChainLayerLayout({
   title,
   description,
   headerAction,
+  hideHeader = false,
   kpis,
   locations,
   widgets,
@@ -153,7 +160,13 @@ export function ChainLayerLayout({
 
   return (
     <div className="space-y-6">
-      <PageHeader title={title} description={description} actions={headerAction} />
+      {!hideHeader && (
+        <PageHeader
+          title={title}
+          description={description}
+          actions={headerAction}
+        />
+      )}
 
       <KpiStrip layerType={layerType} kpis={kpis} />
 

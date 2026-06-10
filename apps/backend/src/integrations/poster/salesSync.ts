@@ -86,27 +86,36 @@ async function resolveStoreId(posterSpotId: number): Promise<number | null> {
  * `menu.getProducts` id). Resolution order (2026-06-08 root-cause fix):
  *   1. `poster_menu_product_map` — the canonical menu-id -> product alias built
  *      by `syncMenuProducts`. Covers BOTH name-matched prepacks (one prepack may
- *      back many menu ids, e.g. БАУНТИ) AND materialised resale товары.
+ *      back many menu ids, e.g. БАУНТИ) AND materialised resale товары. Also
+ *      carries the menu `weight_flag` (migration 0067) — TRUE means the line's
+ *      `num` is a weight in GRAMS, not a count.
  *   2. `products.poster_product_id` — back-compat fallback for the rare case a
  *      menu id equals a prepack's own product_id (the two id-spaces are disjoint
- *      in the live catalogue, but the fallback costs nothing and is safe).
+ *      in the live catalogue, but the fallback costs nothing and is safe). No
+ *      weight information on this path — treated as a piece item.
  *
- * Returns the local id, or null when the menu product is not yet seeded — the
- * caller skips such a line (a full re-seed then makes it resolvable).
+ * Returns the local id + weighted flag, or null when the menu product is not
+ * yet seeded — the caller skips such a line (a full re-seed makes it
+ * resolvable).
  */
-async function resolveSalesProductId(posterProductId: number): Promise<number | null> {
-  const { rows } = await query<{ id: number }>(
-    `SELECT id FROM (
-        SELECT product_id AS id, 1 AS rank FROM poster_menu_product_map
+async function resolveSalesProduct(
+  posterProductId: number,
+): Promise<{ id: number; weighted: boolean } | null> {
+  const { rows } = await query<{ id: number; weighted: boolean }>(
+    `SELECT id, weighted FROM (
+        SELECT product_id AS id, weight_flag AS weighted, 1 AS rank
+          FROM poster_menu_product_map
           WHERE poster_menu_product_id = $1
         UNION ALL
-        SELECT id, 2 AS rank FROM products WHERE poster_product_id = $1
+        SELECT id, FALSE AS weighted, 2 AS rank FROM products WHERE poster_product_id = $1
      ) candidates
      ORDER BY rank
      LIMIT 1`,
     [posterProductId],
   );
-  return rows[0]?.id ?? null;
+  const row = rows[0];
+  if (row === undefined) return null;
+  return { id: Number(row.id), weighted: row.weighted === true };
 }
 
 /**
@@ -144,18 +153,41 @@ function parseCloseDate(raw: string | undefined): Date | null {
 }
 
 /**
- * Parse a Poster numeric string. Poster formats LARGE quantities / sums with a
- * THOUSANDS SEPARATOR comma — e.g. a weighted line's `num` arrives as
- * "3,000.0000000" and a big `payed_sum` as "1,440,000" (verified live against
- * `adia` 2026-06-08, TX 794490 / 794423). A bare `Number("3,000.00")` is `NaN`,
- * which the qty guard silently dropped — losing the whole line's revenue. We
- * strip commas (and any stray spaces) before parsing so weighted/bulk lines are
- * never lost. Returns `NaN` only for genuinely non-numeric input.
+ * Parse a Poster numeric string into a number, tolerating Poster's locale
+ * quirks. Verified live against `adia` (2026-06-08 / 2026-06-10):
+ *
+ *   - "3,000.0000000" (TX 794490 num) — comma is a THOUSANDS separator when a
+ *     dot decimal point is also present -> 3000;
+ *   - "1,440,000" (payed_sum) — multiple commas are always thousands -> 1440000;
+ *   - "0,770" / "12,5" — a SINGLE comma with NO dot is a DECIMAL separator
+ *     (regional comma-decimal formatting) -> 0.77 / 12.5;
+ *   - "1 000" — stray spaces are thousands grouping -> 1000;
+ *   - "2" — plain integers pass through -> 2.
+ *
+ * A bare `Number("3,000.00")` is `NaN`, which the qty guard silently dropped —
+ * losing the whole line's revenue. Returns `NaN` only for genuinely
+ * non-numeric input. Exported for unit tests.
+ *
+ * NOTE: this is a pure PARSER — it never rescales. The grams->kg conversion
+ * for weighted ("КГ") lines is a separate explicit step in
+ * `ingestTransaction`, keyed on the menu `weight_flag`.
  */
-function parsePosterNumber(value: string | number | undefined | null): number {
+export function parsePosterNumber(value: string | number | undefined | null): number {
   if (value === undefined || value === null) return NaN;
   if (typeof value === 'number') return value;
-  return Number(value.replace(/[,\s]/g, ''));
+  let s = value.replace(/\s+/g, '');
+  const commas = (s.match(/,/g) ?? []).length;
+  if (commas > 0) {
+    if (commas > 1 || s.includes('.')) {
+      // Comma(s) alongside a dot decimal point, or several commas — thousands
+      // grouping ("3,000.0000000", "1,440,000").
+      s = s.replace(/,/g, '');
+    } else {
+      // A single comma and no dot — a decimal separator ("0,770", "12,5").
+      s = s.replace(',', '.');
+    }
+  }
+  return Number(s);
 }
 
 /**
@@ -223,6 +255,20 @@ export async function ingestTransaction(
     if (!Number.isInteger(posterProductId) || posterProductId <= 0) continue;
     if (!Number.isFinite(num) || num <= 0) continue;
 
+    const resolved = await resolveSalesProduct(posterProductId);
+    if (resolved === null) continue; // menu item not yet seeded — skip silently
+    const productId = resolved.id;
+
+    // WEIGHT (root-cause fix 2026-06-10, verified live against `adia`):
+    // for a WEIGHTED ("КГ", menu weight_flag=1) line Poster reports `num` in
+    // GRAMS (TX 794490: num="3,000.0000000" = 3 kg of ПЕЛЬМЕНИ). The old code
+    // stored those grams directly, so `sales.qty` was 1000x too big, the
+    // derived price 1000x too small (per-GRAM), `units_sold` ballooned the KPI
+    // loss to -887M, and the sale stock-decrement drained stores 1000x.
+    // Convert grams -> kg HERE so qty, price, stock decrement, shortfall and
+    // audit all see the true kg quantity. Piece lines pass through unchanged.
+    const qty = resolved.weighted ? num / 1000 : num;
+
     // MONEY (root-cause fix 2026-06-08, verified live against `adia`):
     // Poster reports ALL money in TIYIN (1 so'm = 100 tiyin). The per-LINE
     // total — NOT a per-unit price — lives in `payed_sum` (net, after
@@ -231,7 +277,7 @@ export async function ingestTransaction(
     // WEIGHTED ("КГ") line where `num` is the weight (e.g. 170) blew up
     // `qty * price` ~Nx (a single samsa line read as 3.46M instead of 20.4k).
     //
-    // Fix: derive a TRUE per-unit `price = lineTotalSom / num`. Then every
+    // Fix: derive a TRUE per-unit `price = lineTotalSom / qty`. Then every
     // downstream `sum(qty * price)` query collapses to `sum(payed_sum)`, which
     // reconciles EXACTLY to the Poster revenue-breakdown total. `payed_sum`
     // wins; `product_price` is the gross fallback; 0 only when both are absent.
@@ -239,11 +285,8 @@ export async function ingestTransaction(
       line.payed_sum ?? line.product_price ?? 0,
     );
     const lineTotalSom = Number.isFinite(lineTotalTiyin) ? lineTotalTiyin / 100 : 0;
-    // num is already validated > 0 above, so this division is always finite.
-    const price = lineTotalSom / num;
-
-    const productId = await resolveSalesProductId(posterProductId);
-    if (productId === null) continue; // menu item not yet seeded — skip silently
+    // num is validated > 0 above, so qty > 0 and this division is finite.
+    const price = lineTotalSom / qty;
 
     // 0-based positional id within the check — Poster does not surface a stable
     // line id, so we synthesise one. Combined with (tx_id, product_id) it makes
@@ -259,7 +302,7 @@ export async function ingestTransaction(
            VALUES ($1, $2, $3, $4, $5, $6, $7)
            ON CONFLICT (poster_transaction_id, product_id, poster_line_id) DO NOTHING
            RETURNING id`,
-          [storeId, productId, num, price, closedAt, transactionId, lineId],
+          [storeId, productId, qty, price, closedAt, transactionId, lineId],
         );
         // Only decrement stock when the sale row is brand-new — a replay of
         // the same line must NOT double-decrement (the movements partial
@@ -276,11 +319,11 @@ export async function ingestTransaction(
           [storeId, productId],
         );
         const have = Number(current.rows[0]?.qty ?? 0);
-        const decrement = Math.min(have, num);
+        const decrement = Math.min(have, qty);
         // EPIC 8.3 — fors major: the check rang up MORE than ADIA had on hand.
         // Stock is clamped to 0 (invariant 3 — never negative); we surface a
         // chek-level "noto'g'ri urilgan" alert so a human reconciles it.
-        const shortfall = num > have ? num - have : 0;
+        const shortfall = qty > have ? qty - have : 0;
         // NOTE: the over-sold alert is NO LONGER emitted per line here (it used
         // to send one Telegram per product → flood). We only RECORD the
         // shortfall on the result; the caller aggregates these into ONE
@@ -312,7 +355,7 @@ export async function ingestTransaction(
             poster_transaction_id: transactionId,
             product_id: productId,
             store_id: storeId,
-            qty: num,
+            qty,
             decrement,
           },
         });
@@ -327,7 +370,7 @@ export async function ingestTransaction(
             storeId,
             productId,
             transactionId,
-            sold: num,
+            sold: qty,
             had: result.had ?? 0,
             shortfall: result.shortfall ?? 0,
           });

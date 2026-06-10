@@ -4,6 +4,7 @@ import { Card } from '@/components/ui/card';
 import { ErrorState } from '@/components/PageState';
 import {
   dateRangeToQuery,
+  type DateRangePreset,
   type DateRangeValue,
 } from '@/components/DateRangeFilter';
 import { prefetchApiQuery, useApiQuery } from '@/hooks/useApiQuery';
@@ -52,6 +53,44 @@ import { ExecutiveDashboardSkeleton } from './ExecutiveDashboardSkeleton';
  * Auto-refresh: 30 s while the tab is visible. The page is the only
  * place that knows the polling cadence — every child reads the snapshot.
  */
+
+/**
+ * Finance period word per range preset — prefixes the Foyda hero card and
+ * the Moliya footer labels ("Bugungi foyda", "Oylik tushum", …). Local to
+ * this page: it is threaded down to HeroStrip / ProfitSummary as a prop.
+ */
+const FINANCE_PERIOD_LABEL: Record<DateRangePreset, string> = {
+  today: 'Bugungi',
+  week: 'Haftalik',
+  month: 'Oylik',
+  '6m': '6 oylik',
+  custom: 'Davr',
+};
+
+/**
+ * Serialise the dashboard date-range into the `?from=YYYY-MM-DD&to=YYYY-MM-DD`
+ * (inclusive) query the KPI costing endpoint accepts. Unlike the dashboard
+ * endpoints (which resolve `?range=` presets server-side), `/api/kpi/products`
+ * only takes explicit dates — so presets are resolved here, mirroring the
+ * backend's window semantics (week = last 7 days, month = last 30 days,
+ * 6m = last 6 calendar months, all including today).
+ */
+function financeRangeToQuery(value: DateRangeValue): string {
+  if (value.range === 'custom' && value.from && value.to) {
+    return `from=${value.from}&to=${value.to}`;
+  }
+  const to = new Date();
+  const from = new Date(to);
+  if (value.range === 'week') {
+    from.setDate(from.getDate() - 6);
+  } else if (value.range === 'month') {
+    from.setDate(from.getDate() - 29);
+  } else if (value.range === '6m') {
+    from.setMonth(from.getMonth() - 6);
+  }
+  // 'today' (and a degenerate custom without dates): from === to === today.
+  return `from=${todayIso(from)}&to=${todayIso(to)}`;
+}
 export function ExecutiveDashboardPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -73,15 +112,19 @@ export function ExecutiveDashboardPage() {
     '/api/replenishment?status=NEW',
   );
 
-  // Foyda / margin — `GET /api/kpi/products?month=YYYY-MM` is pm-only, so it
-  // 403s for `ai_assistant`. We still fire it for the PM and degrade
-  // gracefully (em-dash hero card, hidden margin footer) when it errors — the
-  // useApiQuery `error` channel captures the 403 without breaking the page.
-  const currentMonth = useMemo(() => todayIso().slice(0, 7), []);
+  // Foyda / margin — `GET /api/kpi/products?from&to` is pm-only, so it 403s
+  // for `ai_assistant`. We still fire it for the PM and degrade gracefully
+  // (em-dash hero card, hidden margin footer) when it errors — the useApiQuery
+  // `error` channel captures the 403 (and a 4xx while the from/to contract is
+  // still landing on the backend) without breaking the page. The query key
+  // embeds the resolved dates, so flipping the range filter re-fires it.
   const isPm = user?.role === 'pm';
+  const kpiQuery = financeRangeToQuery(range);
   const kpi = useApiQuery<KpiProductsResponse>(
-    isPm ? `/api/kpi/products?month=${currentMonth}` : null,
+    isPm ? `/api/kpi/products?${kpiQuery}` : null,
   );
+  // Period word for the finance labels ("Bugungi foyda", "Oylik tushum", …).
+  const financeLabel = FINANCE_PERIOD_LABEL[range.range];
 
   // Aggregate this month's profit / revenue / margin from the per-product
   // rows. `available` is false when the query errored (403 / network) so the
@@ -114,6 +157,7 @@ export function ExecutiveDashboardPage() {
   const ecosystemRefetch = ecosystem.refetch;
   const purchaseOrdersRefetch = purchaseOrders.refetch;
   const replenishmentsRefetch = replenishments.refetch;
+  const kpiRefetch = kpi.refetch;
   useEffect(() => {
     const REFRESH_MS = 30_000;
     let timer: number | null = null;
@@ -125,6 +169,8 @@ export function ExecutiveDashboardPage() {
           ecosystemRefetch();
           purchaseOrdersRefetch();
           replenishmentsRefetch();
+          // No-op for non-PM roles — the kpi query key is null there.
+          kpiRefetch();
         }
       }, REFRESH_MS);
     };
@@ -149,6 +195,7 @@ export function ExecutiveDashboardPage() {
     ecosystemRefetch,
     purchaseOrdersRefetch,
     replenishmentsRefetch,
+    kpiRefetch,
   ]);
 
   // Warm the range-driven endpoints for the three presets the boshliq
@@ -159,7 +206,8 @@ export function ExecutiveDashboardPage() {
   // `selectPreset` builds them. Prefetches are plain GETs that only fill
   // the cache; `prefetchApiQuery` already swallows errors and no-ops on a
   // fresh/in-flight entry, so warming the currently-active range too is
-  // harmless. Mount-only — the empty dep array is intentional.
+  // harmless. Runs once on mount (and again only if the role resolves to
+  // PM later — re-running is a cheap no-op thanks to the freshness check).
   useEffect(() => {
     const PRESETS: DateRangeValue[] = [
       { range: 'today' },
@@ -174,8 +222,13 @@ export function ExecutiveDashboardPage() {
       // `limit=6`) so the warmed entry is actually a cache hit there.
       prefetchApiQuery(`/api/dashboard/sales-breakdown?${q}&by=product&limit=6`);
       prefetchApiQuery(`/api/dashboard/ecosystem?${q}`);
+      // Finance (Foyda / Moliya) — pm-only endpoint, so don't fire 403s
+      // for other roles. Key matches the live kpi query above exactly.
+      if (isPm) {
+        prefetchApiQuery(`/api/kpi/products?${financeRangeToQuery(preset)}`);
+      }
     }
-  }, []);
+  }, [isPm]);
 
   const today = useMemo(() => todayIso(), []);
 
@@ -212,6 +265,7 @@ export function ExecutiveDashboardPage() {
         ecosystemLoading={ecosystem.isLoading && ecosystem.data === null}
         monthlyProfit={finance.available ? finance.totalProfit : null}
         profitLoading={isPm && kpi.isLoading && kpi.data === null}
+        profitLabel={financeLabel}
       />
 
       {/* 3a. ROW A — MOLIYA (revenue donut + profit/margin footer) on the left,
@@ -229,6 +283,7 @@ export function ExecutiveDashboardPage() {
             totalProfit={finance.totalProfit}
             totalRevenue={finance.totalRevenue}
             margin={finance.margin}
+            periodLabel={financeLabel}
           />
         </div>
         {/* Top-sellers for the selected range. `h-full` so it stretches to the

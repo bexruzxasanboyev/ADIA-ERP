@@ -53,6 +53,125 @@ type MonthWindow = {
 };
 
 /**
+ * The effective reporting window for GET /api/kpi/products. Either a whole
+ * month (`?month=YYYY-MM`, the default) or an arbitrary inclusive day range
+ * (`?from=YYYY-MM-DD&to=YYYY-MM-DD`, which OVERRIDES month when given).
+ *
+ * `salaryFactor` is the share of the MONTHLY salary pool the window carries:
+ * the pool is pro-rated by calendar days — for every month the window touches
+ * it contributes (days of the window inside that month / days in that month).
+ * A whole-month window therefore has factor exactly 1 (back-compat), a
+ * 2026-06-01..2026-06-15 window carries 15/30, and a cross-month
+ * 2026-05-25..2026-06-03 window carries 7/31 + 3/30.
+ */
+type ReportWindow = {
+  readonly label: string; // 'YYYY-MM' — the month echo (unchanged shape)
+  readonly start: string; // inclusive 'YYYY-MM-DD' lower bound
+  readonly endExclusive: string; // exclusive 'YYYY-MM-DD' upper bound
+  readonly from: string; // inclusive ISO start date (echoed)
+  readonly to: string; // inclusive ISO end date (echoed)
+  readonly salaryFactor: number;
+};
+
+const DAY_MS = 86_400_000;
+
+/** Format a UTC date as 'YYYY-MM-DD'. */
+function isoDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Parse a strict 'YYYY-MM-DD' string into a UTC date. Returns null for a
+ * malformed string or an impossible calendar day (e.g. 2026-02-30 — the
+ * Date round-trip check catches silent overflow).
+ */
+function parseIsoDate(raw: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw.trim());
+  if (m === null) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const da = Number(m[3]);
+  const d = new Date(Date.UTC(y, mo - 1, da));
+  if (d.getUTCFullYear() !== y || d.getUTCMonth() !== mo - 1 || d.getUTCDate() !== da) {
+    return null;
+  }
+  return d;
+}
+
+/**
+ * Share of the monthly salary pool carried by the inclusive day window
+ * [from, toInclusive]: Σ over touched months of (window days in the month /
+ * days in that month). Exported for unit tests.
+ */
+export function salaryProRateFactor(from: Date, toInclusive: Date): number {
+  let factor = 0;
+  let monthStart = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), 1));
+  while (monthStart.getTime() <= toInclusive.getTime()) {
+    const nextMonth = new Date(
+      Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 1),
+    );
+    const daysInMonth = Math.round((nextMonth.getTime() - monthStart.getTime()) / DAY_MS);
+    const overlapStart = Math.max(from.getTime(), monthStart.getTime());
+    const monthEndInclusive = nextMonth.getTime() - DAY_MS;
+    const overlapEnd = Math.min(toInclusive.getTime(), monthEndInclusive);
+    const overlapDays = Math.round((overlapEnd - overlapStart) / DAY_MS) + 1;
+    if (overlapDays > 0) factor += overlapDays / daysInMonth;
+    monthStart = nextMonth;
+  }
+  return factor;
+}
+
+/**
+ * Resolve the effective reporting window from the query. `from`/`to`
+ * (inclusive, 'YYYY-MM-DD') override `month` when given — both must then be
+ * present and ordered. Without them the window is the whole resolved month
+ * and behaves exactly as before (salaryFactor 1). Exported for unit tests.
+ */
+export function resolveWindow(queryParams: {
+  month?: unknown;
+  from?: unknown;
+  to?: unknown;
+}): ReportWindow {
+  const month = resolveMonth(queryParams.month);
+  const fromRaw = queryParams.from;
+  const toRaw = queryParams.to;
+  if (fromRaw === undefined && toRaw === undefined) {
+    // Month mode — identical to the historic behavior. `to` echoes the last
+    // day of the month (inclusive), salary pool is carried in full.
+    const nextStart = parseIsoDate(month.nextStart);
+    const toInclusive = new Date((nextStart as Date).getTime() - DAY_MS);
+    return {
+      label: month.label,
+      start: month.start,
+      endExclusive: month.nextStart,
+      from: month.start,
+      to: isoDate(toInclusive),
+      salaryFactor: 1,
+    };
+  }
+  if (typeof fromRaw !== 'string' || typeof toRaw !== 'string') {
+    throw AppError.validation('Queries "from" and "to" must BOTH be given as "YYYY-MM-DD".');
+  }
+  const from = parseIsoDate(fromRaw);
+  const to = parseIsoDate(toRaw);
+  if (from === null || to === null) {
+    throw AppError.validation('Queries "from"/"to" must be real dates in the form "YYYY-MM-DD".');
+  }
+  if (from.getTime() > to.getTime()) {
+    throw AppError.validation('Query "from" must not be after "to".');
+  }
+  const endExclusive = new Date(to.getTime() + DAY_MS);
+  return {
+    label: month.label,
+    start: isoDate(from),
+    endExclusive: isoDate(endExclusive),
+    from: isoDate(from),
+    to: isoDate(to),
+    salaryFactor: salaryProRateFactor(from, to),
+  };
+}
+
+/**
  * Parse a `?month=YYYY-MM` query value into a half-open window. Defaults to the
  * CURRENT month when absent/empty. Rejects anything that is not a real month.
  */
@@ -115,7 +234,11 @@ kpiRouter.get(
   authenticate,
   authorize('pm'),
   asyncHandler(async (req, res) => {
-    const win = resolveMonth(req.query['month']);
+    const win = resolveWindow({
+      month: req.query['month'],
+      from: req.query['from'],
+      to: req.query['to'],
+    });
 
     // --- totals -------------------------------------------------------------
     // Salary total — only ACTIVE employees of a PRODUCTION department (sex) count
@@ -136,10 +259,14 @@ kpiRouter.get(
                                  WHERE ul.user_id = u.id))
           )`,
     );
-    const totalSalary = Number(salaryAgg.rows[0]?.total ?? 0);
+    // Salary pool for the WINDOW — the monthly pool pro-rated by calendar days
+    // (factor 1 for a whole-month window; see `salaryProRateFactor`).
+    const totalSalary = roundMoney(
+      Number(salaryAgg.rows[0]?.total ?? 0) * win.salaryFactor,
+    );
 
-    // Units produced this month — done orders of FINISHED products only.
-    // (done_at within the half-open month window.)
+    // Units produced in the window — done orders of FINISHED products only.
+    // (done_at within the half-open window.)
     const producedAgg = await query<AggRow>(
       `SELECT po.product_id, SUM(po.qty) AS qty
          FROM production_orders po
@@ -148,7 +275,7 @@ kpiRouter.get(
           AND po.done_at >= $1 AND po.done_at < $2
           AND p.type = 'finished'
         GROUP BY po.product_id`,
-      [win.start, win.nextStart],
+      [win.start, win.endExclusive],
     );
     const producedByProduct = new Map<number, number>();
     let totalUnitsProduced = 0;
@@ -161,7 +288,7 @@ kpiRouter.get(
     const salaryPerUnit =
       totalUnitsProduced > 0 ? roundMoney(totalSalary / totalUnitsProduced) : null;
 
-    // Sales this month — units_sold + revenue per product.
+    // Sales in the window — units_sold + revenue per product.
     const salesAgg = await query<RevenueRow>(
       `SELECT product_id,
               SUM(qty)            AS units_sold,
@@ -169,7 +296,7 @@ kpiRouter.get(
          FROM sales
         WHERE sold_at >= $1 AND sold_at < $2
         GROUP BY product_id`,
-      [win.start, win.nextStart],
+      [win.start, win.endExclusive],
     );
     const soldByProduct = new Map<number, { units: number; revenue: number }>();
     for (const r of salesAgg.rows) {
@@ -237,6 +364,10 @@ kpiRouter.get(
 
     res.status(200).json({
       month: win.label,
+      // Echo of the effective inclusive window (equals the whole month when
+      // no ?from/?to was given).
+      from: win.from,
+      to: win.to,
       totals: {
         salary: roundMoney(totalSalary),
         units_produced: totalUnitsProduced,

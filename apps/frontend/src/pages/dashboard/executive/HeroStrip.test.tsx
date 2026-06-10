@@ -4,7 +4,8 @@
  * The hero strip exposes four KPI cards in a fixed order:
  *   1. Bugungi tushum     — Poster `sales_today_sum`, compact currency
  *   2. Sotuvlar soni      — Poster `sales_today_count`
- *   3. Oylik foyda        — this month's profit (`monthlyProfit` prop)
+ *   3. Foyda              — selected range's profit (`monthlyProfit` +
+ *                           `profitLabel` props; "Oylik foyda" by default)
  *   4. Kritik pozitsiya   — `kpis.below_min_count` (danger tone)
  */
 import { describe, expect, it, vi } from 'vitest';
@@ -74,6 +75,53 @@ describe('HeroStrip', () => {
     );
     const value = screen.getByTestId('hero-strip-profit-value');
     expect(value.textContent?.replace(/\s+/g, '')).toBe('1250000');
+  });
+
+  it('titles the profit card with the period word from profitLabel', () => {
+    render(
+      <HeroStrip
+        overview={OVERVIEW}
+        ecosystem={ECOSYSTEM}
+        monthlyProfit={1_250_000}
+        profitLabel="Bugungi"
+      />,
+    );
+    expect(screen.getByText('Bugungi foyda')).toBeInTheDocument();
+  });
+
+  it('defaults the profit card title to "Oylik foyda" without profitLabel', () => {
+    render(
+      <HeroStrip
+        overview={OVERVIEW}
+        ecosystem={ECOSYSTEM}
+        monthlyProfit={1_250_000}
+      />,
+    );
+    expect(screen.getByText('Oylik foyda')).toBeInTheDocument();
+  });
+
+  it('tones the profit card success when positive and danger when negative', () => {
+    const { rerender } = render(
+      <HeroStrip
+        overview={OVERVIEW}
+        ecosystem={ECOSYSTEM}
+        monthlyProfit={1_250_000}
+      />,
+    );
+    expect(
+      screen.getByTestId('hero-strip-profit').getAttribute('data-tone'),
+    ).toBe('success');
+
+    rerender(
+      <HeroStrip
+        overview={OVERVIEW}
+        ecosystem={ECOSYSTEM}
+        monthlyProfit={-500_000}
+      />,
+    );
+    expect(
+      screen.getByTestId('hero-strip-profit').getAttribute('data-tone'),
+    ).toBe('danger');
   });
 
   it('shows an em-dash for profit when monthlyProfit is null/absent', () => {

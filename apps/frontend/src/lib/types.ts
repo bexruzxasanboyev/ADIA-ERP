@@ -2100,9 +2100,13 @@ export interface KpiProductRow {
   kpi_target: number | null;
 }
 
-/** `GET /api/kpi/products?month=YYYY-MM` envelope. */
+/** `GET /api/kpi/products?month=YYYY-MM` envelope (optional `?from`/`?to` day range). */
 export interface KpiProductsResponse {
   month: string;
+  /** Inclusive effective window start (YYYY-MM-DD) — echoes ?from or the month start. */
+  from?: string;
+  /** Inclusive effective window end (YYYY-MM-DD) — echoes ?to or the month end. */
+  to?: string;
   totals: KpiTotals;
   products: KpiProductRow[];
 }

@@ -186,6 +186,86 @@ describe('ingestTransaction', () => {
     expect(Number(rows[0]?.qty) * Number(rows[0]?.price)).toBeCloseTo(345_000, 2);
   });
 
+  it('weighted (weight_flag) menu line: num is GRAMS — stored qty is kg, price per kg', async () => {
+    // ROOT-CAUSE (2026-06-10, verified live against `adia`): for a menu product
+    // with weight_flag=1 Poster reports `num` in GRAMS. The old sync stored the
+    // grams directly: НАРЫН С ГОВЯДИНОЙ num="770.0000000", payed_sum=10_010_000
+    // tiyin landed as qty=770 (units!) @ price=130 — 1000x-inflating units_sold
+    // and the sale stock decrement. With the menu map's weight_flag the sync
+    // must store qty=0.77 kg @ 130_000 so'm/kg (line total unchanged).
+    const { rows: s } = await ctx.db.query<{ id: number }>(
+      `INSERT INTO locations (name, type, poster_spot_id) VALUES ('S','store',2) RETURNING id`,
+    );
+    const { rows: p } = await ctx.db.query<{ id: number }>(
+      `INSERT INTO products (name, type, unit, poster_product_id)
+       VALUES ('Naryn','finished','kg',440) RETURNING id`,
+    );
+    const storeId = s[0]!.id;
+    const productId = p[0]!.id;
+    await ctx.db.query(
+      `INSERT INTO poster_menu_product_map (poster_menu_product_id, product_id, weight_flag)
+       VALUES (1047, $1, TRUE)`,
+      [productId],
+    );
+    await ctx.db.query(`INSERT INTO stock (location_id, product_id, qty) VALUES ($1,$2,5)`, [
+      storeId,
+      productId,
+    ]);
+    const r = await ingestTransaction({
+      transaction_id: '795001',
+      spot_id: '2',
+      date_close: '1779521920864',
+      products: [
+        { product_id: '1047', num: '770.0000000', product_price: '10010000', payed_sum: '10010000' },
+      ],
+    });
+    expect(r.linesInserted).toBe(1);
+    const { rows } = await ctx.db.query<{ qty: string; price: string }>(
+      `SELECT qty, price FROM sales`,
+    );
+    expect(Number(rows[0]?.qty)).toBeCloseTo(0.77, 4); // kg, NOT grams
+    expect(Number(rows[0]?.price)).toBeCloseTo(130_000, 2); // so'm per kg
+    // Line revenue is EXACTLY the Poster payed_sum (100_100 so'm).
+    expect(Number(rows[0]?.qty) * Number(rows[0]?.price)).toBeCloseTo(100_100, 2);
+    // Stock decremented by the kg quantity (0.77), never by the gram value.
+    const { rows: st } = await ctx.db.query<{ qty: string }>(
+      `SELECT qty FROM stock WHERE location_id=$1 AND product_id=$2`,
+      [storeId, productId],
+    );
+    expect(Number(st[0]?.qty)).toBeCloseTo(4.23, 4);
+  });
+
+  it('weighted line with a comma-grouped grams num ("3,000.0000000" -> 3 kg)', async () => {
+    // Live TX 794490: ПЕЛЬМЕНИ weight_flag=1, num="3,000.0000000" (3000 g),
+    // payed_sum=34_500_000 tiyin (345_000 so'm) -> 3 kg @ 115_000 so'm/kg.
+    const { rows: s } = await ctx.db.query<{ id: number }>(
+      `INSERT INTO locations (name, type, poster_spot_id) VALUES ('S','store',2) RETURNING id`,
+    );
+    const { rows: p } = await ctx.db.query<{ id: number }>(
+      `INSERT INTO products (name, type, unit, poster_product_id)
+       VALUES ('Pelmeni','finished','kg',440) RETURNING id`,
+    );
+    await ctx.db.query(
+      `INSERT INTO poster_menu_product_map (poster_menu_product_id, product_id, weight_flag)
+       VALUES (358, $1, TRUE)`,
+      [p[0]!.id],
+    );
+    const r = await ingestTransaction({
+      transaction_id: '794490',
+      spot_id: '2',
+      date_close: '1779521920864',
+      products: [
+        { product_id: '358', num: '3,000.0000000', product_price: '34500000', payed_sum: '34500000' },
+      ],
+    });
+    expect(r.linesInserted).toBe(1);
+    const { rows } = await ctx.db.query<{ qty: string; price: string }>(
+      `SELECT qty, price FROM sales`,
+    );
+    expect(Number(rows[0]?.qty)).toBeCloseTo(3, 4);
+    expect(Number(rows[0]?.price)).toBeCloseTo(115_000, 2);
+  });
+
   it('prefers payed_sum (net) over product_price (gross) as the line total', async () => {
     // A discounted line: gross product_price = 1000 tiyin but payed_sum = 800
     // tiyin (after a discount). The authoritative money is the NET payed_sum,

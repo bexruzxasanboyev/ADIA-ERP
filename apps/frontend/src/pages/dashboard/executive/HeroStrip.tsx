@@ -65,12 +65,18 @@ export interface HeroStripProps {
    */
   ecosystemLoading?: boolean;
   /**
-   * This month's profit (so'm) from `GET /api/kpi/products` — drives the
-   * "Foyda" hero card. `null` means the figure is unavailable (the endpoint
-   * is pm-only, so it 403s for `ai_assistant`, or it's still loading): the
-   * card then shows an em-dash instead of a misleading "0".
+   * Profit (so'm) for the selected date range from `GET /api/kpi/products` —
+   * drives the "Foyda" hero card. `null` means the figure is unavailable (the
+   * endpoint is pm-only, so it 403s for `ai_assistant`, or it's still
+   * loading): the card then shows an em-dash instead of a misleading "0".
    */
   monthlyProfit?: number | null;
+  /**
+   * Period word prefixing the Foyda card title — "Bugungi", "Haftalik",
+   * "Oylik", "6 oylik" or "Davr", following the active date-range filter.
+   * Defaults to "Oylik" for callers that don't thread the range.
+   */
+  profitLabel?: string;
   /**
    * When true the Foyda card shows a skeleton (the KPI request is still in
    * flight). Independent of `ecosystemLoading` since it has its own query.
@@ -97,7 +103,7 @@ function rangeCopy(preset: DateRangePreset): RangeCopy {
   };
 }
 
-type Tone = 'default' | 'warning' | 'danger';
+type Tone = 'default' | 'success' | 'warning' | 'danger';
 
 interface HeroKpi {
   testId: string;
@@ -131,12 +137,14 @@ interface HeroKpi {
 
 const VALUE_TONE: Record<Tone, string> = {
   default: 'text-foreground',
+  success: 'text-success',
   warning: 'text-warning',
   danger: 'text-destructive',
 };
 
 const ICON_TONE: Record<Tone, string> = {
   default: 'text-muted-foreground',
+  success: 'text-success',
   warning: 'text-warning',
   danger: 'text-destructive',
 };
@@ -146,6 +154,7 @@ const ICON_TONE: Record<Tone, string> = {
 // background swap. Tone-matched so the danger card glows red, etc.
 const HOVER_GRADIENT_TONE: Record<Tone, string> = {
   default: 'from-primary/20 via-primary/[0.06] to-transparent',
+  success: 'from-success/20 via-success/[0.06] to-transparent',
   warning: 'from-warning/20 via-warning/[0.06] to-transparent',
   danger: 'from-destructive/20 via-destructive/[0.06] to-transparent',
 };
@@ -170,6 +179,7 @@ export function HeroStrip({
   onNavigate,
   ecosystemLoading,
   monthlyProfit,
+  profitLabel,
   profitLoading,
   className,
 }: HeroStripProps) {
@@ -180,12 +190,20 @@ export function HeroStrip({
   const salesToday = ecosystem?.poster_status.sales_today_sum ?? 0;
   const receiptsToday = ecosystem?.poster_status.sales_today_count ?? 0;
   const belowMin = overview.kpis.below_min_count;
-  // Foyda — this month's profit. `null` (endpoint 403 for ai_assistant, or
-  // still loading) renders an em-dash, never a misleading "0".
+  // Foyda — profit for the selected range. `null` (endpoint 403 for
+  // ai_assistant, or still loading) renders an em-dash, never a misleading
+  // "0". Positive profit reads emerald, negative red, zero neutral.
   const profitKnown = monthlyProfit !== null && monthlyProfit !== undefined;
   const profitValue = profitKnown
     ? formatFullNumber(monthlyProfit as number)
     : '—';
+  const profitTone: Tone = !profitKnown
+    ? 'default'
+    : (monthlyProfit as number) > 0
+      ? 'success'
+      : (monthlyProfit as number) < 0
+        ? 'danger'
+        : 'default';
 
   // Prior-day comparison comes from `ecosystem.sales_chart.days`, which
   // tracks total sold qty per day. Sales-sum (revenue) uses qty as a
@@ -229,10 +247,10 @@ export function HeroStrip({
     },
     {
       testId: 'hero-strip-profit',
-      label: 'Oylik foyda',
+      label: `${profitLabel ?? 'Oylik'} foyda`,
       value: profitValue,
       caption: profitKnown ? "so'm" : "ma'lumot yo'q",
-      tone: 'default',
+      tone: profitTone,
       Icon: Coins,
       direction: 'up-good',
       deltaPct: null,

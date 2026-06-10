@@ -123,6 +123,12 @@ export type PosterMenuProductRow = {
   photo?: string;
   /** Original (full-size) menu photo (CDN-relative). */
   photo_origin?: string;
+  /**
+   * "1" = weighted ("КГ") item — its transaction-line `num` arrives in GRAMS;
+   * "0" = piece item (`num` is a count). Verified live 2026-06-10: present on
+   * all 293 `menu.getProducts` rows (64 weighted). See salesSync grams->kg.
+   */
+  weight_flag?: string | number;
 };
 
 /**
@@ -204,9 +210,12 @@ export type PosterTransactionLine = {
   modification_id?: string;
   /**
    * Quantity sold. For PIECE products this is an integer count; for WEIGHTED
-   * ("КГ") products Poster reports the weight in a sub-unit (e.g. 100g steps),
-   * so `num` is NOT a count and MUST NOT be multiplied by `product_price` —
-   * doing so over-states revenue ~Nx. See `salesSync.ingestTransaction`.
+   * ("КГ" / menu `weight_flag=1`) products Poster reports the weight in GRAMS
+   * (verified live 2026-06-10: TX 794490 num="3,000.0000000" = 3 kg of
+   * ПЕЛЬМЕНИ), formatted with a comma THOUSANDS separator and 7 decimals.
+   * `num` is NOT a count for weighted lines and MUST be divided by 1000 to get
+   * kg — see `salesSync.ingestTransaction` (grams->kg conversion keyed on the
+   * menu weight_flag persisted in `poster_menu_product_map`).
    */
   num: string;
   /**

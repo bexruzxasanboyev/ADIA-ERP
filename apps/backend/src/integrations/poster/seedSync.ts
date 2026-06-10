@@ -1165,7 +1165,7 @@ type MenuMapResult = {
  * disjoint id-spaces (verified live 2026-06-08).
  */
 async function buildMenuProductMap(
-  list: readonly { product_id: string; product_name?: string }[],
+  list: readonly { product_id: string; product_name?: string; weight_flag?: string | number }[],
   prepacks: readonly { id: number; name: string }[],
 ): Promise<MenuMapResult> {
   // Normalised-name -> prepack id (later rows win on the rare name collision).
@@ -1184,10 +1184,13 @@ async function buildMenuProductMap(
     if (!Number.isInteger(menuId) || menuId <= 0) continue;
     const name = String(m.product_name ?? '').trim();
     const key = normalizeMatchName(name);
+    // Weighted ("КГ") menu item — its sale-line `num` arrives in GRAMS; the
+    // sales sync converts grams -> kg via this persisted flag (migration 0067).
+    const weighted = Number(m.weight_flag ?? 0) === 1;
 
     const prepackId = key !== '' ? prepackByName.get(key) : undefined;
     if (prepackId !== undefined) {
-      await upsertMenuProductMap(menuId, prepackId);
+      await upsertMenuProductMap(menuId, prepackId, weighted);
       mappedToPrepack += 1;
       continue;
     }
@@ -1200,7 +1203,7 @@ async function buildMenuProductMap(
       unresolved += 1;
       continue;
     }
-    await upsertMenuProductMap(menuId, resaleId);
+    await upsertMenuProductMap(menuId, resaleId, weighted);
     resaleProducts += 1;
   }
 
@@ -1210,14 +1213,21 @@ async function buildMenuProductMap(
 /**
  * Insert/update one menu-id -> ADIA-product mapping. Keyed on the menu id (PK):
  * a re-run re-points it only when the target product changed (idempotent).
+ * `weighted` mirrors the menu row's `weight_flag` (grams->kg in the sales sync).
  */
-async function upsertMenuProductMap(menuProductId: number, productId: number): Promise<void> {
+async function upsertMenuProductMap(
+  menuProductId: number,
+  productId: number,
+  weighted: boolean,
+): Promise<void> {
   await query(
-    `INSERT INTO poster_menu_product_map (poster_menu_product_id, product_id)
-     VALUES ($1, $2)
+    `INSERT INTO poster_menu_product_map (poster_menu_product_id, product_id, weight_flag)
+     VALUES ($1, $2, $3)
      ON CONFLICT (poster_menu_product_id)
-       DO UPDATE SET product_id = EXCLUDED.product_id, updated_at = now()`,
-    [menuProductId, productId],
+       DO UPDATE SET product_id = EXCLUDED.product_id,
+                     weight_flag = EXCLUDED.weight_flag,
+                     updated_at = now()`,
+    [menuProductId, productId, weighted],
   );
 }
 

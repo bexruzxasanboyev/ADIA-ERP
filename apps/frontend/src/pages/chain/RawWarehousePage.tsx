@@ -12,6 +12,7 @@ import {
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Tabs } from '@/components/ui/tabs';
 import {
   Table,
   TableBody,
@@ -36,6 +37,7 @@ import type {
   ChainKpi,
 } from './ChainLayerLayout';
 import { ChainLayerLayout } from './ChainLayerLayout';
+import { RawWarehouseDashboardTab } from './RawWarehouseDashboardTab';
 import type {
   ChainLayerOverview,
   PurchaseOrder,
@@ -43,20 +45,63 @@ import type {
 } from '@/lib/types';
 
 /**
- * F4.6 — `/raw-warehouse` chain-layer screen.
+ * `/raw-warehouse` — Xom-ashyo ombori ish joyi.
  *
  * RBAC: `pm`, `raw_warehouse_manager` (route-guarded by `AppRouter`).
  *
- * Composes:
- *   - the shared `ChainLayerLayout` (header + 4-card KPI strip +
- *     locations grid + recent movements);
- *   - two layer-specific widgets:
- *       · "Sotib olish — qabul kutilmoqda" — approved purchase orders
- *         waiting for receipt; one-click receive (`POST /:id/receive`);
- *       · "Yetishmovchilik xulosa" — top 10 raw items where qty ≤ min;
- *   - a stock-rows table filtered to raw warehouse locations.
+ * A tabbed workspace mirroring the central / production workspaces (in-page
+ * `Tabs` + `useState`, NOT sub-routes), with a single workspace `PageHeader`:
+ *   1. Dashboard         — a clean overview (KPI strip + stock-status bar
+ *                          chart + kirim/chiqim area chart + below-min list),
+ *                          mirroring CentralDashboardTab. See
+ *                          RawWarehouseDashboardTab.
+ *   2. Qoldiq va qabul   — the existing chain-layer screen (the shared
+ *                          `ChainLayerLayout`: KPI strip + locations grid +
+ *                          recent movements, plus the incoming-purchases /
+ *                          shortages / stock-table widgets). Behaviour
+ *                          unchanged; the inner header is suppressed since the
+ *                          workspace already renders the page header.
  */
+
+type PageTabKey = 'dashboard' | 'stock';
+
+const PAGE_TABS: { value: PageTabKey; label: string }[] = [
+  { value: 'dashboard', label: 'Dashboard' },
+  { value: 'stock', label: 'Qoldiq va qabul' },
+];
+
 export function RawWarehousePage() {
+  const [pageTab, setPageTab] = useState<PageTabKey>('dashboard');
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="Xom-ashyo ombori"
+        description="Xom-ashyo qoldig‘i, qabul kutilayotgan sotib olish va min’dan past pozitsiyalar."
+      />
+
+      <Tabs
+        value={pageTab}
+        onValueChange={setPageTab}
+        options={PAGE_TABS}
+        ariaLabel="Bo‘lim"
+      />
+
+      {/* TAB: Dashboard — KPI strip + status bar + kirim/chiqim + below-min. */}
+      {pageTab === 'dashboard' && <RawWarehouseDashboardTab />}
+
+      {/* TAB: Qoldiq va qabul — the existing chain-layer screen, verbatim. */}
+      {pageTab === 'stock' && <RawStockTab />}
+    </div>
+  );
+}
+
+/**
+ * "Qoldiq va qabul" tab — the original `/raw-warehouse` chain-layer screen,
+ * preserved verbatim. Composes the shared `ChainLayerLayout` (header
+ * suppressed) with the incoming-purchases / shortages / stock-table widgets.
+ */
+function RawStockTab() {
   const overview = useApiQuery<ChainLayerOverview>(
     '/api/dashboard/chain-layer/raw_warehouse',
   );
@@ -68,27 +113,11 @@ export function RawWarehousePage() {
   );
 
   if (overview.isLoading && overview.data === null) {
-    return (
-      <div className="space-y-6">
-        <PageHeader
-          title="Xom-ashyo ombori"
-          description="Xom-ashyo qoldig‘i, qabul kutilayotgan sotib olish va min’dan past pozitsiyalar."
-        />
-        <LoadingState />
-      </div>
-    );
+    return <LoadingState />;
   }
 
   if (overview.error && overview.data === null) {
-    return (
-      <div className="space-y-6">
-        <PageHeader
-          title="Xom-ashyo ombori"
-          description="Xom-ashyo qoldig‘i, qabul kutilayotgan sotib olish va min’dan past pozitsiyalar."
-        />
-        <ErrorState message={overview.error} onRetry={overview.refetch} />
-      </div>
-    );
+    return <ErrorState message={overview.error} onRetry={overview.refetch} />;
   }
 
   if (overview.data === null) return null;
@@ -134,39 +163,38 @@ export function RawWarehousePage() {
   ];
 
   return (
-    <>
-      <ChainLayerLayout
-        layerType="raw_warehouse"
-        title="Xom-ashyo ombori"
-        description="Xom-ashyo qoldig‘i, qabul kutilayotgan sotib olish va min’dan past pozitsiyalar."
-        totals={totals}
-        kpis={kpis}
-        locations={locations}
-        recentMovements={recent_movements}
-        widgets={
-          <div className="space-y-6">
-            <IncomingPurchasesPanel
-              rows={incomingPurchases.data ?? []}
-              isLoading={incomingPurchases.isLoading}
-              error={incomingPurchases.error}
-              onRetry={incomingPurchases.refetch}
-              onReceived={() => {
-                overview.refetch();
-                stock.refetch();
-                incomingPurchases.refetch();
-              }}
-            />
-            <ShortagesPanel rows={belowMinRows} />
-            <StockTablePanel
-              rows={rows}
-              isLoading={stock.isLoading}
-              error={stock.error}
-              onRetry={stock.refetch}
-            />
-          </div>
-        }
-      />
-    </>
+    <ChainLayerLayout
+      layerType="raw_warehouse"
+      title="Xom-ashyo ombori"
+      description="Xom-ashyo qoldig‘i, qabul kutilayotgan sotib olish va min’dan past pozitsiyalar."
+      hideHeader
+      totals={totals}
+      kpis={kpis}
+      locations={locations}
+      recentMovements={recent_movements}
+      widgets={
+        <div className="space-y-6">
+          <IncomingPurchasesPanel
+            rows={incomingPurchases.data ?? []}
+            isLoading={incomingPurchases.isLoading}
+            error={incomingPurchases.error}
+            onRetry={incomingPurchases.refetch}
+            onReceived={() => {
+              overview.refetch();
+              stock.refetch();
+              incomingPurchases.refetch();
+            }}
+          />
+          <ShortagesPanel rows={belowMinRows} />
+          <StockTablePanel
+            rows={rows}
+            isLoading={stock.isLoading}
+            error={stock.error}
+            onRetry={stock.refetch}
+          />
+        </div>
+      }
+    />
   );
 }
 

@@ -4,8 +4,8 @@ import { cn } from '@/lib/utils';
 
 /**
  * Profit / margin summary footer for the MOLIYA row (left column, under the
- * revenue donut). Surfaces this month's profit and margin computed from
- * `GET /api/kpi/products`:
+ * revenue donut). Surfaces the selected period's profit and margin computed
+ * from `GET /api/kpi/products?from&to`:
  *
  *   margin = totalRevenue > 0 ? totalProfit / totalRevenue : null
  *
@@ -20,6 +20,12 @@ export interface ProfitSummaryProps {
   totalRevenue: number;
   /** `totalProfit / totalRevenue`, or null when revenue is 0. */
   margin: number | null;
+  /**
+   * Period word prefixing the tushum/foyda labels — "Bugungi", "Haftalik",
+   * "Oylik", "6 oylik" or "Davr", following the dashboard's date-range
+   * filter. Defaults to "Oylik" for callers that don't thread the range.
+   */
+  periodLabel?: string;
   className?: string;
 }
 
@@ -34,6 +40,7 @@ export function ProfitSummary({
   totalProfit,
   totalRevenue,
   margin,
+  periodLabel = 'Oylik',
   className,
 }: ProfitSummaryProps) {
   if (!available) return null;
@@ -56,15 +63,22 @@ export function ProfitSummary({
       )}
     >
       <Metric
-        label="Oylik tushum"
+        label={`${periodLabel} tushum`}
         value={formatPlainNumber(totalRevenue)}
         unit="so'm"
       />
+      {/* Positive profit reads emerald, negative red, zero neutral. */}
       <Metric
-        label="Oylik foyda"
+        label={`${periodLabel} foyda`}
         value={formatPlainNumber(totalProfit)}
         unit="so'm"
-        valueClass={totalProfit >= 0 ? 'text-foreground' : 'text-destructive'}
+        valueClass={
+          totalProfit > 0
+            ? 'text-success'
+            : totalProfit < 0
+              ? 'text-destructive'
+              : 'text-foreground'
+        }
       />
       <Metric
         label="Marja"
