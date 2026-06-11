@@ -171,8 +171,11 @@ stockRouter.get(
 stockRouter.patch(
   '/minmax',
   authenticate,
-  authorize(
-    'pm',
+  // Manager (pm) is OPERATIONAL view-only (owner 2026-06-06): min/max is an
+  // operational setting owned by each location's own manager, not the pm. The
+  // pm oversees the chain read-only here; admin config (users, locations,
+  // prices) stays with the pm elsewhere.
+  authorizeWrite(
     'raw_warehouse_manager',
     'production_manager',
     'supply_manager',
@@ -360,6 +363,8 @@ type MovementRow = {
   product_unit: string;
   from_location_name: string | null;
   to_location_name: string | null;
+  replenishment_id: number | null;
+  brak_qty: number | null;
 };
 
 // GET /api/stock/movements?location_id=&product_id=&limit=&offset=
@@ -434,11 +439,13 @@ stockRouter.get(
       `SELECT m.id, m.product_id, m.from_location_id, m.to_location_id, m.qty,
               m.reason, m.note, m.created_by, m.created_at,
               p.name AS product_name, p.unit AS product_unit,
-              fl.name AS from_location_name, tl.name AS to_location_name
+              fl.name AS from_location_name, tl.name AS to_location_name,
+              m.replenishment_id, r.brak_qty AS brak_qty
        FROM stock_movements m
        JOIN products p ON p.id = m.product_id
        LEFT JOIN locations fl ON fl.id = m.from_location_id
        LEFT JOIN locations tl ON tl.id = m.to_location_id
+       LEFT JOIN replenishment_requests r ON r.id = m.replenishment_id
        ${where}
        ORDER BY m.created_at DESC, m.id DESC
        LIMIT $${limitIdx} OFFSET $${offsetIdx}`,

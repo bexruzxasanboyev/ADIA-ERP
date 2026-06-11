@@ -119,21 +119,27 @@ function locationIdSetForType(
   scope: Exclude<DetailScope, { kind: 'empty' }>,
   locationType: string | readonly string[],
   params: SqlParam[],
+  extraIdFilter?: readonly number[] | null,
 ): string {
   const types = Array.isArray(locationType) ? [...locationType] : [locationType as string];
   params.push(types);
   const typesIdx = params.length;
+  const clauses = [
+    `type::text = ANY($${typesIdx}::text[])`,
+    `is_active = TRUE`,
+  ];
   if (scope.kind === 'locations') {
     params.push(scope.locationIds);
-    const locsIdx = params.length;
-    return `(SELECT id FROM locations
-              WHERE type::text = ANY($${typesIdx}::text[])
-                AND is_active = TRUE
-                AND id = ANY($${locsIdx}::bigint[]))`;
+    clauses.push(`id = ANY($${params.length}::bigint[])`);
   }
-  return `(SELECT id FROM locations
-            WHERE type::text = ANY($${typesIdx}::text[])
-              AND is_active = TRUE)`;
+  // Optional explicit id filter (e.g. `?store_ids=`). ANDed on TOP of the
+  // scope/type clauses so it can only NARROW the set — never widen it past
+  // the principal's RBAC scope. Parameterized; ids are never interpolated.
+  if (extraIdFilter && extraIdFilter.length > 0) {
+    params.push([...extraIdFilter]);
+    clauses.push(`id = ANY($${params.length}::bigint[])`);
+  }
+  return `(SELECT id FROM locations WHERE ${clauses.join(' AND ')})`;
 }
 
 /**
@@ -146,6 +152,26 @@ const SUPPLY_LAYER_TYPES = ['supply', 'sex_storage'] as const;
 /** Format a UTC `Date` (or DATE column from pg) as `YYYY-MM-DD`. */
 function toIsoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Parse a `?store_ids=` CSV of positive integer location ids. Returns `null`
+ * when the param is absent/blank (caller treats null as "no extra filter" —
+ * i.e. all of the principal's stores). Returns a deduped, validated list
+ * otherwise. Non-integer / non-positive tokens are dropped silently; an empty
+ * result (all tokens invalid) is treated as `null` so a malformed param never
+ * silently zeroes the response — RBAC scope still applies regardless.
+ */
+function parseStoreIdsFilter(raw: unknown): number[] | null {
+  if (typeof raw !== 'string') return null;
+  const ids = new Set<number>();
+  for (const tok of raw.split(',')) {
+    const t = tok.trim();
+    if (t === '') continue;
+    const n = Number(t);
+    if (Number.isInteger(n) && n > 0) ids.add(n);
+  }
+  return ids.size > 0 ? [...ids] : null;
 }
 
 /**
@@ -243,7 +269,7 @@ async function fetchRawKpis(
   }>(
     `SELECT
        count(DISTINCT s.product_id) FILTER (WHERE p.type = 'raw') AS raw_product_types,
-       count(*) FILTER (WHERE s.qty <= s.min_level AND s.min_level > 0) AS below_min_count
+       count(*) FILTER (WHERE s.qty <= s.min_level AND s.min_level > 0 AND s.max_level > 0) AS below_min_count
      FROM stock s
      JOIN products p ON p.id = s.product_id
      WHERE s.location_id IN ${rawLocs}`,
@@ -315,6 +341,7 @@ async function fetchRawBelowMinItems(
       WHERE s.location_id IN ${rawLocs}
         AND s.qty <= s.min_level
         AND s.min_level > 0
+        AND s.max_level > 0
       ORDER BY (s.min_level - s.qty) DESC, s.product_id
       LIMIT $${limitIdx}`,
     params,
@@ -1048,7 +1075,7 @@ async function fetchCentralKpis(
     `SELECT
        (SELECT count(*) FROM locations WHERE id IN ${centralLocs})            AS block_count,
        count(DISTINCT s.product_id)                                           AS total_sku,
-       count(*) FILTER (WHERE s.qty <= s.min_level AND s.min_level > 0)       AS below_min_count
+       count(*) FILTER (WHERE s.qty <= s.min_level AND s.min_level > 0 AND s.max_level > 0) AS below_min_count
      FROM stock s
      WHERE s.location_id IN ${centralLocs}`,
     params,
@@ -1111,7 +1138,7 @@ async function fetchCentralBlocks(
        FROM locations l
        LEFT JOIN LATERAL (
          SELECT count(DISTINCT product_id) AS product_count,
-                count(*) FILTER (WHERE qty <= min_level AND min_level > 0) AS below_min_count,
+                count(*) FILTER (WHERE qty <= min_level AND min_level > 0 AND max_level > 0) AS below_min_count,
                 coalesce(sum(qty), 0) AS total_qty
            FROM stock s
           WHERE s.location_id = l.id
@@ -1233,7 +1260,31 @@ type DashboardStoresDetail = {
   }>;
   hourly_heatmap: Array<{ day_offset: number; hour: number; qty: number }>;
   daily_sales: Array<{ date: string; qty: number; revenue: number }>;
+  /**
+   * Store-scoped sales series for the analytics chart. `granularity` is
+   * `'hour'` for `range=today` (one point per business-day hour, 00..now) and
+   * `'day'` otherwise (one point per calendar day in the window).
+   *
+   * The shape mirrors the ecosystem `sales_chart` series EXACTLY so the
+   * frontend `SalesChart` can join each point to its `sales-breakdown` bucket
+   * (by `hour` when hourly, by `date` when daily):
+   *   - hourly: `date` is today's local ISO date (`YYYY-MM-DD`, identical for
+   *     all points) and `hour` is the local hour `0..23`. The chart labels the
+   *     point `HH:00` and the tooltip matches the breakdown's `h:<hour>` key.
+   *   - daily:  `date` is the bucket's `YYYY-MM-DD` calendar date; `hour` is
+   *     absent. The tooltip matches the breakdown's `d:<date>` key.
+   * Empty buckets are zero-filled so the x-axis stays continuous. `qty` =
+   * sum(qty), `amount` = sum(qty*price). Buckets are in BUSINESS_TZ
+   * (Asia/Tashkent).
+   */
+  series: {
+    granularity: 'hour' | 'day';
+    days: Array<{ date: string; hour?: number; qty: number; amount: number }>;
+  };
 };
+
+/** Business timezone for sales bucketing — mirrors dashboard.ts. */
+const STORES_BUSINESS_TZ = 'Asia/Tashkent';
 
 dashboardDetailRouter.get(
   '/stores',
@@ -1244,17 +1295,24 @@ dashboardDetailRouter.get(
     assertLayerAccess(principal, 'stores');
     const scope = resolveDetailScope(principal);
     const range = parseDateRange(req.query);
+    // Optional `?store_ids=` CSV — RESTRICT every aggregate to the
+    // intersection of these ids with the principal's allowed stores. The
+    // intersection is enforced inside `locationIdSetForType` (ANDed on top of
+    // the RBAC scope clause), so a caller can never read a store outside their
+    // scope. `null` = no filter (all of the principal's stores).
+    const storeIdFilter = parseStoreIdsFilter(req.query.store_ids);
     if (scope.kind === 'empty') {
       res.status(200).json(emptyStoresDetail());
       return;
     }
 
-    const [kpis, breakdown, top, heatmap, daily] = await Promise.all([
-      fetchStoresKpis(scope),
-      fetchStoresBreakdown(scope),
-      fetchStoresTopProducts(scope),
+    const [kpis, breakdown, top, heatmap, daily, series] = await Promise.all([
+      fetchStoresKpis(scope, storeIdFilter),
+      fetchStoresBreakdown(scope, storeIdFilter),
+      fetchStoresTopProducts(scope, storeIdFilter),
       fetchStoresHourlyHeatmap(scope),
       fetchStoresDailySales(scope, range),
+      fetchStoresSeries(scope, range, storeIdFilter),
     ]);
 
     const response: DashboardStoresDetail = {
@@ -1263,6 +1321,7 @@ dashboardDetailRouter.get(
       top_products_today: top,
       hourly_heatmap: heatmap,
       daily_sales: daily,
+      series,
     };
     res.status(200).json(response);
   }),
@@ -1270,9 +1329,10 @@ dashboardDetailRouter.get(
 
 async function fetchStoresKpis(
   scope: Exclude<DetailScope, { kind: 'empty' }>,
+  storeIdFilter: number[] | null,
 ): Promise<DashboardStoresDetail['kpis']> {
   const countParams: SqlParam[] = [];
-  const storeLocs = locationIdSetForType(scope, 'store', countParams);
+  const storeLocs = locationIdSetForType(scope, 'store', countParams, storeIdFilter);
   const countQ = query<{ cnt: string }>(
     `SELECT count(*) AS cnt FROM locations WHERE id IN ${storeLocs}`,
     countParams,
@@ -1281,7 +1341,7 @@ async function fetchStoresKpis(
   // sales (today) — read raw `sales` table; cron only refreshes the daily
   // aggregate at 03:00. Tight window + `ix_sales_store_date` keep it cheap.
   const salesParams: SqlParam[] = [];
-  const storeLocsSales = locationIdSetForType(scope, 'store', salesParams);
+  const storeLocsSales = locationIdSetForType(scope, 'store', salesParams, storeIdFilter);
   const salesQ = query<{
     total_sum: string | null;
     receipts: string;
@@ -1308,12 +1368,13 @@ async function fetchStoresKpis(
 
 async function fetchStoresBreakdown(
   scope: Exclude<DetailScope, { kind: 'empty' }>,
+  storeIdFilter: number[] | null,
 ): Promise<DashboardStoresDetail['store_breakdown']> {
   // One row per store with today's sales + open replenishment count +
   // below-min stock count. LATERAL sub-queries keep this single-query and
   // the partial `ix_stock_below_min` index makes the below-min branch cheap.
   const params: SqlParam[] = [];
-  const storeLocs = locationIdSetForType(scope, 'store', params);
+  const storeLocs = locationIdSetForType(scope, 'store', params, storeIdFilter);
   const { rows } = await query<{
     location_id: string;
     location_name: string;
@@ -1342,6 +1403,7 @@ async function fetchStoresBreakdown(
           WHERE s.location_id = l.id
             AND s.qty <= s.min_level
             AND s.min_level > 0
+            AND s.max_level > 0
        ) stock_agg ON TRUE
        LEFT JOIN LATERAL (
          SELECT count(*) AS open_replenishments
@@ -1365,9 +1427,10 @@ async function fetchStoresBreakdown(
 
 async function fetchStoresTopProducts(
   scope: Exclude<DetailScope, { kind: 'empty' }>,
+  storeIdFilter: number[] | null,
 ): Promise<DashboardStoresDetail['top_products_today']> {
   const params: SqlParam[] = [];
-  const storeLocs = locationIdSetForType(scope, 'store', params);
+  const storeLocs = locationIdSetForType(scope, 'store', params, storeIdFilter);
   params.push(TOP_PRODUCTS_TODAY);
   const limitIdx = params.length;
   const { rows } = await query<{
@@ -1498,6 +1561,143 @@ async function fetchStoresDailySales(
   }));
 }
 
+/**
+ * Store-scoped sales SERIES for the analytics chart. Buckets the raw `sales`
+ * table in BUSINESS_TZ (Asia/Tashkent) so the hour index lines up with the
+ * ecosystem hourly chart (fed by Poster local-hour `data_hourly`):
+ *
+ *   - `range=today` -> `granularity:'hour'`, one point per business-day hour
+ *     from 00 up to the current local hour (never a future hour). `date` is
+ *     the zero-padded local hour string `"00".."23"`.
+ *   - else          -> `granularity:'day'`, one point per calendar day across
+ *     the window. `date` is `YYYY-MM-DD` (local calendar date).
+ *
+ * Empty buckets are zero-filled so the x-axis stays continuous. `qty` =
+ * sum(qty); `amount` = sum(qty*price). Store scope + the optional
+ * `store_ids` filter are applied via `locationIdSetForType` (RBAC intersection).
+ */
+async function fetchStoresSeries(
+  scope: Exclude<DetailScope, { kind: 'empty' }>,
+  range: DateRange,
+  storeIdFilter: number[] | null,
+): Promise<DashboardStoresDetail['series']> {
+  const granularity: 'hour' | 'day' = range.preset === 'today' ? 'hour' : 'day';
+
+  if (granularity === 'hour') {
+    // Restrict to the Tashkent CALENDAR day so all hour buckets belong to the
+    // same business day the chart shows (the half-open UTC window would clip
+    // the local 00:00..05:00 hours). Bucket by local hour.
+    const params: SqlParam[] = [];
+    params.push(STORES_BUSINESS_TZ);
+    const tzIdx = params.length;
+    const storeLocs = locationIdSetForType(scope, 'store', params, storeIdFilter);
+    const { rows } = await query<{ hour: number; qty: string; amount: string }>(
+      `SELECT extract(hour FROM sold_at AT TIME ZONE $${tzIdx})::int AS hour,
+              sum(qty)         AS qty,
+              sum(qty * price) AS amount
+         FROM sales
+        WHERE (sold_at AT TIME ZONE $${tzIdx})::date = (now() AT TIME ZONE $${tzIdx})::date
+          AND store_id IN ${storeLocs}
+        GROUP BY 1`,
+      params,
+    );
+
+    const byHour = new Map<number, { qty: number; amount: number }>();
+    for (const r of rows) {
+      byHour.set(Number(r.hour), {
+        qty: Number(r.qty),
+        amount: Math.round(Number(r.amount) * 100) / 100,
+      });
+    }
+
+    // Emit 00..currentHour inclusive (local hour of "now") so the series never
+    // renders a future, always-empty hour. We also derive today's local ISO
+    // date so every hour point carries the SAME `date` plus its numeric
+    // `hour` — mirroring the ecosystem `sales_chart` hourly shape so the
+    // frontend tooltip can match each point to its `sales-breakdown` bucket by
+    // `hour`.
+    const nowParts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: STORES_BUSINESS_TZ,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      hour12: false,
+    }).formatToParts(new Date());
+    const part = (type: Intl.DateTimeFormatPartTypes): string =>
+      nowParts.find((p) => p.type === type)?.value ?? '';
+    // en-CA renders the date as `YYYY-MM-DD` directly.
+    const today = `${part('year')}-${part('month')}-${part('day')}`;
+    let currentHour = Number(part('hour') || '23');
+    // Intl can yield "24" at local midnight in some runtimes — clamp to 23.
+    if (!Number.isInteger(currentHour) || currentHour > 23) currentHour = 23;
+    if (currentHour < 0) currentHour = 0;
+
+    const days: DashboardStoresDetail['series']['days'] = [];
+    for (let h = 0; h <= currentHour; h++) {
+      const bucket = byHour.get(h);
+      days.push({
+        date: today,
+        hour: h,
+        qty: bucket?.qty ?? 0,
+        amount: bucket?.amount ?? 0,
+      });
+    }
+    return { granularity, days };
+  }
+
+  // Daily path — half-open `[from, to)` window, bucket by local calendar date.
+  const params: SqlParam[] = [range.from, range.to];
+  params.push(STORES_BUSINESS_TZ);
+  const tzIdx = params.length;
+  const storeLocs = locationIdSetForType(scope, 'store', params, storeIdFilter);
+  const { rows } = await query<{ day: string; qty: string; amount: string }>(
+    `SELECT to_char((sold_at AT TIME ZONE $${tzIdx})::date, 'YYYY-MM-DD') AS day,
+            sum(qty)         AS qty,
+            sum(qty * price) AS amount
+       FROM sales
+      WHERE sold_at >= $1
+        AND sold_at <  $2
+        AND store_id IN ${storeLocs}
+      GROUP BY 1
+      ORDER BY 1`,
+    params,
+  );
+
+  const byDate = new Map<string, { qty: number; amount: number }>();
+  for (const r of rows) {
+    byDate.set(r.day, {
+      qty: Number(r.qty),
+      amount: Math.round(Number(r.amount) * 100) / 100,
+    });
+  }
+
+  // Zero-fill every local calendar day in the window so the x-axis is
+  // continuous. Iterate by UTC-midnight steps but format each day in
+  // BUSINESS_TZ so the labels match the bucketed `day` keys.
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: STORES_BUSINESS_TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const days: DashboardStoresDetail['series']['days'] = [];
+  const seen = new Set<string>();
+  const lastInstant = range.to.getTime() - 1; // inclusive last moment of window
+  for (
+    let t = range.from.getTime();
+    t <= lastInstant && days.length < DAILY_SERIES_MAX_POINTS;
+    t += 24 * 60 * 60 * 1000
+  ) {
+    const key = fmt.format(new Date(t)); // en-CA -> YYYY-MM-DD
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const bucket = byDate.get(key);
+    days.push({ date: key, qty: bucket?.qty ?? 0, amount: bucket?.amount ?? 0 });
+  }
+  return { granularity, days };
+}
+
 function emptyStoresDetail(): DashboardStoresDetail {
   return {
     kpis: {
@@ -1510,6 +1710,7 @@ function emptyStoresDetail(): DashboardStoresDetail {
     top_products_today: [],
     hourly_heatmap: [],
     daily_sales: [],
+    series: { granularity: 'day', days: [] },
   };
 }
 

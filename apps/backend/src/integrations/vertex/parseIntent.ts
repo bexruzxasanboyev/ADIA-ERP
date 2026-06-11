@@ -36,7 +36,14 @@ import {
 // Public types
 // ---------------------------------------------------------------------------
 
-export type StockIntentAction = 'adjust_in' | 'adjust_out' | 'transfer';
+export type StockIntentAction =
+  | 'adjust_in'
+  | 'adjust_out'
+  | 'transfer'
+  // B1 / B3 (telegram-bot-tz) — a cross-department SUPPLY request: "menga
+  // napoleon kerak". The voiceHandler turns this into a replenishment request
+  // to the topology parent rather than a direct stock movement.
+  | 'request';
 
 /** One parsed intent — Vertex faqat nomlarni qaytaradi, ID emas. */
 export type ParsedIntent = {

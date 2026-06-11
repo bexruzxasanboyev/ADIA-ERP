@@ -36,6 +36,7 @@ const CANDIDATE_USERS: User[] = [
   {
     id: 9,
     name: 'Sardor Aliyev',
+    email: 'sardor@adia.test',
     username: 'sardor',
     role: 'central_warehouse_manager',
     location_id: 2,
@@ -43,6 +44,7 @@ const CANDIDATE_USERS: User[] = [
   {
     id: 10,
     name: 'Bekzod Rahimov',
+    email: 'bekzod@adia.test',
     username: 'bekzod',
     role: 'store_manager',
     location_id: 5,

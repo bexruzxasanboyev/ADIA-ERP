@@ -107,6 +107,7 @@ purchaseOrdersRouter.get(
     const { rows } = await query<
       PurchaseOrderRow & {
         product_name: string;
+        product_unit: string;
         target_location_name: string | null;
         manager_approved_name: string | null;
         manager_approved_username: string | null;
@@ -117,6 +118,7 @@ purchaseOrdersRouter.get(
     >(
       `SELECT ${qualifiedCols},
               p.name AS product_name,
+              p.unit AS product_unit,
               tl.name AS target_location_name,
               mu.name AS manager_approved_name,
               mu.username AS manager_approved_username,

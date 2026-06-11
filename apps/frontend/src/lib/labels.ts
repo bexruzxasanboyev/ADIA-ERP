@@ -2,17 +2,14 @@
  * Uzbek display labels for domain enum values.
  * UI text is Uzbek (CLAUDE.md §2); enum keys stay English.
  */
-import type { DateRangePreset } from '@/components/DateRangeFilter';
 import type {
   DashboardAlertType,
-  FlowType,
   LocationType,
   MovementReason,
   PosterSyncStatus,
   ProductType,
   ProductionOrderStatus,
   PurchaseOrderStatus,
-  RecipeStage,
   ReplenishmentStatus,
   Role,
   Unit,
@@ -46,19 +43,6 @@ export const LOCATION_TYPE_LABELS: Record<LocationType, string> = {
   store: 'Do‘kon',
 };
 
-// EPIC 2.1 — oqim (connection) turlari. Admin bo'g'inlar orasidagi oqimni
-// shu turlardan biri bilan belgilaydi (location_flows.flow_type).
-export const FLOW_TYPE_LABELS: Record<FlowType, string> = {
-  production_output: 'Ishlab chiqarish chiqishi',
-  bom_input: 'Yarim tayyor qaytishi',
-  forward: 'Oldinga oqim',
-  reverse: 'Qaytar oqim',
-};
-
-export const FLOW_TYPE_OPTIONS: { value: FlowType; label: string }[] = (
-  Object.keys(FLOW_TYPE_LABELS) as FlowType[]
-).map((value) => ({ value, label: FLOW_TYPE_LABELS[value] }));
-
 export const PRODUCT_TYPE_LABELS: Record<ProductType, string> = {
   raw: 'Xom-ashyo',
   semi: 'Yarim tayyor',
@@ -70,87 +54,6 @@ export const UNIT_LABELS: Record<Unit, string> = {
   l: 'l',
   pcs: 'dona',
 };
-
-/**
- * EPIC 1.5 — BOM stage section labels for the recipe modal. `other` is the
- * catch-all used when the backend has not (yet) tagged a line with a stage.
- */
-export const RECIPE_STAGE_LABELS: Record<RecipeStage, string> = {
-  dough: 'Hamir',
-  cream: 'Krem',
-  decoration: 'Bezak',
-  other: 'Boshqa',
-};
-
-/** Stable display order of BOM stages in the recipe modal. */
-export const RECIPE_STAGE_ORDER: RecipeStage[] = [
-  'dough',
-  'cream',
-  'decoration',
-  'other',
-];
-
-/**
- * EPIC 8.4 — nakladnoy section headings ("krem uchun", "hamir uchun"…).
- * The owner wants each BOM stage to read as "<stage> uchun" so the
- * nakladnoy is self-describing (image19).
- */
-export const NAKLADNOY_SECTION_LABELS: Record<RecipeStage, string> = {
-  dough: 'Hamir uchun',
-  cream: 'Krem uchun',
-  decoration: 'Bezak uchun',
-  other: 'Boshqa',
-};
-
-/** EPIC 8.5 — kassa smenasi holati. */
-export const CASH_SHIFT_STATUS_LABELS: Record<
-  import('./types').CashShiftStatus,
-  string
-> = {
-  open: 'Ochiq',
-  closed: 'Yopilgan',
-};
-
-// ---------------------------------------------------------------------------
-// Dashboard date-range copy (EPIC 0.4).
-//
-// The revenue / receipts KPI titles must follow the selected period filter
-// instead of staying frozen on "Bugungi tushum". These maps are the single
-// source of truth shared by HeroStrip and RevenueBreakdown so the headline
-// wording never drifts between the two widgets.
-// ---------------------------------------------------------------------------
-
-/** Revenue card title per period, e.g. `today → "Bugungi tushum"`. */
-export const REVENUE_TITLE_BY_RANGE: Record<DateRangePreset, string> = {
-  today: 'Bugungi tushum',
-  week: 'Bu haftalik tushum',
-  month: 'Bu oylik tushum',
-  '6m': '6 oylik tushum',
-  custom: 'Davr tushumi',
-};
-
-/** Receipts card title per period, e.g. `today → "Bugungi sotuvlar"`. */
-export const RECEIPTS_TITLE_BY_RANGE: Record<DateRangePreset, string> = {
-  today: 'Bugungi sotuvlar',
-  week: 'Bu haftalik sotuvlar',
-  month: 'Bu oylik sotuvlar',
-  '6m': '6 oylik sotuvlar',
-  custom: 'Davr sotuvlari',
-};
-
-/** Delta-pill comparison caption per period, e.g. `today → "kechaga"`. */
-export const COMPARISON_LABEL_BY_RANGE: Record<DateRangePreset, string> = {
-  today: 'kechaga',
-  week: "o'tgan haftaga",
-  month: "o'tgan oyga",
-  '6m': 'oldingi 6 oyga',
-  custom: 'oldingi davrga',
-};
-
-/** Revenue title for an optional range; falls back to "Bugungi tushum". */
-export function revenueTitleForRange(range?: DateRangePreset): string {
-  return REVENUE_TITLE_BY_RANGE[range ?? 'today'];
-}
 
 export const MOVEMENT_REASON_LABELS: Record<MovementReason, string> = {
   sale: 'Savdo',

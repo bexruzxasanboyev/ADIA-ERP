@@ -48,6 +48,40 @@ export type RedeemOutcome =
     };
 
 /**
+ * EPIC 3.2 — UNLINK: detach whatever ADIA user is bound to `telegramId`
+ * (clears `users.telegram_id`). Lets a person sign the bot OUT of their
+ * account so the SAME Telegram can later `/start <token>` as a different
+ * user (e.g. switch from PM to a central-warehouse manager). Idempotent:
+ * returns `{ unlinked: false }` when this Telegram is not bound to anyone.
+ */
+export async function unlinkTelegramAccount(
+  telegramId: number,
+  tx?: TxClient,
+): Promise<{ unlinked: boolean; userName: string | null }> {
+  const run = async (
+    client: TxClient,
+  ): Promise<{ unlinked: boolean; userName: string | null }> => {
+    const { rows } = await client.query<{ id: string; name: string }>(
+      `UPDATE users SET telegram_id = NULL, updated_at = now()
+        WHERE telegram_id = $1
+      RETURNING id, name`,
+      [telegramId],
+    );
+    const row = rows[0];
+    if (row === undefined) return { unlinked: false, userName: null };
+    await writeAudit(client, {
+      actorUserId: Number(row.id),
+      action: 'user.telegram_link.unlinked',
+      entity: 'users',
+      entityId: Number(row.id),
+      payload: { telegram_id: telegramId, via: 'bot_logout' },
+    });
+    return { unlinked: true, userName: row.name };
+  };
+  return tx ? run(tx) : withTransaction(run);
+}
+
+/**
  * Issue a single-use Telegram link token for `userId`. Any previously
  * issued-but-unconsumed token for the same user is consumed (invalidated)
  * first so only the most recent token is live — pressing "link" twice does

@@ -6,6 +6,7 @@ import { LoginPage } from '@/pages/LoginPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
 import { LocationsPage } from '@/pages/locations/LocationsPage';
 import { LocationDetailPage } from '@/pages/locations/LocationDetailPage';
+import { UsersPage } from '@/pages/users/UsersPage';
 import { EmployeesPage } from '@/pages/employees/EmployeesPage';
 import { ProductsPage } from '@/pages/products/ProductsPage';
 import { StockPage } from '@/pages/stock/StockPage';
@@ -18,15 +19,12 @@ import { DashboardPage } from '@/pages/dashboard/DashboardPage';
 import { ExecutiveDashboardPage } from '@/pages/dashboard/executive/ExecutiveDashboardPage';
 import { ForecastsPage } from '@/pages/forecasts/ForecastsPage';
 import { ImportWarningsPage } from '@/pages/admin/ImportWarningsPage';
+import { DeliveryPage } from '@/pages/delivery/DeliveryPage';
 import { RawWarehousePage } from '@/pages/chain/RawWarehousePage';
 import { ProductionPage } from '@/pages/chain/ProductionPage';
 import { SupplyPage } from '@/pages/chain/SupplyPage';
 import { CentralWarehousePage } from '@/pages/chain/CentralWarehousePage';
 import { StoresPage } from '@/pages/chain/StoresPage';
-import { ReceiptsPage } from '@/pages/cashier/ReceiptsPage';
-import { CashShiftsPage } from '@/pages/cashier/CashShiftsPage';
-import { SafeExpensesPage } from '@/pages/cashier/SafeExpensesPage';
-import { NakladnoyPage } from '@/pages/cashier/NakladnoyPage';
 
 /**
  * Application routes (phase-1-mvp.md §2, §6).
@@ -136,12 +134,21 @@ export function AppRouter() {
         {/* F4.14 — unified inbox/outbox/archive ("So'rovnomalar"). */}
         <Route path="/sorovnomalar" element={<RequestsPage />} />
 
-        {/* EPIC 4.3 — "Yetkazib berish" (delivery) module removed; sections
-            send directly and receive on arrival. Old bookmarks redirect to
-            the unified requests inbox. */}
+        {/* F4.10 — Yetkazib berish (delivery) module. */}
         <Route
           path="/delivery"
-          element={<Navigate to="/sorovnomalar" replace />}
+          element={
+            <RoleRoute
+              allow={[
+                'pm',
+                'central_warehouse_manager',
+                'supply_manager',
+                'store_manager',
+              ]}
+            >
+              <DeliveryPage />
+            </RoleRoute>
+          }
         />
 
         <Route
@@ -173,56 +180,21 @@ export function AppRouter() {
           }
         />
 
-        {/* EPIC 8 — Kassa / chek & nakladnoy. PM (chain-wide read) +
-            store_manager (own store, RBAC-scoped server-side). The cash
-            shift / safe / nakladnoy backend contracts are not wired yet
-            (gaps P8/P10/P11); the pages degrade to an informative empty
-            state on a 404. */}
-        <Route
-          path="/cashier/receipts"
-          element={
-            <RoleRoute allow={['pm', 'store_manager']}>
-              <ReceiptsPage />
-            </RoleRoute>
-          }
-        />
-        <Route
-          path="/cashier/shifts"
-          element={
-            <RoleRoute allow={['pm', 'store_manager']}>
-              <CashShiftsPage />
-            </RoleRoute>
-          }
-        />
-        <Route
-          path="/cashier/nakladnoy"
-          element={
-            <RoleRoute
-              allow={['pm', 'store_manager', 'production_manager']}
-            >
-              <NakladnoyPage />
-            </RoleRoute>
-          }
-        />
-        <Route
-          path="/cashier/safe"
-          element={
-            <RoleRoute allow={['pm']}>
-              <SafeExpensesPage />
-            </RoleRoute>
-          }
-        />
-
         {/* M2 — products & recipes. */}
         <Route path="/products" element={<ProductsPage />} />
 
-        {/* M1 — locations. */}
+        {/* M1 — locations & users. */}
         <Route path="/locations" element={<LocationsPage />} />
+        <Route
+          path="/users"
+          element={
+            <RoleRoute allow={['pm']}>
+              <UsersPage />
+            </RoleRoute>
+          }
+        />
 
-        {/* EPIC 3 — "Foydalanuvchilar" va "Hodimlar" bitta sahifaga
-            birlashtirildi (hodim = foydalanuvchi). Eski `/users`
-            bookmarklar yangi birlashtirilgan sahifaga yo'naltiriladi. */}
-        <Route path="/users" element={<Navigate to="/employees" replace />} />
+        {/* F4.1 — Hodimlar (M:N locations admin). */}
         <Route
           path="/employees"
           element={

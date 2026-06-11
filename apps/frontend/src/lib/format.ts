@@ -15,46 +15,9 @@ const dateTimeFormatter = new Intl.DateTimeFormat('uz-UZ', {
   minute: '2-digit',
 });
 
-/**
- * Format a numeric quantity with local grouping (e.g. `1 250,5`).
- *
- * Guards against `NaN`/`Infinity`/`undefined`-coerced inputs so a bad
- * value never renders as `NaN` on a dashboard — returns the em-dash
- * placeholder instead (matching `formatCurrencyCompact`).
- */
+/** Format a numeric quantity with local grouping (e.g. `1 250,5`). */
 export function formatQty(value: number): string {
-  if (!Number.isFinite(value)) return '—';
   return numberFormatter.format(value);
-}
-
-/**
- * Format a plain number with local (uz-UZ) grouping and NO fractional
- * digits — for integer-ish counters (open POs, expected qty, below-min
- * counts). Same `NaN`/`Infinity` guard as `formatQty`.
- *
- * This is the single shared helper for all "bare integer with grouping"
- * rendering on the dashboard; prefer it over inline `Intl.NumberFormat`
- * / `toLocaleString()` copies so the locale (space grouping) and the
- * non-finite guard stay consistent everywhere.
- */
-const plainNumberFormatter = new Intl.NumberFormat('uz-UZ', {
-  maximumFractionDigits: 0,
-});
-
-export function formatPlainNumber(value: number): string {
-  if (!Number.isFinite(value)) return '—';
-  return plainNumberFormatter.format(Math.round(value));
-}
-
-/**
- * EPIC 8 — full money amount with local grouping and the "so'm" suffix,
- * no abbreviation. Use for kassa / nakladnoy / seyf rows where the exact
- * value matters (a smena close-out, a safe withdrawal). For at-a-glance
- * dashboard KPIs prefer the abbreviated `formatCurrencyCompact`.
- */
-export function formatSom(value: number): string {
-  if (!Number.isFinite(value)) return '—';
-  return `${plainNumberFormatter.format(Math.round(value))} so‘m`;
 }
 
 /** Format an ISO timestamp as a local date-time string. */

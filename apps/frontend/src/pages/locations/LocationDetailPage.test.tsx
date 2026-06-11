@@ -111,6 +111,7 @@ const USERS: User[] = [
   {
     id: 42,
     name: 'Aziz Rahmonov',
+    email: 'aziz@adia.test',
     username: 'aziz',
     role: 'central_warehouse_manager',
     location_id: 7,
@@ -122,6 +123,7 @@ function fakeAuth(): AuthContextValue {
     user: {
       id: 1,
       name: 'Test PM',
+      email: 'pm@adia.test',
       username: 'pm',
       role: 'pm',
       location_id: null,

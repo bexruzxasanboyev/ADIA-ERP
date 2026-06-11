@@ -96,12 +96,16 @@ async function loadRecipeTree(
     const pending = frontier.filter((id) => !byProduct.has(id));
     if (pending.length === 0) break;
     const { rows } = await runner.query<RecipeRow>(
-      `SELECT r.product_id, r.component_product_id, r.qty_per_unit, r.stage,
+      // TZ-3 — divide each line by its product's recipe_yield so the nakladnoy
+      // requisition is per ONE finished piece, not per imported batch.
+      `SELECT r.product_id, r.component_product_id,
+              r.qty_per_unit / pp.recipe_yield AS qty_per_unit, r.stage,
               p.type::text  AS component_type,
               p.name        AS component_name,
               p.unit::text  AS component_unit
          FROM recipes r
          JOIN products p ON p.id = r.component_product_id
+         JOIN products pp ON pp.id = r.product_id
         WHERE r.product_id = ANY($1::bigint[])`,
       [pending],
     );

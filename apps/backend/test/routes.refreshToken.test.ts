@@ -27,19 +27,19 @@ afterAll(async () => {
 /** Log in with a fresh user and return both tokens + the user id. */
 async function loginFresh(): Promise<{
   userId: number;
-  email: string;
+  username: string;
   password: string;
   accessToken: string;
   refreshToken: string;
 }> {
-  const email = `refresh-${Math.random().toString(36).slice(2, 8)}@test.local`;
+  const username = `refresh-${Math.random().toString(36).slice(2, 8)}`;
   const password = 'a-strong-pass';
-  const user = await makeUser(ctx.db, { role: 'pm', email, password });
-  const res = await request(ctx.app).post('/api/auth/login').send({ email, password });
+  const user = await makeUser(ctx.db, { role: 'pm', username, password });
+  const res = await request(ctx.app).post('/api/auth/login').send({ login: username, password });
   expect(res.status).toBe(200);
   return {
     userId: user.id,
-    email,
+    username,
     password,
     accessToken: res.body.access_token,
     refreshToken: res.body.refresh_token,
@@ -87,7 +87,7 @@ describe('POST /api/auth/refresh', () => {
     // The new refresh token must differ from the old one (rotation).
     expect(res.body.refresh_token).not.toBe(session.refreshToken);
     // User payload unchanged.
-    expect(res.body.user).toMatchObject({ id: session.userId, email: session.email });
+    expect(res.body.user).toMatchObject({ id: session.userId, username: session.username });
 
     // The old row is revoked AND its rotated_to points at the new row.
     const { rows } = await ctx.db.query<{

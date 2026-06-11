@@ -32,6 +32,22 @@ import {
   startSyncRun,
 } from './syncLog.js';
 
+/**
+ * EPIC 8.3 — one over-sold ("noto'g'ri urilgan") line detected during a sync
+ * run. Collected (NOT notified) per line; the caller aggregates these into ONE
+ * consolidated Telegram digest per store after the whole run, so a sync that
+ * finds many over-sold products no longer floods the boss with N near-identical
+ * messages (owner feedback 2026-06).
+ */
+export type WrongKeyedLine = {
+  readonly storeId: number;
+  readonly productId: number;
+  readonly transactionId: number;
+  readonly sold: number;
+  readonly had: number;
+  readonly shortfall: number;
+};
+
 export type SalesIngestResult = {
   /** Number of events scanned (== `poster_webhook_events` rows examined). */
   readonly eventsScanned: number;
@@ -72,16 +88,38 @@ async function resolveSalesProductId(posterProductId: number): Promise<number | 
   return rows[0]?.id ?? null;
 }
 
-/** Parse Poster `date_close`. Accepts both ms-unix-string and "YYYY-MM-DD HH:mm:ss". */
-function parseCloseDate(raw: string | undefined): Date {
-  if (raw === undefined || raw === '') return new Date();
+/**
+ * Lower bound for a *real* Poster close date. Poster emits `date_close = "0"`
+ * (epoch) or `"2000-01-01 00:00:00"` for transactions that were never actually
+ * closed (open / voided / draft checks). Both land on the year-2000 placeholder
+ * once parsed — which previously polluted `sales` with ~880 bln of fake revenue
+ * dated 2000-01-01 (Asia/Tashkent is UTC+5, so the stored value was
+ * `2000-01-01 00:00:00+05`). Any close date at or before this cut-off is a
+ * placeholder, never a genuine sale. 2010-01-01 is comfortably before the
+ * business started and comfortably after every Poster placeholder value.
+ */
+const MIN_VALID_CLOSE_MS = Date.UTC(2010, 0, 1);
+
+/**
+ * Parse Poster `date_close`. Accepts both ms-unix-string and
+ * "YYYY-MM-DD HH:mm:ss". Returns `null` when the value is MISSING or a
+ * PLACEHOLDER (epoch / year-2000) — the caller MUST skip such a line instead of
+ * inserting a sale with a fake date (root-cause fix for the 2000-01-01 rows).
+ */
+function parseCloseDate(raw: string | undefined): Date | null {
+  if (raw === undefined || raw === '') return null;
   const n = Number(raw);
+  let d: Date;
   if (Number.isFinite(n) && n > 0) {
     // Poster gives milliseconds; values smaller than 1e12 are seconds.
-    return new Date(n > 1e12 ? n : n * 1000);
+    d = new Date(n > 1e12 ? n : n * 1000);
+  } else {
+    d = new Date(raw);
   }
-  const d = new Date(raw);
-  return Number.isNaN(d.getTime()) ? new Date() : d;
+  if (Number.isNaN(d.getTime())) return null;
+  // Reject the year-2000 / epoch placeholder Poster emits for un-closed checks.
+  if (d.getTime() < MIN_VALID_CLOSE_MS) return null;
+  return d;
 }
 
 /**
@@ -97,17 +135,33 @@ export async function ingestTransaction(
   failedLines: number;
   /** EPIC 8.3 — lines whose sold qty exceeded on-hand ("noto'g'ri urilgan"). */
   wrongKeyedLines: number;
+  /**
+   * The over-sold lines themselves — returned (NOT notified here) so the
+   * caller can aggregate them into ONE per-store digest after the whole run.
+   */
+  wrongKeyedDetails: WrongKeyedLine[];
 }> {
   const transactionId = Number(tx.transaction_id);
   if (!Number.isInteger(transactionId) || transactionId <= 0) {
-    return { linesInserted: 0, movementsApplied: 0, storeFound: false, failedLines: 0, wrongKeyedLines: 0 };
+    return { linesInserted: 0, movementsApplied: 0, storeFound: false, failedLines: 0, wrongKeyedLines: 0, wrongKeyedDetails: [] };
   }
   const spotId = Number(tx.spot_id);
   const storeId = Number.isInteger(spotId) && spotId > 0 ? await resolveStoreId(spotId) : null;
   if (storeId === null) {
-    return { linesInserted: 0, movementsApplied: 0, storeFound: false, failedLines: 0, wrongKeyedLines: 0 };
+    return { linesInserted: 0, movementsApplied: 0, storeFound: false, failedLines: 0, wrongKeyedLines: 0, wrongKeyedDetails: [] };
   }
+  // ROOT-CAUSE GUARD: a transaction with no valid close date (Poster emits
+  // "0" / "2000-01-01 00:00:00" for un-closed / voided checks) is NOT a real
+  // sale. Skip the WHOLE check rather than inserting a placeholder-dated row —
+  // this is what previously created the 2000-01-01 fake-revenue rows. Log
+  // loudly so a genuinely-malformed close date is visible, not silent.
   const closedAt = parseCloseDate(tx.date_close);
+  if (closedAt === null) {
+    console.warn(
+      `[poster] tx ${transactionId} skipped — invalid/placeholder date_close=${JSON.stringify(tx.date_close)} (un-closed check, not a sale)`,
+    );
+    return { linesInserted: 0, movementsApplied: 0, storeFound: true, failedLines: 0, wrongKeyedLines: 0, wrongKeyedDetails: [] };
+  }
   const lines = Array.isArray(tx.products) ? tx.products : [];
 
   let linesInserted = 0;
@@ -118,6 +172,9 @@ export async function ingestTransaction(
   let failedLines = 0;
   // EPIC 8.3 — count chek-level shortfalls (sold > on-hand).
   let wrongKeyedLines = 0;
+  // EPIC 8.3 — accumulate the over-sold lines so the CALLER can send ONE
+  // consolidated per-store digest after the whole run (no per-line flood).
+  const wrongKeyedDetails: WrongKeyedLine[] = [];
 
   // Each line is its own transaction — a single bad line must not abort the
   // whole check (and the UNIQUE indexes give us idempotency line-by-line).
@@ -125,7 +182,11 @@ export async function ingestTransaction(
     const line = lines[i]!;
     const posterProductId = Number(line.product_id);
     const num = Number(line.num);
-    const price = Number(line.product_price ?? 0);
+    // Poster reports ALL money in TIYIN (1 so'm = 100 tiyin) — the same
+    // convention `paymentReportToBuckets` divides by 100. `product_price` is
+    // the per-unit price in tiyin; store it as so'm so `qty * price` agrees
+    // with the Poster payments report instead of being 100× inflated.
+    const price = Number(line.product_price ?? 0) / 100;
     if (!Number.isInteger(posterProductId) || posterProductId <= 0) continue;
     if (!Number.isFinite(num) || num <= 0) continue;
 
@@ -168,17 +229,11 @@ export async function ingestTransaction(
         // Stock is clamped to 0 (invariant 3 — never negative); we surface a
         // chek-level "noto'g'ri urilgan" alert so a human reconciles it.
         const shortfall = num > have ? num - have : 0;
-        if (shortfall > 0) {
-          await notifyWrongKeyedCheck(txc, {
-            storeId,
-            productId,
-            transactionId,
-            lineId,
-            sold: num,
-            had: have,
-            shortfall,
-          });
-        }
+        // NOTE: the over-sold alert is NO LONGER emitted per line here (it used
+        // to send one Telegram per product → flood). We only RECORD the
+        // shortfall on the result; the caller aggregates these into ONE
+        // per-store digest after the run. Stock clamping / movement / audit
+        // below are unchanged.
         if (decrement > 0) {
           await txc.query(
             `UPDATE stock SET qty = qty - $1
@@ -209,12 +264,22 @@ export async function ingestTransaction(
             decrement,
           },
         });
-        return { applied: true, decrement, shortfall };
+        return { applied: true, decrement, shortfall, had: have };
       });
       if (result.applied) {
         linesInserted += 1;
         if ((result.decrement ?? 0) > 0) movementsApplied += 1;
-        if ((result.shortfall ?? 0) > 0) wrongKeyedLines += 1;
+        if ((result.shortfall ?? 0) > 0) {
+          wrongKeyedLines += 1;
+          wrongKeyedDetails.push({
+            storeId,
+            productId,
+            transactionId,
+            sold: num,
+            had: result.had ?? 0,
+            shortfall: result.shortfall ?? 0,
+          });
+        }
       }
     } catch (err) {
       failedLines += 1;
@@ -225,54 +290,136 @@ export async function ingestTransaction(
     }
   }
 
-  return { linesInserted, movementsApplied, storeFound: true, failedLines, wrongKeyedLines };
+  return { linesInserted, movementsApplied, storeFound: true, failedLines, wrongKeyedLines, wrongKeyedDetails };
+}
+
+/** How many product lines the digest body lists before collapsing to "…+k". */
+const DIGEST_TOP_N = 5;
+/** Debounce window for a store digest — a re-sync inside this stays quiet. */
+const DIGEST_DEDUPE_MINUTES = 60;
+
+/** Resolve a store name; falls back to "do'kon #id" if the row is gone. */
+async function resolveStoreName(txc: TxClient, storeId: number): Promise<string> {
+  const { rows } = await txc.query<{ name: string }>(
+    `SELECT name FROM locations WHERE id = $1`,
+    [storeId],
+  );
+  return rows[0]?.name ?? `do'kon #${storeId}`;
+}
+
+/** Resolve product names for a set of ids in one round-trip (id → name map). */
+async function resolveProductNames(
+  txc: TxClient,
+  productIds: readonly number[],
+): Promise<Map<number, string>> {
+  const map = new Map<number, string>();
+  if (productIds.length === 0) return map;
+  const { rows } = await txc.query<{ id: number; name: string }>(
+    `SELECT id, name FROM products WHERE id = ANY($1::int[])`,
+    [productIds],
+  );
+  for (const r of rows) map.set(Number(r.id), r.name);
+  return map;
 }
 
 /**
- * EPIC 8.3 — emit a chek-level "noto'g'ri urilgan" alert when a sale check rang
- * up more units than ADIA tracked on hand. Runs inside the line's own
- * transaction so the alert commits with the (clamped) sale. Recipients: PMs +
- * the store's manager. Debounced one-per-(store,product) per 6h so a busy POS
- * that keeps over-ringing the same item does not flood the admins.
+ * EPIC 8.3 (owner feedback 2026-06) — emit ONE consolidated "noto'g'ri urilgan"
+ * digest per store after a whole sync run, instead of one Telegram per
+ * over-sold line. The body resolves the store name and product NAMES (never raw
+ * ids), lists the top {DIGEST_TOP_N} products by shortfall, and collapses the
+ * rest into "…va yana k ta mahsulot." Recipients: PMs + the store's manager.
+ * Deduped per (store, user) for {DIGEST_DEDUPE_MINUTES} min so back-to-back
+ * syncs in the same window don't re-flood.
+ *
+ * Each store's digest is emitted in its own transaction so one bad store does
+ * not roll back the others. Already-clamped stock / movements / audit are NOT
+ * touched here.
  */
-async function notifyWrongKeyedCheck(
-  txc: TxClient,
-  info: {
-    storeId: number;
-    productId: number;
-    transactionId: number;
-    lineId: number;
-    sold: number;
-    had: number;
-    shortfall: number;
-  },
+export async function emitWrongKeyedDigests(
+  details: readonly WrongKeyedLine[],
 ): Promise<void> {
-  const pmIds = await getPmRecipients(txc);
-  const managerId = await getLocationManager(txc, info.storeId);
-  const recipients = new Set<number>(pmIds);
-  if (managerId !== null) recipients.add(managerId);
-  for (const userId of recipients) {
-    await createNotification(txc, {
-      recipientUserId: userId,
-      type: 'wrong_keyed_check',
-      title: 'Kassa: noto\'g\'ri urilgan chek',
-      body:
-        `Chek #${info.transactionId}: sotildi ${info.sold}, ostatka ${info.had} edi — ` +
-        `${info.shortfall} ortiqcha (do'kon ${info.storeId}, mahsulot ${info.productId}). ` +
-        `Ostatka 0 ga tushirildi.`,
-      payload: {
-        store_id: info.storeId,
-        product_id: info.productId,
-        poster_transaction_id: info.transactionId,
-        line_id: info.lineId,
-        sold: info.sold,
-        had: info.had,
-        shortfall: info.shortfall,
-      },
-      dedupeKey: `wrong_keyed_check:${info.storeId}:${info.productId}:user:${userId}`,
-      dedupeWindowMinutes: 6 * 60,
-    });
+  if (details.length === 0) return;
+
+  // Group the over-sold lines by store.
+  const byStore = new Map<number, WrongKeyedLine[]>();
+  for (const d of details) {
+    const list = byStore.get(d.storeId);
+    if (list === undefined) byStore.set(d.storeId, [d]);
+    else list.push(d);
   }
+
+  for (const [storeId, lines] of byStore) {
+    try {
+      await withTransaction(async (txc) => {
+        // Aggregate shortfall per product across all the run's checks for this
+        // store (a product over-sold in 3 checks shows once with the total).
+        const perProduct = new Map<number, number>();
+        for (const l of lines) {
+          perProduct.set(l.productId, (perProduct.get(l.productId) ?? 0) + l.shortfall);
+        }
+        const totalShortfall = lines.reduce((s, l) => s + l.shortfall, 0);
+        const checkCount = new Set(lines.map((l) => l.transactionId)).size;
+
+        const storeName = await resolveStoreName(txc, storeId);
+        const nameById = await resolveProductNames(txc, [...perProduct.keys()]);
+
+        const ranked = [...perProduct.entries()].sort((a, b) => b[1] - a[1]);
+        const shown = ranked.slice(0, DIGEST_TOP_N);
+        const remaining = ranked.length - shown.length;
+
+        const listLines = shown
+          .map(([productId, shortfall]) => {
+            const name = nameById.get(productId) ?? `mahsulot #${productId}`;
+            return `• ${name} — ${formatQty(shortfall)} dona ortiqcha`;
+          })
+          .join('\n');
+        const tail = remaining > 0 ? `\n…va yana ${remaining} ta mahsulot.` : '';
+
+        const title = `⚠️ Kassa nomuvofiqligi — ${storeName}`;
+        const body =
+          `${checkCount} ta chekda ostatkadan ortiq sotildi ` +
+          `(jami ${formatQty(totalShortfall)} dona ortiqcha). ` +
+          `Ostatka 0 ga tushirildi — tekshiring.\n\n` +
+          `${listLines}${tail}`;
+
+        const pmIds = await getPmRecipients(txc);
+        const managerId = await getLocationManager(txc, storeId);
+        const recipients = new Set<number>(pmIds);
+        if (managerId !== null) recipients.add(managerId);
+
+        for (const userId of recipients) {
+          await createNotification(txc, {
+            recipientUserId: userId,
+            type: 'wrong_keyed_check',
+            title,
+            body,
+            payload: {
+              store_id: storeId,
+              check_count: checkCount,
+              total_shortfall: totalShortfall,
+              products: ranked.map(([productId, shortfall]) => ({
+                product_id: productId,
+                name: nameById.get(productId) ?? null,
+                shortfall,
+              })),
+            },
+            dedupeKey: `wrong_keyed_digest:${storeId}:user:${userId}`,
+            dedupeWindowMinutes: DIGEST_DEDUPE_MINUTES,
+          });
+        }
+      });
+    } catch (err) {
+      console.error(
+        `[poster] wrong-keyed digest for store ${storeId} failed:`,
+        redactUrl((err as Error).message),
+      );
+    }
+  }
+}
+
+/** Trim a qty for display — integers print bare, fractionals keep 3 places. */
+function formatQty(n: number): string {
+  return Number.isInteger(n) ? String(n) : String(Number(n.toFixed(3)));
 }
 
 /**
@@ -293,6 +440,9 @@ export async function processPendingWebhookEvents(
     failedLines: 0,
     wrongKeyedLines: 0,
   };
+  // EPIC 8.3 — collect over-sold lines across the WHOLE run, then emit one
+  // consolidated digest per store at the end (no per-line flood).
+  const wrongKeyed: WrongKeyedLine[] = [];
   try {
     const { rows } = await query<{ id: number; event_type: string; poster_object_id: number | null }>(
       `SELECT id, event_type, poster_object_id
@@ -335,11 +485,14 @@ export async function processPendingWebhookEvents(
       summary.movementsApplied += result.movementsApplied;
       summary.failedLines += result.failedLines;
       summary.wrongKeyedLines += result.wrongKeyedLines;
+      wrongKeyed.push(...result.wrongKeyedDetails);
       await query(
         `UPDATE poster_webhook_events SET processed = TRUE, processed_at = now() WHERE id = $1`,
         [ev.id],
       );
     }
+    // EPIC 8.3 — ONE consolidated digest per store for the whole run.
+    await emitWrongKeyedDigests(wrongKeyed);
     // C7 — flip to `partial` (with a per-run stats string) when any line of
     // any event raised an exception, even though every other event succeeded.
     if (summary.failedLines > 0) {
@@ -390,6 +543,8 @@ export async function fallbackPollTransactions(
     failedLines: 0,
     wrongKeyedLines: 0,
   };
+  // EPIC 8.3 — collect over-sold lines across the whole poll, digest at the end.
+  const wrongKeyed: WrongKeyedLine[] = [];
   try {
     const to = new Date();
     const from = new Date(to.getTime() - windowMinutes * 60_000);
@@ -415,7 +570,10 @@ export async function fallbackPollTransactions(
       summary.movementsApplied += result.movementsApplied;
       summary.failedLines += result.failedLines;
       summary.wrongKeyedLines += result.wrongKeyedLines;
+      wrongKeyed.push(...result.wrongKeyedDetails);
     }
+    // EPIC 8.3 — ONE consolidated digest per store for the whole poll.
+    await emitWrongKeyedDigests(wrongKeyed);
     if (summary.failedLines > 0) {
       const detail =
         `partial: ${summary.failedLines} failed line(s) across ${summary.eventsScanned} event(s); ` +

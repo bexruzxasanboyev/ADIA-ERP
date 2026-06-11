@@ -115,13 +115,17 @@ describe('GET /api/replenishment/:id — RBAC + linkage branches', () => {
     // Raw warehouse short — engine will raise a PO.
     await setStock(ctx.db, { locationId: rawWh, productId: raw, qty: 1 });
 
+    // Stores no longer auto-raise via scanBelowMin (AI-propose -> boss-approve);
+    // create the store request EXPLICITLY with the qty the scan would compute
+    // (max 6 - qty 0 = 6), then drive the engine cycle from there.
+    const created = await createRequest({
+      productId: finished, requesterLocationId: store, qtyNeeded: 6, actorUserId: null,
+    });
+    // The cron does NOT auto-advance a store request (central accept/reject
+    // gate) — it stays at NEW. Drive the hops directly via advance().
     await runEngineCycle();
-    const { rows } = await ctx.db.query<{ id: number }>(
-      `SELECT id FROM replenishment_requests
-       WHERE product_id = $1 AND requester_location_id = $2`,
-      [finished, store],
-    );
-    const reqId = Number(rows[0]?.id);
+    const reqId = created.id;
+    await advance(reqId, null); // NEW -> CHECK_STORE_SUPPLIER (target resolved)
     await advance(reqId, null); // -> CHECK_PRODUCTION_INPUT
     await advance(reqId, null); // -> CREATE_PURCHASE_ORDER
 
@@ -146,13 +150,14 @@ describe('GET /api/replenishment/:id — RBAC + linkage branches', () => {
     });
     await setStock(ctx.db, { locationId: rawWh, productId: raw, qty: 50 });
 
+    // Store request raised EXPLICITLY (scan excludes stores); qty = max 3 - 0.
+    const created = await createRequest({
+      productId: finished, requesterLocationId: store, qtyNeeded: 3, actorUserId: null,
+    });
+    // Cron does NOT auto-advance a store request; drive the hops via advance().
     await runEngineCycle();
-    const { rows } = await ctx.db.query<{ id: number }>(
-      `SELECT id FROM replenishment_requests
-       WHERE product_id = $1 AND requester_location_id = $2`,
-      [finished, store],
-    );
-    const reqId = Number(rows[0]?.id);
+    const reqId = created.id;
+    await advance(reqId, null); // NEW -> CHECK_STORE_SUPPLIER (target resolved)
     await advance(reqId, null); // -> CHECK_PRODUCTION_INPUT
     await advance(reqId, null); // -> CREATE_PRODUCTION_ORDER (links a PO at `production`)
 
@@ -207,7 +212,7 @@ describe('POST /api/replenishment — validation + RBAC', () => {
     expect(res.body.error?.code).toBe('FORBIDDEN');
   });
 
-  it('a store_manager cannot create a request (403 — pm + central_warehouse_manager only)', async () => {
+  it('a store_manager may create a request for their OWN store (201)', async () => {
     const store = await makeLocation(ctx.db, { type: 'store' });
     const storeMgr = await makeUser(ctx.db, { role: 'store_manager', locationId: store });
     const product = await makeProduct(ctx.db, { type: 'finished' });
@@ -215,6 +220,19 @@ describe('POST /api/replenishment — validation + RBAC', () => {
       .post('/api/replenishment')
       .set('Authorization', `Bearer ${storeMgr.token}`)
       .send({ product_id: product, requester_location_id: store, qty_needed: 5 });
+    expect(res.status).toBe(201);
+    expect(res.body.request?.status).toBe('NEW');
+  });
+
+  it('a store_manager may NOT create a request for a foreign store (403)', async () => {
+    const ownStore = await makeLocation(ctx.db, { type: 'store' });
+    const foreignStore = await makeLocation(ctx.db, { type: 'store' });
+    const storeMgr = await makeUser(ctx.db, { role: 'store_manager', locationId: ownStore });
+    const product = await makeProduct(ctx.db, { type: 'finished' });
+    const res = await request(ctx.app)
+      .post('/api/replenishment')
+      .set('Authorization', `Bearer ${storeMgr.token}`)
+      .send({ product_id: product, requester_location_id: foreignStore, qty_needed: 5 });
     expect(res.status).toBe(403);
   });
 
@@ -455,13 +473,14 @@ describe('GET /api/replenishment — production_location_name embedding', () => 
       [production],
     );
 
+    // Store request raised EXPLICITLY (scan excludes stores); qty = max 3 - 0.
+    const created = await createRequest({
+      productId: finished, requesterLocationId: store, qtyNeeded: 3, actorUserId: null,
+    });
+    // Cron does NOT auto-advance a store request; drive the hops via advance().
     await runEngineCycle();
-    const { rows } = await ctx.db.query<{ id: number }>(
-      `SELECT id FROM replenishment_requests
-       WHERE product_id = $1 AND requester_location_id = $2`,
-      [finished, store],
-    );
-    const reqId = Number(rows[0]?.id);
+    const reqId = created.id;
+    await advance(reqId, null); // NEW -> CHECK_STORE_SUPPLIER (target resolved)
     await advance(reqId, null); // -> CHECK_PRODUCTION_INPUT
     await advance(reqId, null); // -> CREATE_PRODUCTION_ORDER (links PO at `production`)
 

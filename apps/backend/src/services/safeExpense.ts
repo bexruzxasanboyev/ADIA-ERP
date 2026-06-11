@@ -29,7 +29,18 @@ export type SafeExpenseDto = {
   readonly recorded_by_name: string | null;
 };
 
-/** Poster expense type marker. */
+/**
+ * Poster expense type marker. Confirmed LIVE against the `adia` account
+ * 2026-06-01 via `finance.getTransactions` (660 type-0 + 737 type-1 rows over
+ * 2026-05-01..06-01):
+ *   - `type = 0` -> EXPENSE (rasxod): amount is ALWAYS negative; categories are
+ *     spend ("Поставки", "Расход для Чигатой", "Помощники", "Кухня", staff names).
+ *   - `type = 1` -> INCOME (kirim): amount is ALWAYS positive ("Кассовые смены",
+ *     "Переводы").
+ * So `type 0 = expense` is the correct filter (NOT inverted). We surface only
+ * type-0 rows here and normalise the negative tiyin amount to a positive so'm
+ * figure via `Math.abs` in `mapSafeExpense`.
+ */
 const EXPENSE_TYPE = 0;
 
 function posterDateToIso(raw: string | null | undefined): string {

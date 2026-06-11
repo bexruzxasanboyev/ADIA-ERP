@@ -8,15 +8,13 @@ import {
   RefreshCw,
   MapPin,
   Package,
+  Users,
   UserCog,
   ClipboardList,
   ShoppingCart,
   TrendingUp,
+  PackageCheck,
   BookOpen,
-  Wallet,
-  ReceiptText,
-  FileText,
-  Banknote,
   type LucideIcon,
 } from 'lucide-react';
 import type { Role } from './types';
@@ -31,12 +29,7 @@ import type { Role } from './types';
  * jumps to the group's default screen (or the first screen the user
  * has access to inside that group).
  */
-export type NavGroupKey =
-  | 'dashboard'
-  | 'forecasts'
-  | 'modules'
-  | 'cashier'
-  | 'reference';
+export type NavGroupKey = 'dashboard' | 'forecasts' | 'modules' | 'reference';
 
 /**
  * Role-scoped navigation. Each item is visible only to the listed roles —
@@ -187,6 +180,17 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         roles: ALL_ROLES,
       },
       {
+        path: '/delivery',
+        label: 'Yetkazib berish',
+        icon: PackageCheck,
+        roles: [
+          'pm',
+          'central_warehouse_manager',
+          'supply_manager',
+          'store_manager',
+        ],
+      },
+      {
         path: '/production-orders',
         label: 'Ishlab chiqarish zayafkalari',
         icon: ClipboardList,
@@ -197,41 +201,6 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         label: 'Sotib olish so‘rovlari',
         icon: ShoppingCart,
         roles: ['pm', 'supply_manager', 'raw_warehouse_manager'],
-      },
-    ],
-  },
-  {
-    // EPIC 8 — Kassa / chek & nakladnoy. PM ko'radi butun zanjirni;
-    // do'kon boshlig'i o'z do'koni cheklari/smenasini (backend RBAC).
-    key: 'cashier',
-    label: 'Kassa',
-    icon: Wallet,
-    defaultPath: '/cashier/receipts',
-    hasTabs: true,
-    items: [
-      {
-        path: '/cashier/receipts',
-        label: 'Cheklar',
-        icon: ReceiptText,
-        roles: ['pm', 'store_manager'],
-      },
-      {
-        path: '/cashier/shifts',
-        label: 'Smenalar',
-        icon: Banknote,
-        roles: ['pm', 'store_manager'],
-      },
-      {
-        path: '/cashier/nakladnoy',
-        label: 'Nakladnoylar',
-        icon: FileText,
-        roles: ['pm', 'store_manager', 'production_manager'],
-      },
-      {
-        path: '/cashier/safe',
-        label: 'Seyf rasxodlari',
-        icon: Wallet,
-        roles: ['pm'],
       },
     ],
   },
@@ -255,10 +224,13 @@ export const NAV_SECTIONS: readonly NavSection[] = [
         roles: MANAGER_ROLES,
       },
       {
-        // EPIC 3 — "Foydalanuvchilar" va "Hodimlar" bitta sahifaga
-        // birlashtirildi (hodim = foydalanuvchi). M:N bo'g'in oqimi +
-        // Telegram self-link shu yerda. Eski `/users` → `/employees`
-        // redirect (AppRouter).
+        path: '/users',
+        label: 'Foydalanuvchilar',
+        icon: Users,
+        roles: ['pm'],
+      },
+      {
+        // F4.1 — extended employees admin with M:N location flow.
         path: '/employees',
         label: 'Hodimlar',
         icon: UserCog,

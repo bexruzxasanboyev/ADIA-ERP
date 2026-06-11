@@ -14,7 +14,7 @@ import userEvent from '@testing-library/user-event';
 import { renderWithProviders, jsonResponse } from '@/test/render-helpers';
 import { ProductsPage } from './products/ProductsPage';
 import { LocationsPage } from './locations/LocationsPage';
-import { EmployeesPage } from './employees/EmployeesPage';
+import { UsersPage } from './users/UsersPage';
 import { StockPage } from './stock/StockPage';
 import type {
   Location,
@@ -24,15 +24,12 @@ import type {
   MovementsResponse,
 } from '@/lib/types';
 
-// EPIC 1.4b — ProductsPage defaults its filter to "Tayyor mahsulot"
-// (finished), so the contract fixture is a finished product to prove the
-// bare-array response is consumed without first clearing the filter.
 const PRODUCT: Product = {
   id: 1,
-  name: 'Shokoladli tort',
-  type: 'finished',
-  unit: 'pcs',
-  sku: 'FIN-01',
+  name: 'Un',
+  type: 'raw',
+  unit: 'kg',
+  sku: 'UN-01',
   poster_ingredient_id: null,
   poster_product_id: null,
   is_active: true,
@@ -53,6 +50,7 @@ const LOCATION: Location = {
 const ACCOUNT: User = {
   id: 3,
   name: 'Aziz Karimov',
+  email: 'aziz@adia.test',
   username: 'aziz',
   role: 'store_manager',
   location_id: 7,
@@ -127,7 +125,7 @@ describe('list screen response contracts', () => {
   it('ProductsPage renders rows from a bare Product[] response', async () => {
     mockFetchByPath();
     renderWithProviders(<ProductsPage />);
-    expect(await screen.findByText('Shokoladli tort')).toBeInTheDocument();
+    expect(await screen.findByText('Un')).toBeInTheDocument();
   });
 
   it('LocationsPage renders rows from a bare Location[] response', async () => {
@@ -142,9 +140,9 @@ describe('list screen response contracts', () => {
     expect(screen.getAllByText('Markaziy sklad').length).toBeGreaterThan(0);
   });
 
-  it('EmployeesPage renders rows from a bare User[] response (merged users+employees)', async () => {
+  it('UsersPage renders rows from a bare User[] response', async () => {
     mockFetchByPath();
-    renderWithProviders(<EmployeesPage />);
+    renderWithProviders(<UsersPage />);
     expect(await screen.findByText('Aziz Karimov')).toBeInTheDocument();
   });
 

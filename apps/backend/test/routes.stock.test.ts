@@ -93,34 +93,37 @@ describe('POST /api/stock/movement — validation edge cases', () => {
 // PATCH /api/stock/minmax — branches
 // ---------------------------------------------------------------------------
 describe('PATCH /api/stock/minmax — boundary branches', () => {
+  // minmax is gated by authorizeWrite (owner 2026-06-06: pm is operational
+  // view-only), so these branch tests drive it as the location's own manager.
   it('rejects a negative min_level (422)', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
     const loc = await makeLocation(ctx.db, { type: 'store' });
+    const mgr = await makeUser(ctx.db, { role: 'store_manager', locationId: loc });
     const product = await makeProduct(ctx.db);
     const res = await request(ctx.app)
       .patch('/api/stock/minmax')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${mgr.token}`)
       .send({ location_id: loc, product_id: product, min_level: -1, max_level: 5 });
     expect(res.status).toBe(422);
   });
 
   it('rejects a missing required field (location_id) with 422', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
+    const loc = await makeLocation(ctx.db, { type: 'store' });
+    const mgr = await makeUser(ctx.db, { role: 'store_manager', locationId: loc });
     const product = await makeProduct(ctx.db);
     const res = await request(ctx.app)
       .patch('/api/stock/minmax')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${mgr.token}`)
       .send({ product_id: product, min_level: 0, max_level: 5 });
     expect(res.status).toBe(422);
   });
 
   it('creates a fresh stock row when (location, product) had none (upsert insert branch)', async () => {
-    const pm = await makeUser(ctx.db, { role: 'pm' });
     const loc = await makeLocation(ctx.db, { type: 'store' });
+    const mgr = await makeUser(ctx.db, { role: 'store_manager', locationId: loc });
     const product = await makeProduct(ctx.db);
     const res = await request(ctx.app)
       .patch('/api/stock/minmax')
-      .set('Authorization', `Bearer ${pm.token}`)
+      .set('Authorization', `Bearer ${mgr.token}`)
       .send({ location_id: loc, product_id: product, min_level: 1, max_level: 8 });
     expect(res.status).toBe(200);
     expect(Number(res.body.stock?.qty)).toBe(0); // freshly inserted at qty=0

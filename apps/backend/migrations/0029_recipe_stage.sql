@@ -22,9 +22,20 @@
 -- IF NOT EXISTS. No data is deleted or rewritten — purely additive.
 -- =============================================================================
 
+-- Scope the existence check to the CURRENT schema (mirrors 0010 / 0021).
+-- `pg_type` is global, so a parallel schema (e.g. an isolated integration-test
+-- schema) that already has `recipe_stage` would otherwise short-circuit this
+-- block — leaving THIS schema without the type, and the column add below
+-- failing with "type recipe_stage does not exist".
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'recipe_stage') THEN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_type t
+      JOIN pg_namespace n ON n.oid = t.typnamespace
+     WHERE t.typname = 'recipe_stage'
+       AND n.nspname = current_schema()
+  ) THEN
     CREATE TYPE recipe_stage AS ENUM ('base', 'decoration', 'assembly');
   END IF;
 END$$;

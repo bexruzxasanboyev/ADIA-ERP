@@ -110,13 +110,19 @@ export type ReplenishmentRow = {
   reject_reason: string | null;
   /** 0024 — HOW the request reached terminal. NULL while open. */
   closure_reason: ReplenishmentClosureReason | null;
+  /** 0045 — defective qty refused on receipt (NULL until receive). */
+  brak_qty: number | null;
+  /** 0045 — free-form reason for the brak (NULL when no brak). */
+  brak_reason: string | null;
+  /** 0052 — basket group id; lines created in one /batch call share it. NULL = individual. */
+  batch_id: number | null;
 };
 
 export const REPLENISHMENT_COLUMNS = `id, product_id, requester_location_id,
   target_location_id, qty_needed, status, production_order_id, purchase_order_id,
   shipment_movement_id, note, created_by, created_at, updated_at, closed_at,
   assigned_to_user_id, qty_accepted, qty_returned, accept_note, reject_reason,
-  closure_reason`;
+  closure_reason, brak_qty, brak_reason, batch_id`;
 
 /**
  * Possible outcomes of one `advance()` call. `advanced=false` means a wait
@@ -171,6 +177,12 @@ export async function createRequest(opts: {
   qtyNeeded: number;
   actorUserId: number | null;
   note?: string | null;
+  /**
+   * 0052 — optional batch group id. When set, every line created in one
+   * /batch call shares it so the central warehouse can accept/reject the
+   * whole basket as one grouped order. NULL = legacy / individual request.
+   */
+  batchId?: number | null;
 }): Promise<ReplenishmentRow> {
   if (!Number.isFinite(opts.qtyNeeded) || opts.qtyNeeded <= 0) {
     throw AppError.validation('qty_needed must be a number greater than zero.');
@@ -180,8 +192,8 @@ export async function createRequest(opts: {
     return await withTransaction(async (tx) => {
       const { rows } = await tx.query<ReplenishmentRow>(
         `INSERT INTO replenishment_requests
-           (product_id, requester_location_id, qty_needed, status, note, created_by)
-         VALUES ($1, $2, $3, 'NEW', $4, $5)
+           (product_id, requester_location_id, qty_needed, status, note, created_by, batch_id)
+         VALUES ($1, $2, $3, 'NEW', $4, $5, $6)
          RETURNING ${REPLENISHMENT_COLUMNS}`,
         [
           opts.productId,
@@ -189,6 +201,7 @@ export async function createRequest(opts: {
           opts.qtyNeeded,
           opts.note ?? null,
           opts.actorUserId,
+          opts.batchId ?? null,
         ],
       );
       const row = rows[0];
@@ -645,6 +658,147 @@ export async function returnShipment(opts: {
         qty_returned: opts.qtyReturned,
         cumulative_qty_returned: totalReturned,
         remaining_qty_accepted: newAccepted,
+      },
+    });
+    return updated;
+  });
+}
+
+/**
+ * 0045 — Receive a shipment with an optional `brak` (defect) split.
+ *
+ * Model (consistent with the existing accept flow — Variant 2):
+ *   `SHIP_TO_REQUESTER -> CLOSED` already credited the FULL shipped qty into
+ *   the requester store's stock and set status=CLOSED. `receiveShipment` is the
+ *   physical-receipt confirmation the requester operator performs:
+ *
+ *     * `received_qty`  — the GOOD qty the store keeps as sellable stock. It is
+ *                          already in the store's stock (the SHIP step put it
+ *                          there), so no movement is applied for it.
+ *     * `brak_qty`      — the DEFECTIVE qty. It must NOT remain in sellable
+ *                          stock, so it is counter-shipped back to the
+ *                          target_location_id (reason='transfer') and recorded
+ *                          in `brak_qty` / `brak_reason`.
+ *     * any remainder   — `shipped - received_qty - brak_qty` (e.g. a short
+ *                          delivery) is ALSO counter-shipped back to target so
+ *                          the store ends up holding exactly `received_qty`.
+ *
+ * The shipped qty is `qty_needed` (single-ship MVP). `received_qty + brak_qty`
+ * may not exceed it. The closure_reason is `accepted_full` when the store keeps
+ * the whole shipment with zero brak, else `accepted_partial`.
+ *
+ * Idempotent: a second call on a request that already has `closure_reason`
+ * set returns the row unchanged — a double-tap cannot double-move stock.
+ */
+export async function receiveShipment(opts: {
+  requestId: number;
+  receivedQty: number;
+  brakQty?: number;
+  brakReason?: string | null;
+  actorUserId: number | null;
+}): Promise<ReplenishmentRow> {
+  const brakQty = opts.brakQty ?? 0;
+  if (!Number.isFinite(opts.receivedQty) || opts.receivedQty < 0) {
+    throw AppError.validation('received_qty must be a number >= 0.');
+  }
+  if (!Number.isFinite(brakQty) || brakQty < 0) {
+    throw AppError.validation('brak_qty must be a number >= 0.');
+  }
+  const brakReasonClean =
+    typeof opts.brakReason === 'string' && opts.brakReason.trim() !== ''
+      ? opts.brakReason.trim()
+      : null;
+  if (brakQty > 0 && brakReasonClean === null) {
+    throw AppError.validation('brak_reason is required when brak_qty > 0.');
+  }
+  return withTransaction(async (tx) => {
+    const order = await lockRequest(tx, opts.requestId);
+    if (order.closure_reason !== null) {
+      // Already finalised — second tap is a no-op (idempotent).
+      return order;
+    }
+    if (order.status !== 'CLOSED') {
+      throw new AppError(
+        'INVALID_TRANSITION',
+        `Cannot receive a shipment for a request in status ${order.status} — wait for SHIP_TO_REQUESTER to land.`,
+      );
+    }
+    if (order.target_location_id === null) {
+      throw AppError.internal('Cannot receive — request has no target_location_id.');
+    }
+    const shippedQty = Number(order.qty_needed);
+    if (opts.receivedQty + brakQty > shippedQty) {
+      throw AppError.validation(
+        `received_qty (${opts.receivedQty}) + brak_qty (${brakQty}) cannot exceed shipped qty (${shippedQty}).`,
+      );
+    }
+    // Everything the store does NOT keep as good stock is counter-shipped back
+    // to the target: the brak AND any un-received remainder. The store's stock
+    // (credited in full by the SHIP step) thereby settles to exactly
+    // `received_qty`.
+    const returnToTarget = shippedQty - opts.receivedQty;
+    if (returnToTarget > 0) {
+      await applyMovement(
+        {
+          productId: order.product_id,
+          fromLocationId: order.requester_location_id,
+          toLocationId: order.target_location_id,
+          qty: returnToTarget,
+          reason: 'transfer',
+          actorUserId: opts.actorUserId,
+          replenishmentId: order.id,
+          note:
+            brakQty > 0
+              ? `receive: brak ${brakQty} (${brakReasonClean}); remainder ${returnToTarget - brakQty}`
+              : 'receive: un-received remainder',
+        },
+        tx,
+      );
+    }
+    const closureReason: ReplenishmentClosureReason =
+      returnToTarget === 0 ? 'accepted_full' : 'accepted_partial';
+
+    const { rows } = await tx.query<ReplenishmentRow>(
+      `UPDATE replenishment_requests
+         SET qty_accepted   = $2,
+             qty_returned   = $3,
+             brak_qty       = $4,
+             brak_reason    = $5,
+             closure_reason = $6
+       WHERE id = $1
+       RETURNING ${REPLENISHMENT_COLUMNS}`,
+      [
+        opts.requestId,
+        opts.receivedQty,
+        returnToTarget > 0 ? returnToTarget : null,
+        brakQty,
+        brakReasonClean,
+        closureReason,
+      ],
+    );
+    const updated = rows[0];
+    if (updated === undefined) {
+      throw AppError.internal('Replenishment receive returned no row.');
+    }
+    await recordTransition(
+      tx,
+      opts.requestId,
+      'CLOSED',
+      'CLOSED',
+      `receive:${closureReason} received=${opts.receivedQty} brak=${brakQty}`,
+      opts.actorUserId,
+    );
+    await writeAudit(tx, {
+      actorUserId: opts.actorUserId,
+      action: 'replenishment.receive',
+      entity: 'replenishment_requests',
+      entityId: opts.requestId,
+      payload: {
+        closure_reason: closureReason,
+        received_qty: opts.receivedQty,
+        brak_qty: brakQty,
+        brak_reason: brakReasonClean,
+        returned_to_target: returnToTarget,
       },
     });
     return updated;
@@ -1463,6 +1617,286 @@ async function createPurchaseOrderRow(
 }
 
 // -----------------------------------------------------------------------------
+// Store workflow — AI proposals + central accept/reject (2026-06-05)
+// -----------------------------------------------------------------------------
+
+/** One AI top-up proposal for a below-min product at a store. */
+export type ReplenishmentProposal = {
+  product_id: number;
+  product_name: string;
+  unit: string;
+  current_qty: number;
+  min_level: number;
+  max_level: number;
+  /** The AI top-up = max_level - current_qty (always > 0). */
+  suggested_qty: number;
+};
+
+/**
+ * Build the AI auto-request proposals for one store: every below-min product
+ * (qty <= min_level, max_level > 0) that does NOT already have an open
+ * replenishment request (invariant 2 debounce). `suggested_qty` tops the store
+ * back up to `max_level`.
+ */
+export async function getProposalsForLocation(
+  locationId: number,
+): Promise<ReplenishmentProposal[]> {
+  const { rows } = await query<{
+    product_id: number;
+    product_name: string;
+    unit: string;
+    current_qty: string;
+    min_level: string;
+    max_level: string;
+  }>(
+    `SELECT s.product_id,
+            p.name AS product_name,
+            p.unit AS unit,
+            s.qty       AS current_qty,
+            s.min_level AS min_level,
+            s.max_level AS max_level
+       FROM stock s
+       JOIN products p ON p.id = s.product_id
+      WHERE s.location_id = $1
+        AND s.qty <= s.min_level
+        AND s.max_level > 0
+        AND (s.max_level - s.qty) > 0
+        -- invariant 2 debounce: skip products with an open request here.
+        AND NOT EXISTS (
+          SELECT 1 FROM replenishment_requests r
+           WHERE r.requester_location_id = s.location_id
+             AND r.product_id = s.product_id
+             AND r.status NOT IN ('CLOSED', 'CANCELLED')
+        )
+      ORDER BY (s.min_level - s.qty) DESC, p.name ASC`,
+    [locationId],
+  );
+  return rows.map((r) => {
+    const currentQty = Number(r.current_qty);
+    const maxLevel = Number(r.max_level);
+    return {
+      product_id: Number(r.product_id),
+      product_name: r.product_name,
+      unit: r.unit,
+      current_qty: currentQty,
+      min_level: Number(r.min_level),
+      max_level: maxLevel,
+      suggested_qty: maxLevel - currentQty,
+    };
+  });
+}
+
+/**
+ * Central-warehouse ACCEPT of an incoming store request.
+ *
+ * The store requests (status NEW / CHECK_STORE_SUPPLIER) are accepted by the
+ * central warehouse manager: we (a) pin the request's `target_location_id` to
+ * the acting central warehouse if it is not already set, then (b) drive the
+ * engine forward so it ships from the central warehouse to the store
+ * (SHIP_TO_REQUESTER -> CLOSED), reusing `advance()` / `applyMovement` — all
+ * invariants (atomic, audit, no negative stock) are preserved by the engine.
+ *
+ * Returns the advanced request plus a flag indicating whether the ship landed.
+ * If the central has no stock the engine holds at SHIP_TO_REQUESTER and
+ * `shipped=false` is returned (the manager can produce/restock then retry).
+ */
+export async function acceptByCentral(opts: {
+  requestId: number;
+  centralLocationId: number;
+  actorUserId: number | null;
+}): Promise<{ request: ReplenishmentRow; shipped: boolean; reason: string }> {
+  // Pin the target + advance to SHIP in ONE transaction, then ship in a second
+  // advance hop. We open the tx ourselves so the target-pin + the first hop are
+  // atomic; `advance(tx)` re-uses it.
+  return withTransaction(async (tx) => {
+    const order = await lockRequest(tx, opts.requestId);
+    if (TERMINAL_STATUSES.includes(order.status)) {
+      return { request: order, shipped: false, reason: `request already ${order.status}` };
+    }
+
+    // Pin / verify the target. If a target is already set it must be the
+    // acting central warehouse (the manager can only accept requests bound for
+    // their own warehouse — the route enforces this too).
+    if (order.target_location_id === null) {
+      const { rows } = await tx.query<ReplenishmentRow>(
+        `UPDATE replenishment_requests
+            SET target_location_id = $2
+          WHERE id = $1
+          RETURNING ${REPLENISHMENT_COLUMNS}`,
+        [opts.requestId, opts.centralLocationId],
+      );
+      const pinned = rows[0];
+      if (pinned === undefined) {
+        throw AppError.internal('Accept-by-central: target pin returned no row.');
+      }
+      Object.assign(order, pinned);
+    } else if (Number(order.target_location_id) !== opts.centralLocationId) {
+      throw AppError.forbidden(
+        'This request targets a different warehouse; you may only accept requests bound for your own.',
+      );
+    }
+
+    await writeAudit(tx, {
+      actorUserId: opts.actorUserId,
+      action: 'replenishment.accept_by_central',
+      entity: 'replenishment_requests',
+      entityId: opts.requestId,
+      payload: {
+        central_location_id: opts.centralLocationId,
+        from_status: order.status,
+      },
+    });
+
+    // Drive the engine forward inside the SAME transaction. From NEW it needs a
+    // CHECK_STORE_SUPPLIER hop first; we loop a few times so a freshly-pinned
+    // request can reach SHIP_TO_REQUESTER and then CLOSED in one accept.
+    let result: AdvanceResult = { advanced: false, request: order, reason: 'init' };
+    let safety = 6;
+    let current = order;
+    while (safety > 0 && !TERMINAL_STATUSES.includes(current.status)) {
+      safety -= 1;
+      // NEW -> CHECK_STORE_SUPPLIER walks topology to find a central warehouse;
+      // store chains here have no parent, so we bypass NEW by stepping to
+      // CHECK_STORE_SUPPLIER directly (target is already pinned).
+      if (current.status === 'NEW') {
+        current = await transitionStatus(
+          tx,
+          current,
+          'CHECK_STORE_SUPPLIER',
+          'accepted by central — target pinned',
+          opts.actorUserId,
+        );
+        continue;
+      }
+      result = await advanceOne(tx, current, opts.actorUserId);
+      if (!result.advanced) {
+        break;
+      }
+      current = result.request;
+    }
+
+    const shipped = current.status === 'CLOSED';
+    return {
+      request: current,
+      shipped,
+      reason: shipped ? 'shipped to store' : result.reason,
+    };
+  });
+}
+
+/**
+ * Generic fulfiller ACCEPT — for a NON-central target (sex → its sklad,
+ * central → production, ...). A cross-department request's target is the
+ * requester's topology parent, which is NOT always a central warehouse.
+ * `acceptByCentral` forces the central code path (and would, on a stock-short
+ * target, cascade into the central production/purchase chain rooted at the
+ * requester — the wrong chain for a sex→sklad ask). This function instead
+ * applies the simple, target-type-agnostic semantics the owner expects from
+ * any fulfilling manager:
+ *
+ *   - pin the request's target to the accepting location;
+ *   - if that location has stock, ship from it (CHECK_STORE_SUPPLIER ->
+ *     SHIP_TO_REQUESTER -> CLOSED), reusing `advanceShipToRequester`
+ *     (atomic movement + audit + no negative stock);
+ *   - if it does NOT have enough stock, HOLD the request at
+ *     CHECK_STORE_SUPPLIER (do not auto-trigger the central production chain).
+ *     The manager restocks then re-accepts.
+ *
+ * The central-warehouse case keeps using `acceptByCentral`, which deliberately
+ * cascades into production/purchase when the central is short.
+ */
+export async function acceptByFulfiller(opts: {
+  requestId: number;
+  fulfillerLocationId: number;
+  actorUserId: number | null;
+}): Promise<{ request: ReplenishmentRow; shipped: boolean; reason: string }> {
+  return withTransaction(async (tx) => {
+    const order = await lockRequest(tx, opts.requestId);
+    if (TERMINAL_STATUSES.includes(order.status)) {
+      return { request: order, shipped: false, reason: `request already ${order.status}` };
+    }
+
+    // Pin / verify the target to the accepting (fulfiller) location.
+    let current = order;
+    if (current.target_location_id === null) {
+      const { rows } = await tx.query<ReplenishmentRow>(
+        `UPDATE replenishment_requests
+            SET target_location_id = $2
+          WHERE id = $1
+          RETURNING ${REPLENISHMENT_COLUMNS}`,
+        [opts.requestId, opts.fulfillerLocationId],
+      );
+      const pinned = rows[0];
+      if (pinned === undefined) {
+        throw AppError.internal('Accept-by-fulfiller: target pin returned no row.');
+      }
+      current = pinned;
+    } else if (Number(current.target_location_id) !== opts.fulfillerLocationId) {
+      throw AppError.forbidden(
+        'This request targets a different location; you may only accept requests bound for your own.',
+      );
+    }
+
+    await writeAudit(tx, {
+      actorUserId: opts.actorUserId,
+      action: 'replenishment.accept_by_fulfiller',
+      entity: 'replenishment_requests',
+      entityId: opts.requestId,
+      payload: {
+        fulfiller_location_id: opts.fulfillerLocationId,
+        from_status: current.status,
+      },
+    });
+
+    // NEW -> CHECK_STORE_SUPPLIER (target is pinned; bypass the topology-based
+    // central resolution in `advanceNew`).
+    if (current.status === 'NEW') {
+      current = await transitionStatus(
+        tx,
+        current,
+        'CHECK_STORE_SUPPLIER',
+        'accepted by fulfiller — target pinned',
+        opts.actorUserId,
+      );
+    }
+
+    // Ship only if the fulfiller has stock. If it does not, HOLD here — do NOT
+    // fall through to the central production/purchase chain.
+    if (current.status === 'CHECK_STORE_SUPPLIER') {
+      const qtyNeeded = Number(current.qty_needed);
+      const targetQty = await readStockQty(
+        tx,
+        opts.fulfillerLocationId,
+        current.product_id,
+      );
+      if (targetQty <= 0) {
+        return {
+          request: current,
+          shipped: false,
+          reason: 'fulfiller has no stock to ship — restock then re-accept',
+        };
+      }
+      const toShip = await transitionStatus(
+        tx,
+        current,
+        'SHIP_TO_REQUESTER',
+        `fulfiller has ${targetQty} (needed ${qtyNeeded})`,
+        opts.actorUserId,
+      );
+      const result = await advanceShipToRequester(tx, toShip, opts.actorUserId);
+      current = result.request;
+    }
+
+    const shipped = current.status === 'CLOSED';
+    return {
+      request: current,
+      shipped,
+      reason: shipped ? 'shipped to requester' : `held at ${current.status}`,
+    };
+  });
+}
+
+// -----------------------------------------------------------------------------
 // Scan worker
 // -----------------------------------------------------------------------------
 
@@ -1484,9 +1918,15 @@ export async function scanBelowMin(): Promise<BelowMinRow[]> {
     min_level: number;
     max_level: number;
   }>(
-    `SELECT location_id, product_id, qty, min_level, max_level
-     FROM stock
-     WHERE qty <= min_level AND max_level > 0`,
+    // STORES are EXCLUDED from auto-creation: per owner spec the store flow is
+    // AI-propose → boss-approve (GET /proposals + POST /proposals/approve), so a
+    // store never auto-raises a replenishment request. Internal layers
+    // (production sex_storage, central warehouse, raw) keep auto-replenishment.
+    `SELECT s.location_id, s.product_id, s.qty, s.min_level, s.max_level
+     FROM stock s
+     JOIN locations l ON l.id = s.location_id
+     WHERE s.qty <= s.min_level AND s.max_level > 0
+       AND l.type <> 'store'::location_type`,
   );
   return rows.map((r) => ({
     location_id: r.location_id,
@@ -1561,9 +2001,23 @@ export async function runEngineCycle(opts: { actorUserId?: number | null } = {})
   // Step every non-terminal request once. A failure on one row must not stop
   // the whole cycle — the cron pass runs every five minutes, so an isolated
   // error stays visible in the log but the rest of the queue keeps moving.
+  //
+  // CRITICAL — the central accept/reject gate (the owner's "to'g'ri connection").
+  // A request raised by a STORE must WAIT for an explicit central-manager accept
+  // (POST /:id/accept-central, bot xreq:accept -> acceptByCentral) before it
+  // ships. If the cron auto-advanced such a request it would resolve the central
+  // target, ship to the store, and CLOSE it — making the manager's accept/reject
+  // purely cosmetic. So the auto-advance LOOP skips store-requester requests
+  // entirely; they advance ONLY via the central accept path. Internal-layer
+  // requests (production / sex_storage / central / raw) keep auto-advancing.
+  // The manual `advance()` function itself is unchanged — acceptByCentral and
+  // the tests still drive store requests through it directly.
   const { rows: open } = await query<{ id: number }>(
-    `SELECT id FROM replenishment_requests
-     WHERE status NOT IN ('CLOSED','CANCELLED')`,
+    `SELECT r.id
+       FROM replenishment_requests r
+       JOIN locations rl ON rl.id = r.requester_location_id
+      WHERE r.status NOT IN ('CLOSED','CANCELLED')
+        AND rl.type <> 'store'::location_type`,
   );
   let advanced = 0;
   for (const r of open) {

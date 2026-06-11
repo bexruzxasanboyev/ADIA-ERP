@@ -242,14 +242,16 @@ describe('POST /api/replenishment/:id/advance — RBAC location scoping', () => 
       locationId: store, productId: product, qty: 0, minLevel: 1, maxLevel: 4,
     });
 
-    const { runEngineCycle } = await import('../src/services/replenishment.js');
-    await runEngineCycle(); // creates + advances NEW -> CHECK_STORE_SUPPLIER
-
-    const { rows } = await ctx.db.query<{ id: number }>(
-      `SELECT id FROM replenishment_requests WHERE product_id = $1 AND requester_location_id = $2`,
-      [product, store],
-    );
-    const reqId = Number(rows[0]?.id);
+    // Stores are not auto-scanned, and the cron does NOT auto-advance a store
+    // request. Raise it explicitly, then walk the NEW -> CHECK_STORE_SUPPLIER
+    // hop (target pinned to the central) so the central_warehouse_manager is
+    // linked via target and can advance the next hop over HTTP.
+    const { createRequest, advance } = await import('../src/services/replenishment.js');
+    const created = await createRequest({
+      productId: product, requesterLocationId: store, qtyNeeded: 4, actorUserId: null,
+    });
+    const reqId = created.id;
+    await advance(reqId, null); // NEW -> CHECK_STORE_SUPPLIER (target = central)
 
     const centralMgr = await makeUser(ctx.db, {
       role: 'central_warehouse_manager', locationId: central,
@@ -277,14 +279,14 @@ describe('POST /api/replenishment/:id/advance — RBAC location scoping', () => 
     });
     await setStock(ctx.db, { locationId: rawWh, productId: raw, qty: 1 });
 
-    const { runEngineCycle, advance } = await import('../src/services/replenishment.js');
-    await runEngineCycle();
-    // Drive the request to CREATE_PURCHASE_ORDER.
-    const { rows: idRows } = await ctx.db.query<{ id: number }>(
-      `SELECT id FROM replenishment_requests WHERE product_id = $1 AND requester_location_id = $2`,
-      [finished, store],
-    );
-    const reqId = Number(idRows[0]?.id);
+    // Stores are not auto-scanned, and the cron does NOT auto-advance a store
+    // request. Raise it explicitly, then drive the hops via advance().
+    const { createRequest, advance } = await import('../src/services/replenishment.js');
+    const created = await createRequest({
+      productId: finished, requesterLocationId: store, qtyNeeded: 6, actorUserId: null,
+    });
+    const reqId = created.id;
+    await advance(reqId, null); // NEW -> CHECK_STORE_SUPPLIER (target resolved)
     await advance(reqId, null); // -> CHECK_PRODUCTION_INPUT
     await advance(reqId, null); // -> CREATE_PURCHASE_ORDER
 

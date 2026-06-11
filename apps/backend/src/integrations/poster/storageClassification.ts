@@ -81,3 +81,97 @@ export function classifyStorage(storageId: number): StorageLocationType {
 export function isStoreBackingStorage(storageId: number): boolean {
   return storageId in STORE_BACKING_STORAGE;
 }
+
+// -----------------------------------------------------------------------------
+// sex_storage -> production-department NAME matching (conservative attach).
+// -----------------------------------------------------------------------------
+//
+// Poster has NO "production department" concept. ADIA models a production
+// department as `locations.type='production'`; its physical storage is a
+// `type='sex_storage'` row linked by `parent_id` -> the department. The Poster
+// sync seeds the sex_storage rows (by product type: "Склад Тортов", "Склад
+// Наполеон"…) but cannot know WHICH department each belongs under.
+//
+// This helper performs a CONSERVATIVE name match: it only returns a department
+// when a department's name token is a substring of the (translit-normalised)
+// storage name. The bar is deliberately high — an ambiguous storage returns
+// null and is left for the owner to map by hand. We NEVER guess.
+
+/**
+ * Cyrillic -> Latin transliteration map covering the letters that appear in the
+ * live Poster storage / ADIA department names. Lower-case only; callers
+ * lower-case first. Multi-letter Cyrillic sounds expand to their usual Latin
+ * digraphs so a Russian storage name can match a Latin (Uzbek) department name.
+ */
+const CYRILLIC_TO_LATIN: Readonly<Record<string, string>> = {
+  а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh',
+  з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o',
+  п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'ts',
+  ч: 'ch', ш: 'sh', щ: 'sch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu',
+  я: 'ya',
+};
+
+/**
+ * Normalise a location name for matching: lower-case, transliterate Cyrillic to
+ * Latin, drop the generic "sklad"/"sexi"/"cex"/"tseh" qualifier words, and
+ * collapse to single spaces. The result is a stable comparison key in Latin.
+ */
+export function normaliseLocationName(name: string): string {
+  const lower = name.toLowerCase().trim();
+  let translit = '';
+  for (const ch of lower) {
+    translit += ch in CYRILLIC_TO_LATIN ? CYRILLIC_TO_LATIN[ch] : ch;
+  }
+  // Strip generic storage/department qualifier words — they are noise for the
+  // product-type match (e.g. "sklad tortov" / "tort sexi" -> "tortov" / "tort").
+  const STOP_WORDS = new Set(['sklad', 'sexi', 'sex', 'cex', 'tseh', 'skladi']);
+  const tokens = translit
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length > 0 && !STOP_WORDS.has(t));
+  return tokens.join(' ');
+}
+
+/** A production department candidate for the name match. */
+export type DeptCandidate = { readonly id: number; readonly name: string };
+
+/** The result of matching one sex_storage name against the departments. */
+export type DeptMatch = {
+  readonly deptId: number;
+  readonly deptName: string;
+  /** The normalised department token that matched inside the storage name. */
+  readonly matchedToken: string;
+};
+
+/**
+ * Find the production department a sex_storage's name CONFIDENTLY belongs under.
+ *
+ * Rule (conservative): a department matches when ANY of its normalised name
+ * tokens (length >= 4 to avoid spurious 1-2 letter hits) is a substring of the
+ * normalised storage name. The longest matched token wins when several
+ * departments match (most specific). Returns null when nothing matches — the
+ * caller leaves such a storage unparented for manual mapping.
+ *
+ * Why substring and not equality: Poster names the storage by the product
+ * ("Склад Тортов" -> "tortov") while the department is named for the shop
+ * ("Tort sexi" -> "tort"); the department token is the stem of the storage
+ * name, so a substring test on the >=4-char token is the safe confident match.
+ */
+export function matchSexStorageToDept(
+  storageName: string,
+  depts: readonly DeptCandidate[],
+): DeptMatch | null {
+  const haystack = normaliseLocationName(storageName);
+  if (haystack === '') return null;
+  let best: DeptMatch | null = null;
+  for (const dept of depts) {
+    const deptTokens = normaliseLocationName(dept.name).split(' ').filter((t) => t.length >= 4);
+    for (const token of deptTokens) {
+      if (!haystack.includes(token)) continue;
+      if (best === null || token.length > best.matchedToken.length) {
+        best = { deptId: dept.id, deptName: dept.name, matchedToken: token };
+      }
+    }
+  }
+  return best;
+}

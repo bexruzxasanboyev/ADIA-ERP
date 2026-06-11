@@ -11,6 +11,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestContext, type TestContext } from './helpers/context.js';
 import { PosterClient } from '../src/integrations/poster/client.js';
 import {
+  syncCategories,
+  syncIngredientCategories,
   syncSpots,
   syncStorages,
   syncIngredients,
@@ -34,6 +36,7 @@ beforeEach(async () => {
   await ctx.db.query('DELETE FROM stock');
   await ctx.db.query('DELETE FROM recipes');
   await ctx.db.query('DELETE FROM products');
+  await ctx.db.query('DELETE FROM categories');
   await ctx.db.query('DELETE FROM locations');
   await ctx.db.query('DELETE FROM poster_sync_log');
 });
@@ -303,7 +306,13 @@ describe('Poster seedSync — ingredients_type filter (C5)', () => {
 });
 
 describe('Poster seedSync — ingredients + prepacks (BOM)', () => {
-  it('imports ingredients, then a prepack with its BOM (`out`-normalised)', async () => {
+  it('imports ingredients, then a prepack with its BOM (`out`-normalised to the prepack unit)', async () => {
+    // Mirrors real Poster prepack shape: lines are in GRAMS (structure_unit
+    // 'g'), `out` is the batch yield in grams, the prepack is stocked in kg.
+    // qty_per_unit must mean "component qty (kg) per 1 kg of the prepack's
+    // output" — so BOTH the brutto AND `out` normalise g->kg before dividing.
+    // This is the 2026-05-30 fix: previously `out` stayed in grams while the
+    // brutto was already kg, making every qty_per_unit ~1000x too small.
     const client = clientForResponses({
       'menu.getIngredients': [
         { ingredient_id: 100, ingredient_name: 'Flour', ingredient_unit: 'kg' },
@@ -314,23 +323,25 @@ describe('Poster seedSync — ingredients + prepacks (BOM)', () => {
           product_id: '500',
           ingredient_id: '600',
           product_name: 'Dough base',
-          out: 2000, // 2000 units per batch
+          out: 2000, // 2000 g batch yield -> 2 kg of output
           ingredients: [
             {
               structure_id: 's1',
               ingredient_id: '100',
               structure_unit: 'g',
               structure_type: '1',
-              structure_brutto: 1000, // 1000g per batch -> 0.5 kg per batch -> 0.5/2000 kg per unit
+              structure_brutto: 1000, // 1000 g -> 1 kg; / 2 kg out = 0.5 kg/kg
+              structure_netto: 950,
               ingredient_name: 'Flour',
               ingredient_unit: 'kg',
             },
             {
               structure_id: 's2',
               ingredient_id: '101',
-              structure_unit: 'kg',
+              structure_unit: 'g',
               structure_type: '1',
-              structure_brutto: 0.4, // 0.4 kg/batch -> 0.4/2000 kg per unit
+              structure_brutto: 400, // 400 g -> 0.4 kg; / 2 kg out = 0.2 kg/kg
+              structure_netto: 400,
               ingredient_name: 'Sugar',
               ingredient_unit: 'kg',
             },
@@ -353,14 +364,25 @@ describe('Poster seedSync — ingredients + prepacks (BOM)', () => {
     expect(prods.find((p) => p.poster_ingredient_id === 100)?.type).toBe('raw');
     expect(prods.find((p) => p.poster_product_id === 500)?.type).toBe('semi');
 
-    const { rows: recipes } = await ctx.db.query<{ qty_per_unit: number; component_product_id: number }>(
-      `SELECT qty_per_unit, component_product_id FROM recipes ORDER BY component_product_id`,
+    const { rows: recipes } = await ctx.db.query<{
+      qty_per_unit: number;
+      component_product_id: number;
+      brutto: string | null;
+      netto: string | null;
+    }>(
+      `SELECT qty_per_unit, component_product_id, brutto, netto
+         FROM recipes ORDER BY component_product_id`,
     );
     expect(recipes).toHaveLength(2);
-    // Flour: 1000 g (-> 1 kg) / 2000 out = 0.0005 kg per unit
-    expect(recipes[0]?.qty_per_unit).toBeCloseTo(0.0005, 6);
-    // Sugar: 0.4 kg / 2000 = 0.0002 kg per unit
-    expect(recipes[1]?.qty_per_unit).toBeCloseTo(0.0002, 6);
+    // Flour: 1000 g (-> 1 kg) / 2 kg out = 0.5 kg per kg of output.
+    expect(Number(recipes[0]?.qty_per_unit)).toBeCloseTo(0.5, 6);
+    // Sugar: 400 g (-> 0.4 kg) / 2 kg out = 0.2 kg per kg of output.
+    expect(Number(recipes[1]?.qty_per_unit)).toBeCloseTo(0.2, 6);
+    // Brutto/netto stored RAW in the line's structure_unit (grams here).
+    expect(Number(recipes[0]?.brutto)).toBeCloseTo(1000, 4);
+    expect(Number(recipes[0]?.netto)).toBeCloseTo(950, 4);
+    expect(Number(recipes[1]?.brutto)).toBeCloseTo(400, 4);
+    expect(Number(recipes[1]?.netto)).toBeCloseTo(400, 4);
   });
 
   it('isolates per-prepack failures so one bad row does NOT poison the rest (Prove-It regression)', async () => {
@@ -533,6 +555,129 @@ describe('Poster seedSync — ingredients + prepacks (BOM)', () => {
   });
 });
 
+describe('Poster seedSync — nested BOM (structure_type) + cost', () => {
+  it('resolves a prepack-in-prepack child by poster_product_id (structure_type=2) and syncs raw unit cost', async () => {
+    // НАПОЛЕОН-shaped tree: prepack 281 -> [ун raw 310g, крем prepack(562)].
+    // Prepack 562 appears AFTER 281 in the list — phase-1/phase-2 must still
+    // link them (the bug was: type=2 children resolved by poster_ingredient_id
+    // -> always missing -> silently dropped).
+    const client = clientForResponses({
+      'menu.getIngredients': [
+        { ingredient_id: 708, ingredient_name: 'ун', ingredient_unit: 'kg', ingredients_type: 1 },
+        { ingredient_id: 703, ingredient_name: 'Молоко белый', ingredient_unit: 'kg', ingredients_type: 1 },
+      ],
+      'menu.getPrepacks': [
+        {
+          product_id: '281',
+          ingredient_id: '0', // stockless prepack — must still import
+          product_name: 'Г/П НАПОЛЕОН (ЦЕЛЫЙ)',
+          out: 1000,
+          ingredients: [
+            { structure_id: 's1', ingredient_id: '708', structure_type: '1', structure_unit: 'g', structure_brutto: '310.00', structure_netto: 310, structure_selfprice: '232518', ingredient_name: 'ун', ingredient_unit: 'kg' },
+            { structure_id: 's2', ingredient_id: '562', structure_type: '2', structure_unit: 'g', structure_brutto: '3350.00', structure_netto: 3350, structure_selfprice: '7966096', ingredient_name: 'крем наполеон', ingredient_unit: 'kg' },
+          ],
+        },
+        {
+          product_id: '562',
+          ingredient_id: '0',
+          product_name: 'крем наполеон',
+          out: 33500,
+          ingredients: [
+            { structure_id: 's3', ingredient_id: '703', structure_type: '1', structure_unit: 'g', structure_brutto: '15000.00', structure_netto: 15000, structure_selfprice: '27000000', ingredient_name: 'Молоко белый', ingredient_unit: 'kg' },
+          ],
+        },
+      ],
+    });
+
+    await syncIngredients(client);
+    const r = await syncPrepacks(client);
+    expect(r.status).toBe('ok');
+    expect(r.recordsApplied).toBe(2);
+
+    // Both prepacks imported (281 with ingredient_id=0 too).
+    const { rows: prepacks } = await ctx.db.query<{ poster_product_id: number; type: string; poster_ingredient_id: number | null }>(
+      `SELECT poster_product_id, type, poster_ingredient_id FROM products WHERE type='semi' ORDER BY poster_product_id`,
+    );
+    expect(prepacks.map((p) => p.poster_product_id)).toEqual([281, 562]);
+    expect(prepacks[0]?.poster_ingredient_id).toBeNull(); // 281 stockless
+
+    // 281's BOM has BOTH the raw (ун) AND the prepack child (крем = 562).
+    const { rows: bom281 } = await ctx.db.query<{ component_type: string; qty: string }>(
+      `SELECT cp.type AS component_type, r.qty_per_unit::text AS qty
+         FROM recipes r
+         JOIN products parent ON parent.id = r.product_id AND parent.poster_product_id = 281
+         JOIN products cp ON cp.id = r.component_product_id
+        ORDER BY cp.type`,
+    );
+    // raw (ун) + semi (крем) — TWO lines (the prepack child is no longer dropped).
+    expect(bom281).toHaveLength(2);
+    expect(bom281.map((b) => b.component_type).sort()).toEqual(['raw', 'semi']);
+
+    // Raw unit cost synced from structure_selfprice: ун = 232518 tiyin / 0.310 kg
+    // / 100 = 7500.58 so'm/kg.
+    const { rows: cost } = await ctx.db.query<{ cost_per_unit: string }>(
+      `SELECT cost_per_unit::text FROM products WHERE poster_ingredient_id = 708`,
+    );
+    expect(Number(cost[0]?.cost_per_unit)).toBeCloseTo(7500.58, 1);
+  });
+
+  it('links a finished product to its WHOLE (ЦЕЛЫЙ) group_modification prepack', async () => {
+    // Finished НАПОЛЕОН (440) has no flat ingredients — only group_modifications
+    // (ЦЕЛЫЙ brutto 1000 / ПОЛОВИНА 500). Owner: take ЦЕЛЫЙ -> link prepack 281.
+    const client = new PosterClient({
+      token: 'acc:test',
+      minIntervalMs: 0,
+      fetcher: ((url: string | URL) => {
+        const u = typeof url === 'string' ? new URL(url) : url;
+        const m = u.pathname.split('/').pop() ?? '';
+        const ok = (resp: unknown): Response =>
+          new Response(JSON.stringify({ response: resp }), { status: 200 });
+        if (m === 'menu.getPrepacks') {
+          return Promise.resolve(ok([
+            { product_id: '281', ingredient_id: '0', product_name: 'Г/П НАПОЛЕОН (ЦЕЛЫЙ)', out: 1000, ingredients: [] },
+          ]));
+        }
+        if (m === 'menu.getProducts') {
+          return Promise.resolve(ok([
+            { product_id: '440', product_name: 'НАПОЛЕОН', type: '2', ingredient_id: '0' },
+          ]));
+        }
+        if (m === 'menu.getProduct') {
+          return Promise.resolve(ok({
+            product_id: '440', product_name: 'НАПОЛЕОН', type: '2', ingredient_id: '0',
+            group_modifications: [
+              {
+                dish_modification_group_id: 130,
+                name: 'Размеры',
+                modifications: [
+                  { dish_modification_id: 426, name: 'ЦЕЛЫЙ', ingredient_id: 281, type: 3, brutto: 1000 },
+                  { dish_modification_id: 1220, name: 'ПОЛОВИНА', ingredient_id: 281, type: 3, brutto: 500 },
+                ],
+              },
+            ],
+          }));
+        }
+        return Promise.resolve(new Response(JSON.stringify({ error: { code: 30, message: 'no' } }), { status: 200 }));
+      }) as unknown as typeof fetch,
+    });
+
+    await syncPrepacks(client);
+    const r = await syncMenuProducts(client);
+    expect(r.status).toBe('ok');
+
+    // Finished 440 linked to prepack 281 as its single component, qty 1.0 (ЦЕЛЫЙ).
+    const { rows } = await ctx.db.query<{ qty: string; child_poster: number }>(
+      `SELECT r.qty_per_unit::text AS qty, cp.poster_product_id AS child_poster
+         FROM recipes r
+         JOIN products parent ON parent.id = r.product_id AND parent.poster_product_id = 440
+         JOIN products cp ON cp.id = r.component_product_id`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.child_poster).toBe(281);
+    expect(Number(rows[0]?.qty)).toBeCloseTo(1.0, 4);
+  });
+});
+
 describe('Poster seedSync — menu products + BOM import', () => {
   it('imports type=2 products with BOM and skips type=3 products', async () => {
     // Drive `menu.getProduct?product_id=...` per id via URL inspection.
@@ -620,5 +765,146 @@ describe('Poster seedSync — menu products + BOM import', () => {
     expect(recipes).toHaveLength(1);
     // 200 g of cocoa converted to kg -> 0.2 kg per unit.
     expect(recipes[0]?.qty_per_unit).toBeCloseTo(0.2, 6);
+  });
+});
+
+describe('Poster seedSync — categories (menu.getCategories)', () => {
+  it('upserts categories and maps menu_category_id -> products.category_id', async () => {
+    const client = clientForResponses({
+      'menu.getCategories': [
+        { category_id: '3', category_name: 'Пирожные' },
+        { category_id: '7', category_name: 'Торты' },
+      ],
+      'menu.getProducts': [
+        // type=3 so no per-product BOM fetch is attempted; category is mapped
+        // in phase 1 regardless of product type.
+        { product_id: '900', product_name: 'Эклер', type: '3', menu_category_id: '3' },
+        { product_id: '901', product_name: 'Медовик', type: '3', menu_category_id: '7' },
+        // No menu_category_id -> category_id stays NULL.
+        { product_id: '902', product_name: 'Без категории', type: '3' },
+      ],
+    });
+
+    const cat = await syncCategories(client);
+    expect(cat.status).toBe('ok');
+    expect(cat.recordsApplied).toBe(2);
+
+    const prod = await syncMenuProducts(client);
+    expect(prod.status).toBe('ok');
+
+    const { rows } = await ctx.db.query<{
+      poster_product_id: number;
+      category_name: string | null;
+    }>(
+      `SELECT p.poster_product_id, c.name AS category_name
+         FROM products p
+         LEFT JOIN categories c ON c.id = p.category_id
+        WHERE p.poster_product_id IS NOT NULL
+        ORDER BY p.poster_product_id`,
+    );
+    expect(rows).toHaveLength(3);
+    expect(rows[0]?.category_name).toBe('Пирожные'); // 900 -> cat 3
+    expect(rows[1]?.category_name).toBe('Торты'); // 901 -> cat 7
+    expect(rows[2]?.category_name).toBeNull(); // 902 -> no category
+
+    // Idempotent: a second category run renames in place, no duplicate rows.
+    const cat2 = await syncCategories(
+      clientForResponses({
+        'menu.getCategories': [{ category_id: '3', category_name: 'Пирожные (нов.)' }],
+      }),
+    );
+    expect(cat2.status).toBe('ok');
+    const { rows: catCount } = await ctx.db.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM categories`,
+    );
+    expect(catCount[0]?.n).toBe('2');
+  });
+});
+
+describe('Poster seedSync — ingredient categories (menu.getCategoriesIngredients)', () => {
+  it('upserts ingredient categories and maps raw category_id -> products.category_id', async () => {
+    const client = clientForResponses({
+      'menu.getCategoriesIngredients': [
+        { category_id: '1', name: 'Молочные продукты' },
+        { category_id: '15', name: 'Тесто' },
+      ],
+      'menu.getIngredients': [
+        { ingredient_id: '500', ingredient_name: 'Молоко', ingredient_unit: 'l', ingredients_type: 1, category_id: 1 },
+        { ingredient_id: '501', ingredient_name: 'Тесто слоёное', ingredient_unit: 'kg', ingredients_type: 1, category_id: 15 },
+        // category_id 0 -> uncategorised -> category_id stays NULL.
+        { ingredient_id: '502', ingredient_name: 'Без категории', ingredient_unit: 'p', ingredients_type: 1, category_id: 0 },
+      ],
+    });
+
+    const cat = await syncIngredientCategories(client);
+    expect(cat.status).toBe('ok');
+    expect(cat.recordsApplied).toBe(2);
+
+    const ing = await syncIngredients(client);
+    expect(ing.status).toBe('ok');
+    expect(ing.recordsApplied).toBe(3);
+
+    const { rows } = await ctx.db.query<{
+      poster_ingredient_id: number;
+      type: string;
+      category_name: string | null;
+    }>(
+      `SELECT p.poster_ingredient_id, p.type, c.name AS category_name
+         FROM products p
+         LEFT JOIN categories c ON c.id = p.category_id
+        WHERE p.type = 'raw'
+        ORDER BY p.poster_ingredient_id`,
+    );
+    expect(rows).toHaveLength(3);
+    expect(rows[0]?.category_name).toBe('Молочные продукты'); // 500 -> cat 1
+    expect(rows[1]?.category_name).toBe('Тесто'); // 501 -> cat 15
+    expect(rows[2]?.category_name).toBeNull(); // 502 -> uncategorised
+
+    // The ingredient categories land under kind='ingredient'.
+    const { rows: kindRows } = await ctx.db.query<{ kind: string; n: string }>(
+      `SELECT kind, count(*)::text AS n FROM categories GROUP BY kind ORDER BY kind`,
+    );
+    expect(kindRows).toEqual([{ kind: 'ingredient', n: '2' }]);
+  });
+
+  it('keeps menu and ingredient namespaces separate even when ids collide', async () => {
+    // Poster id=4 means "Овощи" as a menu category but "Картонные упаковки" as
+    // an ingredient category — the composite (kind, poster_category_id) key
+    // must keep both rows distinct.
+    const client = clientForResponses({
+      'menu.getCategories': [{ category_id: '4', category_name: 'Овощи (menu)' }],
+      'menu.getCategoriesIngredients': [{ category_id: '4', name: 'Картонные упаковки' }],
+      'menu.getIngredients': [
+        { ingredient_id: '700', ingredient_name: 'Коробка', ingredient_unit: 'p', ingredients_type: 1, category_id: 4 },
+      ],
+      'menu.getProducts': [
+        { product_id: '800', product_name: 'Салат', type: '3', menu_category_id: '4' },
+      ],
+    });
+
+    await syncCategories(client);
+    await syncIngredientCategories(client);
+    await syncIngredients(client);
+    await syncMenuProducts(client);
+
+    const { rows: cats } = await ctx.db.query<{ kind: string; name: string }>(
+      `SELECT kind, name FROM categories WHERE poster_category_id = 4 ORDER BY kind`,
+    );
+    expect(cats).toEqual([
+      { kind: 'ingredient', name: 'Картонные упаковки' },
+      { kind: 'menu', name: 'Овощи (menu)' },
+    ]);
+
+    // The raw ingredient resolves to the INGREDIENT-kind category, the finished
+    // product to the MENU-kind one — no cross-contamination.
+    const { rows } = await ctx.db.query<{ type: string; category_name: string | null }>(
+      `SELECT p.type, c.name AS category_name
+         FROM products p LEFT JOIN categories c ON c.id = p.category_id
+        WHERE p.poster_ingredient_id = 700 OR p.poster_product_id = 800
+        ORDER BY p.type`,
+    );
+    const byType = Object.fromEntries(rows.map((r) => [r.type, r.category_name]));
+    expect(byType.raw).toBe('Картонные упаковки');
+    expect(byType.finished).toBe('Овощи (menu)');
   });
 });

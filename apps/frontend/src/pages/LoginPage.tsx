@@ -22,10 +22,11 @@ interface LocationState {
 /**
  * Login page — wired to `POST /api/auth/login` (phase-1-mvp.md §4.1).
  *
- * Username-only identity (migration 0027): the `login` field carries the
- * username (2-32 chars, `[a-z0-9._-]`), matched case-insensitively against
- * `users.username` server-side. Email was removed from the model entirely.
- * The client always sends `{login, password}`.
+ * F4.12 — the unified `login` field accepts either an email or a short
+ * username handle (3-32 chars, `[a-z0-9._-]`). The backend disambiguates
+ * server-side: it tries email first, then falls back to username. The
+ * legacy `{email, password}` shape is still accepted by the backend for
+ * back-compat, but the client always sends `{login, password}`.
  *
  * On success the session is stored and the user is sent to the path
  * they originally requested (or the dashboard).

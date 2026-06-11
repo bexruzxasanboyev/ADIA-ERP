@@ -22,7 +22,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestContext, type TestContext } from '../helpers/context.js';
 import { makeProduct, makeUser, setStock, getQty } from '../helpers/fixtures.js';
-import { ingestTransaction } from '../../src/integrations/poster/salesSync.js';
+import { ingestTransaction, emitWrongKeyedDigests } from '../../src/integrations/poster/salesSync.js';
 import {
   createAdminPurchaseOrder,
   approvePurchaseOrder,
@@ -102,7 +102,9 @@ describe('SCENARIO 3 — Poster sale -> atomic store stock decrement + fors-majo
     // Invariant 3 — clamped to 0, NOT negative.
     expect(await getQty(ctx.db, store, product)).toBe(0);
 
-    // A wrong_keyed_check notification was created.
+    // The alert is now emitted as a per-store DIGEST by the sync caller (not
+    // per line) — feed the collected over-sold lines through the aggregator.
+    await emitWrongKeyedDigests(result.wrongKeyedDetails);
     const { rows: alerts } = await ctx.db.query<{ n: string }>(
       `SELECT count(*) AS n FROM notifications WHERE type = 'wrong_keyed_check'`,
     );

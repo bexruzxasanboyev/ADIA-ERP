@@ -9,8 +9,9 @@
  *   - menu.getProducts            — menu products (293 in production)
  *   - menu.getProduct             — single menu product with BOM (`ingredients`)
  *   - menu.getPrepacks            — 1121 prepacks with their BOMs
- *   - dash.getTransactions        — sales check list (fallback poll)
+ *   - dash.getTransactions        — sales check list (fallback poll + revenue breakdown)
  *   - dash.getTransaction         — one check with line products
+ *   - settings.getPaymentMethods  — payment-method id->title map (cached, TTL)
  *
  * Cross-cutting behaviour:
  *   - rate limit ~5 req/sec via a serial gate + minimum 200ms gap;
@@ -67,6 +68,39 @@ export type PosterIngredient = {
   ingredient_unit: string;
   ingredients_type?: number | string;
   limit_value?: number | string;
+  /**
+   * RAW-ingredient category id (the join target into
+   * `menu.getCategoriesIngredients`). "0"/0 or absent = uncategorised.
+   * Verified present on every `menu.getIngredients` row (2026-05-30).
+   */
+  category_id?: number | string;
+};
+
+/**
+ * Row shape from `menu.getCategories` (doc §5.3). Verified live against the
+ * `adia` Poster account 2026-05-30: every field arrives as a string. We only
+ * need `category_id` + `category_name`; the rest (photo, color, tree pointers)
+ * are surfaced as optional in case a later feature wants them.
+ */
+export type PosterCategory = {
+  category_id: string;
+  category_name: string;
+  parent_category?: string;
+  category_color?: string;
+  category_hidden?: string;
+  sort_order?: string;
+};
+
+/**
+ * Row shape from `menu.getCategoriesIngredients` — the RAW-ingredient category
+ * lookup. Verified live against the `adia` account 2026-05-30: 14 rows, each
+ * `{ category_id, name }` (both strings). This is a DIFFERENT namespace from
+ * `menu.getCategories` (finished goods) — the numeric ids collide but mean
+ * different things, so callers must keep them separate (categories.kind).
+ */
+export type PosterIngredientCategory = {
+  category_id: string;
+  name: string;
 };
 
 export type PosterMenuProductRow = {
@@ -88,12 +122,45 @@ export type PosterRecipeIngredient = {
   structure_type: string;
   structure_brutto: number | string;
   structure_netto: number | string;
+  /**
+   * Себестоимость of this composition LINE in TIYIN, for the line's
+   * `structure_brutto` quantity (verified live 2026-05-30). For a RAW
+   * (structure_type=1) line, the raw unit cost = selfprice ÷ brutto-in-unit.
+   * Absent on some older fixtures — treat as unavailable then.
+   */
+  structure_selfprice?: number | string;
+  structure_selfprice_netto?: number | string;
   ingredient_name: string;
   ingredient_unit: string;
 };
 
+/**
+ * One modification under a finished product's `group_modifications` (Поля
+ * "Размеры": ЦЕЛЫЙ / ПОЛОВИНА / КУСОК). `ingredient_id` here is a PREPACK's
+ * `product_id` (NOT a raw ingredient id). `brutto` is the portion of one
+ * prepack unit this modification consumes — ЦЕЛЫЙ is the full unit.
+ */
+export type PosterModification = {
+  dish_modification_id: number | string;
+  name: string;
+  ingredient_id: number | string;
+  type?: number | string;
+  brutto?: number | string;
+};
+
+export type PosterModificationGroup = {
+  dish_modification_group_id: number | string;
+  name?: string;
+  modifications?: PosterModification[];
+};
+
 export type PosterMenuProductFull = PosterMenuProductRow & {
   ingredients?: PosterRecipeIngredient[];
+  /** Себестоимость of the finished product (TIYIN); often "0" / stale. */
+  cost?: number | string;
+  cost_netto?: number | string;
+  /** Размеры variants — present when the product has no flat `ingredients`. */
+  group_modifications?: PosterModificationGroup[];
 };
 
 export type PosterPrepack = {
@@ -102,6 +169,9 @@ export type PosterPrepack = {
   product_name: string;
   /** Yield of one batch — used to normalise BOM qty per produced unit. */
   out: number | string;
+  /** Себестоимость of the whole `out` batch (TIYIN); may be stale — see sync. */
+  cost?: number | string;
+  cost_netto?: number | string;
   ingredients: PosterRecipeIngredient[];
 };
 
@@ -119,6 +189,36 @@ export type PosterTransactionSummary = {
   date_close?: string;
   status?: string;
   sum?: string;
+  /**
+   * Revenue-breakdown fields (verified live against `adia` 2026-06-06). All
+   * money is in TIYIN (string). `pay_type`: "0" open/unpaid, "1" cash,
+   * "2" card, "3" mixed. `payment_method_id` is the custom-method id (string;
+   * "0" = no custom method -> use the cash/card split). Optional because
+   * `dash.getTransactions` is also used by the sales-sync poll, which ignores
+   * them.
+   */
+  pay_type?: string | number;
+  payment_method_id?: string | number;
+  payed_cash?: string | number;
+  payed_card?: string | number;
+  payed_third_party?: string | number;
+  payed_ewallet?: string | number;
+  payed_bonus?: string | number;
+  payed_sum?: string | number;
+};
+
+/**
+ * Revenue-breakdown — one row from `settings.getPaymentMethods` (verified live
+ * against `adia` 2026-06-06). Built-in ids 1=cash, 2=card; custom methods
+ * (Payme=19, Click=20 for `adia`) get the next free integer and are
+ * account-specific — match by `title` for stability. All fields arrive as
+ * strings.
+ */
+export type PosterPaymentMethod = {
+  payment_method_id: string;
+  title: string;
+  /** "1"=cash-type, "2"=card-type, "3"=external/other (Poster convention). */
+  type?: string;
 };
 
 export type PosterTransactionFull = PosterTransactionSummary & {
@@ -183,6 +283,57 @@ export type PosterPaymentTotal = {
 export type PosterPaymentReport = {
   days?: PosterPaymentDay[];
   total: PosterPaymentTotal;
+};
+
+/**
+ * Top-selling-products — one row from `dash.getProductsSales` (verified live
+ * against the `adia` Poster account on 2026-06-06). Poster emits one row per
+ * product+modification, so a product with several modifications appears in
+ * several rows and must be aggregated by `product_id`.
+ *
+ * Money fields (`payed_sum`, `product_sum`, `product_profit`) are in TIYIN
+ * (string) — divide by 100 via `tiyinToSom`. `count` is the quantity sold as a
+ * decimal string ("12.5"). All numeric-looking fields arrive as strings.
+ */
+export type PosterProductSalesRow = {
+  product_id: string;
+  product_name: string;
+  modificator_name?: string;
+  modification_id?: string;
+  category_id?: string;
+  /**
+   * Quantity sold (decimal string, e.g. "12.5"). Its UNIT depends on
+   * `weight_flag`: for piece-sold products this is an integer count of pieces;
+   * for weight-sold products it is a decimal weight in the `unit` (e.g. kg).
+   * Verified live 2026-06-06: `count` and `count_converted` are equal for the
+   * `adia` catalogue (no secondary-unit conversion configured), so `count` is
+   * the canonical quantity field for both product types.
+   */
+  count: string;
+  /**
+   * Quantity sold in the product's CONVERTED unit (decimal string). Equal to
+   * `count` when no unit conversion is configured (the live `adia` case). Kept
+   * for completeness; the route reads `count`.
+   */
+  count_converted?: string;
+  /**
+   * Sale-mode flag (verified live 2026-06-06):
+   *   "1" -> sold BY WEIGHT  (`unit` = "kg"; `count` is a decimal weight).
+   *   "0" -> sold BY PIECE   (`unit` = "p";  `count` is an integer count).
+   * Drives the displayed quantity unit on the dashboard.
+   */
+  weight_flag?: string | number;
+  /** Gross paid amount in TIYIN (string). */
+  payed_sum: string;
+  /** Product sum in TIYIN (string). */
+  product_sum?: string;
+  /** Product profit in TIYIN (string). */
+  product_profit?: string;
+  /**
+   * Unit of `count` as Poster reports it ("p" = pieces / dona, "kg" = weight).
+   * Mirrors `weight_flag`; the route normalises this to a stable display unit.
+   */
+  unit?: string;
 };
 
 /**
@@ -299,6 +450,8 @@ export type PosterClientOptions = {
    * fixed 300ms gap before the retry.
    */
   readonly transientRetries?: number;
+  /** TTL for the in-memory `getPaymentMethods` cache. Default: 600_000 (10 min). */
+  readonly paymentMethodsTtlMs?: number;
 };
 
 export class PosterApiError extends Error {
@@ -339,6 +492,14 @@ export class PosterClient {
   /** Serial gate — every call awaits this chain so requests run one at a time. */
   private gate: Promise<unknown> = Promise.resolve();
   private lastCallAt = 0;
+  /**
+   * In-memory cache for `settings.getPaymentMethods` — the id->title map rarely
+   * changes, so we avoid refetching on every dashboard hit. Invalidated by TTL.
+   */
+  private paymentMethodsCache:
+    | { at: number; value: PosterPaymentMethod[] }
+    | undefined;
+  private readonly paymentMethodsTtlMs: number;
 
   constructor(opts: PosterClientOptions) {
     if (typeof opts.token !== 'string' || opts.token.trim() === '') {
@@ -353,6 +514,7 @@ export class PosterClient {
     this.minIntervalMs = opts.minIntervalMs ?? 220;
     this.fetcher = opts.fetcher ?? globalThis.fetch.bind(globalThis);
     this.transientRetries = opts.transientRetries ?? 1;
+    this.paymentMethodsTtlMs = opts.paymentMethodsTtlMs ?? 10 * 60_000;
   }
 
   // --- Public API methods --------------------------------------------------
@@ -384,6 +546,21 @@ export class PosterClient {
     return r ?? [];
   }
 
+  /** All Poster product categories (menu.getCategories — doc §5.3). */
+  async getCategories(): Promise<PosterCategory[]> {
+    const r = await this.call<PosterCategory[]>('menu.getCategories');
+    return r ?? [];
+  }
+
+  /**
+   * RAW-ingredient categories (menu.getCategoriesIngredients). A SEPARATE
+   * namespace from getCategories — used to group `products(type='raw')`.
+   */
+  async getIngredientCategories(): Promise<PosterIngredientCategory[]> {
+    const r = await this.call<PosterIngredientCategory[]>('menu.getCategoriesIngredients');
+    return r ?? [];
+  }
+
   async getProduct(productId: number): Promise<PosterMenuProductFull | null> {
     const r = await this.call<PosterMenuProductFull | PosterMenuProductFull[]>(
       'menu.getProduct',
@@ -399,23 +576,89 @@ export class PosterClient {
   }
 
   /**
-   * Fetch a sales check list. `dateFrom`/`dateTo` are `YYYY-MM-DD HH:mm:ss`
-   * strings (Poster accepts them for `dash.getTransactions`).
+   * Fetch a sales check list. `dateFrom`/`dateTo` are `YYYY-MM-DD` (or
+   * `YYYY-MM-DD HH:mm:ss`) strings — Poster accepts them for
+   * `dash.getTransactions`.
+   *
+   * Pagination: Poster pages with `num` (page size, max 1000) + `offset`. A
+   * single `num`-only call without `offset` returns at most `num` rows and
+   * silently truncates a busy day. When `paginate` is true we loop on `offset`
+   * until a page comes back shorter than `num` (or the safety cap is hit), so a
+   * long range (e.g. 6 months) returns every row. The legacy sales-sync poll
+   * keeps the old single-page behaviour by leaving `paginate` undefined.
    */
   async getTransactions(params: {
     dateFrom: string;
     dateTo: string;
     spotId?: number;
     num?: number;
+    /** When true, loop on `offset` until all rows are fetched. */
+    paginate?: boolean;
+    /** Safety cap on total rows when paginating. Default: 100_000. */
+    maxRows?: number;
   }): Promise<PosterTransactionSummary[]> {
-    const qs: Record<string, string> = {
+    const pageSize = params.num ?? 1000;
+    const baseQs: Record<string, string> = {
       dateFrom: params.dateFrom,
       dateTo: params.dateTo,
+      num: String(pageSize),
     };
-    if (params.spotId !== undefined) qs.spot_id = String(params.spotId);
-    if (params.num !== undefined) qs.num = String(params.num);
-    const r = await this.call<PosterTransactionSummary[]>('dash.getTransactions', qs);
-    return r ?? [];
+    if (params.spotId !== undefined) baseQs.spot_id = String(params.spotId);
+
+    if (params.paginate !== true) {
+      const r = await this.call<PosterTransactionSummary[]>(
+        'dash.getTransactions',
+        baseQs,
+      );
+      return r ?? [];
+    }
+
+    const maxRows = params.maxRows ?? 100_000;
+    const all: PosterTransactionSummary[] = [];
+    let offset = 0;
+    // Hard cap on iterations as a belt-and-braces guard against a Poster page
+    // that never shrinks (would otherwise loop forever).
+    for (let page = 0; page < 1000; page += 1) {
+      const r = await this.call<PosterTransactionSummary[]>('dash.getTransactions', {
+        ...baseQs,
+        offset: String(offset),
+      });
+      const rows = r ?? [];
+      all.push(...rows);
+      if (rows.length < pageSize || all.length >= maxRows) break;
+      offset += pageSize;
+    }
+    return all.slice(0, maxRows);
+  }
+
+  /**
+   * Revenue-breakdown — the account's payment-method id->title map
+   * (`settings.getPaymentMethods`). Cached in-memory with a TTL since it rarely
+   * changes (operators add a method maybe once a quarter). Used to resolve a
+   * transaction's `payment_method_id` to a canonical bucket (cash/card/payme/
+   * click/other) WITHOUT hardcoding ids — ids differ per account, titles are
+   * stable.
+   */
+  async getPaymentMethods(): Promise<PosterPaymentMethod[]> {
+    const now = Date.now();
+    const cached = this.paymentMethodsCache;
+    if (cached !== undefined && now - cached.at < this.paymentMethodsTtlMs) {
+      return cached.value;
+    }
+    // Poster returns either an array or an id-keyed object map — normalise.
+    const r = await this.call<PosterPaymentMethod[] | Record<string, PosterPaymentMethod>>(
+      'settings.getPaymentMethods',
+    );
+    let value: PosterPaymentMethod[];
+    if (Array.isArray(r)) {
+      value = r;
+    } else if (r !== null && typeof r === 'object') {
+      value = Object.values(r);
+    } else {
+      value = [];
+    }
+    this.paymentMethodsCache = { at: now, value };
+    return value;
   }
 
   /**
@@ -469,6 +712,41 @@ export class PosterClient {
     return r ?? {};
   }
 
+  /**
+   * Top-selling products in a date range (`dash.getProductsSales`). Poster
+   * returns one row per product+modification — the caller aggregates by
+   * `product_id`. Date strings follow Poster's `YYYYMMDD` convention. String
+   * fields are normalised so every row has the keys the aggregator reads.
+   */
+  async getProductsSales(params: {
+    dateFrom: string; // YYYYMMDD
+    dateTo: string; // YYYYMMDD
+    spotId?: number;
+  }): Promise<PosterProductSalesRow[]> {
+    const qs: Record<string, string> = {
+      dateFrom: params.dateFrom,
+      dateTo: params.dateTo,
+    };
+    if (params.spotId !== undefined) qs.spot_id = String(params.spotId);
+    const r = await this.call<PosterProductSalesRow[]>('dash.getProductsSales', qs);
+    if (!Array.isArray(r)) return [];
+    return r.map((row) => {
+      const out: PosterProductSalesRow = {
+        product_id: String(row.product_id ?? ''),
+        product_name: String(row.product_name ?? ''),
+        count: String(row.count ?? '0'),
+        payed_sum: String(row.payed_sum ?? '0'),
+      };
+      if (row.modificator_name !== undefined) out.modificator_name = String(row.modificator_name);
+      if (row.modification_id !== undefined) out.modification_id = String(row.modification_id);
+      if (row.category_id !== undefined) out.category_id = String(row.category_id);
+      if (row.product_sum !== undefined) out.product_sum = String(row.product_sum);
+      if (row.product_profit !== undefined) out.product_profit = String(row.product_profit);
+      if (row.unit !== undefined) out.unit = String(row.unit);
+      return out;
+    });
+  }
+
   async getTransaction(transactionId: number): Promise<PosterTransactionFull | null> {
     const r = await this.call<PosterTransactionFull | PosterTransactionFull[]>(
       'dash.getTransaction',
@@ -492,7 +770,11 @@ export class PosterClient {
       dateTo: params.dateTo,
     };
     if (params.spotId !== undefined) qs.spot_id = String(params.spotId);
-    const r = await this.call<PosterCashShift[]>('finance.getCashshifts', qs);
+    // NB: Poster method names are CASE-SENSITIVE. The correct method is
+    // `finance.getCashShifts` (capital S) — the lowercase `finance.getCashshifts`
+    // returns HTTP 405 `{code:30, Method Not Allowed}` for the `adia` token.
+    // Verified live 2026-06-01.
+    const r = await this.call<PosterCashShift[]>('finance.getCashShifts', qs);
     return r ?? [];
   }
 

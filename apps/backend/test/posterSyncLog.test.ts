@@ -34,12 +34,13 @@ beforeEach(async () => {
 });
 
 async function makePm(name = 'PM'): Promise<number> {
-  // F4.12 — `users.username` is NOT NULL with a 3..32 charset CHECK. Use a
-  // random suffix so re-runs inside the same suite never collide on it.
+  // `users.username` is the sole login handle: NOT NULL UNIQUE with a 2..32
+  // charset CHECK. Use a random suffix so re-runs inside the same suite never
+  // collide on it.
   const username = `pm_${Math.random().toString(36).slice(2, 10)}`;
   const { rows } = await ctx.db.query<{ id: number }>(
-    `INSERT INTO users (name, email, username, password_hash, role)
-     VALUES ($1, $1 || '@test', $2, 'x', 'pm') RETURNING id`,
+    `INSERT INTO users (name, username, password_hash, role)
+     VALUES ($1, $2, 'x', 'pm') RETURNING id`,
     [name, username],
   );
   return Number(rows[0]!.id);

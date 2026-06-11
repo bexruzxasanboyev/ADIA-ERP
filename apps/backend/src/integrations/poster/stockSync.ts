@@ -16,7 +16,7 @@
  * Idempotent — running the sync twice with no Poster movement is a no-op.
  */
 import { applyMovement } from '../../services/stockMovement.js';
-import { query, withTransaction } from '../../db/index.js';
+import { query, withTransaction, type TxClient } from '../../db/index.js';
 import {
   createNotification,
   getLocationManager,
@@ -36,6 +36,20 @@ export type StockSyncResult = {
   readonly adjustments: number;
   readonly negativesClamped: number;
   readonly skippedNoProduct: number;
+};
+
+/**
+ * One negative-Poster-qty item detected during a leftover sync run. Collected
+ * (NOT notified) per item; the caller aggregates these into ONE consolidated
+ * Telegram digest per location after the whole run, so a sync that finds many
+ * negative leftovers no longer floods the boss with N near-identical messages
+ * (owner feedback 2026-06 — mirrors the kassa "wrong-keyed" digest fix in
+ * salesSync.ts).
+ */
+export type NegativeStockItem = {
+  readonly locationId: number;
+  readonly productId: number;
+  readonly posterQty: number;
 };
 
 /** Read all active locations with a Poster storage id. */
@@ -65,43 +79,136 @@ async function readQty(locationId: number, productId: number): Promise<number> {
   return rows[0]?.qty ?? 0;
 }
 
+/** How many product lines the digest body lists before collapsing to "…+k". */
+const DIGEST_TOP_N = 5;
+/** Debounce window for a location digest — a re-scan inside this stays quiet. */
+const DIGEST_DEDUPE_MINUTES = 60;
+
+/** Resolve a location name; falls back to "bo'g'in #id" if the row is gone. */
+async function resolveLocationName(tx: TxClient, locationId: number): Promise<string> {
+  const { rows } = await tx.query<{ name: string }>(
+    `SELECT name FROM locations WHERE id = $1`,
+    [locationId],
+  );
+  return rows[0]?.name ?? `bo'g'in #${locationId}`;
+}
+
+/** Resolve product names for a set of ids in one round-trip (id → name map). */
+async function resolveProductNames(
+  tx: TxClient,
+  productIds: readonly number[],
+): Promise<Map<number, string>> {
+  const map = new Map<number, string>();
+  if (productIds.length === 0) return map;
+  const { rows } = await tx.query<{ id: number; name: string }>(
+    `SELECT id, name FROM products WHERE id = ANY($1::int[])`,
+    [productIds],
+  );
+  for (const r of rows) map.set(Number(r.id), r.name);
+  return map;
+}
+
+/** Trim a qty for display — integers print bare, fractionals keep 3 places. */
+function formatQty(n: number): string {
+  return Number.isInteger(n) ? String(n) : String(Number(n.toFixed(3)));
+}
+
 /**
- * Push a `negative_stock_detected` notification to PMs + the location manager.
+ * Owner feedback 2026-06 — emit ONE consolidated negative-stock digest per
+ * location after a whole leftover sync run, instead of one Telegram per
+ * affected product (the old `notifyNegative` flooded PMs once per product on
+ * EVERY 15-minute scan). The body resolves the location name and product
+ * NAMES (never raw ids), lists the top {DIGEST_TOP_N} most-negative products,
+ * and collapses the rest into "…va yana k ta mahsulot." Recipients: PMs + the
+ * location's manager. Deduped per (location, user) for {DIGEST_DEDUPE_MINUTES}
+ * min so back-to-back scans in the same window don't re-flood.
  *
- * Debounce (C3 — Sprint 3 audit): one notification per (location, product)
- * per 24 hours. A negative-qty Poster row reappears on every 15-minute scan
- * until reconciled, and we must not spam PMs once they have seen it. The
- * dedupe key collapses both the PM and the manager nudge into the same
- * window so they all share one Telegram per 24h.
+ * Each location's digest is emitted in its own transaction so one bad location
+ * does not roll back the others. The stock CLAMP / movement / audit already
+ * applied by `applyLeftover` are NOT touched here.
  */
-async function notifyNegative(
-  locationId: number,
-  productId: number,
-  posterQty: number,
+export async function emitNegativeStockDigests(
+  items: readonly NegativeStockItem[],
 ): Promise<void> {
-  try {
-    await withTransaction(async (tx) => {
-      const pmIds = await getPmRecipients(tx);
-      const managerId = await getLocationManager(tx, locationId);
-      const recipients = new Set<number>(pmIds);
-      if (managerId !== null) recipients.add(managerId);
-      for (const userId of recipients) {
-        await createNotification(tx, {
-          recipientUserId: userId,
-          type: 'negative_stock_detected',
-          title: 'Poster: negative stock detected',
-          body: `Poster qty ${posterQty} at location ${locationId} for product ${productId}; clamped to 0.`,
-          payload: { location_id: locationId, product_id: productId, poster_qty: posterQty },
-          // Per-recipient scope — `createNotification` dedupes on the key
-          // alone, so a single recipient-less key would let the FIRST
-          // user's row suppress every other user's nudge.
-          dedupeKey: `negative_stock_detected:${locationId}:${productId}:user:${userId}`,
-          dedupeWindowMinutes: 24 * 60,
-        });
-      }
-    });
-  } catch (err) {
-    console.error('[poster] notifyNegative swallow:', redactUrl((err as Error).message));
+  if (items.length === 0) return;
+
+  // Group the negative items by location.
+  const byLocation = new Map<number, NegativeStockItem[]>();
+  for (const it of items) {
+    const list = byLocation.get(it.locationId);
+    if (list === undefined) byLocation.set(it.locationId, [it]);
+    else list.push(it);
+  }
+
+  for (const [locationId, locItems] of byLocation) {
+    try {
+      await withTransaction(async (tx) => {
+        // Keep the most-negative Poster qty per product across the run's rows
+        // (a product can appear once per storage; collapse to the worst value).
+        const perProduct = new Map<number, number>();
+        for (const it of locItems) {
+          const prev = perProduct.get(it.productId);
+          if (prev === undefined || it.posterQty < prev) {
+            perProduct.set(it.productId, it.posterQty);
+          }
+        }
+
+        const locationName = await resolveLocationName(tx, locationId);
+        const nameById = await resolveProductNames(tx, [...perProduct.keys()]);
+
+        // Most-negative first (ascending posterQty).
+        const ranked = [...perProduct.entries()].sort((a, b) => a[1] - b[1]);
+        const shown = ranked.slice(0, DIGEST_TOP_N);
+        const remaining = ranked.length - shown.length;
+
+        const listLines = shown
+          .map(([productId, posterQty]) => {
+            const name = nameById.get(productId) ?? `mahsulot #${productId}`;
+            return `• ${name} — Poster: ${formatQty(posterQty)}`;
+          })
+          .join('\n');
+        const tail = remaining > 0 ? `\n…va yana ${remaining} ta mahsulot.` : '';
+
+        const title = `⚠️ Manfiy qoldiq aniqlandi — ${locationName}`;
+        const body =
+          `${ranked.length} ta mahsulotda Poster manfiy qoldiq berdi ` +
+          `(0 ga tushirildi — tekshiring).\n\n` +
+          `${listLines}${tail}`;
+
+        const pmIds = await getPmRecipients(tx);
+        const managerId = await getLocationManager(tx, locationId);
+        const recipients = new Set<number>(pmIds);
+        if (managerId !== null) recipients.add(managerId);
+
+        for (const userId of recipients) {
+          await createNotification(tx, {
+            recipientUserId: userId,
+            type: 'negative_stock_detected',
+            title,
+            body,
+            payload: {
+              location_id: locationId,
+              product_count: ranked.length,
+              products: ranked.map(([productId, posterQty]) => ({
+                product_id: productId,
+                name: nameById.get(productId) ?? null,
+                poster_qty: posterQty,
+              })),
+            },
+            // Per-recipient location-level scope — `createNotification` dedupes
+            // on the key alone, so a single recipient-less key would let the
+            // FIRST user's row suppress every other user's nudge.
+            dedupeKey: `negative_stock_digest:${locationId}:user:${userId}`,
+            dedupeWindowMinutes: DIGEST_DEDUPE_MINUTES,
+          });
+        }
+      });
+    } catch (err) {
+      console.error(
+        `[poster] negative-stock digest for location ${locationId} failed:`,
+        redactUrl((err as Error).message),
+      );
+    }
   }
 }
 
@@ -115,6 +222,7 @@ async function notifyNegative(
 async function applyLeftover(
   locationId: number,
   leftover: PosterLeftover,
+  negatives: NegativeStockItem[],
 ): Promise<'no-product' | 'noop' | 'adjusted' | 'clamped'> {
   const posterIngredientId = Number(leftover.ingredient_id);
   if (!Number.isInteger(posterIngredientId) || posterIngredientId <= 0) return 'no-product';
@@ -140,7 +248,10 @@ async function applyLeftover(
         note: `Poster clamp: storage_ingredient_left=${posterQty}`,
       });
     }
-    await notifyNegative(locationId, productId, posterQty);
+    // Owner feedback 2026-06 — DO NOT notify per product here (that flooded
+    // PMs once per product on every scan). COLLECT the negative item; the
+    // caller emits ONE consolidated per-location digest after the whole run.
+    negatives.push({ locationId, productId, posterQty });
     return 'clamped';
   }
 
@@ -188,6 +299,10 @@ export async function syncStockLeftovers(
     { storagesScanned: 0, adjustments: 0, negativesClamped: 0, skippedNoProduct: 0 };
   let recordsIn = 0;
   let recordsApplied = 0;
+  // Owner feedback 2026-06 — collect negative-stock items across the WHOLE run,
+  // then emit ONE consolidated digest per location at the end (no per-product
+  // flood). Mirrors the kassa wrong-keyed digest in salesSync.ts.
+  const negatives: NegativeStockItem[] = [];
   try {
     const locations = await listStorageLocations();
     for (const loc of locations) {
@@ -205,7 +320,7 @@ export async function syncStockLeftovers(
       recordsIn += leftovers.length;
       for (const lo of leftovers) {
         try {
-          const outcome = await applyLeftover(loc.id, lo);
+          const outcome = await applyLeftover(loc.id, lo, negatives);
           if (outcome === 'no-product') summary.skippedNoProduct += 1;
           else if (outcome === 'adjusted') {
             summary.adjustments += 1;
@@ -223,6 +338,9 @@ export async function syncStockLeftovers(
         }
       }
     }
+    // Owner feedback 2026-06 — ONE consolidated digest per location for the
+    // whole run (after all clamps/movements/audit already committed).
+    await emitNegativeStockDigests(negatives);
     await finishSyncRun(runId, 'ok', { recordsIn, recordsApplied });
     return summary;
   } catch (err) {

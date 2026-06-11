@@ -162,15 +162,24 @@ describe('bot /start <token> command', () => {
     const user = await makeUser(ctx.db, { role: 'store_manager', locationId: loc });
     const issued = await issueLinkToken(user.id, null);
 
-    const replies: string[] = [];
+    // B2 — after a successful link the bot now drops the user straight onto
+    // their role menu (greeting + reply keyboard), not the plain "ulandi"
+    // confirmation. The menu greeting only renders for a linked, active user,
+    // so its presence is itself proof the link succeeded.
+    const replies: Array<{ text: string; opts?: Record<string, unknown> }> = [];
     await handleStartCommand({
       fromTelegramId: 1234509876,
       token: issued.token,
-      reply: async (t) => {
-        replies.push(t);
+      reply: async (t, opts) => {
+        replies.push({ text: t, opts });
       },
     });
-    expect(replies[0]).toContain('ulandi');
+    expect(replies[0]?.text).toContain('Salom');
+    expect(replies[0]?.text).toContain("bo'limidasiz");
+    const markup = replies[0]?.opts?.reply_markup as
+      | { keyboard?: string[][] }
+      | undefined;
+    expect(markup?.keyboard).toBeDefined();
 
     const status = await getLinkStatus(user.id);
     expect(status.telegramId).toBe('1234509876');

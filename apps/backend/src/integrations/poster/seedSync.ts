@@ -6,6 +6,8 @@
  * source, but operational decisions in ADIA (which storage is the central
  * warehouse, which user manages a store) live on the same `locations` row.
  *
+ *   - syncCategories()  — menu.getCategories -> categories (kind='menu')
+ *   - syncIngredientCategories() — menu.getCategoriesIngredients -> categories (kind='ingredient')
  *   - syncSpots()       — Poster spots  -> locations(type='store')
  *   - syncStorages()    — Poster storages -> locations (default central_warehouse,
  *                         classification edited by PM in PATCH /api/locations/:id)
@@ -26,6 +28,8 @@ import {
   STORAGE_TYPE_BY_ID,
   STORE_BACKING_STORAGE,
   DEFAULT_STORAGE_TYPE,
+  matchSexStorageToDept,
+  type DeptCandidate,
 } from './storageClassification.js';
 import {
   finishSyncRun,
@@ -36,12 +40,30 @@ import {
   type SyncTrigger,
 } from './syncLog.js';
 
+/** Which Poster category namespace a `categories` row belongs to (migration 0038). */
+type CategoryKind = 'menu' | 'ingredient';
+
 export type SeedRunResult = {
   readonly entity: SyncEntity;
   readonly status: 'ok' | 'partial' | 'failed';
   readonly recordsIn: number;
   readonly recordsApplied: number;
   readonly errorDetail?: string;
+};
+
+/**
+ * One resolved BOM line ready to write to `recipes`.
+ *   - `qtyPerUnit` — DERIVED component qty (in the component's unit) per ONE
+ *     unit of the parent product's output (kg/l/pcs); drives cost + production.
+ *   - `brutto` / `netto` — RAW Poster figures in the line's `structure_unit`,
+ *     carried for Poster-style display (NULL when unknown — e.g. a modification
+ *     link that has no per-line composition figures).
+ */
+type BomComponent = {
+  componentProductId: number;
+  qtyPerUnit: number;
+  brutto?: number | null;
+  netto?: number | null;
 };
 
 // -----------------------------------------------------------------------------
@@ -84,6 +106,145 @@ function normaliseQty(
   if ((su === 'g' && iu === 'kg') || (su === 'ml' && iu === 'l')) return n / 1000;
   if ((su === 'kg' && iu === 'g') || (su === 'l' && iu === 'ml')) return n * 1000;
   return n;
+}
+
+/**
+ * Normalise a prepack's `out` (batch yield) to the prepack's OWN product unit
+ * (`kg` / `l` / `pcs`) so it can be used as the per-unit divisor consistently
+ * with the normalised brutto.
+ *
+ * Poster reports `out` in the structure BASE unit of the prepack's lines — for
+ * weight prepacks that is GRAMS (e.g. ЦЕЛЫЙ out=1000 = 1 kg), for volume it is
+ * MILLILITRES, for count it is PIECES. The prepack is stored as `kg` (count
+ * prepacks are the rare exception). We pick the dominant line `structure_unit`
+ * as `out`'s unit and convert g->kg / ml->l (÷1000); pcs/unknown pass through.
+ *
+ * THE BUG THIS FIXES (2026-05-30): the old code divided a brutto already
+ * normalised to kg by a raw `out` still in grams, making every qty_per_unit
+ * ~1000× too small (НАПОЛЕОН ун 0.31 kg/kg landed as 0.0003 -> rounded to 0).
+ */
+/** Parse a Poster numeric field to a non-negative number, or null. */
+function numOrNull(raw: number | string | undefined | null): number | null {
+  if (raw === undefined || raw === null) return null;
+  const n = typeof raw === 'number' ? raw : Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+function normaliseOut(outStructureUnit: string, raw: number | string): number {
+  const n = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  const su = outStructureUnit.toLowerCase();
+  if (su === 'g' || su === 'ml') return n / 1000;
+  return n;
+}
+
+/**
+ * The structure_unit that a prepack's `out` is denominated in — the most
+ * common `structure_unit` across its lines (weight `g`, volume `ml`, or count
+ * `p`/`pcs`). `out` is a single batch yield in this base unit, so the dominant
+ * line unit identifies it. Defaults to `g` (the overwhelming Poster majority).
+ */
+function dominantStructureUnit(
+  rows: readonly { structure_unit?: string }[],
+): string {
+  const counts = new Map<string, number>();
+  for (const r of rows) {
+    const su = String(r.structure_unit ?? '').toLowerCase();
+    if (su === '') continue;
+    counts.set(su, (counts.get(su) ?? 0) + 1);
+  }
+  let best = 'g';
+  let bestN = 0;
+  for (const [su, n] of counts) {
+    if (n > bestN) {
+      best = su;
+      bestN = n;
+    }
+  }
+  return best;
+}
+
+/** 1 so'm = 100 tiyin — Poster `structure_selfprice`/`cost` are in tiyin. */
+const TIYIN_PER_SOM = 100;
+
+/**
+ * Derive a RAW ingredient's unit cost (so'm per the component's
+ * `ingredient_unit`) from a Poster composition line. Poster gives
+ * `structure_selfprice` = the line's Себестоимость in TIYIN for its
+ * `structure_brutto` quantity (in `structure_unit`). Verified live
+ * 2026-05-30 the value is stable across every prepack that uses the same raw
+ * (e.g. ун = 750_058 tiyin/kg everywhere) — so any one line yields the unit
+ * cost. We normalise the brutto to the ingredient's own unit, then divide:
+ *
+ *   unit_cost_som = (selfprice_tiyin / brutto_in_ingredient_unit) / 100
+ *
+ * Returns null when the line carries no usable selfprice/brutto.
+ */
+function rawUnitCostFromLine(line: {
+  structure_unit: string;
+  ingredient_unit: string;
+  structure_brutto: number | string;
+  structure_selfprice?: number | string;
+}): number | null {
+  if (line.structure_selfprice === undefined || line.structure_selfprice === null) return null;
+  const selfprice =
+    typeof line.structure_selfprice === 'number'
+      ? line.structure_selfprice
+      : Number(line.structure_selfprice);
+  if (!Number.isFinite(selfprice) || selfprice < 0) return null;
+  const bruttoInUnit = normaliseQty(
+    String(line.structure_unit ?? ''),
+    String(line.ingredient_unit ?? ''),
+    line.structure_brutto,
+  );
+  if (!(bruttoInUnit > 0)) return null;
+  const unitCostSom = selfprice / bruttoInUnit / TIYIN_PER_SOM;
+  return Number.isFinite(unitCostSom) && unitCostSom >= 0 ? unitCostSom : null;
+}
+
+/**
+ * Set/refresh a RAW product's `cost_per_unit` (so'm per unit). Keyed by the
+ * raw ingredient's `poster_ingredient_id`. A no-op when no raw row matches
+ * (the ingredient is not yet seeded). Idempotent — a re-run overwrites with
+ * the freshest derived value.
+ *
+ * FEATURE A — when a MANUAL price is pinned (`manual_cost_per_unit IS NOT
+ * NULL`) the sync MUST NOT touch the cost: the manager's price wins and must
+ * survive re-sync. The `AND manual_cost_per_unit IS NULL` guard leaves those
+ * rows untouched (the effective cost is COALESCE(manual, synced) at read time).
+ */
+async function setRawIngredientCost(
+  posterIngredientId: number,
+  costPerUnit: number,
+): Promise<void> {
+  await query(
+    `UPDATE products
+        SET cost_per_unit = $2
+      WHERE poster_ingredient_id = $1 AND type = 'raw'
+        AND manual_cost_per_unit IS NULL`,
+    [posterIngredientId, costPerUnit],
+  );
+}
+
+/**
+ * Resolve ONE Poster composition line to an ADIA component product id.
+ * structure_type drives the lookup column (the bug this fixes — every line
+ * was resolved by `poster_ingredient_id` only, silently dropping prepack
+ * children):
+ *   - type 1 -> RAW: products.poster_ingredient_id = line.ingredient_id;
+ *   - type 2 -> PREPACK (semi): products.poster_product_id = line.ingredient_id.
+ * Returns the local id, or null when the component is not yet seeded.
+ */
+async function resolveComponentId(
+  posterId: number,
+  structureType: number,
+): Promise<number | null> {
+  const column = structureType === 2 ? 'poster_product_id' : 'poster_ingredient_id';
+  const r = await query<{ id: number }>(
+    `SELECT id FROM products WHERE ${column} = $1`,
+    [posterId],
+  );
+  return r.rows[0]?.id ?? null;
 }
 
 // -----------------------------------------------------------------------------
@@ -167,6 +328,216 @@ async function mergeStorageIntoSpot(storageId: number, spotId: number): Promise<
   );
 }
 
+// -----------------------------------------------------------------------------
+// sex_storage -> production-department attach (conservative, reversible).
+// -----------------------------------------------------------------------------
+
+/** One row of the proposed/applied sex_storage -> department attach plan. */
+export type AttachPlanRow = {
+  readonly storageId: number;
+  readonly storageName: string;
+  readonly currentParentId: number | null;
+  /** The matched department id, or null when no confident match exists. */
+  readonly matchedDeptId: number | null;
+  readonly matchedDeptName: string | null;
+  /** The normalised token that produced the match (audit trail). */
+  readonly matchedToken: string | null;
+  /** What the run did with this row. */
+  readonly action: 'set' | 'already' | 'unmatched' | 'skipped-has-parent';
+};
+
+export type AttachResult = {
+  readonly applied: number;
+  readonly rows: readonly AttachPlanRow[];
+};
+
+/**
+ * Attach each `sex_storage` location to its matching `production` department by
+ * a CONSERVATIVE name heuristic (`matchSexStorageToDept`).
+ *
+ * Conservative + reversible by design:
+ *   - only the `parent_id` column is touched — never `type`, never
+ *     `manager_user_id`, never the row itself (no delete/recreate);
+ *   - a sex_storage that ALREADY has a parent is left untouched UNLESS
+ *     `reparentExisting` is true (default false) — we never silently override a
+ *     parent a human set;
+ *   - an unmatched sex_storage is left unparented and reported, never guessed;
+ *   - idempotent: a re-run that finds the parent already correct is a no-op
+ *     (`action: 'already'`).
+ *
+ * The whole attach runs in ONE transaction with a single audit-log entry so a
+ * partial attach is never visible. When `dryRun` is true the plan is built and
+ * returned but nothing is written (used by the diagnostic / report path).
+ */
+export async function attachSexStoragesToDepts(
+  opts: { dryRun?: boolean; reparentExisting?: boolean } = {},
+): Promise<AttachResult> {
+  const dryRun = opts.dryRun ?? false;
+  const reparentExisting = opts.reparentExisting ?? false;
+
+  // Load the production departments (match candidates) and the sex_storage rows.
+  const { rows: depts } = await query<{ id: number; name: string }>(
+    `SELECT id, name FROM locations WHERE type = 'production' ORDER BY id`,
+  );
+  const deptCandidates: DeptCandidate[] = depts.map((d) => ({ id: d.id, name: d.name }));
+
+  const { rows: storages } = await query<{
+    id: number;
+    name: string;
+    parent_id: number | null;
+  }>(
+    `SELECT id, name, parent_id FROM locations WHERE type = 'sex_storage' ORDER BY id`,
+  );
+
+  const validDeptIds = new Set(deptCandidates.map((d) => d.id));
+
+  const plan: AttachPlanRow[] = storages.map((s) => {
+    const match = matchSexStorageToDept(s.name, deptCandidates);
+    if (match === null) {
+      return {
+        storageId: s.id,
+        storageName: s.name,
+        currentParentId: s.parent_id,
+        matchedDeptId: null,
+        matchedDeptName: null,
+        matchedToken: null,
+        action: 'unmatched',
+      };
+    }
+    // A self-parent would violate the chain hierarchy — guard it (cannot happen
+    // here since depts and sex_storages are distinct types, but be defensive).
+    if (match.deptId === s.id || !validDeptIds.has(match.deptId)) {
+      return {
+        storageId: s.id,
+        storageName: s.name,
+        currentParentId: s.parent_id,
+        matchedDeptId: null,
+        matchedDeptName: null,
+        matchedToken: null,
+        action: 'unmatched',
+      };
+    }
+    if (s.parent_id === match.deptId) {
+      return {
+        storageId: s.id,
+        storageName: s.name,
+        currentParentId: s.parent_id,
+        matchedDeptId: match.deptId,
+        matchedDeptName: match.deptName,
+        matchedToken: match.matchedToken,
+        action: 'already',
+      };
+    }
+    if (s.parent_id !== null && !reparentExisting) {
+      return {
+        storageId: s.id,
+        storageName: s.name,
+        currentParentId: s.parent_id,
+        matchedDeptId: match.deptId,
+        matchedDeptName: match.deptName,
+        matchedToken: match.matchedToken,
+        action: 'skipped-has-parent',
+      };
+    }
+    return {
+      storageId: s.id,
+      storageName: s.name,
+      currentParentId: s.parent_id,
+      matchedDeptId: match.deptId,
+      matchedDeptName: match.deptName,
+      matchedToken: match.matchedToken,
+      action: 'set',
+    };
+  });
+
+  const toSet = plan.filter((p) => p.action === 'set');
+  if (dryRun || toSet.length === 0) {
+    return { applied: 0, rows: plan };
+  }
+
+  await withTransaction(async (tx) => {
+    for (const row of toSet) {
+      // parent_id only — type and manager_user_id are NOT touched.
+      await tx.query(
+        `UPDATE locations SET parent_id = $2, updated_at = now()
+          WHERE id = $1 AND type = 'sex_storage'`,
+        [row.storageId, row.matchedDeptId],
+      );
+    }
+    await writeAudit(tx, {
+      actorUserId: null,
+      action: 'poster.sex_storage.attach',
+      entity: 'locations',
+      entityId: null,
+      payload: {
+        attached: toSet.map((r) => ({
+          storage_id: r.storageId,
+          storage_name: r.storageName,
+          previous_parent_id: r.currentParentId,
+          new_parent_id: r.matchedDeptId,
+          matched_dept_name: r.matchedDeptName,
+          matched_token: r.matchedToken,
+        })),
+      },
+    });
+  });
+
+  return { applied: toSet.length, rows: plan };
+}
+
+/**
+ * Insert/update one Poster category into the `categories` lookup, keyed by its
+ * natural `poster_category_id`. Returns the local `categories.id`. Idempotent:
+ * a re-run UPDATEs the name (Poster may rename a category). RETURNING on the
+ * INSERT path is empty when ON CONFLICT fires, so we fall back to a SELECT.
+ */
+async function upsertCategory(
+  posterCategoryId: number,
+  name: string,
+  kind: CategoryKind = 'menu',
+): Promise<number> {
+  const { rows } = await query<{ id: number }>(
+    `INSERT INTO categories (kind, poster_category_id, name)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (kind, poster_category_id)
+       DO UPDATE SET name = EXCLUDED.name, updated_at = now()
+     RETURNING id`,
+    [kind, posterCategoryId, name],
+  );
+  const id = rows[0]?.id;
+  if (id !== undefined) return id;
+  const { rows: r2 } = await query<{ id: number }>(
+    `SELECT id FROM categories WHERE kind = $1 AND poster_category_id = $2`,
+    [kind, posterCategoryId],
+  );
+  if (r2[0] === undefined) {
+    throw new Error(
+      `upsertCategory: cannot resolve id for kind=${kind} poster_category_id=${posterCategoryId}`,
+    );
+  }
+  return r2[0].id;
+}
+
+/**
+ * Build the `poster_category_id -> categories.id` lookup map from the rows
+ * already in the `categories` table. Used by `syncMenuProducts` to map each
+ * product's `menu_category_id` to a local FK without an extra round-trip per
+ * product. `syncCategories` MUST have run first (the seed orchestrator
+ * guarantees this ordering).
+ */
+async function loadCategoryMap(kind: CategoryKind = 'menu'): Promise<Map<number, number>> {
+  // Scope to one kind — the 'menu' and 'ingredient' namespaces share numeric
+  // poster_category_id values (e.g. both have id=4), so an unscoped map would
+  // collide and assign the wrong category.
+  const { rows } = await query<{ id: number; poster_category_id: number }>(
+    `SELECT id, poster_category_id FROM categories WHERE kind = $1`,
+    [kind],
+  );
+  const map = new Map<number, number>();
+  for (const r of rows) map.set(Number(r.poster_category_id), Number(r.id));
+  return map;
+}
+
 /**
  * Insert/update one Poster ingredient as a `products(type='raw')` row. Pure
  * raw materials carry only `poster_ingredient_id` (per ADR-0002 §1).
@@ -175,13 +546,19 @@ async function upsertIngredient(
   posterIngredientId: number,
   name: string,
   unit: string,
+  categoryId: number | null,
 ): Promise<void> {
+  // category_id is the local FK into an 'ingredient'-kind `categories` row
+  // (migration 0038), resolved from the Poster ingredient's `category_id` via
+  // the ingredient-category map. On a re-run we always refresh it (EXCLUDED) so
+  // a re-categorisation in Poster propagates; a NULL incoming value clears it.
   await query(
-    `INSERT INTO products (name, type, unit, poster_ingredient_id)
-     VALUES ($1, 'raw', $2, $3)
+    `INSERT INTO products (name, type, unit, poster_ingredient_id, category_id)
+     VALUES ($1, 'raw', $2, $3, $4)
      ON CONFLICT (poster_ingredient_id) WHERE poster_ingredient_id IS NOT NULL
-     DO UPDATE SET name = EXCLUDED.name, unit = EXCLUDED.unit`,
-    [name, normaliseUnit(unit), posterIngredientId],
+     DO UPDATE SET name = EXCLUDED.name, unit = EXCLUDED.unit,
+                   category_id = EXCLUDED.category_id`,
+    [name, normaliseUnit(unit), posterIngredientId, categoryId],
   );
 }
 
@@ -192,7 +569,7 @@ async function upsertIngredient(
  */
 async function upsertPrepack(
   posterProductId: number,
-  posterIngredientId: number,
+  posterIngredientId: number | null,
   name: string,
 ): Promise<number> {
   // C5 — `products` has TWO partial UNIQUE indexes on the Poster keys:
@@ -248,15 +625,20 @@ async function upsertMenuProduct(
   posterProductId: number,
   posterIngredientId: number | null,
   name: string,
+  categoryId: number | null,
 ): Promise<number> {
+  // category_id is set from the product's Poster `menu_category_id` mapped via
+  // the `categories` lookup. On a re-run we always refresh it (EXCLUDED) so a
+  // re-categorisation in Poster propagates; a NULL incoming value clears it.
   const { rows } = await query<{ id: number }>(
-    `INSERT INTO products (name, type, unit, poster_product_id, poster_ingredient_id)
-     VALUES ($1, 'finished', 'pcs', $2, $3)
+    `INSERT INTO products (name, type, unit, poster_product_id, poster_ingredient_id, category_id)
+     VALUES ($1, 'finished', 'pcs', $2, $3, $4)
      ON CONFLICT (poster_product_id) WHERE poster_product_id IS NOT NULL
      DO UPDATE SET name = EXCLUDED.name,
-                   poster_ingredient_id = COALESCE(products.poster_ingredient_id, EXCLUDED.poster_ingredient_id)
+                   poster_ingredient_id = COALESCE(products.poster_ingredient_id, EXCLUDED.poster_ingredient_id),
+                   category_id = EXCLUDED.category_id
      RETURNING id`,
-    [name, posterProductId, posterIngredientId],
+    [name, posterProductId, posterIngredientId, categoryId],
   );
   const id = rows[0]?.id;
   if (id !== undefined) return id;
@@ -286,7 +668,7 @@ async function upsertMenuProduct(
  */
 async function replaceRecipe(
   parentProductId: number,
-  components: readonly { componentProductId: number; qtyPerUnit: number }[],
+  components: readonly BomComponent[],
 ): Promise<number> {
   if (components.length === 0) return 0;
   return withTransaction(async (tx) => {
@@ -302,11 +684,19 @@ async function replaceRecipe(
       try {
         await tx.query(`SAVEPOINT ${sp}`);
         await tx.query(
-          `INSERT INTO recipes (product_id, component_product_id, qty_per_unit)
-           VALUES ($1, $2, $3)
+          `INSERT INTO recipes (product_id, component_product_id, qty_per_unit, brutto, netto)
+           VALUES ($1, $2, $3, $4, $5)
            ON CONFLICT (product_id, component_product_id, stage) DO UPDATE
-             SET qty_per_unit = EXCLUDED.qty_per_unit`,
-          [parentProductId, c.componentProductId, c.qtyPerUnit],
+             SET qty_per_unit = EXCLUDED.qty_per_unit,
+                 brutto = EXCLUDED.brutto,
+                 netto = EXCLUDED.netto`,
+          [
+            parentProductId,
+            c.componentProductId,
+            c.qtyPerUnit,
+            c.brutto ?? null,
+            c.netto ?? null,
+          ],
         );
         await tx.query(`RELEASE SAVEPOINT ${sp}`);
         applied += 1;
@@ -338,6 +728,73 @@ async function replaceRecipe(
 // -----------------------------------------------------------------------------
 // Public sync entry points — one per entity + a top-level `runSeedSync`.
 // -----------------------------------------------------------------------------
+
+/**
+ * Sync the real Poster product categories (`menu.getCategories`) into the
+ * `categories` lookup. MUST run before `syncMenuProducts` so the product sync
+ * can map each `menu_category_id` to a local `categories.id`. Logged under the
+ * `products` sync entity (the `poster_sync_entity` enum has no `categories`
+ * value, and categories are part of the product domain).
+ */
+export async function syncCategories(
+  client: PosterClient,
+  trigger: SyncTrigger = 'manual',
+): Promise<SeedRunResult> {
+  const runId = await startSyncRun('products', trigger);
+  try {
+    const rows = await client.getCategories();
+    let applied = 0;
+    for (const r of rows) {
+      const id = Number(r.category_id);
+      if (!Number.isInteger(id) || id <= 0) continue;
+      const name = String(r.category_name ?? '').trim() || `Category ${id}`;
+      await upsertCategory(id, name);
+      applied += 1;
+    }
+    await finishSyncRun(runId, 'ok', { recordsIn: rows.length, recordsApplied: applied });
+    return { entity: 'products', status: 'ok', recordsIn: rows.length, recordsApplied: applied };
+  } catch (err) {
+    const detail = redactUrl((err as Error).message);
+    await finishSyncRun(runId, 'failed', { recordsIn: 0, recordsApplied: 0 }, detail);
+    await notifyPosterSyncFailed('products', detail);
+    return { entity: 'products', status: 'failed', recordsIn: 0, recordsApplied: 0, errorDetail: detail };
+  }
+}
+
+/**
+ * Sync the real Poster RAW-ingredient categories (`menu.getCategoriesIngredients`)
+ * into the `categories` lookup under `kind='ingredient'` (migration 0038). MUST
+ * run before `syncIngredients` so the ingredient sync can map each raw
+ * ingredient's `category_id` to a local `categories.id`. Logged under the
+ * `ingredients` sync entity.
+ *
+ * NOTE: Poster groups ONLY raw ingredients this way. Semi-finished prepacks
+ * (`menu.getPrepacks`) carry no category — they stay `category_id = NULL`.
+ */
+export async function syncIngredientCategories(
+  client: PosterClient,
+  trigger: SyncTrigger = 'manual',
+): Promise<SeedRunResult> {
+  const runId = await startSyncRun('ingredients', trigger);
+  try {
+    const rows = await client.getIngredientCategories();
+    let applied = 0;
+    for (const r of rows) {
+      const id = Number(r.category_id);
+      if (!Number.isInteger(id) || id <= 0) continue;
+      const name = String(r.name ?? '').trim() || `Ingredient category ${id}`;
+      await upsertCategory(id, name, 'ingredient');
+      applied += 1;
+    }
+    await finishSyncRun(runId, 'ok', { recordsIn: rows.length, recordsApplied: applied });
+    return { entity: 'ingredients', status: 'ok', recordsIn: rows.length, recordsApplied: applied };
+  } catch (err) {
+    const detail = redactUrl((err as Error).message);
+    await finishSyncRun(runId, 'failed', { recordsIn: 0, recordsApplied: 0 }, detail);
+    await notifyPosterSyncFailed('ingredients', detail);
+    return { entity: 'ingredients', status: 'failed', recordsIn: 0, recordsApplied: 0, errorDetail: detail };
+  }
+}
 
 export async function syncSpots(
   client: PosterClient,
@@ -396,6 +853,12 @@ export async function syncIngredients(
   const runId = await startSyncRun('ingredients', trigger);
   try {
     const rows = await client.getIngredients();
+    // Real Poster ingredient-category map (poster_category_id -> categories.id),
+    // scoped to kind='ingredient'. Built once from the rows that
+    // `syncIngredientCategories` populated first (the seed orchestrator
+    // guarantees the ordering). Raw ingredients with no/unknown category map
+    // to NULL.
+    const categoryMap = await loadCategoryMap('ingredient');
     let applied = 0;
     for (const r of rows) {
       const id = Number(r.ingredient_id);
@@ -412,7 +875,12 @@ export async function syncIngredients(
       if (Number.isFinite(ingType) && ingType !== 1) continue;
       const name = String(r.ingredient_name ?? '').trim() || `Ingredient ${id}`;
       const unit = String(r.ingredient_unit ?? 'p');
-      await upsertIngredient(id, name, unit);
+      const pcid = r.category_id !== undefined ? Number(r.category_id) : null;
+      const categoryId =
+        pcid !== null && Number.isInteger(pcid) && pcid > 0
+          ? (categoryMap.get(pcid) ?? null)
+          : null;
+      await upsertIngredient(id, name, unit, categoryId);
       applied += 1;
     }
     await finishSyncRun(runId, 'ok', { recordsIn: rows.length, recordsApplied: applied });
@@ -446,16 +914,26 @@ export async function syncMenuProducts(
   try {
     const list = await client.getProducts();
     total = list.length;
+    // Real Poster category map (poster_category_id -> categories.id). Built
+    // once from the `categories` lookup that `syncCategories` populated first.
+    const categoryMap = await loadCategoryMap();
     // Phase 1: upsert each product row.
     const idMap = new Map<number, number>(); // poster_product_id -> ADIA id
     for (const p of list) {
       const ppid = Number(p.product_id);
       if (!Number.isInteger(ppid) || ppid <= 0) continue;
       const pingId = p.ingredient_id !== undefined ? Number(p.ingredient_id) : null;
+      const pcid =
+        p.menu_category_id !== undefined ? Number(p.menu_category_id) : null;
+      const categoryId =
+        pcid !== null && Number.isInteger(pcid) && pcid > 0
+          ? (categoryMap.get(pcid) ?? null)
+          : null;
       const adiaId = await upsertMenuProduct(
         ppid,
         pingId !== null && Number.isInteger(pingId) && pingId > 0 ? pingId : null,
         String(p.product_name ?? '').trim() || `Product ${ppid}`,
+        categoryId,
       );
       idMap.set(ppid, adiaId);
       applied += 1;
@@ -467,10 +945,20 @@ export async function syncMenuProducts(
       const parentId = idMap.get(ppid);
       if (parentId === undefined) continue;
       const full = await client.getProduct(ppid);
-      if (full === null || !Array.isArray(full.ingredients) || full.ingredients.length === 0) {
-        continue;
+      if (full === null) continue;
+      // Preferred: a flat `ingredients` BOM (raw + prepack lines).
+      let components: BomComponent[] = [];
+      if (Array.isArray(full.ingredients) && full.ingredients.length > 0) {
+        components = await resolveBomComponents(full.ingredients);
+      } else if (
+        Array.isArray(full.group_modifications) &&
+        full.group_modifications.length > 0
+      ) {
+        // No flat BOM — the cake is configured via Размеры modifications. Link
+        // the WHOLE (ЦЕЛЫЙ) modification's prepack as the single component.
+        components = await resolveModificationComponent(full.group_modifications);
       }
-      const components = await resolveBomComponents(full.ingredients);
+      if (components.length === 0) continue;
       await replaceRecipe(parentId, components);
     }
     await finishSyncRun(runId, 'ok', { recordsIn: total, recordsApplied: applied });
@@ -512,32 +1000,77 @@ export async function syncPrepacks(
   try {
     const list = await client.getPrepacks();
     total = list.length;
+
+    // PHASE 1 — upsert every prepack ROW first (and sync raw-ingredient unit
+    // costs). A prepack BOM can reference ANOTHER prepack (structure_type=2);
+    // resolving those `poster_product_id` links in one pass would miss any
+    // prepack that appears later in the list. So we land all prepack rows up
+    // front, THEN resolve BOMs in phase 2 when every poster_product_id exists.
+    const parentIdByPoster = new Map<number, number>(); // poster_product_id -> ADIA id
     for (const p of list) {
       const ppid = Number(p.product_id);
-      const ping = Number(p.ingredient_id);
+      const pingRaw = Number(p.ingredient_id);
+      // A prepack MUST have a menu product_id (its natural key). The
+      // `ingredient_id` is OPTIONAL — Poster reports 0 for a stockless
+      // prepack. Previously such prepacks (ingredient_id<=0) were skipped,
+      // which dropped whole BOM sub-trees; we now import them keyed only by
+      // poster_product_id.
       if (!Number.isInteger(ppid) || ppid <= 0) continue;
-      if (!Number.isInteger(ping) || ping <= 0) continue;
+      const ping = Number.isInteger(pingRaw) && pingRaw > 0 ? pingRaw : null;
       try {
         const parentId = await upsertPrepack(
           ppid,
           ping,
           String(p.product_name ?? '').trim() || `Prepack ${ppid}`,
         );
-        const out = Number(p.out);
-        const yieldQty = Number.isFinite(out) && out > 0 ? out : 1;
-        // structure_brutto already in `structure_unit`; convert to component
-        // `ingredient_unit`, then normalise by `out` so qty_per_unit is "per 1
-        // produced unit" not "per batch".
-        const components: { componentProductId: number; qtyPerUnit: number }[] = [];
+        parentIdByPoster.set(ppid, parentId);
+        // For every RAW (type=1) line, persist the derived unit cost on the
+        // raw product. Best-effort — a not-yet-seeded raw is a no-op (the raw
+        // ingredient sync already ran in runSeedSync ordering).
         for (const ing of p.ingredients ?? []) {
           const compPing = Number(ing.ingredient_id);
           if (!Number.isInteger(compPing) || compPing <= 0) continue;
-          const compRow = await query<{ id: number }>(
-            `SELECT id FROM products WHERE poster_ingredient_id = $1`,
-            [compPing],
-          );
-          const compId = compRow.rows[0]?.id;
-          if (compId === undefined) continue; // ingredient not yet seeded — skip
+          const sType = Number(ing.structure_type);
+          if (Number.isFinite(sType) && sType === 2) continue; // prepack child — no raw cost
+          const unitCost = rawUnitCostFromLine(ing);
+          if (unitCost !== null) await setRawIngredientCost(compPing, unitCost);
+        }
+      } catch (err) {
+        const e = err as { message?: string; code?: string };
+        const msg = redactUrl(e.message ?? 'unknown');
+        failedItems.push({ posterProductId: ppid, code: e.code, message: msg });
+        console.error(`[poster:prepack:upsert] id=${ppid} code=${e.code ?? '-'} msg=${msg}`);
+      }
+    }
+
+    // PHASE 2 — now every prepack row exists; resolve each prepack's BOM.
+    for (const p of list) {
+      const ppid = Number(p.product_id);
+      if (!Number.isInteger(ppid) || ppid <= 0) continue;
+      const parentId = parentIdByPoster.get(ppid);
+      if (parentId === undefined) continue; // phase-1 upsert failed — already logged
+      try {
+        // `out` is the batch yield in the prepack's BASE structure unit
+        // (grams for weight prepacks, ml for volume, pcs for count). Normalise
+        // it to the prepack's OWN product unit (kg/l/pcs) so it is the SAME
+        // unit basis as each line's normalised brutto — otherwise qty_per_unit
+        // is ~1000× off (the 2026-05-30 bug). The denominator is then
+        // "1 unit of the prepack's output".
+        const outUnit = dominantStructureUnit(p.ingredients ?? []);
+        const yieldInUnit = normaliseOut(outUnit, p.out);
+        const yieldQty = yieldInUnit > 0 ? yieldInUnit : 1;
+        const components: BomComponent[] = [];
+        for (const ing of p.ingredients ?? []) {
+          const compPing = Number(ing.ingredient_id);
+          if (!Number.isInteger(compPing) || compPing <= 0) continue;
+          // structure_type drives the lookup column: 1 -> raw
+          // (poster_ingredient_id), 2 -> prepack/semi (poster_product_id).
+          const sType = Number(ing.structure_type);
+          const structureType = Number.isFinite(sType) ? sType : 1;
+          const compId = await resolveComponentId(compPing, structureType);
+          if (compId === null) continue; // component not seeded — skip
+          // brutto -> component unit (kg), then ÷ yield (in parent unit) =
+          // component qty per 1 unit of parent output.
           const qtyConverted = normaliseQty(
             String(ing.structure_unit ?? ''),
             String(ing.ingredient_unit ?? ''),
@@ -545,7 +1078,12 @@ export async function syncPrepacks(
           );
           const perUnit = qtyConverted / yieldQty;
           if (perUnit > 0 && Number.isFinite(perUnit)) {
-            components.push({ componentProductId: compId, qtyPerUnit: perUnit });
+            components.push({
+              componentProductId: compId,
+              qtyPerUnit: perUnit,
+              brutto: numOrNull(ing.structure_brutto),
+              netto: numOrNull(ing.structure_netto),
+            });
           }
         }
         await replaceRecipe(parentId, components);
@@ -622,26 +1160,81 @@ async function resolveBomComponents(
     structure_unit: string;
     ingredient_unit: string;
     structure_brutto: number | string;
+    structure_netto?: number | string;
+    structure_type?: string;
+    structure_selfprice?: number | string;
   }[],
-): Promise<{ componentProductId: number; qtyPerUnit: number }[]> {
-  const out: { componentProductId: number; qtyPerUnit: number }[] = [];
+): Promise<BomComponent[]> {
+  const out: BomComponent[] = [];
   for (const ing of rows) {
     const ping = Number(ing.ingredient_id);
     if (!Number.isInteger(ping) || ping <= 0) continue;
-    const r = await query<{ id: number }>(
-      `SELECT id FROM products WHERE poster_ingredient_id = $1`,
-      [ping],
-    );
-    const id = r.rows[0]?.id;
-    if (id === undefined) continue;
+    // structure_type drives the lookup column: 1 -> raw, 2 -> prepack (semi).
+    const sType = Number(ing.structure_type);
+    const structureType = Number.isFinite(sType) ? sType : 1;
+    // A RAW line carries the ingredient's unit cost — persist it.
+    if (structureType !== 2) {
+      const unitCost = rawUnitCostFromLine(ing);
+      if (unitCost !== null) await setRawIngredientCost(ping, unitCost);
+    }
+    const id = await resolveComponentId(ping, structureType);
+    if (id === null) continue;
+    // A finished product's flat `ingredients` BOM is already per ONE finished
+    // unit (menu.getProduct does not expose a batch `out`), so no yield divisor
+    // — qty_per_unit is the brutto converted to the component's unit.
     const qty = normaliseQty(
       String(ing.structure_unit ?? ''),
       String(ing.ingredient_unit ?? ''),
       ing.structure_brutto,
     );
-    if (qty > 0) out.push({ componentProductId: id, qtyPerUnit: qty });
+    if (qty > 0) {
+      out.push({
+        componentProductId: id,
+        qtyPerUnit: qty,
+        brutto: numOrNull(ing.structure_brutto),
+        netto: numOrNull(ing.structure_netto),
+      });
+    }
   }
   return out;
+}
+
+/**
+ * Resolve a finished product's BOM when `menu.getProduct` exposes no flat
+ * `ingredients` array but a `group_modifications` block (Размеры: ЦЕЛЫЙ /
+ * ПОЛОВИНА / КУСОК). Per owner: take the WHOLE (ЦЕЛЫЙ — largest `brutto`)
+ * modification only and link the finished product to that prepack as its
+ * single component. The modification's `ingredient_id` is a PREPACK's
+ * `product_id` (resolve via poster_product_id). qty_per_unit = brutto in the
+ * prepack's unit; brutto is in grams (e.g. 1000 = 1 unit) so we treat it as a
+ * fraction of one prepack unit (÷1000) — ЦЕЛЫЙ=1000 -> 1.0.
+ */
+async function resolveModificationComponent(
+  groups: readonly {
+    modifications?: { ingredient_id: number | string; brutto?: number | string }[];
+  }[],
+): Promise<BomComponent[]> {
+  // Flatten every modification, pick the one with the largest brutto (ЦЕЛЫЙ).
+  let best: { posterProductId: number; brutto: number } | null = null;
+  for (const g of groups) {
+    for (const m of g.modifications ?? []) {
+      const pid = Number(m.ingredient_id);
+      const brutto = Number(m.brutto);
+      if (!Number.isInteger(pid) || pid <= 0) continue;
+      if (!Number.isFinite(brutto) || brutto <= 0) continue;
+      if (best === null || brutto > best.brutto) {
+        best = { posterProductId: pid, brutto };
+      }
+    }
+  }
+  if (best === null) return [];
+  // The modification's ingredient_id is a PREPACK product_id.
+  const compId = await resolveComponentId(best.posterProductId, 2);
+  if (compId === null) return [];
+  // brutto is in grams of the prepack's produced unit; 1000 g = 1.0 unit.
+  const qtyPerUnit = best.brutto / 1000;
+  if (!(qtyPerUnit > 0)) return [];
+  return [{ componentProductId: compId, qtyPerUnit }];
 }
 
 // -----------------------------------------------------------------------------
@@ -667,6 +1260,11 @@ export async function runSeedSync(
     results.push(await syncStorages(client, 'manual'));
   }
   if (selector === 'all' || selector === 'products') {
+    // categories first — syncMenuProducts maps menu_category_id -> categories.id.
+    results.push(await syncCategories(client, 'manual'));
+    // ingredient categories before ingredients — syncIngredients maps each raw
+    // ingredient's Poster category_id -> categories.id (kind='ingredient').
+    results.push(await syncIngredientCategories(client, 'manual'));
     results.push(await syncIngredients(client, 'manual'));
     results.push(await syncPrepacks(client, 'manual'));
     results.push(await syncMenuProducts(client, 'manual'));

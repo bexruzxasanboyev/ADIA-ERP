@@ -266,6 +266,55 @@ describe('GET /api/dashboard/overview — RBAC + payload shape', () => {
     });
   });
 
+  it('excludes a no-threshold (min_level=0 / max_level=0) row from below_min — Poster-junk guard', async () => {
+    const w = await seedWorld();
+
+    // Baseline below_min count BEFORE the junk row. (The suite schema is
+    // shared across `it`s, so prior fixtures may have seeded rows — assert a
+    // DELTA, not an absolute count.)
+    const baselineRes = await request(ctx.app)
+      .get('/api/dashboard/overview')
+      .set('Authorization', `Bearer ${w.pm.token}`);
+    expect(baselineRes.status).toBe(200);
+    const baselineCount = baselineRes.body.below_min.length;
+
+    // A Poster-synced row with qty=0 but NO configured reorder point
+    // (min_level=0 AND max_level=0). It has no threshold, so it must NOT
+    // surface as below-min/critical even though qty <= min_level holds.
+    const junk = await makeProduct(ctx.db, {
+      name: 'Tuxum (poster junk)',
+      type: 'raw',
+      unit: 'pcs',
+    });
+    await setStock(ctx.db, {
+      locationId: w.rawWh,
+      productId: junk,
+      qty: 0,
+      minLevel: 0,
+      maxLevel: 0,
+    });
+
+    const res = await request(ctx.app)
+      .get('/api/dashboard/overview')
+      .set('Authorization', `Bearer ${w.pm.token}`);
+    expect(res.status).toBe(200);
+    const body = res.body;
+
+    // The junk row is absent from below_min.
+    const belowKeys = body.below_min.map(
+      (r: { location_id: number; product_id: number }) => `${r.location_id}:${r.product_id}`,
+    );
+    expect(belowKeys).not.toContain(`${w.rawWh}:${junk}`);
+
+    // The junk row did NOT increase the below-min count.
+    expect(body.below_min).toHaveLength(baselineCount);
+
+    // Reconciliation invariant: the KPI count is the SAME single source as
+    // the below_min array length (so the HeroStrip "Kritik pozitsiya" KPI and
+    // the CriticalAlerts panel can never drift).
+    expect(body.kpis.below_min_count).toBe(body.below_min.length);
+  });
+
   it('scopes a store_manager to its own store (AC8.2)', async () => {
     const w = await seedWorld();
     const res = await request(ctx.app)

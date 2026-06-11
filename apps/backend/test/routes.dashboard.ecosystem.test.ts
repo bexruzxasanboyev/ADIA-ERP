@@ -20,8 +20,13 @@
  * passing — this file adds a sibling endpoint, it does not change
  * the M8 surface.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
+import {
+  PosterClient,
+  setPosterClientForTests,
+  resetPosterClientCache,
+} from '../src/integrations/poster/client.js';
 import { createTestContext, type TestContext } from './helpers/context.js';
 import {
   makeLocation,
@@ -39,7 +44,119 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await ctx.dispose();
+  setPosterClientForTests(undefined);
+  resetPosterClientCache();
 });
+
+beforeEach(() => {
+  // D-0028 — revenue (sales_today_sum / sales_today_count / sales_chart.amount)
+  // now comes from Poster, NOT the local `sales` table. Default each test to a
+  // Poster client that ERRORS on every call, so a test that does not opt into
+  // a revenue stub sees a clean ZERO — `fetchPosterRevenue` swallows the error
+  // and falls back to zeroes (the resilience path). Installing an explicit
+  // error stub (instead of clearing the token) is deterministic regardless of
+  // whatever `POSTER_TOKEN` the loaded `.env` happens to carry.
+  stubPosterUnavailable();
+});
+
+/**
+ * Install a Poster client whose every request rejects — simulates Poster being
+ * down / unreachable. `fetchPosterRevenue` must catch this and return zeroes.
+ */
+function stubPosterUnavailable(): void {
+  setPosterClientForTests(
+    new PosterClient({
+      token: 'acc:test',
+      minIntervalMs: 0,
+      transientRetries: 0,
+      fetcher: (() =>
+        Promise.reject(new Error('poster unavailable'))) as unknown as typeof fetch,
+    }),
+  );
+  process.env.POSTER_TOKEN = 'acc:test';
+}
+
+/**
+ * D-0028 — install a stub Poster client whose `dash.getPaymentsReport` returns
+ * a real `{days, total}` aggregate built from a `date -> {amount, count}` map
+ * (amounts given in SO'M; the stub multiplies by 100 to emit TIYIN, exactly as
+ * Poster does). The route divides back to so'm via `tiyinToSom`. `spot_id` is
+ * ignored by the stub — single-spot scoped tests get the same payload.
+ */
+/**
+ * F4.9-hourly — so'm of revenue the analytics stub puts in EACH of the 24
+ * `data_hourly` slots when `hourlyPerSlot` is given. data_hourly is already in
+ * so'm (the route applies NO ÷100).
+ *
+ * `hourlyTxPerSlot` is the per-hour TRANSACTION COUNT the stub serves for the
+ * `select=transactions` `getAnalytics` call (the hourly qty source). The stub
+ * branches on the request's `select` query param so the revenue and
+ * transactions series are distinct, exactly as Poster behaves.
+ */
+function stubPosterRevenue(
+  byDate: Record<string, { amount: number; count: number }>,
+  hourlyPerSlot?: number,
+  hourlyTxPerSlot?: number,
+): void {
+  const days = Object.entries(byDate).map(([date, v]) => ({
+    date,
+    payed_sum_sum: Math.round(v.amount * 100), // so'm -> tiyin
+  }));
+  const totalSom = Object.values(byDate).reduce((a, v) => a + v.amount, 0);
+  const totalCount = Object.values(byDate).reduce((a, v) => a + v.count, 0);
+  const payload = {
+    response: {
+      days,
+      total: {
+        payed_sum_sum: Math.round(totalSom * 100), // so'm -> tiyin
+        transactions_count: totalCount,
+      },
+    },
+  };
+  const revenueAnalyticsPayload = {
+    response: {
+      data_hourly: new Array<number>(24).fill(hourlyPerSlot ?? 0),
+      counters: { revenue: String((hourlyPerSlot ?? 0) * 24) },
+    },
+  };
+  const txAnalyticsPayload = {
+    response: {
+      data_hourly: new Array<number>(24).fill(hourlyTxPerSlot ?? 0),
+      counters: { transactions: String((hourlyTxPerSlot ?? 0) * 24) },
+    },
+  };
+  setPosterClientForTests(
+    new PosterClient({
+      token: 'acc:test',
+      minIntervalMs: 0,
+      fetcher: ((url: string | URL) => {
+        const u = typeof url === 'string' ? new URL(url) : url;
+        const m = u.pathname.split('/').pop();
+        if (m === 'dash.getPaymentsReport') {
+          return Promise.resolve(
+            new Response(JSON.stringify(payload), { status: 200 }),
+          );
+        }
+        if (m === 'dash.getAnalytics') {
+          // Branch on `select` so the revenue series (amount) and the
+          // transactions series (hourly qty) are distinct, like Poster.
+          const select = u.searchParams.get('select');
+          const body =
+            select === 'transactions' ? txAnalyticsPayload : revenueAnalyticsPayload;
+          return Promise.resolve(
+            new Response(JSON.stringify(body), { status: 200 }),
+          );
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: { code: 30, message: 'NA' } }), {
+            status: 200,
+          }),
+        );
+      }) as unknown as typeof fetch,
+    }),
+  );
+  process.env.POSTER_TOKEN = 'acc:test';
+}
 
 type World = {
   rawWh: number;
@@ -65,6 +182,18 @@ async function seedWorld(): Promise<World> {
   });
   const storeA = await makeLocation(ctx.db, { type: 'store', name: 'Store A' });
   const storeB = await makeLocation(ctx.db, { type: 'store', name: 'Store B' });
+
+  // D-0028 — map each store to a Poster spot so a scoped principal's revenue
+  // query can resolve a `poster_spot_id` (the helper restricts a locations-
+  // scoped principal to their stores' spots). Unique spot ids per store.
+  await ctx.db.query(`UPDATE locations SET poster_spot_id = $1 WHERE id = $2`, [
+    storeA,
+    storeA,
+  ]);
+  await ctx.db.query(`UPDATE locations SET poster_spot_id = $1 WHERE id = $2`, [
+    storeB,
+    storeB,
+  ]);
 
   const productFlour = await makeProduct(ctx.db, { name: 'Flour', type: 'raw', unit: 'kg' });
   const productCake = await makeProduct(ctx.db, {
@@ -161,7 +290,36 @@ async function seedWorld(): Promise<World> {
     [storeB, productCake, 4, 1000, 1002, 1],
   );
 
-  // sales_stats_daily — last 5 days for both stores.
+  // Historical sales — the chart now reads the raw `sales` table (so TODAY's
+  // partial rows are included), so seed past days there. Days 1..4 back, at a
+  // fixed price of 1000 so amount == qty * 1000. Today (i=0) is the three
+  // rows seeded above (storeA 5 units, storeB 4 units). Distinct
+  // poster_transaction_id per row keeps the uq_sales_poster_line index happy.
+  let txn = 2000;
+  for (let i = 1; i <= 4; i++) {
+    await ctx.db.query(
+      `INSERT INTO sales (store_id, product_id, qty, price, sold_at,
+         poster_transaction_id, poster_line_id)
+       VALUES ($1, $2, $3, 1000, now() - ($4::int || ' days')::interval, $5, 1)`,
+      [storeA, productCake, 5 + i, i, txn++],
+    );
+    await ctx.db.query(
+      `INSERT INTO sales (store_id, product_id, qty, price, sold_at,
+         poster_transaction_id, poster_line_id)
+       VALUES ($1, $2, $3, 1000, now() - ($4::int || ' days')::interval, $5, 1)`,
+      [storeB, productCake, 3 + i, i, txn++],
+    );
+  }
+  // One row outside the 30d window — must NOT appear in sales_chart.
+  await ctx.db.query(
+    `INSERT INTO sales (store_id, product_id, qty, price, sold_at,
+       poster_transaction_id, poster_line_id)
+     VALUES ($1, $2, 99, 1000, now() - interval '45 days', $3, 1)`,
+    [storeA, productCake, txn++],
+  );
+
+  // sales_stats_daily — kept for the dynamic min/max cron and any aggregate
+  // consumers; the ecosystem sales_chart no longer reads this table.
   for (let i = 0; i < 5; i++) {
     await ctx.db.query(
       `INSERT INTO sales_stats_daily (location_id, product_id, stat_date, qty_sold)
@@ -174,12 +332,6 @@ async function seedWorld(): Promise<World> {
       [storeB, productCake, i, 3 + i],
     );
   }
-  // One row outside the 30d window — must NOT appear in sales_chart.
-  await ctx.db.query(
-    `INSERT INTO sales_stats_daily (location_id, product_id, stat_date, qty_sold)
-     VALUES ($1, $2, CURRENT_DATE - 45, 99)`,
-    [storeA, productCake],
-  );
 
   // Notifications — three rows of mixed types/severities.
   await ctx.db.query(
@@ -218,9 +370,21 @@ async function seedWorld(): Promise<World> {
 describe('GET /api/dashboard/ecosystem', () => {
   it('returns the chain-wide ecosystem snapshot for pm', async () => {
     const w = await seedWorld();
-    // F4.9 — the default `?range=today` would clip 5-day-old seeded rows out
-    // of the sales_chart. The original assertions were written for the old
-    // 30-day window, so we pass `?range=month` to preserve them.
+    // D-0028 — revenue comes from Poster. Get "today" from the DB session so
+    // the stubbed Poster day aligns with the chart's `sold_at::date` bucketing.
+    const todayRow0 = await ctx.db.query<{ d: string }>(
+      `SELECT to_char(now()::date, 'YYYY-MM-DD') AS d`,
+    );
+    const todayDate = todayRow0.rows[0].d;
+    // Stub a Poster month aggregate: 19,553,300 so'm total / 84 cheques, with
+    // a single dated day on TODAY carrying the whole amount.
+    stubPosterRevenue({
+      [todayDate]: { amount: 19_553_300, count: 84 },
+    });
+
+    // F4.9 — the default `?range=today` would clip the days-back seeded rows
+    // out of the sales_chart, so we pass `?range=month`. NOTE: poster_status
+    // `sales_*` are range-windowed too (Poster query uses the same window).
     const res = await request(ctx.app)
       .get('/api/dashboard/ecosystem?range=month')
       .set('Authorization', `Bearer ${w.pm.token}`);
@@ -233,8 +397,10 @@ describe('GET /api/dashboard/ecosystem', () => {
     expect(body.poster_status.last_sync_status).toBe('ok');
     expect(typeof body.poster_status.last_sync_at).toBe('string');
     expect(body.poster_status.sync_errors_24h).toBe(1);
-    expect(body.poster_status.sales_today_count).toBe(3);
-    expect(body.poster_status.sales_today_sum).toBe(9);
+    // D-0028 — count + sum now come from the stubbed Poster total (so'm), NOT
+    // local `sales` math.
+    expect(body.poster_status.sales_today_count).toBe(84);
+    expect(body.poster_status.sales_today_sum).toBe(19_553_300);
 
     // chain_flow — one row per location, ordered by type:
     // raw_warehouse, production, supply, central_warehouse, store, store.
@@ -283,17 +449,39 @@ describe('GET /api/dashboard/ecosystem', () => {
     expect(sev.poster_sync_failed).toBe('danger');
     expect(sev.replenishment_created).toBe('info');
 
-    // sales_chart — last 30 days. Five distinct dates were seeded; the 45-day
-    // outlier MUST NOT appear. days[i].qty is the sum across both stores.
-    const days = body.sales_chart.days;
+    // sales_chart — D-0028: `qty` (UNITS) stays sourced from the raw `sales`
+    // table; `amount` (SO'M) now comes from Poster. Five distinct local-sales
+    // days were seeded (today + 4 days back); the 45-day outlier MUST NOT
+    // appear. The day set is the UNION of local qty days and Poster days.
+    const days = body.sales_chart.days as Array<{
+      date: string;
+      qty: number;
+      amount: number;
+    }>;
     expect(Array.isArray(days)).toBe(true);
     expect(days.length).toBe(5);
-    // qty_sold seeded as storeA(5..9 = 35) + storeB(3..7 = 25) = 60 total.
-    const totalQty = days.reduce(
-      (acc: number, d: { qty: number }) => acc + Number(d.qty),
-      0,
-    );
-    expect(totalQty).toBe(60);
+    for (const d of days) {
+      expect(typeof d.date).toBe('string');
+      expect(typeof d.qty).toBe('number');
+      expect(typeof d.amount).toBe('number');
+    }
+    // TODAY must be present (raw `sales` includes today's partial units; the
+    // Poster stub also dates its whole amount on today). Derive "today" from
+    // the DB session so the assertion never skews against the Node process TZ.
+    const todayPoint = days.find((d) => d.date === todayDate);
+    expect(todayPoint).toBeDefined();
+    // qty stays local — today across both stores: storeA (3 + 2) + storeB 4 = 9.
+    expect(todayPoint?.qty).toBe(9);
+    // amount is Poster-authoritative — the whole stubbed month total is dated
+    // on today.
+    expect(todayPoint?.amount).toBe(19_553_300);
+    // qty total stays the local 61 units; the Poster-only days contribute 0
+    // units, the local-only days contribute 0 so'm.
+    const totalQty = days.reduce((acc, d) => acc + Number(d.qty), 0);
+    expect(totalQty).toBe(61);
+    // amount total reconciles with the Poster range total (so'm).
+    const totalAmount = days.reduce((acc, d) => acc + Number(d.amount), 0);
+    expect(totalAmount).toBe(19_553_300);
   });
 
   // F4.x — sex (production) nodes carry two extra KPIs the canvas surfaces
@@ -378,8 +566,18 @@ describe('GET /api/dashboard/ecosystem', () => {
 
   it('scopes a store_manager to its own store (chain_flow + sales_chart)', async () => {
     const w = await seedWorld();
-    // F4.9 — pass range=month so the 5-day-back sales_stats_daily seed lands
-    // in the chart window (the test pre-dates the range parameter).
+    // D-0028 — the store_manager's revenue query is restricted to their store's
+    // Poster spot. seedWorld maps storeA -> its own spot id. Stub Poster to
+    // return a known per-spot total (the stub ignores spot_id, but storeA maps
+    // to exactly one spot, so the helper makes a single call).
+    const todayRow0 = await ctx.db.query<{ d: string }>(
+      `SELECT to_char(now()::date, 'YYYY-MM-DD') AS d`,
+    );
+    const todayDate = todayRow0.rows[0].d;
+    stubPosterRevenue({ [todayDate]: { amount: 35_000, count: 6 } });
+
+    // F4.9 — pass range=month so the 4-day-back sales seed lands in the
+    // chart window (the test pre-dates the range parameter).
     const res = await request(ctx.app)
       .get('/api/dashboard/ecosystem?range=month')
       .set('Authorization', `Bearer ${w.storeAManager.token}`);
@@ -396,16 +594,54 @@ describe('GET /api/dashboard/ecosystem', () => {
       open_requests_count: 1,
     });
 
-    // sales_today_sum — only storeA sales (3 + 2 = 5).
-    expect(body.poster_status.sales_today_sum).toBe(5);
-    expect(body.poster_status.sales_today_count).toBe(2);
+    // poster_status revenue is Poster-sourced (so'm), scoped to storeA's spot.
+    expect(body.poster_status.sales_today_sum).toBe(35_000);
+    expect(body.poster_status.sales_today_count).toBe(6);
 
-    // sales_chart — only storeA's qty (5..9 = 35).
-    const totalQty = body.sales_chart.days.reduce(
-      (acc: number, d: { qty: number }) => acc + Number(d.qty),
-      0,
-    );
+    // sales_chart — qty (units) stays local and store-scoped to storeA:
+    // today 5 + days-back 6+7+8+9 = 35 units; storeB MUST be excluded. amount
+    // is the Poster per-spot revenue (so'm), reconciling with the range total.
+    const days = body.sales_chart.days as Array<{ qty: number; amount: number }>;
+    const totalQty = days.reduce((acc, d) => acc + Number(d.qty), 0);
     expect(totalQty).toBe(35);
+    const totalAmount = days.reduce((acc, d) => acc + Number(d.amount), 0);
+    expect(totalAmount).toBe(35_000);
+  });
+
+  it('range=today emits an HOURLY sales_chart (granularity=hour)', async () => {
+    const w = await seedWorld();
+    const PER_HOUR_SOM = 1234;
+    const PER_HOUR_TX = 7;
+    stubPosterRevenue({}, PER_HOUR_SOM, PER_HOUR_TX);
+
+    const res = await request(ctx.app)
+      .get('/api/dashboard/ecosystem?range=today')
+      .set('Authorization', `Bearer ${w.pm.token}`);
+    expect(res.status).toBe(200);
+
+    // Wrapper carries the granularity discriminator.
+    expect(res.body.sales_chart.granularity).toBe('hour');
+    const days = res.body.sales_chart.days as Array<{
+      date: string;
+      hour: number;
+      qty: number;
+      amount: number;
+    }>;
+    const nowHour = new Date().getUTCHours();
+    // One point per hour from 00:00 up to the current hour (never the future).
+    expect(days.length).toBe(nowHour + 1);
+    const todayIso = new Date().toISOString().slice(0, 10);
+    days.forEach((d, i) => {
+      expect(d.date).toBe(todayIso);
+      expect(d.hour).toBe(i);
+      // qty now comes from `select=transactions` data_hourly[hour] (counts).
+      expect(d.qty).toBe(PER_HOUR_TX);
+      // amount comes straight from `select=revenue` data_hourly[hour] (so'm).
+      expect(d.amount).toBe(PER_HOUR_SOM);
+    });
+    // And the qty series is genuinely non-zero (regression guard for the old
+    // hard-coded `qty: 0` hourly flat line).
+    expect(days.some((d) => d.qty > 0)).toBe(true);
   });
 
   it('returns an empty alerts feed when no notifications exist', async () => {
@@ -901,5 +1137,59 @@ describe('GET /api/dashboard/ecosystem', () => {
     expect(res.body.poster_status.sync_errors_24h).toBe(0);
     expect(res.body.poster_status.sales_today_count).toBe(0);
     expect(res.body.poster_status.sales_today_sum).toBe(0);
+  });
+
+  // ---------------------------------------------------------------------------
+  // D-0028 (2026-06-01) — `sales_today_sum` / `sales_today_count` are now
+  // sourced from Poster `dash.getPaymentsReport` (the single source of truth
+  // for revenue), NOT from the local `sales` table's `sum(qty*price)`. The
+  // local money column is unit-corrupted, so the dashboard headline reads
+  // Poster's so'm total + cheque count directly. Earlier this test pinned the
+  // local-sales revenue regression; it now pins the Poster source-of-truth.
+  // ---------------------------------------------------------------------------
+  it('sources sales_today_sum (so\'m) + count from Poster, not local sales', async () => {
+    const w = await seedWorld();
+    const todayRow0 = await ctx.db.query<{ d: string }>(
+      `SELECT to_char(now()::date, 'YYYY-MM-DD') AS d`,
+    );
+    const todayDate = todayRow0.rows[0].d;
+    // Stub a Poster "today" aggregate in tiyin -> the route must report so'm.
+    stubPosterRevenue({ [todayDate]: { amount: 1_234_500, count: 7 } });
+
+    const res = await request(ctx.app)
+      .get('/api/dashboard/ecosystem?range=today')
+      .set('Authorization', `Bearer ${w.pm.token}`);
+
+    expect(res.status).toBe(200);
+    const sum = res.body.poster_status.sales_today_sum as number;
+    const count = res.body.poster_status.sales_today_count as number;
+    // Values come straight from the stubbed Poster total (÷100 to so'm) — they
+    // are NOT derived from the local `sales` rows seeded by seedWorld.
+    expect(sum).toBe(1_234_500);
+    expect(count).toBe(7);
+  });
+
+  // D-0028 — resilience: a Poster failure must NOT 500 the ecosystem endpoint.
+  // With no Poster token configured (no stub installed) `fetchPosterRevenue`
+  // swallows the error and falls back to zero revenue; the rest of the payload
+  // (chain_flow, alerts, local qty) still renders.
+  it('falls back to zero revenue (not 500) when Poster is unavailable', async () => {
+    const w = await seedWorld();
+    // beforeEach installed a Poster client that rejects every call, so
+    // fetchPosterRevenue catches it and resolves to zero revenue.
+    const res = await request(ctx.app)
+      .get('/api/dashboard/ecosystem?range=month')
+      .set('Authorization', `Bearer ${w.pm.token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.poster_status.sales_today_sum).toBe(0);
+    expect(res.body.poster_status.sales_today_count).toBe(0);
+    // chain_flow still renders (DB-sourced, independent of Poster).
+    expect(res.body.chain_flow.length).toBeGreaterThan(0);
+    // sales_chart still carries local qty even though Poster amount is 0.
+    const days = res.body.sales_chart.days as Array<{ qty: number; amount: number }>;
+    const totalQty = days.reduce((acc, d) => acc + Number(d.qty), 0);
+    expect(totalQty).toBeGreaterThan(0);
+    for (const d of days) expect(d.amount).toBe(0);
   });
 });

@@ -91,20 +91,47 @@ async function upsertUser(
   const existing = await query<{ id: number }>('SELECT id FROM users WHERE username = $1', [
     username,
   ]);
+  let userId: number;
   if (existing.rows[0] !== undefined) {
-    return existing.rows[0].id;
+    userId = existing.rows[0].id;
+  } else {
+    const hash = await bcrypt.hash(SEED_PASSWORD, BCRYPT_ROUNDS);
+    const { rows } = await query<{ id: number }>(
+      `INSERT INTO users (name, username, password_hash, role, location_id)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [name, username, hash, role, locationId],
+    );
+    const row = rows[0];
+    if (row === undefined) {
+      throw new Error(`Failed to insert user ${username}.`);
+    }
+    userId = row.id;
   }
-  const hash = await bcrypt.hash(SEED_PASSWORD, BCRYPT_ROUNDS);
-  const { rows } = await query<{ id: number }>(
-    `INSERT INTO users (name, username, password_hash, role, location_id)
-     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-    [name, username, hash, role, locationId],
-  );
-  const row = rows[0];
-  if (row === undefined) {
-    throw new Error(`Failed to insert user ${username}.`);
+
+  // Keep `user_locations` in sync with `users.location_id` (ADR-0012): the
+  // authenticate middleware resolves assigned locations from `user_locations`,
+  // NOT from `users.location_id`, so a scoped user with no primary row here is
+  // locked out of its own location ("X-Active-Location is not assigned").
+  // Idempotent — also back-fills users seeded before this sync was added.
+  // `is_primary` is TRUE only when the user has no primary yet; otherwise the
+  // row is a secondary attachment. This keeps the partial-unique invariant
+  // (`uq_user_locations_primary` — one primary per user) intact even when the
+  // user's existing primary points at a different location (e.g. a real
+  // Poster-synced warehouse vs. this seed's placeholder).
+  if (locationId !== null) {
+    const primary = await query(
+      'SELECT 1 FROM user_locations WHERE user_id = $1 AND is_primary = TRUE',
+      [userId],
+    );
+    const isPrimary = primary.rows.length === 0;
+    await query(
+      `INSERT INTO user_locations (user_id, location_id, is_primary, assigned_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (user_id, location_id) DO NOTHING`,
+      [userId, locationId, isPrimary],
+    );
   }
-  return row.id;
+  return userId;
 }
 
 /** Insert a location if its name is free; return the location id. */
@@ -113,6 +140,21 @@ async function upsertLocation(
   type: string,
   parentId: number | null,
 ): Promise<number> {
+  // The central warehouse is a singleton owned by Poster ("Склад Центральный",
+  // poster_storage_id=8). Reuse the existing Poster-synced row instead of
+  // creating a second, placeholder central_warehouse ("Markaziy Sklad") — the
+  // duplicate has no stock and only confuses the location switcher.
+  if (type === 'central_warehouse') {
+    const poster = await query<{ id: number }>(
+      `SELECT id FROM locations
+        WHERE type = 'central_warehouse'
+        ORDER BY (poster_storage_id IS NOT NULL) DESC, id
+        LIMIT 1`,
+    );
+    if (poster.rows[0] !== undefined) {
+      return poster.rows[0].id;
+    }
+  }
   const existing = await query<{ id: number }>('SELECT id FROM locations WHERE name = $1', [name]);
   if (existing.rows[0] !== undefined) {
     return existing.rows[0].id;

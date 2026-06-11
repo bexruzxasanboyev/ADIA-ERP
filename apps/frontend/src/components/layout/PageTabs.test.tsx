@@ -11,6 +11,7 @@ function fakeUser(role: Role): User {
   return {
     id: 1,
     name: `Test ${role}`,
+    email: `${role}@adia.test`,
     username: role,
     role,
     location_id: null,
@@ -62,6 +63,7 @@ describe('PageTabs', () => {
       'central-warehouse',
       'stores',
       'replenishment',
+      'delivery',
       'production-orders',
       'purchase-orders',
     ]) {
@@ -107,7 +109,7 @@ describe('PageTabs', () => {
     const list = screen.getByTestId('page-tabs');
     expect(within(list).getByTestId('page-tab-products')).toBeInTheDocument();
     expect(within(list).getByTestId('page-tab-locations')).toBeInTheDocument();
-    // EPIC 3 — /users merged into /employees; only the merged tab remains.
+    expect(within(list).getByTestId('page-tab-users')).toBeInTheDocument();
     expect(within(list).getByTestId('page-tab-employees')).toBeInTheDocument();
   });
 

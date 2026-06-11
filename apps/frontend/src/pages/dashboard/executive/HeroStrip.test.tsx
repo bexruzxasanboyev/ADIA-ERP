@@ -7,8 +7,8 @@
  *   3. Faol so'rovlar     — active production + open requests + pending approvals
  *   4. Kritik pozitsiya   — `kpis.below_min_count` (danger tone)
  */
-import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it } from 'vitest';
+import { render, screen } from '@testing-library/react';
 import { HeroStrip } from './HeroStrip';
 import type { DashboardEcosystem, DashboardOverview } from '@/lib/types';
 
@@ -112,8 +112,8 @@ describe('HeroStrip', () => {
         range={{ range: 'week' }}
       />,
     );
-    expect(screen.getByText('Bu haftalik tushum')).toBeInTheDocument();
-    expect(screen.getByText('Bu haftalik sotuvlar')).toBeInTheDocument();
+    expect(screen.getByText('Haftalik tushum')).toBeInTheDocument();
+    expect(screen.getByText('Haftalik sotuvlar')).toBeInTheDocument();
   });
 
   it('switches revenue/receipts titles when range=month', () => {
@@ -124,8 +124,8 @@ describe('HeroStrip', () => {
         range={{ range: 'month' }}
       />,
     );
-    expect(screen.getByText('Bu oylik tushum')).toBeInTheDocument();
-    expect(screen.getByText('Bu oylik sotuvlar')).toBeInTheDocument();
+    expect(screen.getByText('Oylik tushum')).toBeInTheDocument();
+    expect(screen.getByText('Oylik sotuvlar')).toBeInTheDocument();
   });
 
   it('uses the generic "Davr" copy when range=custom', () => {
@@ -138,36 +138,6 @@ describe('HeroStrip', () => {
     );
     expect(screen.getByText('Davr tushumi')).toBeInTheDocument();
     expect(screen.getByText('Davr sotuvlari')).toBeInTheDocument();
-  });
-
-  it('renders KPI cards as static regions when onNavigate is absent', () => {
-    render(<HeroStrip overview={OVERVIEW} ecosystem={ECOSYSTEM} />);
-    const card = screen.getByTestId('hero-strip-revenue');
-    // No router/handler → plain region, never an interactive button.
-    expect(card.tagName).toBe('DIV');
-    expect(card.getAttribute('role')).toBe('region');
-  });
-
-  it('renders KPI cards as buttons and navigates on click (EPIC 7.1)', () => {
-    const onNavigate = vi.fn();
-    render(
-      <HeroStrip
-        overview={OVERVIEW}
-        ecosystem={ECOSYSTEM}
-        onNavigate={onNavigate}
-      />,
-    );
-
-    const revenue = screen.getByTestId('hero-strip-revenue');
-    expect(revenue.tagName).toBe('BUTTON');
-    fireEvent.click(revenue);
-    expect(onNavigate).toHaveBeenCalledWith('/dashboard/operations');
-
-    fireEvent.click(screen.getByTestId('hero-strip-requests'));
-    expect(onNavigate).toHaveBeenCalledWith('/sorovnomalar');
-
-    fireEvent.click(screen.getByTestId('hero-strip-critical'));
-    expect(onNavigate).toHaveBeenCalledWith('/stock');
   });
 
   it('uses the default tone when no critical positions exist', () => {

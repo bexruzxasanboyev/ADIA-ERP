@@ -77,6 +77,22 @@ describe('mapSafeExpense / isExpense (pure)', () => {
     expect(isExpense({ transaction_id: 1, type: 0 })).toBe(true);
     expect(isExpense({ transaction_id: 2, type: 1 })).toBe(false);
     expect(isExpense({ transaction_id: 3 })).toBe(false);
+    // Poster sends numeric-looking fields as strings too — pin both forms.
+    expect(isExpense({ transaction_id: 4, type: '0' })).toBe(true);
+    expect(isExpense({ transaction_id: 5, type: '1' })).toBe(false);
+  });
+
+  it('expense rows carry a NEGATIVE tiyin amount; mapper normalises to positive so\'m', () => {
+    // Real shape (live 2026-06-01): type-0 expense amounts are negative tiyin.
+    const dto = mapSafeExpense({
+      transaction_id: 344791,
+      type: '0',
+      amount: '-41490700', // -414907.00 so'm
+      category_name: 'Актуализация',
+      date: '2026-05-31 21:06:36',
+    });
+    expect(dto.amount).toBe(414907);
+    expect(dto.category).toBe('Актуализация');
   });
 });
 
@@ -96,6 +112,26 @@ describe('GET /api/safe-expenses', () => {
     expect(ids).not.toContain(12);
     const e = res.body.items.find((x: { id: number }) => x.id === 11);
     expect(e.amount).toBe(2000);
+  });
+
+  it('a range covering real expenses returns them (type-0 kept, type-1 dropped)', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    // Real-shaped rows from 2026-05-31: type-0 expenses (negative tiyin) +
+    // type-1 income (positive). Only the expenses must come back.
+    stubFinanceTransactions([
+      { transaction_id: 344791, type: '0', amount: '-41490700', category_name: 'Актуализация', date: '2026-05-31 21:06:36' },
+      { transaction_id: 344792, type: '0', amount: '-1025700000', category_name: 'Переводы', date: '2026-05-31 21:32:43' },
+      { transaction_id: 344796, type: '1', amount: '1362784500', category_name: 'Кассовые смены', date: '2026-05-31 21:34:53' },
+    ]);
+    const res = await request(ctx.app)
+      .get('/api/safe-expenses?range=custom&from=2026-05-31&to=2026-05-31')
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(200);
+    const ids = res.body.items.map((e: { id: number }) => e.id);
+    expect(ids).toEqual(expect.arrayContaining([344791, 344792]));
+    expect(ids).not.toContain(344796); // income dropped
+    const big = res.body.items.find((x: { id: number }) => x.id === 344792);
+    expect(big.amount).toBe(10257000); // |−1025700000| tiyin -> so'm
   });
 
   it('store_manager forbidden -> 403', async () => {

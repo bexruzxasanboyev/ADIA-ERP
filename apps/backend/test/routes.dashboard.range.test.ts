@@ -14,8 +14,13 @@
  *   - custom range with from/to honors both bounds.
  *   - invalid range -> 422; custom without from/to -> 422.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
+import {
+  PosterClient,
+  setPosterClientForTests,
+  resetPosterClientCache,
+} from '../src/integrations/poster/client.js';
 import { createTestContext, type TestContext } from './helpers/context.js';
 import {
   makeLocation,
@@ -32,6 +37,109 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await ctx.dispose();
+  setPosterClientForTests(undefined);
+  resetPosterClientCache();
+});
+
+/**
+ * D-0028 — the ecosystem `poster_status.sales_*` and `sales_chart.amount` now
+ * come from Poster `dash.getPaymentsReport`, windowed to `?range`. Install a
+ * stub whose response is DERIVED FROM THE REQUESTED `dateFrom`/`dateTo`
+ * (YYYYMMDD) in the URL: it emits one day entry per calendar day in the window
+ * with a fixed per-day amount + cheque count. So a wider `?range` (more days)
+ * yields a strictly larger `transactions_count` and total — exactly the
+ * monotonicity these range tests assert. Money is emitted in TIYIN; the route
+ * divides back to so'm.
+ */
+const PER_DAY_SOM = 1000; // so'm of revenue stubbed for each day in the window
+const PER_DAY_CHEQUES = 2; // cheque count stubbed for each day in the window
+// F4.9-hourly — so'm of revenue the analytics stub puts in EACH of the 24
+// `data_hourly` slots (already so'm, the route applies NO ÷100).
+const PER_HOUR_SOM = 250;
+// F4.9-hourly — per-hour TRANSACTION COUNT the stub serves for the
+// `select=transactions` analytics call (the hourly qty / "Sotuv soni" source).
+const PER_HOUR_TX = 3;
+
+function installRangeAwarePoster(): void {
+  setPosterClientForTests(
+    new PosterClient({
+      token: 'acc:test',
+      minIntervalMs: 0,
+      fetcher: ((url: string | URL) => {
+        const u = typeof url === 'string' ? new URL(url) : url;
+        const m = u.pathname.split('/').pop();
+        // F4.9-hourly — the today path pulls `dash.getAnalytics.data_hourly`
+        // TWICE: `select=revenue` (24 so'm values -> amount) and
+        // `select=transactions` (24 count values -> qty). Branch on `select`
+        // and emit a flat per-hour series for each so the hourly chart
+        // assertions can reason about each point's amount AND qty.
+        if (m === 'dash.getAnalytics') {
+          const select = u.searchParams.get('select');
+          const fill = select === 'transactions' ? PER_HOUR_TX : PER_HOUR_SOM;
+          const counters =
+            select === 'transactions'
+              ? { transactions: String(PER_HOUR_TX * 24) }
+              : { revenue: String(PER_HOUR_SOM * 24) };
+          const payload = {
+            response: {
+              data_hourly: new Array<number>(24).fill(fill),
+              counters,
+            },
+          };
+          return Promise.resolve(
+            new Response(JSON.stringify(payload), { status: 200 }),
+          );
+        }
+        if (m !== 'dash.getPaymentsReport') {
+          return Promise.resolve(
+            new Response(JSON.stringify({ error: { code: 30, message: 'NA' } }), {
+              status: 200,
+            }),
+          );
+        }
+        const dateFrom = u.searchParams.get('dateFrom') ?? '';
+        const dateTo = u.searchParams.get('dateTo') ?? '';
+        const days = expandPosterDays(dateFrom, dateTo);
+        const payload = {
+          response: {
+            days: days.map((date) => ({
+              date,
+              payed_sum_sum: PER_DAY_SOM * 100, // so'm -> tiyin
+            })),
+            total: {
+              payed_sum_sum: days.length * PER_DAY_SOM * 100, // tiyin
+              transactions_count: days.length * PER_DAY_CHEQUES,
+            },
+          },
+        };
+        return Promise.resolve(
+          new Response(JSON.stringify(payload), { status: 200 }),
+        );
+      }) as unknown as typeof fetch,
+    }),
+  );
+  process.env.POSTER_TOKEN = 'acc:test';
+}
+
+/** Expand a YYYYMMDD..YYYYMMDD inclusive range into `YYYY-MM-DD` day strings. */
+function expandPosterDays(dateFrom: string, dateTo: string): string[] {
+  const toDate = (s: string): Date | null => {
+    const mm = /^(\d{4})(\d{2})(\d{2})$/.exec(s);
+    if (!mm) return null;
+    return new Date(`${mm[1]}-${mm[2]}-${mm[3]}T00:00:00.000Z`);
+  };
+  const start = toDate(dateFrom);
+  const end = toDate(dateTo);
+  if (start === null || end === null || start > end) return [];
+  const out: string[] = [];
+  for (let t = start.getTime(); t <= end.getTime(); t += 86_400_000) {
+    out.push(new Date(t).toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+beforeEach(() => {
+  installRangeAwarePoster();
 });
 
 type World = {
@@ -187,9 +295,26 @@ describe('GET /api/dashboard/ecosystem — ?range', () => {
       .set('Authorization', `Bearer ${w.pm.token}`);
     expect(res.status).toBe(200);
     const todayCount = res.body.poster_status.sales_today_count;
-    // sales_chart — at most one stat_date row (today). The 7-day and 25-day
-    // sales_stats_daily seeds must NOT appear.
-    expect(res.body.sales_chart.days.length).toBeLessThanOrEqual(1);
+    // F4.9-hourly — `range=today` now emits HOURLY buckets (granularity
+    // 'hour'), one point per hour from 00:00 up to the current hour (never a
+    // future hour). The 7-day / 25-day daily seeds must still NOT appear.
+    expect(res.body.sales_chart.granularity).toBe('hour');
+    const hourlyDays = res.body.sales_chart.days as Array<{
+      date: string;
+      hour: number;
+      qty: number;
+      amount: number;
+    }>;
+    const nowHour = new Date().getUTCHours();
+    // One point per hour 0..nowHour inclusive.
+    expect(hourlyDays.length).toBe(nowHour + 1);
+    const todayIso = new Date().toISOString().slice(0, 10);
+    hourlyDays.forEach((d, i) => {
+      expect(d.date).toBe(todayIso); // every hour carries today's date
+      expect(d.hour).toBe(i); // hours are 0..N in order
+      expect(d.qty).toBe(PER_HOUR_TX); // counts from select=transactions data_hourly
+      expect(d.amount).toBe(PER_HOUR_SOM); // so'm from select=revenue data_hourly, no ÷100
+    });
     // Same `it` later requests with range=month, expect strictly more rows.
     const month = await request(ctx.app)
       .get('/api/dashboard/ecosystem?range=month')
@@ -211,10 +336,22 @@ describe('GET /api/dashboard/ecosystem — ?range', () => {
     expect(week.body.poster_status.sales_today_count).toBeGreaterThan(
       today.body.poster_status.sales_today_count,
     );
-    // sales_chart for week includes the 7-day-ago bucket.
-    expect(week.body.sales_chart.days.length).toBeGreaterThanOrEqual(
-      today.body.sales_chart.days.length + 1,
-    );
+    // F4.9-hourly — today is HOURLY, week is DAILY. The two series carry
+    // different granularity discriminators, and the daily week series has no
+    // `hour` field on its points.
+    expect(today.body.sales_chart.granularity).toBe('hour');
+    expect(week.body.sales_chart.granularity).toBe('day');
+    const weekDays = week.body.sales_chart.days as Array<{
+      date: string;
+      hour?: number;
+      qty: number;
+      amount: number;
+    }>;
+    // A 7-day window has multiple daily buckets, none carrying `hour`.
+    expect(weekDays.length).toBeGreaterThanOrEqual(2);
+    for (const d of weekDays) {
+      expect(d.hour).toBeUndefined();
+    }
   });
 
   it('range=month pulls the 25-day-old chart row in', async () => {
@@ -223,19 +360,29 @@ describe('GET /api/dashboard/ecosystem — ?range', () => {
       .get('/api/dashboard/ecosystem?range=month')
       .set('Authorization', `Bearer ${w.pm.token}`);
     expect(res.status).toBe(200);
-    // The 25-day-old stat_date row is now inside the window.
-    expect(res.body.sales_chart.days.length).toBeGreaterThanOrEqual(3);
-    // The sum is global across the schema (other tests in this file also seed
-    // sales_stats_daily). We only assert this seed's quantities are present.
-    const qtySet = new Set(
-      res.body.sales_chart.days.map((d: { qty: number }) => Number(d.qty)),
-    );
-    // qty_sold for this seed: 10 (today), 20 (-7d), 30 (-25d). Other seeds
-    // pump the SAME location_id+product_id+stat_date keys though, so the
-    // aggregate may roll up. Just assert one row exceeds the smallest single
-    // seeded value.
-    const maxQty = Math.max(...(qtySet as Set<number>));
-    expect(maxQty).toBeGreaterThanOrEqual(30);
+    // D-0028 — `qty` (units) sources from the raw `sales` table (so TODAY is
+    // included) while `amount` (so'm) sources from Poster. This seed has
+    // `sales` rows at three ages — today, -5d, -25d — all inside the 30-day
+    // window; the union with the Poster day series (one entry per window day)
+    // yields a full month of buckets.
+    const days = res.body.sales_chart.days as Array<{
+      date: string;
+      qty: number;
+      amount: number;
+    }>;
+    expect(days.length).toBeGreaterThanOrEqual(3);
+    // Every point carries qty AND amount as numbers; amount is the Poster
+    // per-day revenue (PER_DAY_SOM where Poster reported that day, else 0) —
+    // it is NO LONGER `qty * price` (the local money column is not trusted).
+    for (const d of days) {
+      expect(typeof d.qty).toBe('number');
+      expect(typeof d.amount).toBe('number');
+    }
+    // The amount total reconciles with the Poster range total (so'm): one
+    // PER_DAY_SOM per calendar day across the ~30-day window.
+    const totalAmount = days.reduce((acc, d) => acc + Number(d.amount), 0);
+    expect(totalAmount).toBe(res.body.poster_status.sales_today_sum);
+    expect(totalAmount).toBeGreaterThan(0);
   });
 });
 

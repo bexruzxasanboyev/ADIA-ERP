@@ -1,5 +1,4 @@
 import type { ComponentType, ReactNode } from 'react';
-import { Link } from 'react-router-dom';
 import {
   AlertTriangle,
   Boxes,
@@ -54,11 +53,6 @@ export interface ChainKpi {
   /** Visual tone — `accent` uses the layer accent colour. */
   tone: 'neutral' | 'accent' | 'amber' | 'destructive';
   hint?: string;
-  /**
-   * EPIC 7.1 — drill-down route. When set, the KPI card becomes a link
-   * to its full detail (e.g. below-min → stock list filtered to lows).
-   */
-  href?: string;
 }
 
 /** Visual accent per chain layer — kept subtle (premium dark cobalt base). */
@@ -222,59 +216,38 @@ function KpiCard({ kpi, layerType }: { kpi: ChainKpi; layerType: LocationType })
           ? accent.valueText
           : 'text-foreground';
 
-  const inner = (
-    <div className="flex items-start justify-between gap-3">
-      <div className="min-w-0 space-y-1">
-        <p className="text-xs uppercase tracking-wide text-muted-foreground">
-          {kpi.label}
-        </p>
-        <p
-          className={cn(
-            'text-3xl font-semibold tabular-nums leading-none',
-            numberTone,
+  return (
+    <Card className={cn('p-5', ringByTone)}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 space-y-1">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">
+            {kpi.label}
+          </p>
+          <p
+            className={cn(
+              'text-3xl font-semibold tabular-nums leading-none',
+              numberTone,
+            )}
+            data-testid="chain-kpi-value"
+          >
+            {formatQty(kpi.value)}
+          </p>
+          {kpi.hint && (
+            <p className="text-xs text-muted-foreground">{kpi.hint}</p>
           )}
-          data-testid="chain-kpi-value"
+        </div>
+        <span
+          aria-hidden="true"
+          className={cn(
+            'inline-flex size-9 shrink-0 items-center justify-center rounded-md',
+            iconWrapByTone,
+          )}
         >
-          {formatQty(kpi.value)}
-        </p>
-        {kpi.hint && (
-          <p className="text-xs text-muted-foreground">{kpi.hint}</p>
-        )}
+          <Icon className="size-4" />
+        </span>
       </div>
-      <span
-        aria-hidden="true"
-        className={cn(
-          'inline-flex size-9 shrink-0 items-center justify-center rounded-md',
-          iconWrapByTone,
-        )}
-      >
-        <Icon className="size-4" />
-      </span>
-    </div>
+    </Card>
   );
-
-  // EPIC 7.1 — clickable KPI drills down to its detail when `href` is set.
-  if (kpi.href !== undefined) {
-    return (
-      <Card
-        className={cn(
-          'p-5 transition-colors hover:border-border hover:bg-muted/30',
-          'focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background',
-          ringByTone,
-        )}
-      >
-        <Link
-          to={kpi.href}
-          aria-label={`${kpi.label} — batafsil`}
-          className="block outline-none"
-        >
-          {inner}
-        </Link>
-      </Card>
-    );
-  }
-
-  return <Card className={cn('p-5', ringByTone)}>{inner}</Card>;
 }
 
 // ---------------------------------------------------------------------------

@@ -13,8 +13,10 @@ import { describe, expect, it } from 'vitest';
 import {
   tiyinToSom,
   paymentReportToBuckets,
+  transactionsToBuckets,
   analyticsToDailySom,
 } from '../src/integrations/poster/posterMoney.js';
+import type { PosterTransactionSummary } from '../src/integrations/poster/client.js';
 
 describe('tiyinToSom', () => {
   it('divides tiyin by 100 to get so\'m', () => {
@@ -97,6 +99,175 @@ describe('paymentReportToBuckets', () => {
     expect(byMethod.card).toBe(2000);
     expect(byMethod.payme).toBe(500);
     expect(total).toBe(3500);
+  });
+});
+
+describe('transactionsToBuckets', () => {
+  // The `adia` payment-method map (verified live 2026-06-06). Payme=19,
+  // Click=20; ids are account-specific, classified by TITLE not number.
+  const adiaMethods = [
+    { payment_method_id: '1', title: 'Наличные' },
+    { payment_method_id: '2', title: 'Карта' },
+    { payment_method_id: '14', title: 'Доверительный платеж' },
+    { payment_method_id: '17', title: 'Карта|Абдулқодир ака' },
+    { payment_method_id: '19', title: 'Payme' },
+    { payment_method_id: '20', title: 'Click' },
+  ];
+
+  /** Build a closed transaction (tiyin strings, as Poster emits). */
+  function txn(
+    over: Partial<PosterTransactionSummary>,
+  ): PosterTransactionSummary {
+    return {
+      transaction_id: '1',
+      spot_id: '1',
+      pay_type: '1',
+      payment_method_id: '0',
+      payed_cash: '0',
+      payed_card: '0',
+      payed_third_party: '0',
+      payed_ewallet: '0',
+      payed_bonus: '0',
+      payed_sum: '0',
+      ...over,
+    };
+  }
+
+  it('gives every named custom method its own row (incl. card-titled) and reconciles', () => {
+    const transactions: PosterTransactionSummary[] = [
+      // pm_id 0, cash (default split)
+      txn({ pay_type: '1', payment_method_id: '0', payed_cash: '500000', payed_sum: '500000' }),
+      // pm_id 0, card (default split)
+      txn({ pay_type: '2', payment_method_id: '0', payed_card: '300000', payed_sum: '300000' }),
+      // pm_id 19 Payme — whole txn -> payme (Poster folds this into card otherwise)
+      txn({ pay_type: '2', payment_method_id: '19', payed_card: '122350000', payed_sum: '122350000' }),
+      // pm_id 20 Click — whole txn -> click
+      txn({ pay_type: '2', payment_method_id: '20', payed_card: '91350000', payed_sum: '91350000' }),
+      // pm_id 14 "Доверительный платеж" -> its OWN named row pm_14
+      txn({ pay_type: '2', payment_method_id: '14', payed_card: '198383600', payed_sum: '198383600' }),
+      // pm_id 17 "Карта|Абдулқодир ака" -> its OWN named row pm_17 (NOT folded into card)
+      txn({ pay_type: '2', payment_method_id: '17', payed_card: '31640000', payed_sum: '31640000' }),
+      // open/unpaid -> ignored
+      txn({ pay_type: '0', payment_method_id: '0', payed_sum: '999999999' }),
+    ];
+
+    const expected =
+      5000 + 3000 + 1_223_500 + 913_500 + 1_983_836 + 316_400; // so'm
+    const out = transactionsToBuckets(transactions, adiaMethods, expected);
+
+    expect(out.byMethod.cash).toBe(5000);
+    // card = ONLY the default-split card (3000) — id 17 no longer folds in here.
+    expect(out.byMethod.card).toBe(3000);
+    expect(out.byMethod.payme).toBe(1_223_500);
+    expect(out.byMethod.click).toBe(913_500);
+    expect(out.byMethod.other).toBe(0);
+    expect(out.closedCount).toBe(6);
+
+    // The two named custom methods reconcile against the live-verified figures.
+    const pm14 = out.methods.find((m) => m.key === 'pm_14');
+    const pm17 = out.methods.find((m) => m.key === 'pm_17');
+    expect(pm14).toEqual({ key: 'pm_14', label: 'Доверительный платеж', amount: 1_983_836 });
+    expect(pm17).toEqual({ key: 'pm_17', label: 'Карта|Абдулқодир ака', amount: 316_400 });
+
+    // The 4 core methods always lead the list, in fixed order.
+    expect(out.methods.slice(0, 4)).toEqual([
+      { key: 'cash', label: 'Naqd', amount: 5000 },
+      { key: 'card', label: 'Karta', amount: 3000 },
+      { key: 'payme', label: 'Payme', amount: 1_223_500 },
+      { key: 'click', label: 'Click', amount: 913_500 },
+    ]);
+    // Named customs follow, sorted by amount desc (pm_14 > pm_17). No `other`
+    // row (residual is 0).
+    expect(out.methods.map((m) => m.key)).toEqual([
+      'cash',
+      'card',
+      'payme',
+      'click',
+      'pm_14',
+      'pm_17',
+    ]);
+
+    // sum(methods) === total === expected (exact reconciliation).
+    const methodsSum = out.methods.reduce((s, m) => s + m.amount, 0);
+    expect(methodsSum).toBe(out.total);
+    expect(out.total).toBe(expected);
+    expect(out.reconcileWarning).toBeNull();
+  });
+
+  it('always lists the 4 core methods even at zero, and appends a residual other row', () => {
+    const transactions: PosterTransactionSummary[] = [
+      // default-split with cash + a third-party residual -> unnamed `other`.
+      txn({
+        pay_type: '3',
+        payment_method_id: '0',
+        payed_cash: '100000',
+        payed_third_party: '50000',
+        payed_sum: '150000',
+      }),
+    ];
+    const out = transactionsToBuckets(transactions, adiaMethods);
+
+    // Core 4 present even though card/payme/click are 0.
+    expect(out.methods.slice(0, 4)).toEqual([
+      { key: 'cash', label: 'Naqd', amount: 1000 },
+      { key: 'card', label: 'Karta', amount: 0 },
+      { key: 'payme', label: 'Payme', amount: 0 },
+      { key: 'click', label: 'Click', amount: 0 },
+    ]);
+    // Unnamed residual gets the trailing `other` row.
+    expect(out.methods[out.methods.length - 1]).toEqual({
+      key: 'other',
+      label: 'Boshqa',
+      amount: 500,
+    });
+    const methodsSum = out.methods.reduce((s, m) => s + m.amount, 0);
+    expect(methodsSum).toBe(out.total);
+    expect(out.total).toBe(1500);
+  });
+
+  it('flags a reconcile warning when buckets drift from the expected total', () => {
+    const transactions: PosterTransactionSummary[] = [
+      txn({ pay_type: '1', payment_method_id: '0', payed_cash: '100000', payed_sum: '100000' }),
+    ];
+    // Buckets = 1000 so'm; tell it we expected 9999 -> drift > 1 so'm.
+    const out = transactionsToBuckets(transactions, adiaMethods, 9999);
+    expect(out.total).toBe(1000);
+    expect(out.reconcileWarning).not.toBeNull();
+  });
+
+  it('folds third_party/ewallet/bonus into other for default-split txns', () => {
+    const transactions: PosterTransactionSummary[] = [
+      txn({
+        pay_type: '3',
+        payment_method_id: '0',
+        payed_cash: '100000',
+        payed_card: '200000',
+        payed_third_party: '50000',
+        payed_ewallet: '30000',
+        payed_bonus: '20000',
+        payed_sum: '400000',
+      }),
+    ];
+    const out = transactionsToBuckets(transactions, adiaMethods);
+    expect(out.byMethod.cash).toBe(1000);
+    expect(out.byMethod.card).toBe(2000);
+    expect(out.byMethod.other).toBe(1000); // 500 + 300 + 200
+    expect(out.total).toBe(4000);
+  });
+
+  it('returns an all-zero breakdown for no transactions', () => {
+    const out = transactionsToBuckets([], adiaMethods);
+    expect(out.total).toBe(0);
+    expect(out.closedCount).toBe(0);
+    expect(out.byMethod).toEqual({ cash: 0, card: 0, payme: 0, click: 0, other: 0 });
+    // The 4 core methods still list (so the manager sees they exist); no
+    // `other` row when the residual is 0.
+    expect(out.methods).toEqual([
+      { key: 'cash', label: 'Naqd', amount: 0 },
+      { key: 'card', label: 'Karta', amount: 0 },
+      { key: 'payme', label: 'Payme', amount: 0 },
+      { key: 'click', label: 'Click', amount: 0 },
+    ]);
   });
 });
 

@@ -35,7 +35,12 @@ import {
   PRODUCTION_ORDER_COLUMNS,
   type ProductionOrderRow,
 } from '../../services/productionOrder.js';
-import { advance } from '../../services/replenishment.js';
+import {
+  advance,
+  acceptByCentral,
+  acceptByFulfiller,
+  cancelRequestByFulfiller,
+} from '../../services/replenishment.js';
 import {
   confirmAction,
   rejectAction,
@@ -84,6 +89,11 @@ export const CALLBACK_VERBS = [
   // EPIC 5 / ADR-0016 — production dialog answer/cancel.
   'dlg',
   'dlgx',
+  // B4 (telegram-bot-tz §4) — cross-department request accept / reject. The
+  // callback data is `xreq:accept:<id>` / `xreq:reject:<id>` — the second
+  // segment carries the sub-action (accept|reject) rather than an entity, so
+  // these are parsed by a dedicated branch in `parseCallbackData`.
+  'xreq',
 ] as const;
 export type CallbackVerb = (typeof CALLBACK_VERBS)[number];
 
@@ -110,6 +120,13 @@ export type ParsedCallback = {
   readonly entity: CallbackEntity;
   readonly id: number;
   readonly extraId: number | null;
+  /**
+   * B4 — for the `xreq` verb the second segment is a STRING sub-action
+   * (`accept` | `reject`), not a numeric entity. It is parsed here and the
+   * `entity` field is set to the synthetic `req` so the rest of the pipeline
+   * (RBAC scope, audit) keeps working with a real entity.
+   */
+  readonly subAction?: 'accept' | 'reject';
 };
 
 /**
@@ -126,6 +143,24 @@ export function parseCallbackData(raw: string): ParsedCallback | null {
   const verbRaw = parts[0]!;
   const entityRaw = parts[1]!;
   const idRaw = parts[2]!;
+
+  // B4 — `xreq:accept:<id>` / `xreq:reject:<id>` — the 2nd segment is a string
+  // sub-action. Validate it here and synthesize a `req`-entity ParsedCallback.
+  if (verbRaw === 'xreq') {
+    if (parts.length !== 3) return null;
+    if (entityRaw !== 'accept' && entityRaw !== 'reject') return null;
+    if (!/^\d{1,15}$/.test(idRaw)) return null;
+    const reqId = Number(idRaw);
+    if (!Number.isInteger(reqId) || reqId <= 0) return null;
+    return {
+      verb: 'xreq',
+      entity: 'req',
+      id: reqId,
+      extraId: null,
+      subAction: entityRaw,
+    };
+  }
+
   const extraRaw = parts[3];
   if (!(CALLBACK_VERBS as readonly string[]).includes(verbRaw)) return null;
   if (!(CALLBACK_ENTITIES as readonly string[]).includes(entityRaw)) return null;
@@ -213,6 +248,14 @@ export async function dispatchCallback(
   }
   if (verb === 'dlgx' && entity === 'pdlg') {
     return cancelDialogCallback(id, principal);
+  }
+
+  // ---- B4 (telegram-bot-tz §4) — cross-department request accept / reject -
+  if (verb === 'xreq' && parsed.subAction === 'accept') {
+    return xreqAcceptCallback(id, principal);
+  }
+  if (verb === 'xreq' && parsed.subAction === 'reject') {
+    return xreqRejectCallback(id, principal);
   }
 
   return {
@@ -658,6 +701,233 @@ async function checkReqRbac(
     return null;
   }
   return { kind: 'rbac', message: "Bu so'rov sizning bo'g'ining tashqarisida" };
+}
+
+// -----------------------------------------------------------------------------
+// B4 (telegram-bot-tz §4) — cross-department request accept / reject
+// -----------------------------------------------------------------------------
+
+/**
+ * RBAC for an `xreq:*` press: only the TARGET location's manager OR a
+ * `central_warehouse_manager` (the default fulfiller) — or `pm` — may act.
+ *
+ * The target may still be unresolved (a store request that has not yet been
+ * advanced past NEW). In that case we resolve the topology PARENT of the
+ * requester (the same parent the notification was addressed to) and check the
+ * presser against ITS manager, so the intended fulfiller can act before the
+ * engine pins the central warehouse.
+ */
+async function checkXreqRbac(
+  requestId: number,
+  principal: CallbackPrincipal,
+): Promise<{ ok: true; target: { id: number | null } } | { ok: false; outcome: DispatchOutcome }> {
+  if (principal.role === 'pm') return { ok: true, target: { id: null } };
+
+  const { rows } = await query<{
+    requester_location_id: number;
+    target_location_id: number | null;
+    status: string;
+  }>(
+    `SELECT requester_location_id, target_location_id, status
+       FROM replenishment_requests WHERE id = $1`,
+    [requestId],
+  );
+  if (rows.length === 0) {
+    return { ok: false, outcome: { kind: 'invalid', message: "So'rov topilmadi" } };
+  }
+  const r = rows[0]!;
+
+  // central_warehouse_manager is always an eligible fulfiller (default target).
+  if (principal.role === 'central_warehouse_manager') {
+    return { ok: true, target: { id: r.target_location_id } };
+  }
+
+  // Otherwise the presser must manage the target location. Resolve the
+  // effective target: the pinned one, else the requester's topology parent.
+  let targetLocationId = r.target_location_id;
+  if (targetLocationId === null) {
+    const { rows: prows } = await query<{ parent_id: number | null }>(
+      `SELECT parent_id FROM locations WHERE id = $1`,
+      [r.requester_location_id],
+    );
+    targetLocationId = prows[0]?.parent_id ?? null;
+  }
+  if (
+    targetLocationId !== null &&
+    principal.locationId !== null &&
+    principal.locationId === Number(targetLocationId)
+  ) {
+    return { ok: true, target: { id: targetLocationId } };
+  }
+  return {
+    ok: false,
+    outcome: {
+      kind: 'rbac',
+      message: "Bu so'rovni faqat maqsad bo'lim boshlig'i qabul/rad qila oladi",
+    },
+  };
+}
+
+/** Notify the requester location manager of the xreq outcome (best-effort). */
+async function notifyRequesterOfOutcome(
+  requestId: number,
+  outcome: 'accepted' | 'rejected',
+  detail: string,
+): Promise<void> {
+  try {
+    await withTransaction(async (tx) => {
+      const { rows } = await tx.query<{
+        requester_location_id: number;
+        product_id: number;
+      }>(
+        `SELECT requester_location_id, product_id
+           FROM replenishment_requests WHERE id = $1`,
+        [requestId],
+      );
+      const r = rows[0];
+      if (r === undefined) return;
+      const managerId = await getLocationManager(tx, Number(r.requester_location_id));
+      if (managerId === null) return;
+      const title =
+        outcome === 'accepted' ? "So'rov qabul qilindi" : "So'rov rad etildi";
+      await createNotification(tx, {
+        recipientUserId: managerId,
+        type: outcome === 'accepted' ? 'shipment_created' : 'replenishment_created',
+        title,
+        body: `So'rov #${requestId}: ${detail}`,
+        payload: { replenishment_id: requestId, outcome },
+      });
+    });
+  } catch (err) {
+    console.error('[xreq] requester notify failed:', (err as Error).message);
+  }
+}
+
+/** xreq:accept:<id> — the target manager accepts → engine ships to requester. */
+async function xreqAcceptCallback(
+  requestId: number,
+  principal: CallbackPrincipal,
+): Promise<DispatchOutcome> {
+  const rbac = await checkXreqRbac(requestId, principal);
+  if (!rbac.ok) return rbac.outcome;
+
+  // The acting location is the presser's own location (the target). For `pm`
+  // (no location) or central_warehouse_manager we fall back to the request's
+  // pinned target / topology parent so `acceptByCentral` has a warehouse to
+  // ship from.
+  let centralLocationId = principal.locationId ?? rbac.target.id;
+  if (centralLocationId === null) {
+    const { rows } = await query<{
+      target_location_id: number | null;
+      requester_location_id: number;
+    }>(
+      `SELECT target_location_id, requester_location_id
+         FROM replenishment_requests WHERE id = $1`,
+      [requestId],
+    );
+    const r = rows[0];
+    if (r !== undefined) {
+      if (r.target_location_id !== null) {
+        centralLocationId = Number(r.target_location_id);
+      } else {
+        const { rows: prows } = await query<{ parent_id: number | null }>(
+          `SELECT parent_id FROM locations WHERE id = $1`,
+          [r.requester_location_id],
+        );
+        centralLocationId = prows[0]?.parent_id ?? null;
+      }
+    }
+  }
+  if (centralLocationId === null) {
+    return {
+      kind: 'invalid',
+      message: "Maqsad bo'lim aniqlanmadi — so'rovni qabul qilib bo'lmadi",
+    };
+  }
+
+  // IMPORTANT-4 — branch on the target location TYPE. A cross-dept request can
+  // target a NON-central parent (sex -> its sklad, central -> production).
+  // `acceptByCentral` forces the central code path (and cascades into the
+  // central production/purchase chain on a short target), which is wrong for a
+  // non-central fulfiller. So: central_warehouse -> acceptByCentral; anything
+  // else -> the generic acceptByFulfiller (ship from the fulfiller's own stock,
+  // else hold — no central-only assumptions).
+  let targetType: string | null = null;
+  {
+    const { rows } = await query<{ type: string }>(
+      `SELECT type::text AS type FROM locations WHERE id = $1`,
+      [centralLocationId],
+    );
+    targetType = rows[0]?.type ?? null;
+  }
+
+  try {
+    const result =
+      targetType === 'central_warehouse'
+        ? await acceptByCentral({
+            requestId,
+            centralLocationId,
+            actorUserId: principal.userId,
+          })
+        : await acceptByFulfiller({
+            requestId,
+            fulfillerLocationId: centralLocationId,
+            actorUserId: principal.userId,
+          });
+    const msg = result.shipped
+      ? `So'rov #${requestId} qabul qilindi va jo'natildi`
+      : `So'rov #${requestId} qabul qilindi (jo'natish kutilmoqda: ${result.reason})`;
+    await notifyRequesterOfOutcome(
+      requestId,
+      'accepted',
+      result.shipped ? 'qabul qilindi va jo\'natildi' : 'qabul qilindi',
+    );
+    return {
+      kind: 'ok',
+      message: msg,
+      result: {
+        replenishment_id: requestId,
+        shipped: result.shipped,
+        new_status: result.request.status,
+      },
+      removeButtons: true,
+    };
+  } catch (err) {
+    return {
+      kind: 'failed',
+      message: "So'rovni qabul qilib bo'lmadi",
+      error: (err as Error).message,
+    };
+  }
+}
+
+/** xreq:reject:<id> — the target manager refuses → request CANCELLED. */
+async function xreqRejectCallback(
+  requestId: number,
+  principal: CallbackPrincipal,
+): Promise<DispatchOutcome> {
+  const rbac = await checkXreqRbac(requestId, principal);
+  if (!rbac.ok) return rbac.outcome;
+  try {
+    const updated = await cancelRequestByFulfiller(
+      requestId,
+      principal.userId,
+      'Telegram: target manager rejected',
+    );
+    await notifyRequesterOfOutcome(requestId, 'rejected', 'rad etildi');
+    return {
+      kind: 'ok',
+      message: `So'rov #${requestId} rad etildi`,
+      result: { replenishment_id: requestId, new_status: updated.status },
+      removeButtons: true,
+    };
+  } catch (err) {
+    return {
+      kind: 'failed',
+      message: "So'rovni rad etib bo'lmadi",
+      error: (err as Error).message,
+    };
+  }
 }
 
 // -----------------------------------------------------------------------------

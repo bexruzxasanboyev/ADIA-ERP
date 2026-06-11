@@ -245,6 +245,7 @@ const USERS: User[] = [
   {
     id: 22,
     name: 'Tort Operator',
+    email: 'tort@adia.test',
     username: 'tort',
     role: 'production_manager',
     location_id: LOC_PROD_TORT.id,

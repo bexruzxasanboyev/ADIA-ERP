@@ -8,7 +8,6 @@ import {
   Warehouse,
   Store,
   MapPin,
-  Waypoints,
 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -33,7 +32,6 @@ import { useAuth } from '@/hooks/useAuth';
 import { LOCATION_TYPE_LABELS } from '@/lib/labels';
 import type { Location, LocationType } from '@/lib/types';
 import { LocationFormDialog } from './LocationFormDialog';
-import { LocationFlowsDialog } from './LocationFlowsDialog';
 
 const LOCATION_TYPE_ICON: Record<LocationType, typeof MapPin> = {
   raw_warehouse: Boxes,
@@ -56,7 +54,6 @@ export function LocationsPage() {
     useApiQuery<Location[]>('/api/locations');
 
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [flowsOpen, setFlowsOpen] = useState(false);
   const [editing, setEditing] = useState<Location | null>(null);
   const [view, setView] = useViewMode('locations', 'card');
 
@@ -80,12 +77,6 @@ export function LocationsPage() {
         action={
           <div className="flex flex-wrap items-center gap-2">
             <ViewToggle value={view} onChange={setView} />
-            {isPm && (
-              <Button variant="outline" onClick={() => setFlowsOpen(true)}>
-                <Waypoints className="size-4" aria-hidden="true" />
-                Oqimlar
-              </Button>
-            )}
             {isPm && (
               <Button onClick={openCreate}>
                 <Plus className="size-4" aria-hidden="true" />
@@ -213,14 +204,6 @@ export function LocationsPage() {
           location={editing}
           allLocations={locations}
           onSaved={refetch}
-        />
-      )}
-
-      {isPm && (
-        <LocationFlowsDialog
-          open={flowsOpen}
-          onOpenChange={setFlowsOpen}
-          allLocations={locations}
         />
       )}
     </div>

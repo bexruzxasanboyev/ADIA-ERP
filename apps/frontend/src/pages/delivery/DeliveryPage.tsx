@@ -390,7 +390,7 @@ function AssignDialog({
               <option value="">— tanlang —</option>
               {candidates.map((u) => (
                 <option key={u.id} value={u.id}>
-                  {u.name} (@{u.username})
+                  {u.name} ({u.email})
                 </option>
               ))}
             </Select>

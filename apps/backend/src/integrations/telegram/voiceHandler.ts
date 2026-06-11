@@ -41,7 +41,14 @@ import {
   parseStockMovementIntent,
   type ParsedIntent,
 } from '../vertex/parseIntent.js';
+import {
+  transcribeAndParseVoice,
+  getLocationCatalogNames,
+  type TranscribeAndParseResult,
+} from '../vertex/parseVoiceAudio.js';
+import { isVertexEnabled } from '../vertex/client.js';
 import { getWriteTool } from '../vertex/tools/write.js';
+import { createCrossDeptRequest } from '../../services/crossDeptRequest.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -95,9 +102,21 @@ export type VoiceCtxLike = {
 export type VoiceHandlerDeps = {
   /** Telegram fayl yuklab olish — production'da `bot.api.getFile` + fetch. */
   readonly downloadVoice: (fileId: string) => Promise<Buffer>;
-  /** STT — production'da `recognizeShort`. */
+  /**
+   * B1 PRIMARY STT path — audio bytes → transcript + intents in ONE Gemini
+   * 2.5 Flash call (`transcribeAndParseVoice`). When this throws or returns an
+   * empty transcript, the handler falls back to `recognize` + `parseIntent`
+   * (Yandex). Optional so legacy tests that only set `recognize`/`parseIntent`
+   * still exercise the fallback path.
+   */
+  readonly transcribeAndParse?: (input: {
+    audio: Buffer;
+    principal: AuthPrincipal;
+    catalogNames: readonly string[];
+  }) => Promise<TranscribeAndParseResult>;
+  /** STT FALLBACK — production'da `recognizeShort` (Yandex). */
   readonly recognize: (audio: Buffer) => Promise<{ text: string; elapsedMs: number }>;
-  /** Vertex intent parser. */
+  /** Vertex intent parser (fallback path, paired with `recognize`). */
   readonly parseIntent: typeof parseStockMovementIntent;
   /** /tmp katalogi — testda override. */
   readonly tmpDir: string;
@@ -138,6 +157,16 @@ export function makeDefaultDownloadVoice(bot: Pick<Bot, 'api'>) {
 }
 
 export const DEFAULT_VOICE_DEPS: Omit<VoiceHandlerDeps, 'downloadVoice'> = {
+  // B1 — Gemini 2.5 Flash audio is PRIMARY. It fetches the requester
+  // location's catalog (Russian product names) as STT mapping context.
+  transcribeAndParse: (input) =>
+    transcribeAndParseVoice({
+      audio: input.audio,
+      mimeType: 'audio/ogg',
+      principal: input.principal,
+      catalogNames: input.catalogNames,
+    }),
+  // Yandex stays as an OPTIONAL fallback (kept, not deleted — tz §2).
   recognize: (audio) => recognizeShort(audio, { lang: 'uz-UZ', format: 'oggopus' }),
   parseIntent: parseStockMovementIntent,
   tmpDir: os.tmpdir(),
@@ -184,6 +213,75 @@ export async function loadVoicePrincipal(
     locationIds,
     // Voice flow — header header yo'q; default primary lokatsiya.
     activeLocationId: u.location_id === null ? null : Number(u.location_id),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// STT + parse — Gemini audio primary, Yandex fallback (B1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Produce `{ transcript, intents }` from the raw audio.
+ *
+ * Order (tz §2):
+ *   1. PRIMARY — `deps.transcribeAndParse` (Gemini 2.5 Flash audio, one call).
+ *      Uses the requester location's catalog (Russian names) as STT context.
+ *      A non-empty transcript wins, even if it produced zero intents (the
+ *      user may have just greeted the bot — we echo what was heard).
+ *   2. FALLBACK — `deps.recognize` (Yandex) + `deps.parseIntent` (Vertex
+ *      text). Used when the Gemini path is absent, disabled, throws, or
+ *      returns an empty transcript.
+ *
+ * Throws only when BOTH paths fail (or the only available path fails) — the
+ * caller maps that to a single "STT xatosi" reply.
+ */
+async function sttAndParse(
+  deps: VoiceHandlerDeps,
+  audioBuf: Buffer,
+  principal: AuthPrincipal,
+): Promise<{ transcript: string; intents: ParsedIntent[]; empty_reason: string | null }> {
+  const geminiUsable =
+    deps.transcribeAndParse !== undefined &&
+    (isVertexEnabled() || process.env.NODE_ENV === 'test');
+
+  if (geminiUsable && deps.transcribeAndParse !== undefined) {
+    try {
+      const catalogNames = await getLocationCatalogNames(
+        principal.activeLocationId ?? principal.locationId,
+      );
+      const out = await deps.transcribeAndParse({
+        audio: audioBuf,
+        principal,
+        catalogNames,
+      });
+      if (out.transcript.trim() !== '') {
+        return {
+          transcript: out.transcript.trim(),
+          intents: out.intents,
+          empty_reason: out.empty_reason,
+        };
+      }
+      // Empty transcript from Gemini — drop to Yandex fallback below.
+    } catch (err) {
+      console.error(
+        '[telegram-voice] Gemini audio STT failed, falling back to Yandex:',
+        (err as Error).message,
+      );
+      // fall through to Yandex
+    }
+  }
+
+  // Fallback: Yandex recognize + Vertex text parse.
+  const stt = await deps.recognize(audioBuf);
+  const transcript = stt.text.trim();
+  if (transcript === '') {
+    return { transcript: '', intents: [], empty_reason: 'empty_transcript' };
+  }
+  const parsed = await deps.parseIntent(transcript, principal);
+  return {
+    transcript,
+    intents: parsed.intents,
+    empty_reason: parsed.empty_reason,
   };
 }
 
@@ -396,7 +494,11 @@ const PENDING_ACTION_TTL_MINUTES = 5;
 type IntentOutcome =
   | { kind: 'staged'; staged: StagedAction; line: string }
   | { kind: 'clarify'; productName: string; candidates: Array<{ id: number; name: string; unit: string }>; line: string }
-  | { kind: 'skipped'; line: string };
+  | { kind: 'skipped'; line: string }
+  // B3 — a cross-department request was created (requester → topology parent).
+  // It does NOT need a confirm button (it is already sent to the target
+  // manager); we only report the line back to the requester.
+  | { kind: 'requested'; line: string; requestId: number };
 
 async function stageIntentAsAction(
   intent: ParsedIntent,
@@ -426,6 +528,51 @@ async function stageIntentAsAction(
       candidates: match.candidates,
       line: `• "${intent.product_name}" — qaysi mahsulot? (tanlang)`,
     };
+  }
+
+  // B3 — a cross-department SUPPLY request ("menga napoleon kerak"). Create a
+  // replenishment request to the topology parent + notify the target manager.
+  // No confirm button — it is dispatched immediately.
+  if (intent.action === 'request') {
+    const requesterLocationId =
+      principal.activeLocationId ?? principal.locationId;
+    if (requesterLocationId === null) {
+      return {
+        kind: 'skipped',
+        line: `• ${match.name} — sizga bo'lim biriktirilmagan, so'rov yuborib bo'lmaydi`,
+      };
+    }
+    try {
+      const res = await createCrossDeptRequest({
+        productId: match.id,
+        productName: match.name,
+        unit: match.unit,
+        requesterLocationId,
+        qty: intent.qty,
+        actorUserId: principal.userId,
+        note: `voice request:${voiceId}`,
+      });
+      const where = res.targetManagerNotified
+        ? `${res.target.name} boshlig'iga yuborildi`
+        : `${res.target.name} ga yuborildi (boshliq biriktirilmagan)`;
+      return {
+        kind: 'requested',
+        requestId: res.request.id,
+        line: `• ${match.name} × ${intent.qty} ${match.unit} → ${where} (so'rov #${res.request.id})`,
+      };
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (code === 'OPEN_REQUEST_EXISTS') {
+        return {
+          kind: 'skipped',
+          line: `• ${match.name} — bu mahsulot uchun ochiq so'rov allaqachon bor`,
+        };
+      }
+      return {
+        kind: 'skipped',
+        line: `• ${match.name} — so'rov yuborib bo'lmadi: ${(err as Error).message}`,
+      };
+    }
   }
 
   // 3) location hint (default activeLocationId).
@@ -701,11 +848,15 @@ export async function handleVoiceMessage(
     }
     await fs.writeFile(tmpPath, audioBuf);
 
-    // 4. STT.
+    // 4+5. STT + parse — B1: ONE Gemini 2.5 Flash audio call (transcribe +
+    // extract). On failure / empty / disabled, fall back to Yandex
+    // `recognize` + Vertex `parseIntent` (the old two-hop path, kept alive).
     let transcript = '';
+    let parseResult: { intents: ParsedIntent[]; empty_reason: string | null };
     try {
-      const stt = await deps.recognize(audioBuf);
-      transcript = stt.text.trim();
+      const outcome = await sttAndParse(deps, audioBuf, principal);
+      transcript = outcome.transcript;
+      parseResult = { intents: outcome.intents, empty_reason: outcome.empty_reason };
     } catch (err) {
       const detail =
         err instanceof YandexSttError ? err.message : (err as Error).message;
@@ -731,24 +882,6 @@ export async function handleVoiceMessage(
       status: 'transcribed',
       transcript,
     });
-
-    // 5. Vertex parse.
-    let parseResult: Awaited<ReturnType<typeof parseStockMovementIntent>>;
-    try {
-      parseResult = await deps.parseIntent(transcript, principal);
-    } catch (err) {
-      const detail = (err as Error).message;
-      await updateVoiceStatus(voiceRow.id, {
-        status: 'failed',
-        errorDetail: `parse: ${detail}`.slice(0, 500),
-        markProcessed: true,
-      });
-      await safeReply(
-        ctx,
-        `📝 Eshitdim: "${transcript}"\n\nLekin tahlilda xatolik yuz berdi (AI). Keyinroq urinib ko'ring.`,
-      );
-      return { voiceMessageId: voiceRow.id, status: 'failed', stagedActionIds: [] };
-    }
     await updateVoiceStatus(voiceRow.id, {
       intentParseResult: { intents: parseResult.intents, empty_reason: parseResult.empty_reason },
     });
@@ -773,6 +906,7 @@ export async function handleVoiceMessage(
     const staged: StagedAction[] = [];
     const lines: string[] = [];
     const clarifyKeyboards: InlineKeyboard[] = [];
+    const requestedIds: number[] = [];
     for (const intent of parseResult.intents) {
       const outcome = await stageIntentAsAction(
         intent,
@@ -787,6 +921,8 @@ export async function handleVoiceMessage(
         clarifyKeyboards.push(
           buildClarifyKeyboard(voiceRow.id, outcome.candidates),
         );
+      } else if (outcome.kind === 'requested') {
+        requestedIds.push(outcome.requestId);
       }
     }
 
@@ -814,7 +950,11 @@ export async function handleVoiceMessage(
         ? 'actions_pending'
         : clarifyKeyboards.length > 0
           ? 'clarification_needed'
-          : 'failed';
+          : // B3 — a cross-department request was created and dispatched: the
+            // voice flow is DONE (no pending confirm), so mark it executed.
+            requestedIds.length > 0
+            ? 'executed'
+            : 'failed';
     await updateVoiceStatus(voiceRow.id, {
       status: nextStatus,
       markProcessed: nextStatus !== 'actions_pending',

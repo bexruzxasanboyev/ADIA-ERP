@@ -1,10 +1,7 @@
 import { Wallet, CreditCard, Smartphone, Zap } from 'lucide-react';
 import type { ComponentType } from 'react';
-import type { DateRangePreset } from '@/components/DateRangeFilter';
 import { Card } from '@/components/ui/card';
 import { useApiQuery } from '@/hooks/useApiQuery';
-import { formatPlainNumber } from '@/lib/format';
-import { revenueTitleForRange } from '@/lib/labels';
 import { cn } from '@/lib/utils';
 import type { DashboardRevenueBreakdown } from '@/lib/types';
 
@@ -27,14 +24,6 @@ export interface RevenueBreakdownProps {
    * still sees an answer to "bugun qancha tushdi".
    */
   fallbackTotal?: number;
-  /**
-   * Active period filter. Drives the headline copy ("Bugungi tushum" /
-   * "Bu haftalik tushum" / …) so the title tracks the selected range
-   * instead of staying frozen on "Bugungi tushum" (EPIC 0.4). The data
-   * fetch is still day-scoped via `isoDate` — only the wording follows
-   * the range until the backend exposes a ranged breakdown endpoint.
-   */
-  range?: DateRangePreset;
   className?: string;
 }
 
@@ -75,19 +64,14 @@ const CHIPS: ChipDef[] = [
   },
 ];
 
-// `formatSum` is the shared uz-UZ grouped-integer formatter (NaN-guarded);
-// kept as a local alias so the JSX below reads in terms of "sum".
-const formatSum = formatPlainNumber;
+const fullNumberFormatter = new Intl.NumberFormat('uz-UZ', {
+  maximumFractionDigits: 0,
+});
 
-// Zero-revenue fallback: a successful but empty response (or a quiet
-// zero-revenue day) renders all-zero chips rather than a perpetual
-// "yuklanmoqda…" note.
-const EMPTY_BY_METHOD: DashboardRevenueBreakdown['byMethod'] = {
-  cash: 0,
-  card: 0,
-  payme: 0,
-  click: 0,
-};
+function formatSum(value: number): string {
+  if (!Number.isFinite(value)) return '—';
+  return fullNumberFormatter.format(Math.round(value));
+}
 
 function formatPct(part: number, total: number): string {
   if (total <= 0 || !Number.isFinite(part)) return '0%';
@@ -98,10 +82,8 @@ function formatPct(part: number, total: number): string {
 export function RevenueBreakdown({
   isoDate,
   fallbackTotal,
-  range,
   className,
 }: RevenueBreakdownProps) {
-  const title = revenueTitleForRange(range);
   const { data, isLoading, error } = useApiQuery<DashboardRevenueBreakdown>(
     `/api/dashboard/revenue-breakdown?date=${isoDate}`,
   );
@@ -112,30 +94,18 @@ export function RevenueBreakdown({
   const isMissing = error !== null;
   const total = data?.total ?? fallbackTotal ?? 0;
   const byMethod = data?.byMethod ?? null;
-  // The breakdown note (below the total) only renders while genuinely
-  // loading or when the endpoint is missing. A SUCCESSFUL response —
-  // even one with zero revenue and an absent `byMethod` — must NOT keep
-  // the "yuklanmoqda…" spinner up forever (defect: stuck loading on a
-  // zero-revenue day). In that loaded-but-empty case we fall through to
-  // a real zero-state set of chips.
-  const showLoadingNote = isLoading && data === null && !isMissing;
-  // Render chips whenever we have a breakdown, OR when the request has
-  // resolved without an error (loaded-but-empty → all-zero chips). This
-  // resolves the headline + a proper empty state instead of an infinite
-  // spinner.
-  const chips = byMethod ?? (!isLoading && !isMissing ? EMPTY_BY_METHOD : null);
 
   return (
     <Card
       data-testid="revenue-breakdown"
       className={cn('space-y-4 p-5 sm:p-6', className)}
       role="region"
-      aria-label={`${title} brekdown`}
+      aria-label="Bugungi tushum brekdown"
     >
       <header className="flex items-baseline justify-between gap-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            {title}
+            Bugungi tushum
           </p>
           <p
             className="mt-1 text-3xl font-bold leading-none tabular-nums xl:text-4xl"
@@ -147,7 +117,7 @@ export function RevenueBreakdown({
             </span>
           </p>
         </div>
-        {showLoadingNote && (
+        {isLoading && (
           <span
             className="text-xs text-muted-foreground"
             aria-live="polite"
@@ -157,10 +127,10 @@ export function RevenueBreakdown({
         )}
       </header>
 
-      {chips !== null ? (
+      {byMethod !== null ? (
         <div className="flex flex-wrap gap-2">
           {CHIPS.map((chip) => {
-            const value = chips[chip.key] ?? 0;
+            const value = byMethod[chip.key] ?? 0;
             return (
               <MethodChip
                 key={chip.key}
@@ -173,12 +143,12 @@ export function RevenueBreakdown({
               />
             );
           })}
-          {chips.other !== undefined && chips.other > 0 && (
+          {byMethod.other !== undefined && byMethod.other > 0 && (
             <MethodChip
               testId="revenue-chip-other"
               label="Boshqa"
-              value={chips.other}
-              pct={formatPct(chips.other, total)}
+              value={byMethod.other}
+              pct={formatPct(byMethod.other, total)}
               Icon={Wallet}
               toneClass="text-slate-300 border-slate-500/30 bg-slate-500/10"
             />
@@ -191,7 +161,7 @@ export function RevenueBreakdown({
         >
           {isMissing
             ? "Tushum brekdown ma'lumotlari tayyor emas."
-            : 'Tushum brekdown yuklanmoqda…'}
+            : "Tushum brekdown yuklanmoqda…"}
         </p>
       )}
     </Card>

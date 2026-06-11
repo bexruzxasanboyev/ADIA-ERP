@@ -13,12 +13,7 @@ import type {
   DateRangePreset,
   DateRangeValue,
 } from '@/components/DateRangeFilter';
-import { formatPlainNumber, formatQty } from '@/lib/format';
-import {
-  COMPARISON_LABEL_BY_RANGE,
-  RECEIPTS_TITLE_BY_RANGE,
-  REVENUE_TITLE_BY_RANGE,
-} from '@/lib/labels';
+import { formatQty } from '@/lib/format';
 import type { DashboardEcosystem, DashboardOverview } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
@@ -42,39 +37,50 @@ export interface HeroStripProps {
   ecosystem: DashboardEcosystem | null;
   /**
    * Active date-range filter. Drives the dynamic copy on the revenue
-   * and receipts cards ("Bugungi tushum" / "Bu haftalik tushum" / …) and
+   * and receipts cards ("Bugungi tushum" / "Haftalik tushum" / …) and
    * the comparison label on the delta pill ("kechaga" / "o'tgan haftaga"
    * / …). Defaults to `{ range: 'today' }` so callers that don't yet
    * thread the range still render something sensible.
    */
   range?: DateRangeValue;
-  /**
-   * EPIC 7.1 — KPI click → detail. When supplied, each card with an
-   * `href` becomes a clickable button that calls this with the target
-   * route. The page wires `react-router`'s `navigate`; keeping the
-   * navigation in the parent lets HeroStrip render router-free in tests.
-   */
-  onNavigate?: (href: string) => void;
   className?: string;
 }
 
 interface RangeCopy {
-  /** Card title prefix, e.g. "Bugungi tushum", "Bu haftalik tushum". */
+  /** Card title prefix, e.g. "Bugungi tushum", "Haftalik tushum". */
   revenueTitle: string;
   receiptsTitle: string;
   /** Caption under the delta arrow, e.g. "kechaga", "o'tgan haftaga". */
   comparisonLabel: string;
 }
 
-// Period copy is derived from the shared maps in `@/lib/labels` so the
-// revenue / receipts headline wording stays identical to RevenueBreakdown.
-function rangeCopy(preset: DateRangePreset): RangeCopy {
-  return {
-    revenueTitle: REVENUE_TITLE_BY_RANGE[preset],
-    receiptsTitle: RECEIPTS_TITLE_BY_RANGE[preset],
-    comparisonLabel: COMPARISON_LABEL_BY_RANGE[preset],
-  };
-}
+const RANGE_COPY: Record<DateRangePreset, RangeCopy> = {
+  today: {
+    revenueTitle: 'Bugungi tushum',
+    receiptsTitle: 'Bugungi sotuvlar',
+    comparisonLabel: 'kechaga',
+  },
+  week: {
+    revenueTitle: 'Haftalik tushum',
+    receiptsTitle: 'Haftalik sotuvlar',
+    comparisonLabel: "o'tgan haftaga",
+  },
+  month: {
+    revenueTitle: 'Oylik tushum',
+    receiptsTitle: 'Oylik sotuvlar',
+    comparisonLabel: "o'tgan oyga",
+  },
+  '6m': {
+    revenueTitle: '6 oylik tushum',
+    receiptsTitle: '6 oylik sotuvlar',
+    comparisonLabel: 'oldingi 6 oyga',
+  },
+  custom: {
+    revenueTitle: 'Davr tushumi',
+    receiptsTitle: 'Davr sotuvlari',
+    comparisonLabel: 'oldingi davrga',
+  },
+};
 
 type Tone = 'default' | 'warning' | 'danger';
 
@@ -85,13 +91,6 @@ interface HeroKpi {
   caption?: string;
   tone: Tone;
   Icon: ComponentType<{ className?: string }>;
-  /**
-   * Drill-down route opened when the card is clicked (EPIC 7.1). When
-   * undefined the card stays static (no affordance, no handler).
-   */
-  href?: string;
-  /** Short Uzbek hint shown to invite the click ("Batafsil →"). */
-  detailHint?: string;
   /**
    * "Better when it goes up" (sales, receipts) vs. "better when it goes
    * down" (open requests, critical positions). Drives the colour of the
@@ -116,10 +115,17 @@ const ICON_TONE: Record<Tone, string> = {
   danger: 'text-destructive',
 };
 
-// Hero KPI cards always render the FULL grouped number ("2 400 000"),
-// never the compact "2.4M" form — `formatPlainNumber` (uz-UZ, no
-// fractional digits, NaN-guarded) is exactly that.
-const formatFullNumber = formatPlainNumber;
+// `Intl.NumberFormat('uz-UZ')` groups with a non-breaking space — perfect
+// for "2 400 000". A dedicated formatter so we never accidentally fall
+// back to the compact "2.4M" form on hero cards.
+const fullNumberFormatter = new Intl.NumberFormat('uz-UZ', {
+  maximumFractionDigits: 0,
+});
+
+function formatFullNumber(value: number): string {
+  if (!Number.isFinite(value)) return '—';
+  return fullNumberFormatter.format(Math.round(value));
+}
 
 function computeDeltaPct(today: number, prev: number): number | null {
   if (prev > 0) {
@@ -133,10 +139,9 @@ export function HeroStrip({
   overview,
   ecosystem,
   range,
-  onNavigate,
   className,
 }: HeroStripProps) {
-  const copy = rangeCopy(range?.range ?? 'today');
+  const copy = RANGE_COPY[range?.range ?? 'today'];
   const salesToday = ecosystem?.poster_status.sales_today_sum ?? 0;
   const receiptsToday = ecosystem?.poster_status.sales_today_count ?? 0;
   const activeRequests =
@@ -168,9 +173,6 @@ export function HeroStrip({
       direction: 'up-good',
       deltaPct: revenueDelta,
       prevLabel: copy.comparisonLabel,
-      // Full sales charts + payment breakdown live on the operations view.
-      href: '/dashboard/operations',
-      detailHint: "Sotuv tafsilotlari",
     },
     {
       testId: 'hero-strip-receipts',
@@ -182,8 +184,6 @@ export function HeroStrip({
       direction: 'up-good',
       deltaPct: receiptsDelta,
       prevLabel: copy.comparisonLabel,
-      href: '/dashboard/operations',
-      detailHint: "Cheklar tafsilotlari",
     },
     {
       testId: 'hero-strip-requests',
@@ -194,9 +194,6 @@ export function HeroStrip({
       Icon: ClipboardList,
       direction: 'down-good',
       deltaPct: null,
-      // Open replenishment + production + supply requests inbox.
-      href: '/sorovnomalar',
-      detailHint: "So'rovlarni ko'rish",
     },
     {
       testId: 'hero-strip-critical',
@@ -207,9 +204,6 @@ export function HeroStrip({
       Icon: AlertTriangle,
       direction: 'down-good',
       deltaPct: null,
-      // Below-min positions across the chain — the stock screen lists them.
-      href: '/stock',
-      detailHint: belowMin > 0 ? "Kritik qoldiqlar" : "Qoldiqni ko'rish",
     },
   ];
 
@@ -222,27 +216,26 @@ export function HeroStrip({
       )}
     >
       {kpis.map((kpi) => (
-        <HeroKpiCard key={kpi.testId} kpi={kpi} onNavigate={onNavigate} />
+        <HeroKpiCard key={kpi.testId} kpi={kpi} />
       ))}
     </div>
   );
 }
 
-function HeroKpiCard({
-  kpi,
-  onNavigate,
-}: {
-  kpi: HeroKpi;
-  onNavigate?: (href: string) => void;
-}) {
+function HeroKpiCard({ kpi }: { kpi: HeroKpi }) {
   const { Icon } = kpi;
-  // The card is interactive only when both a target route and a
-  // navigation handler are present. Otherwise it stays a plain region
-  // (e.g. in unit tests that render HeroStrip without a router).
-  const isClickable = kpi.href !== undefined && onNavigate !== undefined;
-
-  const body = (
-    <>
+  return (
+    <Card
+      data-testid={kpi.testId}
+      data-tone={kpi.tone}
+      role="region"
+      aria-label={kpi.label}
+      className={cn(
+        'flex min-h-[140px] flex-col justify-between gap-3 p-5 sm:p-6',
+        'border-border/60 transition-colors hover:border-border',
+        'focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background',
+      )}
+    >
       <div className="flex items-start justify-between gap-3">
         <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {kpi.label}
@@ -272,58 +265,6 @@ function HeroKpiCard({
         </div>
         <DeltaPill kpi={kpi} />
       </div>
-
-      {isClickable && kpi.detailHint !== undefined && (
-        <span
-          className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
-          aria-hidden="true"
-        >
-          {kpi.detailHint}
-          <ArrowRight className="size-3" />
-        </span>
-      )}
-    </>
-  );
-
-  // Shared visual: matches the shadcn Card surface so the clickable
-  // button is pixel-identical to the static region.
-  const surfaceClass = cn(
-    'rounded-lg border border-border bg-card text-card-foreground shadow-sm',
-    'flex min-h-[140px] flex-col justify-between gap-3 p-5 sm:p-6',
-    'border-border/60 transition-colors hover:border-border',
-  );
-
-  if (isClickable) {
-    return (
-      <button
-        type="button"
-        data-testid={kpi.testId}
-        data-tone={kpi.tone}
-        aria-label={`${kpi.label} — batafsil`}
-        onClick={() => onNavigate?.(kpi.href as string)}
-        className={cn(
-          surfaceClass,
-          'group w-full text-left cursor-pointer hover:bg-muted/30',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-        )}
-      >
-        {body}
-      </button>
-    );
-  }
-
-  return (
-    <Card
-      data-testid={kpi.testId}
-      data-tone={kpi.tone}
-      role="region"
-      aria-label={kpi.label}
-      className={cn(
-        surfaceClass,
-        'focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background',
-      )}
-    >
-      {body}
     </Card>
   );
 }

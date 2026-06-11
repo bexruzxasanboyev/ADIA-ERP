@@ -381,3 +381,99 @@ locationsRouter.patch(
     res.status(200).json({ location: updated });
   }),
 );
+
+// ---------------------------------------------------------------------------
+// DELETE /api/locations/:id  — pm only. Guarded HARD delete.
+// ---------------------------------------------------------------------------
+// A location may only be physically removed when NOTHING references it.
+// Otherwise the row carries business history (stock, sales, requests) or wires
+// the chain together (child locations, assigned users), so we refuse with a 409
+// and steer the caller to soft-archive (PATCH { is_active: false }).
+//
+// Reference tables guarded (every FK to locations(id) that is business-bearing):
+//   locations.parent_id        — child sub-departments
+//   users.location_id          — primary assignment
+//   user_locations.location_id — M:N assignment
+//   stock.location_id          — on-hand rows
+//   stock_movements.from/to    — movement history
+//   replenishment_requests.requester/target — open or historical requests
+//   production_orders.location_id/target_location_id
+//   purchase_orders.target_location_id
+//   sales.store_id             — synced Poster sales
+//   location_flows.from/to     — explicit chain edges
+locationsRouter.delete(
+  '/:id',
+  authenticate,
+  authorize('pm'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const id = parseIdParam(req.params.id, 'id');
+
+    // Existence first — a missing id is 404, not 409.
+    const { rows: existing } = await query<{ id: string }>(
+      `SELECT id FROM locations WHERE id = $1`,
+      [id],
+    );
+    if (existing[0] === undefined) {
+      throw AppError.notFound('Location not found.');
+    }
+
+    // One round-trip: count every dependent in parallel via a single SELECT of
+    // scalar sub-queries. If any is non-zero the location is referenced.
+    const { rows: depRows } = await query<{
+      children: string;
+      users_primary: string;
+      user_locations: string;
+      stock: string;
+      stock_movements: string;
+      replenishment_requests: string;
+      production_orders: string;
+      purchase_orders: string;
+      sales: string;
+      location_flows: string;
+    }>(
+      `SELECT
+         (SELECT count(*) FROM locations WHERE parent_id = $1)                        AS children,
+         (SELECT count(*) FROM users WHERE location_id = $1)                          AS users_primary,
+         (SELECT count(*) FROM user_locations WHERE location_id = $1)                 AS user_locations,
+         (SELECT count(*) FROM stock WHERE location_id = $1)                          AS stock,
+         (SELECT count(*) FROM stock_movements
+            WHERE from_location_id = $1 OR to_location_id = $1)                       AS stock_movements,
+         (SELECT count(*) FROM replenishment_requests
+            WHERE requester_location_id = $1 OR target_location_id = $1)              AS replenishment_requests,
+         (SELECT count(*) FROM production_orders
+            WHERE location_id = $1 OR target_location_id = $1)                        AS production_orders,
+         (SELECT count(*) FROM purchase_orders WHERE target_location_id = $1)         AS purchase_orders,
+         (SELECT count(*) FROM sales WHERE store_id = $1)                             AS sales,
+         (SELECT count(*) FROM location_flows
+            WHERE from_location_id = $1 OR to_location_id = $1)                        AS location_flows`,
+      [id],
+    );
+    const deps = depRows[0];
+    const dependents: string[] = [];
+    if (deps !== undefined) {
+      for (const [key, value] of Object.entries(deps)) {
+        if (Number(value) > 0) {
+          dependents.push(key);
+        }
+      }
+    }
+    if (dependents.length > 0) {
+      // 409 Conflict — the row cannot be removed while referenced.
+      throw AppError.conflict(
+        `Bog‘liq ma’lumotlar bor — arxivlang (${dependents.join(', ')}).`,
+      );
+    }
+
+    // No dependents — safe to physically remove.
+    await query(`DELETE FROM locations WHERE id = $1`, [id]);
+    await writeAudit(poolRunner, {
+      actorUserId: principal.userId,
+      action: 'location.delete',
+      entity: 'locations',
+      entityId: id,
+      payload: null,
+    });
+    res.status(204).end();
+  }),
+);

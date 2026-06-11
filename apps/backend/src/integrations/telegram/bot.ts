@@ -23,12 +23,20 @@
  * later call returns the cached instance. `resetBotCache()` exists for
  * tests that mock `Bot` and need a fresh build.
  */
-import { Bot, type BotConfig } from 'grammy';
+import { Bot, InputFile, type BotConfig } from 'grammy';
 import { loadConfig } from '../../config/index.js';
 import { handleCallbackQuery, type CallbackContext } from './callbackHandler.js';
+import {
+  handleReportsCallback,
+  isReportsCallback,
+  type ReportsCallbackContext,
+} from './reportsHandler.js';
 import { handleStartCommand, type StartContext } from './startCommand.js';
+import { unlinkTelegramAccount } from '../../services/userTelegramLink.js';
 import { wireVoiceHandler } from './voiceHandler.js';
 import { handleCashShiftMessage, type CashShiftCtxLike } from './cashShiftHandler.js';
+import { handleMenuMessage, type MenuCtxLike } from './menuHandler.js';
+import { handleAiChatMessage, exitAiChatMode, type AiChatCtxLike } from './aiChatHandler.js';
 
 /**
  * Minimal surface the outbox worker needs from a Grammy bot. Kept narrow
@@ -100,6 +108,43 @@ export function ensureCallbackHandlerWired(): void {
     const update = ctx.update;
     const cq = ctx.callbackQuery;
     if (cq === undefined) return;
+
+    // 📊 Hisobotlar — the reports flow uses string callback segments and
+    // sends DOCUMENTS, so it is handled by its own self-contained handler
+    // (same idempotency / RBAC / audit framework) BEFORE the generic
+    // verb:entity:id dispatcher. Everything else falls through unchanged.
+    const rawData = cq.data ?? '';
+    if (isReportsCallback(rawData)) {
+      const chatId = cq.message?.chat?.id;
+      const reportsCtx: ReportsCallbackContext = {
+        updateId: update.update_id,
+        callbackQueryId: cq.id,
+        fromTelegramId: cq.from.id,
+        data: rawData,
+        answerCallbackQuery: (text, opts) =>
+          ctx.answerCallbackQuery({ text, show_alert: opts?.showAlert ?? false }),
+        sendMessage: (text, opts) => {
+          if (chatId === undefined) return Promise.resolve();
+          return ctx.api
+            .sendMessage(chatId, text, {
+              parse_mode: 'Markdown',
+              ...(opts?.inlineKeyboard !== undefined
+                ? { reply_markup: { inline_keyboard: opts.inlineKeyboard } }
+                : {}),
+            })
+            .then(() => undefined);
+        },
+        replyWithDocument: (buffer, filename) => {
+          if (chatId === undefined) return Promise.resolve();
+          return ctx.api
+            .sendDocument(chatId, new InputFile(buffer, filename))
+            .then(() => undefined);
+        },
+      };
+      await handleReportsCallback(reportsCtx);
+      return;
+    }
+
     const ctxAdapter: CallbackContext = {
       updateId: update.update_id,
       callbackQueryId: cq.id,
@@ -139,9 +184,29 @@ export function ensureCallbackHandlerWired(): void {
     const startCtx: StartContext = {
       fromTelegramId: fromId,
       token,
-      reply: (text) => ctx.reply(text).then(() => undefined),
+      // B2 — forward `opts` so the onboarding reply-keyboard (reply_markup)
+      // reaches Telegram.
+      reply: (text, opts) => ctx.reply(text, opts).then(() => undefined),
     };
     await handleStartCommand(startCtx);
+  });
+  // /logout — detach this Telegram from its ADIA user so the same account can
+  // re-link as a different user (e.g. switch PM → central-warehouse manager).
+  bot.command('logout', async (ctx) => {
+    const fromId = ctx.from?.id;
+    if (fromId === undefined) return;
+    try {
+      const { unlinked, userName } = await unlinkTelegramAccount(fromId);
+      exitAiChatMode(fromId);
+      const msg = unlinked
+        ? `✅ Tizimdan chiqdingiz${userName ? ` (${userName})` : ''}.\n` +
+          "Boshqa akkaunt ulash uchun ilovadan yangi havola oling va /start <token> yuboring."
+        : "Siz hech qaysi akkauntga ulanmagansiz.";
+      await ctx.reply(msg, { reply_markup: { remove_keyboard: true } }).catch(() => undefined);
+    } catch (err) {
+      console.error('[telegram-logout] failed:', (err as Error).message);
+      await ctx.reply("Server xatosi. Birozdan so'ng qayta urinib ko'ring.").catch(() => undefined);
+    }
   });
   // F4.3 / ADR-0014 — message:voice handler. `wireVoiceHandler` ham idempotent
   // (Grammy bot.on additive, lekin `inboundWired` flag dublikatlarni
@@ -153,9 +218,23 @@ export function ensureCallbackHandlerWired(): void {
   // Grammy command'ni message:text dan oldin ushlaydi, to'qnashuv yo'q.
   bot.on('message:text', async (ctx) => {
     try {
-      await handleCashShiftMessage(ctx as unknown as CashShiftCtxLike);
+      // Precedence: menu > cash-shift > AI chat.
+      // B2 — menu reply-keyboard buttons are routed FIRST. `handleMenuMessage`
+      // returns `{handled:false}` for any non-menu text, so the cash-shift
+      // handler still sees ordinary messages (no flow is broken).
+      const menu = await handleMenuMessage(ctx as unknown as MenuCtxLike);
+      if (menu.handled) return;
+      // EPIC 8.5 — cash-shift submissions are keyword-gated; `handled:false`
+      // for ordinary text falls through to the AI assistant.
+      const cash = await handleCashShiftMessage(ctx as unknown as CashShiftCtxLike);
+      if (cash.handled) return;
+      // AI chat — the default for any free text that is NOT a menu button and
+      // NOT a cash-shift submission. Reuses the web assistant (`runAssistant
+      // Query`) with the user's real principal, so web + bot share one
+      // assistant and one RBAC scope.
+      await handleAiChatMessage(ctx as unknown as AiChatCtxLike);
     } catch (err) {
-      console.error('[telegram-cashshift] uncaught:', (err as Error).message);
+      console.error('[telegram-text] uncaught:', (err as Error).message);
     }
   });
   inboundWired = true;

@@ -50,6 +50,22 @@ export type VertexGenerateRequest = {
   readonly toolConfig?: ToolConfig;
 };
 
+/**
+ * B1 (telegram-bot-tz §2) — multimodal request shape. Same as
+ * `VertexGenerateRequest` but `contents` already carries the audio `inlineData`
+ * part(s) plus the prompt text. Kept separate so the (text-only) assistant
+ * path and the (audio) voice path do not share an over-broad type, and so the
+ * test fake can implement only the method it exercises.
+ */
+export type VertexAudioRequest = {
+  readonly systemInstruction: string;
+  /** Caller builds the Content[] — typically one `user` turn that mixes an
+   *  audio `inlineData` part with a text instruction part. */
+  readonly contents: Content[];
+  readonly tools: Tool[];
+  readonly toolConfig?: ToolConfig;
+};
+
 export type VertexClient = {
   /** True when the SDK is wired and ADC credentials are present. */
   readonly enabled: boolean;
@@ -58,6 +74,13 @@ export type VertexClient = {
    * errors; callers translate that into an `AI_TOOL_ERROR` response.
    */
   generate(req: VertexGenerateRequest): Promise<GenerateContentResponse>;
+  /**
+   * B1 — issue a single multimodal `generateContent` round-trip that includes
+   * an audio part. Used by the Telegram voice flow to BOTH transcribe (Uzbek)
+   * AND extract the structured request in one Gemini 2.5 Flash call.
+   * Optional on the interface so a text-only test fake need not implement it.
+   */
+  generateWithAudio?(req: VertexAudioRequest): Promise<GenerateContentResponse>;
 };
 
 let cached: GoogleGenAI | undefined;
@@ -109,6 +132,26 @@ export const defaultVertexClient: VertexClient = {
         // Vertex default (AUTO).
         ...(req.toolConfig !== undefined ? { toolConfig: req.toolConfig } : {}),
         temperature: 0.2, // deterministic-leaning — domain answers, not creative writing
+        maxOutputTokens: cfg.vertex.maxOutputTokens,
+      },
+    });
+  },
+  async generateWithAudio(
+    req: VertexAudioRequest,
+  ): Promise<GenerateContentResponse> {
+    const cfg = loadConfig();
+    const ai = getAi();
+    // Same model (gemini-2.5-flash) — it is natively multimodal, so audio
+    // transcription + function-calling extraction happen in ONE round-trip.
+    return ai.models.generateContent({
+      model: cfg.vertex.model,
+      contents: req.contents,
+      config: {
+        systemInstruction: req.systemInstruction,
+        tools: req.tools,
+        ...(req.toolConfig !== undefined ? { toolConfig: req.toolConfig } : {}),
+        // Transcription benefits from low temperature (faithful to the audio).
+        temperature: 0.1,
         maxOutputTokens: cfg.vertex.maxOutputTokens,
       },
     });

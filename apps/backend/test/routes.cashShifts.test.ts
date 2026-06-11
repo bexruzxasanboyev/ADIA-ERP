@@ -3,10 +3,12 @@
  *
  * Coverage:
  *   - mapCashShift: tiyin->so'm, closing_balance + kniжный/факт discrepancy.
- *   - route maps Poster finance.getCashshifts onto the CashShift contract,
+ *   - route maps Poster finance.getCashShifts onto the CashShift contract,
  *     resolves spot_id -> ADIA store, returns { items: [...] }.
  *   - RBAC: store_manager sees only its own store; foreign store_id -> 403.
  *   - unauthenticated -> 401.
+ *   - graceful degradation: a method-level PosterApiError (HTTP 405 / Poster
+ *     code 30) yields 200 {items:[]} instead of 500.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
@@ -44,7 +46,7 @@ async function makeStoreWithSpot(spotId: number, name: string): Promise<number> 
   return Number(rows[0]!.id);
 }
 
-/** Stub the Poster client so finance.getCashshifts returns `shifts`. */
+/** Stub the Poster client so finance.getCashShifts returns `shifts`. */
 function stubCashShifts(shifts: unknown[]): void {
   setPosterClientForTests(
     new PosterClient({
@@ -53,13 +55,46 @@ function stubCashShifts(shifts: unknown[]): void {
       fetcher: ((url: string | URL) => {
         const u = typeof url === 'string' ? new URL(url) : url;
         const m = u.pathname.split('/').pop();
-        if (m === 'finance.getCashshifts') {
+        // Poster's real method is case-sensitive `finance.getCashShifts`.
+        if (m === 'finance.getCashShifts') {
           return Promise.resolve(
             new Response(JSON.stringify({ response: shifts }), { status: 200 }),
           );
         }
         return Promise.resolve(
           new Response(JSON.stringify({ error: { code: 30, message: 'NA' } }), { status: 200 }),
+        );
+      }) as unknown as typeof fetch,
+    }),
+  );
+  process.env.POSTER_TOKEN = 'acc:test';
+}
+
+/**
+ * Stub a Poster client whose cash-shift call fails like a real unavailable
+ * method. `mode` selects the failure shape:
+ *   - 'http405' — HTTP 405 (what the lowercase method used to return);
+ *   - 'envelope30' — HTTP 200 with `{error:{code:30,...}}` (Poster style).
+ */
+function stubCashShiftsUnavailable(mode: 'http405' | 'envelope30'): void {
+  setPosterClientForTests(
+    new PosterClient({
+      token: 'acc:test',
+      minIntervalMs: 0,
+      fetcher: (() => {
+        if (mode === 'http405') {
+          return Promise.resolve(
+            new Response(JSON.stringify({ error: { code: 30, message: 'Method Not Allowed' } }), {
+              status: 405,
+              statusText: 'Method Not Allowed',
+            }),
+          );
+        }
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ error: { code: 30, message: 'Method Not Allowed' } }),
+            { status: 200 },
+          ),
         );
       }) as unknown as typeof fetch,
     }),
@@ -155,5 +190,25 @@ describe('GET /api/cash-shifts', () => {
   it('unauthenticated -> 401', async () => {
     const res = await request(ctx.app).get('/api/cash-shifts');
     expect(res.status).toBe(401);
+  });
+
+  it('degrades to 200 {items:[]} when Poster returns HTTP 405 (method unavailable)', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    stubCashShiftsUnavailable('http405');
+    const res = await request(ctx.app)
+      .get('/api/cash-shifts?range=today')
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.items).toEqual([]);
+  });
+
+  it('degrades to 200 {items:[]} on Poster {code:30} envelope (method not allowed)', async () => {
+    const pm = await makeUser(ctx.db, { role: 'pm' });
+    stubCashShiftsUnavailable('envelope30');
+    const res = await request(ctx.app)
+      .get('/api/cash-shifts?range=today')
+      .set('Authorization', `Bearer ${pm.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.items).toEqual([]);
   });
 });

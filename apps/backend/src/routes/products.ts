@@ -38,6 +38,8 @@ import {
   type ProductCategory,
   type ProductType,
 } from '../lib/productCategory.js';
+import { readRecipeTree } from '../services/bom.js';
+import { enqueueProductUnitWriteback } from '../services/posterWriteback.js';
 
 export const productsRouter: Router = Router();
 
@@ -52,10 +54,28 @@ type ProductRow = {
   sku: string | null;
   poster_ingredient_id: number | null;
   poster_product_id: number | null;
+  category_id: number | null;
+  /** Joined from categories — the REAL Poster category name (NULL when none). */
+  category_name: string | null;
+  /** EXISTS flag — true when the product has at least one row in `recipes`. */
+  has_recipe: boolean;
+  /**
+   * FEATURE A — the Poster-synced unit cost (so'm per unit), or NULL. Refreshed
+   * on every sync; overridden by `manual_cost_per_unit` when that is set.
+   */
+  cost_per_unit: string | number | null;
+  /**
+   * FEATURE A — the MANUAL unit-cost override (so'm per unit), or NULL. When
+   * non-null it WINS over `cost_per_unit` everywhere and survives re-sync.
+   */
+  manual_cost_per_unit: string | number | null;
   is_active: boolean;
   created_at: Date;
   updated_at: Date;
 };
+
+/** The real Poster category DTO: `{ id, name }` or `null` when uncategorised. */
+type PosterCategoryDto = { id: number; name: string } | null;
 
 /**
  * EPIC 1.3 — a product row enriched with the smart-category fields. `category`
@@ -63,18 +83,29 @@ type ProductRow = {
  * names to `finished`. The frontend prefers these over its own client-side
  * derivation.
  */
-type EnrichedProductRow = ProductRow & {
+type EnrichedProductRow = Omit<ProductRow, 'category_name'> & {
   category: ProductCategory;
   effective_type: ProductType;
+  /**
+   * The REAL Poster category (menu.getCategories). `{ id, name }` or `null`.
+   * Distinct from `category` above (which is the EPIC 1.3 heuristic string
+   * guess). The frontend should prefer `poster_category` for grouping.
+   */
+  poster_category: PosterCategoryDto;
 };
 
-/** Attach the EPIC 1.3 smart-category fields to a product row. */
+/** Attach the EPIC 1.3 smart-category fields + the real Poster category. */
 function enrich(row: ProductRow): EnrichedProductRow {
   const type = row.type as ProductType;
+  const { category_name, ...rest } = row;
   return {
-    ...row,
+    ...rest,
     category: deriveCategory(row.name, type),
     effective_type: effectiveType(row.name, type),
+    poster_category:
+      row.category_id !== null && category_name !== null
+        ? { id: Number(row.category_id), name: category_name }
+        : null,
   };
 }
 
@@ -85,8 +116,21 @@ type RecipeRow = {
   qty_per_unit: number;
 };
 
-const PRODUCT_COLUMNS = `id, name, type, unit, sku, poster_ingredient_id,
-  poster_product_id, is_active, created_at, updated_at`;
+// Product columns + the joined real-Poster category name. `c.name` is aliased
+// to `category_name` so the row shape matches `ProductRow`; the LEFT JOIN keeps
+// uncategorised products (category_id IS NULL) in the result.
+const PRODUCT_SELECT = `SELECT p.id, p.name, p.type, p.unit, p.sku,
+    p.poster_ingredient_id, p.poster_product_id, p.category_id,
+    c.name AS category_name,
+    EXISTS (SELECT 1 FROM recipes r WHERE r.product_id = p.id) AS has_recipe,
+    p.cost_per_unit, p.manual_cost_per_unit,
+    p.is_active, p.created_at, p.updated_at
+  FROM products p
+  LEFT JOIN categories c ON c.id = p.category_id`;
+
+// Columns for INSERT ... RETURNING (no join — category_name resolved separately).
+const PRODUCT_RETURNING = `id, name, type, unit, sku, poster_ingredient_id,
+  poster_product_id, category_id, is_active, created_at, updated_at`;
 
 // GET /api/products?type=
 productsRouter.get(
@@ -115,9 +159,9 @@ productsRouter.get(
 
     const { rows } =
       typeRaw === undefined
-        ? await query<ProductRow>(`SELECT ${PRODUCT_COLUMNS} FROM products ORDER BY id`)
+        ? await query<ProductRow>(`${PRODUCT_SELECT} ORDER BY p.id`)
         : await query<ProductRow>(
-            `SELECT ${PRODUCT_COLUMNS} FROM products WHERE type = $1 ORDER BY id`,
+            `${PRODUCT_SELECT} WHERE p.type = $1 ORDER BY p.id`,
             [typeRaw],
           );
 
@@ -155,16 +199,28 @@ productsRouter.post(
       }
     }
 
-    const { rows } = await query<ProductRow>(
+    const { rows } = await query<Omit<ProductRow, 'category_name' | 'has_recipe'>>(
       `INSERT INTO products (name, type, unit, sku, poster_ingredient_id, poster_product_id)
        VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING ${PRODUCT_COLUMNS}`,
+       RETURNING ${PRODUCT_RETURNING}`,
       [name, type, unit, sku, posterIngredientId ?? null, posterProductId ?? null],
     );
-    const created = rows[0];
-    if (created === undefined) {
+    const inserted = rows[0];
+    if (inserted === undefined) {
       throw AppError.internal('Product insert returned no row.');
     }
+    // A manually-created product is never assigned a Poster category here, so
+    // category_name is always NULL — the create endpoint does not set category_id.
+    // A brand-new product has no recipe rows yet, so has_recipe is always false.
+    // A brand-new product has no cost yet (Poster sync sets cost_per_unit; the
+    // manual override is opt-in) — both cost columns start NULL.
+    const created: ProductRow = {
+      ...inserted,
+      category_name: null,
+      has_recipe: false,
+      cost_per_unit: null,
+      manual_cost_per_unit: null,
+    };
     await writeAudit(poolRunner, {
       actorUserId: principal.userId,
       action: 'product.create',
@@ -177,15 +233,25 @@ productsRouter.post(
 );
 
 // GET /api/products/:id/recipe
+//
+// Returns BOTH:
+//   - `recipe` — the flat top-level lines (backward-compatible; the PUT editor
+//                and any existing consumer keep working unchanged);
+//   - `tree`   — the NESTED recipe (prepacks expandable), each node carrying
+//                qty_per_unit, unit_cost, line_cost, total_cost (so'm);
+//   - `total_cost` — the product's full recipe Себестоимость (Σ top-level
+//                line_cost), or null when any leg's cost is unknown.
+// Cost is computed bottom-up from `products.cost_per_unit` (raw leaf cost).
 productsRouter.get(
   '/:id/recipe',
   authenticate,
   authorize('pm', 'production_manager'),
   asyncHandler(async (req, res) => {
     const productId = parseIdParam(req.params.id, 'id');
-    const exists = await query<{ id: number }>('SELECT id FROM products WHERE id = $1', [
-      productId,
-    ]);
+    const exists = await query<{ recipe_yield: string | number }>(
+      'SELECT recipe_yield FROM products WHERE id = $1',
+      [productId],
+    );
     if (exists.rows.length === 0) {
       throw AppError.notFound('Product not found.');
     }
@@ -194,7 +260,306 @@ productsRouter.get(
        FROM recipes WHERE product_id = $1 ORDER BY id`,
       [productId],
     );
-    res.status(200).json({ product_id: productId, recipe: rows });
+    const tree = await readRecipeTree(poolRunner, productId);
+    res.status(200).json({
+      product_id: productId,
+      recipe: rows,
+      tree: tree.nodes,
+      total_cost: tree.total_cost,
+      // TZ-3 — how many finished pieces one full recipe yields. The cost/tree
+      // above are already per-piece (divided by this). Default 1.
+      recipe_yield: Number(exists.rows[0]!.recipe_yield),
+    });
+  }),
+);
+
+// PATCH /api/products/:id/recipe-yield  — TZ-3.
+//
+// Set how many finished UNITS one full recipe produces. The cost roll-up and
+// the requisition math divide qty_per_unit by this, so it is the manager's
+// confirmation (or correction) of the AI yield estimate for a batch recipe.
+// pm + production_manager only.
+productsRouter.patch(
+  '/:id/recipe-yield',
+  authenticate,
+  authorize('pm', 'production_manager'),
+  asyncHandler(async (req, res) => {
+    const productId = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+    const yieldVal = requirePositiveNumber(body, 'recipe_yield');
+    const { rows } = await query<{ recipe_yield: string }>(
+      `UPDATE products SET recipe_yield = $2 WHERE id = $1 RETURNING recipe_yield`,
+      [productId, yieldVal],
+    );
+    if (rows.length === 0) {
+      throw AppError.notFound('Product not found.');
+    }
+    res
+      .status(200)
+      .json({ id: productId, recipe_yield: Number(rows[0]!.recipe_yield) });
+  }),
+);
+
+// PATCH /api/products/:id/cost  — FEATURE A (editable MANUAL price).
+//
+// Pin a manual unit cost (so'm per unit) that OVERRIDES Poster's synced
+// cost_per_unit everywhere (the cost roll-up reads COALESCE(manual, synced))
+// and SURVIVES re-sync (seedSync only updates cost_per_unit when manual IS
+// NULL). Body `{ cost_per_unit: number > 0 | null }` — `null` CLEARS the
+// override, falling back to the Poster cost. pm + production_manager only.
+productsRouter.patch(
+  '/:id/cost',
+  authenticate,
+  authorize('pm', 'production_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const productId = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+
+    // `cost_per_unit` is REQUIRED in the body but may be `null` (clear the
+    // override) or a number strictly greater than zero (pin a price). A price
+    // of exactly 0 is rejected — clearing is done with `null`, not 0.
+    const raw = body.cost_per_unit;
+    let manualCost: number | null;
+    if (raw === null) {
+      manualCost = null;
+    } else if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+      manualCost = raw;
+    } else {
+      throw AppError.validation(
+        'Field "cost_per_unit" must be a number greater than zero, or null to clear the override.',
+      );
+    }
+
+    const { rows } = await query<{
+      manual_cost_per_unit: string | null;
+      cost_per_unit: string | null;
+    }>(
+      `UPDATE products
+          SET manual_cost_per_unit = $2
+        WHERE id = $1
+      RETURNING manual_cost_per_unit, cost_per_unit`,
+      [productId, manualCost],
+    );
+    if (rows.length === 0) {
+      throw AppError.notFound('Product not found.');
+    }
+    const updated = rows[0]!;
+
+    await writeAudit(poolRunner, {
+      actorUserId: principal.userId,
+      action: 'product.cost.override',
+      entity: 'products',
+      entityId: productId,
+      payload: { manual_cost_per_unit: manualCost },
+    });
+
+    res.status(200).json({
+      id: productId,
+      manual_cost_per_unit:
+        updated.manual_cost_per_unit === null ? null : Number(updated.manual_cost_per_unit),
+      cost_per_unit: updated.cost_per_unit === null ? null : Number(updated.cost_per_unit),
+    });
+  }),
+);
+
+// PATCH /api/products/:id/unit  — edit a product's unit of measure.
+//
+// Owner requirement (2026-06-06): the boss edits a product's unit (kg / l /
+// pcs). The change lands in the ERP DB immediately AND a Poster write-back
+// intent is enqueued (the live Poster token is read-only — see
+// services/posterWriteback.ts; a future worker flushes the queue via
+// menu.updateProduct).
+//
+// Same write-capable roles that manage products (mirror POST /): pm +
+// raw_warehouse_manager. Body `{ unit: 'kg' | 'l' | 'pcs' }`.
+//
+// Behaviour:
+//   - 404 when the product is missing;
+//   - no-op (200, unchanged product, NO write-back) when unit is unchanged;
+//   - otherwise UPDATE + audit in ONE transaction, then best-effort enqueue
+//     the Poster write-back AFTER commit (a Poster failure must never break the
+//     local update — invariant 1 of the outbox pattern).
+productsRouter.patch(
+  '/:id/unit',
+  authenticate,
+  authorize('pm', 'raw_warehouse_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const productId = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+    const unit = requireEnum(body, 'unit', UNIT_TYPES);
+
+    // Load the current product (full enriched shape, so the no-op path and the
+    // success path both return the same Product the frontend expects).
+    const current = await query<ProductRow>(`${PRODUCT_SELECT} WHERE p.id = $1`, [productId]);
+    const existing = current.rows[0];
+    if (existing === undefined) {
+      throw AppError.notFound('Product not found.');
+    }
+
+    // No-op — unit unchanged. Return the product as-is, NO write-back enqueued.
+    if (existing.unit === unit) {
+      res.status(200).json({ product: enrich(existing) });
+      return;
+    }
+
+    const previousUnit = existing.unit;
+
+    // UPDATE + audit in ONE transaction (all-or-nothing).
+    await withTransaction(async (tx) => {
+      await tx.query('UPDATE products SET unit = $2, updated_at = now() WHERE id = $1', [
+        productId,
+        unit,
+      ]);
+      await writeAudit(tx, {
+        actorUserId: principal.userId,
+        action: 'product.unit.update',
+        entity: 'products',
+        entityId: productId,
+        payload: {
+          from: previousUnit,
+          to: unit,
+          actor: principal.userId,
+          // Note when there is no Poster mapping (no write-back possible).
+          poster_writeback: existing.poster_product_id !== null ? 'enqueued' : 'skipped',
+        },
+      });
+    });
+
+    // Best-effort Poster write-back AFTER commit — a failure here must NOT break
+    // the local update, so swallow + log. Skipped automatically when the product
+    // has no poster_product_id (nothing to push to the POS).
+    try {
+      await enqueueProductUnitWriteback({
+        productId,
+        posterProductId: existing.poster_product_id,
+        field: 'unit',
+        oldValue: previousUnit,
+        newValue: unit,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[products] unit write-back enqueue failed (swallowed):', message);
+    }
+
+    // Re-read the full enriched product so the frontend gets a complete Product.
+    const updated = await query<ProductRow>(`${PRODUCT_SELECT} WHERE p.id = $1`, [productId]);
+    const row = updated.rows[0];
+    if (row === undefined) {
+      throw AppError.internal('Product disappeared after unit update.');
+    }
+    res.status(200).json({ product: enrich(row) });
+  }),
+);
+
+// PATCH /api/products/:id/kpi-target  — KPI production-costing.
+//
+// Pin (or clear) the boss's MONTHLY SALES TARGET (so'm) for this product. The
+// KPI screen compares actual revenue against it. Body
+// `{ kpi_target: number >= 0 | null }` — `null` CLEARS the target. Gated the
+// same way as the cost edit above: pm + production_manager.
+productsRouter.patch(
+  '/:id/kpi-target',
+  authenticate,
+  authorize('pm', 'production_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const productId = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+
+    // `kpi_target` is REQUIRED but may be `null` (clear) or a finite number
+    // >= 0 (a target of 0 is allowed; clearing is done with `null`).
+    const raw = body.kpi_target;
+    let target: number | null;
+    if (raw === null) {
+      target = null;
+    } else if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
+      target = raw;
+    } else {
+      throw AppError.validation(
+        'Field "kpi_target" must be a number >= 0, or null to clear the target.',
+      );
+    }
+
+    const { rows } = await query<{ kpi_target: string | null }>(
+      `UPDATE products SET kpi_target = $2, updated_at = now()
+        WHERE id = $1
+      RETURNING kpi_target`,
+      [productId, target],
+    );
+    if (rows.length === 0) {
+      throw AppError.notFound('Product not found.');
+    }
+
+    await writeAudit(poolRunner, {
+      actorUserId: principal.userId,
+      action: 'product.kpi_target.set',
+      entity: 'products',
+      entityId: productId,
+      payload: { kpi_target: target },
+    });
+
+    res.status(200).json({
+      id: productId,
+      kpi_target: rows[0]!.kpi_target === null ? null : Number(rows[0]!.kpi_target),
+    });
+  }),
+);
+
+// PATCH /api/products/:id/komunal  — KPI production-costing.
+//
+// Owner decision (2026-06-06): utilities ("komunal") are a PER-PRODUCT manual
+// per-unit cost, NOT a shared monthly pool. Pin (or clear) the boss's per-unit
+// utility cost (so'm per finished unit) for this product. The KPI screen folds
+// it into full_cost. Body `{ komunal_per_unit: number >= 0 | null }` — `null`
+// CLEARS it. Gated the same way as cost / kpi-target: pm + production_manager.
+productsRouter.patch(
+  '/:id/komunal',
+  authenticate,
+  authorize('pm', 'production_manager'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const productId = parseIdParam(req.params.id, 'id');
+    const body = asObject(req.body);
+
+    // `komunal_per_unit` is REQUIRED but may be `null` (clear) or a finite
+    // number >= 0 (a value of 0 is allowed; clearing is done with `null`).
+    const raw = body.komunal_per_unit;
+    let komunal: number | null;
+    if (raw === null) {
+      komunal = null;
+    } else if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
+      komunal = raw;
+    } else {
+      throw AppError.validation(
+        'Field "komunal_per_unit" must be a number >= 0, or null to clear it.',
+      );
+    }
+
+    const { rows } = await query<{ komunal_per_unit: string | null }>(
+      `UPDATE products SET komunal_per_unit = $2, updated_at = now()
+        WHERE id = $1
+      RETURNING komunal_per_unit`,
+      [productId, komunal],
+    );
+    if (rows.length === 0) {
+      throw AppError.notFound('Product not found.');
+    }
+
+    await writeAudit(poolRunner, {
+      actorUserId: principal.userId,
+      action: 'product.komunal.set',
+      entity: 'products',
+      entityId: productId,
+      payload: { komunal_per_unit: komunal },
+    });
+
+    res.status(200).json({
+      id: productId,
+      komunal_per_unit:
+        rows[0]!.komunal_per_unit === null ? null : Number(rows[0]!.komunal_per_unit),
+    });
   }),
 );
 

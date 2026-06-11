@@ -28,8 +28,60 @@ import {
 import { runMinmaxRecalcCycle } from '../workers/minmaxRecalcCron.js';
 import { runForecastRefreshCycle } from '../workers/forecastRefreshCron.js';
 import { loadConfig } from '../config/index.js';
+import {
+  estimateRecipeYield,
+  findBatchYieldCandidates,
+} from '../services/recipeYieldEstimate.js';
 
 export const adminRouter: Router = Router();
+
+// -----------------------------------------------------------------------------
+// POST /api/admin/recipe-yield/estimate — TZ-3 (AI estimate + manager confirm).
+//
+// AI-estimate the batch yield for finished products that still look batch-sized
+// (recipe_yield = 1 AND > 1.5 kg of raw per "piece"), store each estimate, and
+// return the list so the production manager can confirm / correct it via
+// PATCH /api/products/:id/recipe-yield.
+// -----------------------------------------------------------------------------
+
+adminRouter.post(
+  '/recipe-yield/estimate',
+  authenticate,
+  authorize('pm'),
+  asyncHandler(async (req, res) => {
+    const principal = getPrincipal(req);
+    const candidates = await findBatchYieldCandidates();
+    const estimated: {
+      product_id: number;
+      name: string;
+      total_kg: number;
+      estimated_yield: number | null;
+      applied: boolean;
+    }[] = [];
+    for (const cand of candidates) {
+      const est = await estimateRecipeYield(cand.product_id);
+      const applied = est !== null && est > 1;
+      if (applied) {
+        await query(`UPDATE products SET recipe_yield = $2 WHERE id = $1`, [
+          cand.product_id,
+          est,
+        ]);
+      }
+      estimated.push({ ...cand, estimated_yield: est, applied });
+    }
+    await writeAudit(poolRunner, {
+      actorUserId: principal.userId,
+      action: 'admin.recipe_yield.estimate',
+      entity: 'products',
+      entityId: null,
+      payload: {
+        candidates: candidates.length,
+        applied: estimated.filter((e) => e.applied).length,
+      },
+    });
+    res.status(200).json({ estimated });
+  }),
+);
 
 // -----------------------------------------------------------------------------
 // POST /api/admin/recalc-minmax
